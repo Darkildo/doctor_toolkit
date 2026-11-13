@@ -1,0 +1,56 @@
+name: Fuzz
+
+# A short run of every fuzz target: weekly, by hand, and when the fuzz
+# targets or their seeds change. Building them (nightly, sanitizers) takes
+# long, so it is not part of every check.
+
+on:
+  schedule:
+    - cron: "17 3 * * 1"
+  push:
+    branches: [main]
+    paths: ["fuzz/**"]
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fuzz-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  fuzz:
+    name: fuzz smoke test
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: fuzz
+      - name: Install cargo-fuzz
+        run: cargo +nightly install cargo-fuzz --locked
+      - name: Build the fuzz targets
+        run: cargo +nightly fuzz build -O
+      - name: Run every target for a few seconds
+        run: |
+          mkdir -p "$RUNNER_TEMP/fuzz"
+          for target in $(cargo +nightly fuzz list); do
+            echo "::group::$target"
+            mkdir -p "$RUNNER_TEMP/fuzz/$target"
+            seeds=()
+            if [ -d "fuzz/seeds/$target" ]; then seeds=("$GITHUB_WORKSPACE/fuzz/seeds/$target"); fi
+            TMPDIR="$RUNNER_TEMP/fuzz" cargo +nightly fuzz run -O "$target" "$RUNNER_TEMP/fuzz/$target" "${seeds[@]}" -- \
+              -max_total_time=10 -rss_limit_mb=2048 -malloc_limit_mb=512 -timeout=10
+            echo "::endgroup::"
+          done
+      - name: Keep crash inputs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-artifacts
+          path: fuzz/artifacts/

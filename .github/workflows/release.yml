@@ -1,5 +1,10 @@
 name: Release
 
+# Packages for a release tag `v<version>` (the version of Cargo.toml):
+# Linux x86_64 (tools/release.sh), Windows x86_64 and macOS (tools/package.sh)
+# and the in-game module of the live link (doctor_live.asi). They are put on
+# a draft release; run the workflow by hand to build them without one.
+
 on:
   push:
     tags: ["v*"]
@@ -7,9 +12,14 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
 
 permissions:
   contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   linux:
@@ -17,32 +27,81 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.97.1
-      - uses: Swatinem/rust-cache@v2
-      # The editor plays sound (ALSA): its pkg-config file and libasound.so
-      # for linking; the window libraries are loaded at run time.
-      - name: Install the ALSA development files
-        run: sudo apt-get update && sudo apt-get install -y libasound2-dev
-      - name: Install zig and cargo-zigbuild (links against glibc 2.31)
-        run: |
-          python3 -m pip install --target "$RUNNER_TEMP/zig" ziglang
-          echo "$RUNNER_TEMP/zig/ziglang" >> "$GITHUB_PATH"
-          cargo install cargo-zigbuild --locked
       - name: Check that the tag matches the version
         if: startsWith(github.ref, 'refs/tags/v')
         run: |
           version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n1)
           test "v$version" = "$GITHUB_REF_NAME" || { echo "tag $GITHUB_REF_NAME, Cargo.toml $version"; exit 1; }
-      - run: cargo test --workspace
+      - uses: dtolnay/rust-toolchain@1.97.1
+        with:
+          # The live module: a 32-bit Windows DLL, linked by MinGW.
+          targets: i686-pc-windows-gnu
+      - uses: Swatinem/rust-cache@v2
+      # The editor plays sound (ALSA): its pkg-config file and libasound.so
+      # for linking; the window libraries are loaded at run time.
+      - name: Install the ALSA development files and MinGW
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev gcc-mingw-w64-i686
+      - name: Install zig and cargo-zigbuild (links against glibc 2.31)
+        run: |
+          python3 -m pip install --target "$RUNNER_TEMP/zig" ziglang
+          echo "$RUNNER_TEMP/zig/ziglang" >> "$GITHUB_PATH"
+          cargo install cargo-zigbuild --locked
+      # Every push to main has passed the tests (ci.yml); the package is
+      # built from the same commit.
       - run: tools/release.sh
+      - name: The live module as a file of its own
+        run: |
+          tar -xzOf dist/doctor_toolkit-*-linux-x86_64.tar.gz --wildcards '*/doctor_live.asi' > dist/doctor_live.asi
+          (cd dist && sha256sum doctor_live.asi > doctor_live.asi.sha256)
       - uses: actions/upload-artifact@v4
         with:
           name: linux-x86_64
           path: dist/*
-      - name: Publish the release
-        if: startsWith(github.ref, 'refs/tags/v')
+
+  windows:
+    name: Windows x86_64 package
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.97.1
+      - uses: Swatinem/rust-cache@v2
+      - run: tools/package.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-x86_64
+          path: dist/*
+
+  macos:
+    name: macOS package
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.97.1
+      - uses: Swatinem/rust-cache@v2
+      - run: tools/package.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos
+          path: dist/*
+
+  publish:
+    name: Draft release
+    needs: [linux, windows, macos]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Create the draft release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "$GITHUB_REF_NAME" dist/* --draft --title "doctor_toolkit $GITHUB_REF_NAME" \
-            --notes "Linux x86_64 build. See docs/guide (Russian) and README.md."
+          ls -l dist
+          gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" --draft \
+            --title "doctor_toolkit $GITHUB_REF_NAME" \
+            --notes "Packages for Linux x86_64, Windows x86_64 and macOS, and the in-game live-link module (doctor_live.asi). See README.md and docs/guide (Russian)."

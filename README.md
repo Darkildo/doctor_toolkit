@@ -10,7 +10,7 @@ First supported game: **The Godfather II (PC)**.
 [![CI](https://github.com/Darkildo/doctor_toolkit/actions/workflows/ci.yml/badge.svg)](https://github.com/Darkildo/doctor_toolkit/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/Darkildo/doctor_toolkit?include_prereleases&label=release)](https://github.com/Darkildo/doctor_toolkit/releases)
 [![License: GPL-3.0](https://img.shields.io/badge/license-GPL--3.0-blue.svg)](LICENSE)
-![Platform](https://img.shields.io/badge/platform-Linux-lightgrey)
+![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20Windows%20%7C%20macOS-lightgrey)
 
 <img src="docs/images/overview.png" alt="The editor: files of the game, a stream, details of a model" width="900">
 
@@ -58,9 +58,10 @@ documentation of this tool only.
 
 ## Quick start
 
-1. Download the archive of the [latest release](https://github.com/Darkildo/doctor_toolkit/releases)
-   (Linux x86_64) or [build from source](#building-from-source) (Windows and
-   macOS builds are checked by CI but not packaged yet).
+1. Download the package for your system from the
+   [latest release](https://github.com/Darkildo/doctor_toolkit/releases)
+   (Linux x86_64; Windows x86_64 and macOS from the next release on) or
+   [build from source](#building-from-source).
 2. Unpack it and start the editor with the folder of your game:
 
    ```sh
@@ -709,8 +710,13 @@ repository); `fuzz/seeds/` holds a few synthetic ones used by CI.
 Release archive: `tools/release.sh` builds `dist/doctor_toolkit-<version>-linux-x86_64.tar.gz`
 with the `dist` profile (thin LTO, stripped) and checks the dynamic
 dependencies (the C library, and `libasound.so.2` for the editor); with
-`cargo-zigbuild` and `zig` installed it links against glibc 2.31. CI (`.github/workflows/`) runs fmt, clippy, tests, Windows and macOS
-builds and a fuzz smoke test; a `v*` tag builds the release.
+`cargo-zigbuild` and `zig` installed it links against glibc 2.31;
+`tools/package.sh` builds the Windows and macOS packages. CI
+(`.github/workflows/`): every change to the code runs fmt, clippy and the
+tests on Linux and the Python bindings (`ci.yml`); the fuzz targets run
+weekly (`fuzz.yml`); a `v*` tag builds the packages for Linux, Windows and
+macOS and the live-link module and puts them on a draft release
+(`release.yml`).
 
 Documentation of the file formats is in `docs/formats/` (Russian).
 
