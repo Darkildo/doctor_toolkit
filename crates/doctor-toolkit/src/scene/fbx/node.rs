@@ -239,7 +239,13 @@ impl<'a> Binary<'a> {
         }
         let name = String::from_utf8_lossy(self.slice(at + header, name_len)?).into_owned();
         let mut pos = at + header + name_len;
-        if count > end - pos {
+        // A name that runs past the end of the node would make `end - pos`
+        // wrap around and let any count through (a fuzzed file asked for
+        // 18 GB of properties).
+        let room = end
+            .checked_sub(pos)
+            .ok_or_else(|| bad(format!("node `{name}` ends inside its name")))?;
+        if count > room {
             return Err(bad(format!("node `{name}`: {count} properties")));
         }
         let mut props = Vec::with_capacity(count);
@@ -883,6 +889,20 @@ Connections:  {
         let mut bytes = write_binary(&[Node::new("A", vec![Prop::I32(1)])], 7400);
         assert!(parse(&bytes[..30]).is_err());
         bytes[27] = 0xFF; // end offset beyond the file
+        assert!(parse(&bytes).is_err());
+    }
+
+    /// A node whose name runs past its end and asks for many properties
+    /// (found by fuzzing: the count check wrapped around and 18 GB were
+    /// asked for).
+    #[test]
+    fn a_name_past_the_end_of_its_node_is_an_error() {
+        let mut bytes = write_binary(&[Node::new("A", vec![Prop::I32(1)])], 7400);
+        // First node at 27: end, property count, property bytes, name length.
+        let end = 27 + 13 + 1; // inside the name
+        bytes[27..31].copy_from_slice(&(end as u32).to_le_bytes());
+        bytes[31..35].copy_from_slice(&u32::MAX.to_le_bytes());
+        bytes[39] = 5; // name length: past the end, still inside the file
         assert!(parse(&bytes).is_err());
     }
 }

@@ -474,7 +474,9 @@ pub fn restore_stale(root: &Path) -> Result<bool> {
     Ok(changed)
 }
 
-#[cfg(test)]
+// DXVK is for Wine on Linux: on Windows `check` refuses at once and paths
+// use other separators.
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use std::fs;

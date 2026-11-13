@@ -175,9 +175,10 @@ dependencies = [
 
 [[package]]
 name = "doctor-toolkit"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "binrw",
+ "doctor-toolkit-live",
  "flate2",
  "gltf",
  "jpeg-decoder",
@@ -203,6 +204,10 @@ dependencies = [
  "libfuzzer-sys",
  "serde_json",
 ]
+
+[[package]]
+name = "doctor-toolkit-live"
+version = "0.0.1"
 
 [[package]]
 name = "either"

@@ -137,9 +137,18 @@ mod tests {
     #[test]
     fn commands_are_split_like_a_shell() {
         assert_eq!(split_command("  gimp   -n  ").unwrap(), ["gimp", "-n"]);
+        // A backslash outside quotes escapes the next character, except on
+        // Windows, where it is a path separator and stays.
+        let last: &[&str] = if cfg!(windows) {
+            &["e\\", "f"]
+        } else {
+            &["e f"]
+        };
+        let mut expected = vec!["flatpak", "run", "org.kde.krita", "a b", "c\"d"];
+        expected.extend_from_slice(last);
         assert_eq!(
             split_command(r#"flatpak run "org.kde.krita" 'a b' "c\"d" e\ f"#).unwrap(),
-            ["flatpak", "run", "org.kde.krita", "a b", "c\"d", "e f"]
+            expected
         );
         assert_eq!(split_command(r#"x "" y"#).unwrap(), ["x", "", "y"]);
         assert!(split_command("x 'open").is_err());
