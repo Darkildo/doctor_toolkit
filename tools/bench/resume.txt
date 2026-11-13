@@ -1,0 +1,20 @@
+# From the start of the game to gameplay from the save of SAVES (made by
+# `saves` after save-terrace.txt): selects the profile, "Resume Game" loads
+# the last save, the player stands on the hotel terrace in Havana at
+# (179.410, 21.165, -25.438) facing (-0.574, 0, -0.819). 1-4 min at
+# 1024x768, depending on the load of the machine.
+# Needs the references title, profiles, resume-selected and hud.
+# Under load the game misses a key now and then: every key is repeated
+# until its screen changes (`seek !NAME`).
+await title 600
+shot 01-title
+seek !title Return 6 0.4
+await profiles 300
+seek !profiles Return 6 0.4          # the first profile
+seek resume-selected Return 10 0.4   # "Autosave is now turned on" -> Continue
+shot 02-menu
+key Return                           # Resume Game
+seek !resume-selected Return 6 0.4   # again if the key was missed
+await hud 900
+wait 5
+shot 03-spawn

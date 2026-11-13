@@ -1,0 +1,24 @@
+[package]
+name = "doctor-toolkit-mods"
+description = "Mod manager for games of the EARS engine: install, order and apply mods"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+name = "doctor_toolkit_mods"
+path = "src/lib.rs"
+
+[[bin]]
+name = "doctor-toolkit-mods"
+path = "src/main.rs"
+
+[dependencies]
+doctor-toolkit.workspace = true
+eframe = { version = "=0.37.0", default-features = false, features = ["default_fonts", "wgpu", "wayland", "x11"] }
+egui = "=0.37.0"
+egui_extras = { version = "=0.37.0", default-features = false }
+rfd = "0.18"
+toml = "1"

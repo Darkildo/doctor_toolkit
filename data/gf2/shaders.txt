@@ -1,0 +1,97 @@
+# Shaders of materials (`material` slots 0x24 and the shadow shader at 0x1C).
+# A material names a shader by CRC-32 of the lower-case name. Names come from
+# godfather2.exe; flags from its shader table at 0x00E7B200 (entries of 0x24
+# bytes: name, 6 runtime words, parameter callback, flags):
+#   blend         alpha blended (flag 0x100)
+#   lit           drawn in the lit pass (flag 1)
+#   linear-tints  g_TintColor0..2 and other colours raised to 2.2 on load (callback 0x009DA3B0)
+#   uv-offsets    as linear-tints, and *UVScaleOffset.w becomes 1 - w - 1/y (callback 0x009DA470)
+# Lines: name, then flags.
+gf_char_face lit
+gf_char_eye lit
+gf_char_eye_depth
+gf_char_face_wrinkle_depth
+gf_char_face_detail_wrinkle_depth
+gf_char_eye_LowRes
+gf_char_hair_aniso blend linear-tints lit
+gf_char_hair_aniso_tint blend linear-tints lit
+gf_char_hair_tint blend linear-tints lit
+gf_char_hair_tint_LowRes blend linear-tints lit
+gf_road linear-tints lit
+gf_char_hair blend lit
+gf_char_skin lit
+gf_char_skin_LowRes lit
+gf_char_skin_detail lit
+gf_char_skin_detail_LowRes lit
+gf_char_face_detail lit
+gf_char_face_detail_LowRes lit
+gf_normal_spec_reflect lit
+gf_basic_tint_reflect linear-tints lit
+gf_basic_tint_reflect_LowRes linear-tints lit
+gf_normal_spec lit
+gf_basic lit
+gf_basic_LowRes lit
+gf_building linear-tints lit
+gf_building_detail linear-tints lit
+gf_building_detail_depth
+gf_building_detail_LowRes linear-tints lit
+gf_overlay_vertex_ao
+gf_char_tint_mask_detail_lowres linear-tints uv-offsets lit
+gf_char_tint_mask_detail linear-tints uv-offsets lit
+gf_char_tint_mask_lowres linear-tints lit
+gf_char_tint_mask_basic linear-tints uv-offsets lit
+gf_char_tint_mask_lowquality linear-tints lit
+gf_pano linear-tints lit
+WindowGlassLighting blend linear-tints lit
+gf_char_glass blend lit
+gf_char_glass_LowRes blend lit
+WindowGlowLowRes lit
+DepthSpecExpNxy12PS
+DepthAlphaTestSpecExpNxy12PS
+DepthSpecExpPS
+DepthAlphaTestSpecExpPS
+DepthSpecExpMedResPS
+DepthAlphaTestSpecExpMedResPS
+DepthSpecExpLowResPS
+DepthAlphaTestSpecExpLowResPS
+DepthDetailUVScaleOffsetPS linear-tints uv-offsets
+DepthAlphaTestDetailUVScaleOffsetPS linear-tints uv-offsets
+DepthDetailUVScaleOffsetMaskPS linear-tints uv-offsets
+gf_vehicles lit
+gf_vehicles_LowRes lit
+gf_vehicles_tint linear-tints lit
+gf_vehicles_tint_LowRes linear-tints lit
+gf_vehicles_DepthPS
+gf_vehicles_DepthAlphaTestPS
+gf_vehicles_glass blend linear-tints lit
+WindowGlassLightingLowRes blend linear-tints lit
+MiniMap
+sky_clouds
+sky_dome
+gf_normal_spec_bleed lit
+UVanimationScroll linear-tints lit
+UVanimationStep linear-tints lit
+WaterOceanLoRes linear-tints lit
+WaterOceanHighRes linear-tints lit
+WaterOceanLoResDepth
+WaterOceanHiResDepth
+WindowGlass lit
+WindowGlow lit
+WindowParallax lit
+gf_basic_vfx lit
+gf_basic_non_deferred_lit_vfx blend lit
+gf_basic_non_lit_vfx lit
+DeferredNormalsFastLowLOD
+DeferredNormals
+DeferredNormalsFast
+DeferredNormalsAlpha
+TreeRotatingLeaf
+TreeRotatingLeafDepth
+TreeNonRotatingLeafDepth
+TreeNonRotatingLeaf
+TreeTrunkDepth
+TreeTrunk
+WaterOceanHiRes
+DeferredNormalsFastAlpha
+shadowsskinned
+shadows

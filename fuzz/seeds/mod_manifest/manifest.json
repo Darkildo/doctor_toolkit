@@ -1,0 +1,26 @@
+{
+  "format": "doctor-toolkit-mod",
+  "format_version": 1,
+  "id": "fuzz-seed",
+  "name": "Fuzz seed",
+  "version": "1.0",
+  "author": "fuzz",
+  "description": "A seed for the fuzzer",
+  "game": {
+    "profile": "The Godfather II (PC)"
+  },
+  "resources": [
+    {
+      "key": "gf2/cuba:variabledictionary:00000000",
+      "payload": {
+        "sha256": "1136e8cf83c904fc13a46e912fd92f662f54ade417080d502088065da68c5750",
+        "size": 16
+      },
+      "original": {
+        "sha256": "5fa303d0c7487254f0382018cc70326c73b1bd5765336f040befefa47831e424",
+        "size": 29
+      },
+      "label": "Replace resource 5 of gf2/cuba"
+    }
+  ]
+}

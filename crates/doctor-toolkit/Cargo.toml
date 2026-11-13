@@ -1,0 +1,36 @@
+[package]
+name = "doctor-toolkit"
+description = "Reader and writer for the game file formats of the EARS engine (EA Redwood Shores / Visceral Games)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+doctor-toolkit-live.workspace = true
+binrw.workspace = true
+memmap2.workspace = true
+rayon.workspace = true
+thiserror.workspace = true
+png = "0.18"
+texpresso = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "1"
+sha2 = "0.10"
+gltf = { version = "1.4", default-features = false, features = ["utils", "names"] }
+jpeg-decoder = { version = "0.3", default-features = false }
+flate2 = "1"
+lz4_flex = { version = "0.14", default-features = false, features = ["std", "safe-encode", "safe-decode", "checked-decode"] }
+zip = { version = "9", default-features = false, features = ["deflate-flate2-zlib-rs"] }
+notify = "8.2"
+
+[features]
+# A miniature game for the tests of the GUI and other crates (`testing`).
+testing = []
+
+[dev-dependencies]
+proptest = "1"
+refpack = "5"
+tempfile = "3"

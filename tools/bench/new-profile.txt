@@ -1,0 +1,27 @@
+# From the start of the game to the first gameplay, on a prefix without
+# profiles: creates the profile "bench", starts a new game, accepts the
+# character and waits through the opening cutscene to the terrace in Cuba.
+# Screen 1024x768; needs the references title, profiles, profile-name,
+# autosave, menu, character and hud (docs/analysis/game-bench.md, §10).
+await title 600
+shot 01-title
+key Return
+await profiles 300
+click 498,567           # Create Profile
+await profile-name 300
+type bench
+click 598,600           # Accept
+await autosave 300
+key Return              # Continue
+await menu 300
+shot 02-menu
+seek new-game-selected Down 9
+key Return              # New Game
+await character 900
+shot 03-character
+wait 5
+seek !character Tab 6    # Tab accepts the character (pressed again until it takes)
+await hud 3600
+shot 04-spawn
+wait 10
+shot 05-spawn

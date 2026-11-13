@@ -1,0 +1,5 @@
+# Memory policy names of The Godfather II (PC).
+# The 32-bit value in a resource header is the SDBM hash of the name.
+default
+geometry
+volatile

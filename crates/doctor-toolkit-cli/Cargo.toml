@@ -1,0 +1,23 @@
+[package]
+name = "doctor-toolkit-cli"
+description = "Command line tool for the game files of the EARS engine"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "doctor-toolkit"
+path = "src/main.rs"
+
+[dependencies]
+doctor-toolkit.workspace = true
+anyhow.workspace = true
+clap.workspace = true
+rayon.workspace = true
+serde_json = { version = "1", features = ["preserve_order"] }
+toml = "1"
+
+[dev-dependencies]
+tempfile = "3"

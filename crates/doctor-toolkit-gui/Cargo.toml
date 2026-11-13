@@ -1,0 +1,50 @@
+[package]
+name = "doctor-toolkit-gui"
+description = "Graphical browser for the game files of the EARS engine"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "doctor-toolkit-gui"
+path = "src/main.rs"
+
+[dependencies]
+doctor-toolkit.workspace = true
+doctor-toolkit-mods.workspace = true
+eframe = { version = "=0.37.0", default-features = false, features = ["default_fonts", "wgpu", "glow", "wayland", "x11"] }
+egui = "=0.37.0"
+egui_extras = { version = "=0.37.0", default-features = false }
+egui_tiles = { version = "0.18", features = ["serde"] }
+serde = { version = "1", features = ["derive"] }
+toml = "1"
+rfd = "0.18"
+serde_json = "1"
+bytemuck = { version = "1.25", features = ["derive"] }
+pollster = "1"
+rayon.workspace = true
+cpal = { version = "0.16", optional = true }
+
+# The game in a tab (stage 33): on Linux a nested X server, its frames read
+# and its input sent over the X protocol (no libxcb, no external programs).
+[target.'cfg(all(unix, not(target_os = "macos")))'.dependencies]
+x11rb = { version = "0.13", features = ["damage", "xtest"] }
+rustix = { version = "1", default-features = false, features = ["std", "process"] }
+
+# On Windows the game's own window is put inside the editor's.
+[target.'cfg(windows)'.dependencies]
+raw-window-handle = "0.6"
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging"] }
+
+[dev-dependencies]
+doctor-toolkit = { workspace = true, features = ["testing"] }
+
+[features]
+default = ["audio"]
+# Sound playback: the sound bank view, the cut-scene editor and the Movies
+# player. On Linux it links the ALSA library (`libasound.so.2`; building
+# needs its headers: libasound2-dev, alsa-lib-devel or alsa-lib). Without it
+# (`--no-default-features`) these play by the frame timer, silently.
+audio = ["dep:cpal"]

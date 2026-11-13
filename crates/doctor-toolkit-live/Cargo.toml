@@ -1,0 +1,16 @@
+[package]
+name = "doctor-toolkit-live"
+description = "Live link with the running game: protocol, addresses of the supported build and the edition check shared by the in-game module and the editor"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+name = "doctor_toolkit_live"
+path = "src/lib.rs"
+
+# No dependencies: the in-game module (crates/doctor-toolkit-live-asi) builds
+# this crate for i686-pc-windows-gnu too.
+[dependencies]

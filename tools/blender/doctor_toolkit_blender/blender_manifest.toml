@@ -1,0 +1,19 @@
+schema_version = "1.0.0"
+
+id = "doctor_toolkit_blender"
+version = "0.0.1"
+name = "doctor_toolkit"
+tagline = "Import and export The Godfather II models through a workspace"
+maintainer = "doctor_toolkit contributors"
+type = "add-on"
+website = "https://github.com/Darkildo/doctor_toolkit"
+tags = ["Import-Export"]
+blender_version_min = "4.2.0"
+license = ["SPDX:GPL-3.0-or-later"]
+
+# tools/blender/build-extension.py adds `platforms` and `wheels` here when it
+# bundles the doctor_toolkit wheel; without them the add-on finds the module
+# through the "Module folder" preference.
+
+[permissions]
+files = "Read the game folder and record edits in its workspace"

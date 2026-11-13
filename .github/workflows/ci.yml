@@ -1,0 +1,109 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: fmt, clippy, tests (Linux)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.97.1
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Install GUI build dependencies
+        run: sudo apt-get update && sudo apt-get install -y libxkbcommon-dev libwayland-dev libasound2-dev
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      # The editor plays sound by default (`audio`, ALSA); check the build
+      # without it too.
+      - run: cargo clippy -p doctor-toolkit-gui --all-targets --no-default-features -- -D warnings
+      # Corpus tests need the game files (EARS_GF2_DIR) and skip themselves here.
+      - run: cargo test --workspace
+      - run: cargo test -p doctor-toolkit-gui --no-default-features
+      - name: Check the release script
+        run: bash -n tools/release.sh
+
+  build:
+    name: build (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.97.1
+      - uses: Swatinem/rust-cache@v2
+      # The library and the command line; the GUIs follow once releases for
+      # these platforms are planned.
+      - run: cargo build -p doctor-toolkit -p doctor-toolkit-cli
+      - run: cargo test -p doctor-toolkit --lib
+
+  fuzz:
+    name: fuzz smoke test
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: fuzz
+      - name: Install cargo-fuzz
+        run: cargo +nightly install cargo-fuzz --locked
+      - name: Build the fuzz targets
+        run: cargo +nightly fuzz build -O
+      - name: Run every target for a few seconds
+        run: |
+          mkdir -p "$RUNNER_TEMP/fuzz"
+          for target in $(cargo +nightly fuzz list); do
+            echo "::group::$target"
+            mkdir -p "$RUNNER_TEMP/fuzz/$target"
+            seeds=()
+            if [ -d "fuzz/seeds/$target" ]; then seeds=("$GITHUB_WORKSPACE/fuzz/seeds/$target"); fi
+            TMPDIR="$RUNNER_TEMP/fuzz" cargo +nightly fuzz run -O "$target" "$RUNNER_TEMP/fuzz/$target" "${seeds[@]}" -- \
+              -max_total_time=10 -rss_limit_mb=2048 -malloc_limit_mb=512 -timeout=10
+            echo "::endgroup::"
+          done
+      - name: Keep crash inputs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-artifacts
+          path: fuzz/artifacts/
+
+  python:
+    name: Python bindings
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.97.1
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.9"
+      # Builds the abi3 module into a virtualenv and runs the pytest suite
+      # (synthetic game; the corpus tests skip themselves without EARS_GF2_DIR).
+      - name: Python bindings
+        working-directory: crates/doctor-toolkit-py
+        run: |
+          python -m venv .venv
+          .venv/bin/pip install "maturin>=1.9.4,<2" pytest
+          VIRTUAL_ENV=$PWD/.venv .venv/bin/maturin develop --release
+          .venv/bin/python -m pytest -q

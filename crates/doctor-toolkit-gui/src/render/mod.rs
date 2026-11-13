@@ -1,0 +1,70 @@
+//! A reusable scene renderer on wgpu.
+//!
+//! The model viewer uses it for one mesh; the level view is meant to use it for
+//! thousands of placed objects. The pieces:
+//!
+//! - [`MeshData`] / [`TextureData`] — CPU data, uploaded once with
+//!   [`SceneRenderer::upload_mesh`] / [`SceneRenderer::upload_texture`] under
+//!   caller-chosen keys and cached (least recently drawn meshes are evicted).
+//! - [`Scene`] — instances (mesh key + transform + tint), part visibility,
+//!   highlight, extra lines and render switches. Instances of one mesh are
+//!   drawn with one instanced draw call per part, after frustum culling.
+//! - [`Viewport`] — offscreen colour (with 4× MSAA where supported) and depth
+//!   targets, registered with egui as a native texture and shown as an image.
+//!   The renderer draws into it from the UI thread only when something changed.
+//! - [`SceneRenderer::pick`] — an id pass restricted to one pixel answers
+//!   which instance and part are under the cursor; [`Scene::ray_pick`] does the
+//!   same on the CPU from the retained mesh data.
+//! - [`OrbitCamera`] / [`View`] — camera input, projection and picking rays.
+//!
+//! Offscreen rendering rather than drawing inside egui's own render pass keeps
+//! depth, MSAA and the id pass independent of the window surface and lets an
+//! unchanged view cost nothing per frame.
+
+mod camera;
+mod gpu;
+pub mod math;
+mod scene;
+
+use std::sync::{Arc, Mutex, MutexGuard};
+
+pub use camera::{OrbitCamera, View};
+pub use gpu::{GpuContext, RenderStats, SceneRenderer, Viewport, adapter_rank};
+// The whole scene API is public for the level view, even parts the model viewer does not use.
+#[allow(unused_imports)]
+pub use scene::{
+    Instance, LineVertex, MaterialData, MeshData, MeshKey, Pick, Scene, SceneOptions, Surface,
+    SurfaceModel, TextureData, TextureKey, Vertex,
+};
+
+/// The renderer shared by every view of the application.
+#[derive(Clone)]
+pub struct Gpu {
+    renderer: Arc<Mutex<SceneRenderer>>,
+    summary: Arc<str>,
+}
+
+impl Gpu {
+    /// Uses eframe's wgpu device; `None` when eframe runs on another backend.
+    pub fn from_creation_context(cc: &eframe::CreationContext<'_>) -> Option<Self> {
+        let state = cc.wgpu_render_state.as_ref()?;
+        Some(Self::new(GpuContext::from_egui(state)))
+    }
+
+    pub fn new(context: GpuContext) -> Self {
+        let summary = context.adapter_summary().into();
+        Self {
+            renderer: Arc::new(Mutex::new(SceneRenderer::new(context))),
+            summary,
+        }
+    }
+
+    pub fn lock(&self) -> MutexGuard<'_, SceneRenderer> {
+        self.renderer.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Adapter name and backend.
+    pub fn summary(&self) -> &str {
+        &self.summary
+    }
+}

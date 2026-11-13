@@ -1,0 +1,48 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+permissions:
+  contents: write
+
+jobs:
+  linux:
+    name: Linux x86_64 archive
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.97.1
+      - uses: Swatinem/rust-cache@v2
+      # The editor plays sound (ALSA): its pkg-config file and libasound.so
+      # for linking; the window libraries are loaded at run time.
+      - name: Install the ALSA development files
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev
+      - name: Install zig and cargo-zigbuild (links against glibc 2.31)
+        run: |
+          python3 -m pip install --target "$RUNNER_TEMP/zig" ziglang
+          echo "$RUNNER_TEMP/zig/ziglang" >> "$GITHUB_PATH"
+          cargo install cargo-zigbuild --locked
+      - name: Check that the tag matches the version
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n1)
+          test "v$version" = "$GITHUB_REF_NAME" || { echo "tag $GITHUB_REF_NAME, Cargo.toml $version"; exit 1; }
+      - run: cargo test --workspace
+      - run: tools/release.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-x86_64
+          path: dist/*
+      - name: Publish the release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/* --draft --title "doctor_toolkit $GITHUB_REF_NAME" \
+            --notes "Linux x86_64 build. See docs/guide (Russian) and README.md."

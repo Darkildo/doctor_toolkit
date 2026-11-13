@@ -1,0 +1,913 @@
+{
+  "format": "doctor-toolkit-script",
+  "version": 1,
+  "name": "doctor_e2e",
+  "description": "In-game check of the compiler (docs/scripts.md §1): file probes for every\nstep, a game variable read by a VariableSwitch, a MessageRelay round trip,\na VariableOperator, a delay, and once the player stands in the level\n(position not 0): noon, a fanfare and, 3 s later, a fade to black.",
+  "start": {
+    "on_load": true
+  },
+  "variables": [
+    {
+      "name": "ticks",
+      "type": "number",
+      "default": 0
+    }
+  ],
+  "nodes": [
+    {
+      "id": 1,
+      "kind": "event.load",
+      "pos": [
+        0,
+        0
+      ]
+    },
+    {
+      "id": 2,
+      "kind": "debug.probe",
+      "pos": [
+        200,
+        0
+      ],
+      "inputs": {
+        "tag": "g_start"
+      }
+    },
+    {
+      "id": 3,
+      "kind": "engine.set",
+      "pos": [
+        400,
+        0
+      ],
+      "inputs": {
+        "name": "doctor_var",
+        "value": 2
+      }
+    },
+    {
+      "id": 4,
+      "kind": "action.send_message",
+      "pos": [
+        600,
+        0
+      ],
+      "inputs": {
+        "message": "doctor_checkvar"
+      }
+    },
+    {
+      "id": 5,
+      "kind": "action.send_message",
+      "pos": [
+        800,
+        0
+      ],
+      "inputs": {
+        "message": "doctor_ping"
+      }
+    },
+    {
+      "id": 6,
+      "kind": "action.send_message",
+      "pos": [
+        1000,
+        0
+      ],
+      "inputs": {
+        "message": "doctor_setvar"
+      }
+    },
+    {
+      "id": 7,
+      "kind": "debug.probe",
+      "pos": [
+        1200,
+        0
+      ]
+    },
+    {
+      "id": 8,
+      "kind": "string.concat",
+      "pos": [
+        1000,
+        120
+      ],
+      "inputs": {
+        "a": "g_var2_now_"
+      }
+    },
+    {
+      "id": 9,
+      "kind": "engine.get",
+      "pos": [
+        800,
+        120
+      ],
+      "inputs": {
+        "name": "doctor_var2"
+      }
+    },
+    {
+      "id": 10,
+      "kind": "flow.delay",
+      "pos": [
+        1400,
+        0
+      ],
+      "inputs": {
+        "seconds": 2
+      }
+    },
+    {
+      "id": 11,
+      "kind": "debug.probe",
+      "pos": [
+        1600,
+        0
+      ]
+    },
+    {
+      "id": 12,
+      "kind": "string.concat",
+      "pos": [
+        1400,
+        120
+      ],
+      "inputs": {
+        "a": "g_var2_later_"
+      }
+    },
+    {
+      "id": 13,
+      "kind": "engine.get",
+      "pos": [
+        1200,
+        120
+      ],
+      "inputs": {
+        "name": "doctor_var2"
+      }
+    },
+    {
+      "id": 20,
+      "kind": "event.message",
+      "pos": [
+        0,
+        300
+      ],
+      "params": {
+        "message": "doctor_pong"
+      }
+    },
+    {
+      "id": 21,
+      "kind": "debug.probe",
+      "pos": [
+        200,
+        300
+      ],
+      "inputs": {
+        "tag": "g_pong"
+      }
+    },
+    {
+      "id": 22,
+      "kind": "event.message",
+      "pos": [
+        0,
+        400
+      ],
+      "params": {
+        "message": "doctor_var_is_2"
+      }
+    },
+    {
+      "id": 23,
+      "kind": "debug.probe",
+      "pos": [
+        200,
+        400
+      ],
+      "inputs": {
+        "tag": "g_switch_2"
+      }
+    },
+    {
+      "id": 24,
+      "kind": "event.message",
+      "pos": [
+        0,
+        500
+      ],
+      "params": {
+        "message": "doctor_var_is_0"
+      }
+    },
+    {
+      "id": 25,
+      "kind": "debug.probe",
+      "pos": [
+        200,
+        500
+      ],
+      "inputs": {
+        "tag": "g_switch_0"
+      }
+    },
+    {
+      "id": 26,
+      "kind": "event.message",
+      "pos": [
+        0,
+        600
+      ],
+      "params": {
+        "message": "audio_init_delay"
+      }
+    },
+    {
+      "id": 27,
+      "kind": "debug.probe",
+      "pos": [
+        200,
+        600
+      ],
+      "inputs": {
+        "tag": "g_audio_init_delay"
+      }
+    },
+    {
+      "id": 60,
+      "kind": "comment",
+      "pos": [
+        -20,
+        -60
+      ],
+      "params": {
+        "text": "On start: game variable, relay, switch, operator, delay"
+      }
+    },
+    {
+      "id": 30,
+      "kind": "event.timer",
+      "pos": [
+        0,
+        800
+      ],
+      "params": {
+        "name": "clock",
+        "seconds": 1,
+        "repeat": true
+      }
+    },
+    {
+      "id": 31,
+      "kind": "flow.sequence",
+      "pos": [
+        200,
+        800
+      ],
+      "params": {
+        "count": 3
+      }
+    },
+    {
+      "id": 32,
+      "kind": "var.set",
+      "pos": [
+        400,
+        800
+      ],
+      "params": {
+        "variable": "ticks"
+      }
+    },
+    {
+      "id": 33,
+      "kind": "var.get",
+      "pos": [
+        200,
+        950
+      ],
+      "params": {
+        "variable": "ticks"
+      }
+    },
+    {
+      "id": 34,
+      "kind": "math.add",
+      "pos": [
+        300,
+        950
+      ],
+      "inputs": {
+        "b": 1
+      }
+    },
+    {
+      "id": 35,
+      "kind": "debug.probe",
+      "pos": [
+        600,
+        800
+      ]
+    },
+    {
+      "id": 36,
+      "kind": "string.concat",
+      "pos": [
+        500,
+        950
+      ],
+      "inputs": {
+        "a": "g_tick_"
+      }
+    },
+    {
+      "id": 40,
+      "kind": "debug.probe",
+      "pos": [
+        400,
+        1100
+      ]
+    },
+    {
+      "id": 41,
+      "kind": "game.player_position",
+      "pos": [
+        0,
+        1200
+      ]
+    },
+    {
+      "id": 42,
+      "kind": "game.position_xyz",
+      "pos": [
+        150,
+        1200
+      ]
+    },
+    {
+      "id": 43,
+      "kind": "math.floor",
+      "pos": [
+        300,
+        1200
+      ]
+    },
+    {
+      "id": 44,
+      "kind": "math.floor",
+      "pos": [
+        300,
+        1280
+      ]
+    },
+    {
+      "id": 45,
+      "kind": "string.concat",
+      "pos": [
+        450,
+        1200
+      ],
+      "inputs": {
+        "a": "g_pos_"
+      }
+    },
+    {
+      "id": 46,
+      "kind": "string.concat",
+      "pos": [
+        450,
+        1280
+      ],
+      "inputs": {
+        "a": "_"
+      }
+    },
+    {
+      "id": 47,
+      "kind": "string.concat",
+      "pos": [
+        600,
+        1240
+      ]
+    },
+    {
+      "id": 50,
+      "kind": "flow.branch",
+      "pos": [
+        400,
+        1400
+      ]
+    },
+    {
+      "id": 51,
+      "kind": "compare.ne",
+      "pos": [
+        200,
+        1450
+      ],
+      "inputs": {
+        "b": 0
+      }
+    },
+    {
+      "id": 52,
+      "kind": "flow.do_once",
+      "pos": [
+        600,
+        1400
+      ]
+    },
+    {
+      "id": 53,
+      "kind": "debug.probe",
+      "pos": [
+        800,
+        1400
+      ],
+      "inputs": {
+        "tag": "g_spawned"
+      }
+    },
+    {
+      "id": 54,
+      "kind": "action.send_message",
+      "pos": [
+        1000,
+        1400
+      ],
+      "inputs": {
+        "message": "doctor_noon"
+      }
+    },
+    {
+      "id": 55,
+      "kind": "action.send_message",
+      "pos": [
+        1200,
+        1400
+      ],
+      "inputs": {
+        "message": "doctor_fanfare"
+      }
+    },
+    {
+      "id": 56,
+      "kind": "flow.delay",
+      "pos": [
+        1400,
+        1400
+      ],
+      "inputs": {
+        "seconds": 3
+      }
+    },
+    {
+      "id": 57,
+      "kind": "action.send_message",
+      "pos": [
+        1600,
+        1400
+      ],
+      "inputs": {
+        "message": "doctor_fade"
+      }
+    },
+    {
+      "id": 58,
+      "kind": "debug.probe",
+      "pos": [
+        1800,
+        1400
+      ],
+      "inputs": {
+        "tag": "g_fade_sent"
+      }
+    }
+  ],
+  "links": [
+    {
+      "from": [
+        1,
+        "then"
+      ],
+      "to": [
+        2,
+        "exec"
+      ]
+    },
+    {
+      "from": [
+        2,
+        "then"
+      ],
+      "to": [
+        3,
+        "exec"
+      ]
+    },
+    {
+      "from": [
+        3,
+        "then"
+      ],
+      "to": [
+        4,
+        "exec"
+      ]
+    },
+    {
+      "from": [
+        4,
+        "then"
+      ],
+      "to": [
+        5,
+        "exec"
+      ]
+    },
+    {
+      "from": [
+        5,
+        "then"
+      ],
+      "to": [
+        6,
+        "exec"
+      ]
+    },
+    {
+      "from": [
+        6,
+        "then"
+      ],
+      "to": [
+        7,
+        "exec"
+      ]
+    },
+    {
+      "from": [
+        9,
+        "value"
+      ],
+      "to": [
+        8,
+        "b"
+      ]
+    },
+    {
+      "from": [
+        8,
+        "result"
+      ],
+      "to": [
+        7,
+        "tag"
+      ]
+    },
+    {
+      "from": [
+        7,
+        "then"
+      ],
+      "to": [
+        10,
+        "exec"
+      ]
+    },
+    {
+      "from": [
+        10,
+        "then"
+      ],
+      "to": [
+        11,
+        "exec"
+      ]
+    },
+    {
+      "from": [
+        13,
+        "value"
+      ],
+      "to": [
+        12,
+        "b"
+      ]
+    },
+    {
+      "from": [
+        12,
+        "result"
+      ],
+      "to": [
+        11,
+        "tag"
+      ]
+    },
+    {
+      "from": [
+        20,
+        "then"
+      ],
+      "to": [
+        21,
+        "exec"
+      ]
+    },
+    {
+      "from": [
+        22,
+        "then"
+      ],
+      "to": [
+        23,
+        "exec"
+      ]
+    },
+    {
+      "from": [
+        24,
+        "then"
+      ],
+      "to": [
+        25,
+        "exec"
+      ]
+    },
+    {
+      "from": [
+        26,
+        "then"
+      ],
+      "to": [
+        27,
+        "exec"
+      ]
+    },
+    {
+      "from": [
+        30,
+        "then"
+      ],
+      "to": [
+        31,
+        "exec"
+      ]
+    },
+    {
+      "from": [
+        31,
+        "then0"
+      ],
+      "to": [
+        32,
+        "exec"
+      ]
+    },
+    {
+      "from": [
+        33,
+        "value"
+      ],
+      "to": [
+        34,
+        "a"
+      ]
+    },
+    {
+      "from": [
+        34,
+        "result"
+      ],
+      "to": [
+        32,
+        "value"
+      ]
+    },
+    {
+      "from": [
+        32,
+        "then"
+      ],
+      "to": [
+        35,
+        "exec"
+      ]
+    },
+    {
+      "from": [
+        32,
+        "value"
+      ],
+      "to": [
+        36,
+        "b"
+      ]
+    },
+    {
+      "from": [
+        36,
+        "result"
+      ],
+      "to": [
+        35,
+        "tag"
+      ]
+    },
+    {
+      "from": [
+        31,
+        "then1"
+      ],
+      "to": [
+        40,
+        "exec"
+      ]
+    },
+    {
+      "from": [
+        41,
+        "position"
+      ],
+      "to": [
+        42,
+        "position"
+      ]
+    },
+    {
+      "from": [
+        42,
+        "x"
+      ],
+      "to": [
+        43,
+        "x"
+      ]
+    },
+    {
+      "from": [
+        42,
+        "z"
+      ],
+      "to": [
+        44,
+        "x"
+      ]
+    },
+    {
+      "from": [
+        43,
+        "result"
+      ],
+      "to": [
+        45,
+        "b"
+      ]
+    },
+    {
+      "from": [
+        44,
+        "result"
+      ],
+      "to": [
+        46,
+        "b"
+      ]
+    },
+    {
+      "from": [
+        45,
+        "result"
+      ],
+      "to": [
+        47,
+        "a"
+      ]
+    },
+    {
+      "from": [
+        46,
+        "result"
+      ],
+      "to": [
+        47,
+        "b"
+      ]
+    },
+    {
+      "from": [
+        47,
+        "result"
+      ],
+      "to": [
+        40,
+        "tag"
+      ]
+    },
+    {
+      "from": [
+        31,
+        "then2"
+      ],
+      "to": [
+        50,
+        "exec"
+      ]
+    },
+    {
+      "from": [
+        43,
+        "result"
+      ],
+      "to": [
+        51,
+        "a"
+      ]
+    },
+    {
+      "from": [
+        51,
+        "result"
+      ],
+      "to": [
+        50,
+        "condition"
+      ]
+    },
+    {
+      "from": [
+        50,
+        "true"
+      ],
+      "to": [
+        52,
+        "exec"
+      ]
+    },
+    {
+      "from": [
+        52,
+        "then"
+      ],
+      "to": [
+        53,
+        "exec"
+      ]
+    },
+    {
+      "from": [
+        53,
+        "then"
+      ],
+      "to": [
+        54,
+        "exec"
+      ]
+    },
+    {
+      "from": [
+        54,
+        "then"
+      ],
+      "to": [
+        55,
+        "exec"
+      ]
+    },
+    {
+      "from": [
+        55,
+        "then"
+      ],
+      "to": [
+        56,
+        "exec"
+      ]
+    },
+    {
+      "from": [
+        56,
+        "then"
+      ],
+      "to": [
+        57,
+        "exec"
+      ]
+    },
+    {
+      "from": [
+        57,
+        "then"
+      ],
+      "to": [
+        58,
+        "exec"
+      ]
+    }
+  ]
+}

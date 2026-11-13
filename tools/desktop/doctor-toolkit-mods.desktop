@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=doctor_toolkit mods
+GenericName=Mod manager
+Comment=Install, order, apply and remove mods for The Godfather II
+Exec=doctor-toolkit-mods %f
+Icon=doctor-toolkit-mods
+Terminal=false
+Categories=Game;
+Keywords=Godfather;EARS;mods;mod manager;
+StartupNotify=true
+StartupWMClass=doctor-toolkit-mods

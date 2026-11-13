@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=doctor_toolkit
+GenericName=Game file editor
+Comment=Browse, export, edit and mod the files of The Godfather II (EARS engine)
+Exec=doctor-toolkit-gui %f
+Icon=doctor-toolkit
+Terminal=false
+Categories=Development;
+Keywords=Godfather;EARS;modding;mod;textures;models;levels;
+StartupNotify=true
+StartupWMClass=doctor-toolkit

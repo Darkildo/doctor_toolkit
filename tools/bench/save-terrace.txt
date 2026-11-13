@@ -1,0 +1,27 @@
+# Once per bench prefix: a new game to the first gameplay on the terrace in
+# Havana (~13 min, the opening cutscene cannot be skipped), then Pause menu
+# -> Save. Afterwards `tools/game-bench.sh saves DIR` keeps the profile with
+# this save for SAVES=DIR and tools/bench/resume.txt. Start it with SAVES
+# of a profile without saves (after new-profile.txt). Needs the references
+# of new-game.txt and pause-save.
+await title 600
+key Return
+await profiles 300
+key Return              # the first profile
+await autosave 300
+key Return              # Continue
+await menu 300
+seek new-game-selected Down 9
+key Return              # New Game
+await character 900
+wait 5
+seek !character Tab 6    # Tab accepts the character
+await hud 3600
+wait 10
+shot 01-spawn
+key Escape              # Pause menu
+wait 8
+seek pause-save Down 8 0.7  # "Save", the fifth item
+hold Return 0.7         # saves at once, no slot choice
+wait 15
+shot 02-saved

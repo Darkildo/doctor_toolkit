@@ -1,0 +1,14 @@
+# Names added by hand for the name dictionary (`doctor-toolkit lookup`).
+# One name per line, `#` starts a comment. Every name is hashed with every
+# known function (SDBM, CRC-32, FNV-1a, each as written and in lower case);
+# names found in the game files are added automatically and need not be here.
+#
+# Resource type tags without a type id in the game files yet.
+rwID_TEXDICTIONARY
+DFFResource
+# Texture parameter names guessed from their values; the hashes in tg4h
+# headers do not match them (see docs/formats/resource-types.md §1.1).
+format
+sRGB
+filter
+address

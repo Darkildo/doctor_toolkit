@@ -1,0 +1,1239 @@
+//! A game directory: its streams, tables of contents and resource index.
+//!
+//! This is the only layer that writes into the game directory. Every file is
+//! backed up before it is modified for the first time.
+
+use std::collections::HashMap;
+use std::fs;
+use std::path::{Path, PathBuf};
+
+use memmap2::Mmap;
+use rayon::prelude::*;
+
+use crate::container::ustream::{self, Replacement, ResourceHeader, StreamLayout};
+use crate::profile::GameProfile;
+use crate::toc::{self, Toc};
+use crate::{Error, Result};
+
+/// Directory inside the game directory where originals are kept.
+pub const BACKUP_DIR: &str = "_doctor_toolkit/backups";
+
+/// Directories that hold tool data, not game data. They are skipped when scanning.
+const SKIPPED_DIRS: &[&str] = &["_toolkit", "_doctor_toolkit"];
+
+/// A memory-mapped stream file together with its parsed layout.
+///
+/// The file must not be modified while it is open: the mapping would change
+/// under the parsed layout.
+#[derive(Debug)]
+pub struct StreamFile {
+    path: PathBuf,
+    mmap: Mmap,
+    layout: StreamLayout,
+}
+
+impl StreamFile {
+    /// Maps and parses the stream at `path`.
+    pub fn open(path: impl Into<PathBuf>) -> Result<Self> {
+        let path = path.into();
+        let file = fs::File::open(&path).map_err(|e| Error::io(&path, e))?;
+        // SAFETY: the mapping is read-only. Concurrent modification of the file
+        // by another process is outside of what this tool can prevent.
+        let mmap = unsafe { Mmap::map(&file) }.map_err(|e| Error::io(&path, e))?;
+        let layout = StreamLayout::parse(&mmap)?;
+        Ok(Self { path, mmap, layout })
+    }
+
+    /// Path the stream was opened from.
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    /// The raw file contents.
+    pub fn data(&self) -> &[u8] {
+        &self.mmap
+    }
+
+    /// The parsed block structure.
+    pub fn layout(&self) -> &StreamLayout {
+        &self.layout
+    }
+
+    /// Reads and decompresses the data of resource `index`.
+    pub fn resource_data(&self, index: usize) -> Result<Vec<u8>> {
+        self.layout.resource_data(&self.mmap, index)
+    }
+}
+
+/// A file found in the game directory.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GameFile {
+    /// Path relative to the game directory, with forward slashes.
+    pub rel_path: String,
+    /// Absolute path.
+    pub path: PathBuf,
+    /// File size in bytes.
+    pub len: u64,
+}
+
+impl GameFile {
+    /// The stream name as tables of contents spell it: lower case, forward
+    /// slashes, no extension.
+    pub fn stream_name(&self) -> String {
+        let without_ext = self
+            .rel_path
+            .rsplit_once('.')
+            .map_or(&*self.rel_path, |(stem, _)| stem);
+        without_ext.to_ascii_lowercase()
+    }
+}
+
+/// One resource in the game-wide index.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct IndexEntry {
+    /// Index into [`GameInstance::streams`].
+    pub stream: u32,
+    /// Index of the resource inside its stream.
+    pub resource: u32,
+    pub header: ResourceHeader,
+    /// Bytes the data blocks occupy on disk.
+    pub stored_size: u32,
+    pub compressed: bool,
+}
+
+/// Totals for one resource type.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TypeSummary {
+    pub type_id: u32,
+    pub count: usize,
+    /// Sum of decompressed sizes.
+    pub data_bytes: u64,
+    /// Sum of on-disk sizes.
+    pub stored_bytes: u64,
+}
+
+/// All resources of a game.
+#[derive(Debug, Clone, Default)]
+pub struct ResourceIndex {
+    /// Entries ordered by stream, then by position in the stream.
+    pub entries: Vec<IndexEntry>,
+}
+
+impl ResourceIndex {
+    /// Totals per resource type, most frequent type first.
+    pub fn type_summary(&self) -> Vec<TypeSummary> {
+        let mut by_type: std::collections::HashMap<u32, TypeSummary> = Default::default();
+        for entry in &self.entries {
+            let summary = by_type.entry(entry.header.type_id).or_insert(TypeSummary {
+                type_id: entry.header.type_id,
+                count: 0,
+                data_bytes: 0,
+                stored_bytes: 0,
+            });
+            summary.count += 1;
+            summary.data_bytes += entry.header.data_size as u64;
+            summary.stored_bytes += entry.stored_size as u64;
+        }
+        let mut list: Vec<_> = by_type.into_values().collect();
+        list.sort_by(|a, b| b.count.cmp(&a.count).then(a.type_id.cmp(&b.type_id)));
+        list
+    }
+}
+
+/// Options for [`GameInstance::replace_resources`].
+#[derive(Debug, Clone, Copy)]
+pub struct ReplaceOptions {
+    /// Update the stream's size in every table of contents that lists it.
+    pub update_toc: bool,
+}
+
+impl Default for ReplaceOptions {
+    fn default() -> Self {
+        Self { update_toc: true }
+    }
+}
+
+/// What [`GameInstance::replace_resources`] changed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReplaceReport {
+    /// Stream size before and after, in bytes.
+    pub old_len: u64,
+    pub new_len: u64,
+    /// Sum of decompressed resource sizes before and after.
+    pub old_data_size: u64,
+    pub new_data_size: u64,
+    /// Relative paths of the files that were written.
+    pub written: Vec<String>,
+    /// Relative paths of the files that were backed up by this call.
+    pub backed_up: Vec<String>,
+}
+
+/// An installed game.
+#[derive(Debug, Clone)]
+pub struct GameInstance {
+    root: PathBuf,
+    profile: GameProfile,
+    streams: Vec<GameFile>,
+    tocs: Vec<GameFile>,
+}
+
+impl GameInstance {
+    /// Scans the game directory `root` for streams and tables of contents.
+    pub fn open(root: impl Into<PathBuf>) -> Result<Self> {
+        let root = root.into();
+        match fs::metadata(&root) {
+            Err(error) => return Err(Error::io(root, error)),
+            Ok(metadata) if !metadata.is_dir() => return Err(Error::NotAGame { path: root }),
+            Ok(_) => {}
+        }
+        let detected = GameProfile::detect(&root);
+        // Do not walk a whole home directory chosen by mistake.
+        if detected.is_none() && !has_game_files(&root, 2) {
+            return Err(Error::NotAGame { path: root });
+        }
+        let profile = detected.unwrap_or(GameProfile::GF2_PC);
+        let mut streams = Vec::new();
+        let mut tocs = Vec::new();
+        scan(&root, "", &mut streams, &mut tocs)?;
+        if streams.is_empty() && tocs.is_empty() {
+            return Err(Error::NotAGame { path: root });
+        }
+        streams.sort_by(|a, b| a.rel_path.cmp(&b.rel_path));
+        tocs.sort_by(|a, b| a.rel_path.cmp(&b.rel_path));
+        Ok(Self {
+            root,
+            profile,
+            streams,
+            tocs,
+        })
+    }
+
+    /// The game directory.
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
+    /// Format parameters of this game.
+    pub fn profile(&self) -> &GameProfile {
+        &self.profile
+    }
+
+    /// All `.str` files, sorted by relative path.
+    pub fn streams(&self) -> &[GameFile] {
+        &self.streams
+    }
+
+    /// All `.toc` files, sorted by relative path.
+    pub fn tocs(&self) -> &[GameFile] {
+        &self.tocs
+    }
+
+    /// Finds a stream by name. Accepts a table-of-contents name (`gf2\frontend`),
+    /// a relative path (`gf2/frontend.str`) in any case.
+    pub fn find_stream(&self, name: &str) -> Option<usize> {
+        let mut wanted =
+            String::from_utf8_lossy(&toc::normalize_name(name.as_bytes())).into_owned();
+        if let Some(stem) = wanted.strip_suffix(".str") {
+            wanted = stem.to_owned();
+        }
+        self.streams.iter().position(|s| s.stream_name() == wanted)
+    }
+
+    /// Opens stream `index`.
+    pub fn open_stream(&self, index: usize) -> Result<StreamFile> {
+        let entry = self
+            .streams
+            .get(index)
+            .ok_or_else(|| Error::InvalidArgument(format!("stream index {index} out of range")))?;
+        StreamFile::open(&entry.path)
+    }
+
+    /// Reads and parses table of contents `index`.
+    pub fn load_toc(&self, index: usize) -> Result<Toc> {
+        let entry = self
+            .tocs
+            .get(index)
+            .ok_or_else(|| Error::InvalidArgument(format!("toc index {index} out of range")))?;
+        let data = fs::read(&entry.path).map_err(|e| Error::io(&entry.path, e))?;
+        Toc::parse(&data)
+    }
+
+    /// The prerequisites of every stream in every table of contents: the
+    /// streams the game loads before it. Names are normalised like
+    /// [`GameFile::stream_name`].
+    pub fn stream_parents(&self) -> Result<HashMap<String, Vec<String>>> {
+        let normalize =
+            |bytes: &[u8]| String::from_utf8_lossy(&toc::normalize_name(bytes)).into_owned();
+        let mut parents: HashMap<String, Vec<String>> = HashMap::new();
+        for index in 0..self.tocs.len() {
+            let table = self.load_toc(index)?;
+            for (file_index, file) in table.files.iter().enumerate() {
+                let deps = &table.dep_words[file.deps.clone()][..file.prerequisite_count()];
+                let list = parents
+                    .entry(normalize(&table.file_name(file_index).name))
+                    .or_default();
+                for &dep in deps {
+                    let dep = normalize(&table.names[dep].name);
+                    if !list.contains(&dep) {
+                        list.push(dep);
+                    }
+                }
+            }
+        }
+        Ok(parents)
+    }
+
+    /// Streams the game loads before stream `name`: its prerequisites in
+    /// every table of contents, transitively, nearest first.
+    pub fn stream_ancestors(&self, name: &str) -> Result<Vec<String>> {
+        Ok(ancestors(&self.stream_parents()?, name))
+    }
+
+    /// Every non-zero name hash in the tables of contents.
+    pub fn toc_hashes(&self) -> Result<std::collections::HashSet<u32>> {
+        let mut out = std::collections::HashSet::new();
+        for index in 0..self.tocs.len() {
+            out.extend(
+                self.load_toc(index)?
+                    .names
+                    .iter()
+                    .map(|n| n.hash)
+                    .filter(|&h| h != 0),
+            );
+        }
+        Ok(out)
+    }
+
+    /// Builds the index of all resources, reading the streams in parallel.
+    ///
+    /// `progress` is called once per finished stream, from worker threads.
+    /// Streams that fail to parse are reported in the second element.
+    pub fn build_index(
+        &self,
+        progress: impl Fn(&GameFile) + Sync,
+    ) -> (ResourceIndex, Vec<(usize, Error)>) {
+        let results: Vec<_> = self
+            .streams
+            .par_iter()
+            .enumerate()
+            .map(|(stream_index, file)| {
+                let result = StreamFile::open(&file.path).map(|stream| {
+                    let layout = stream.layout();
+                    layout
+                        .resources
+                        .iter()
+                        .enumerate()
+                        .map(|(resource_index, resource)| IndexEntry {
+                            stream: stream_index as u32,
+                            resource: resource_index as u32,
+                            header: resource.header,
+                            stored_size: layout.stored_size(resource_index) as u32,
+                            compressed: layout.is_compressed(resource_index),
+                        })
+                        .collect::<Vec<_>>()
+                });
+                progress(file);
+                (stream_index, result)
+            })
+            .collect();
+
+        let mut index = ResourceIndex::default();
+        let mut errors = Vec::new();
+        for (stream_index, result) in results {
+            match result {
+                Ok(entries) => index.entries.extend(entries),
+                Err(error) => errors.push((stream_index, error)),
+            }
+        }
+        (index, errors)
+    }
+
+    /// Replaces the data of resources in stream `stream_index` on disk.
+    ///
+    /// The original stream and every table of contents that is modified are
+    /// copied to [`BACKUP_DIR`] first, unless a backup already exists.
+    pub fn replace_resources(
+        &self,
+        stream_index: usize,
+        replacements: &[Replacement],
+        options: ReplaceOptions,
+    ) -> Result<ReplaceReport> {
+        let entry = self.streams.get(stream_index).ok_or_else(|| {
+            Error::InvalidArgument(format!("stream index {stream_index} out of range"))
+        })?;
+
+        let (rebuilt, old_data_size) = {
+            let stream = StreamFile::open(&entry.path)?;
+            let rebuilt = ustream::rebuild(stream.data(), stream.layout(), replacements)?;
+            (rebuilt, stream.layout().total_data_size())
+            // The mapping is dropped here, before the file is replaced.
+        };
+        let new_layout = StreamLayout::parse(&rebuilt)?;
+        let new_data_size = new_layout.total_data_size();
+        let toc_size = u32::try_from(new_data_size)
+            .map_err(|_| Error::InvalidArgument("stream data exceeds 4 GiB".into()))?;
+
+        // Prepare every table of contents before touching the disk.
+        let mut toc_updates = Vec::new();
+        if options.update_toc {
+            let name = entry.stream_name();
+            for toc_file in &self.tocs {
+                let data = fs::read(&toc_file.path).map_err(|e| Error::io(&toc_file.path, e))?;
+                let mut table = Toc::parse(&data)?;
+                if let Some(file_index) = table.find_file(&name)
+                    && table.files[file_index].data_size != toc_size
+                {
+                    table.files[file_index].data_size = toc_size;
+                    toc_updates.push((toc_file, table.to_bytes()?));
+                }
+            }
+        }
+
+        let mut report = ReplaceReport {
+            old_len: entry.len,
+            new_len: rebuilt.len() as u64,
+            old_data_size,
+            new_data_size,
+            written: Vec::new(),
+            backed_up: Vec::new(),
+        };
+        self.write_with_backup(entry, &rebuilt, &mut report)?;
+        for (toc_file, bytes) in toc_updates {
+            self.write_with_backup(toc_file, &bytes, &mut report)?;
+        }
+        Ok(report)
+    }
+
+    /// Replaces a texture of stream `stream_index` with a DDS or PNG image.
+    ///
+    /// `pair` locates the texture; the header keeps its identity, see
+    /// [`crate::resource::texture::from_dds`] and [`crate::resource::texture::from_png`].
+    /// Both resources keep their storage (raw or compressed).
+    pub fn import_texture(
+        &self,
+        stream_index: usize,
+        pair: crate::resource::texture::TexturePair,
+        image: &[u8],
+        is_png: bool,
+    ) -> Result<(crate::resource::texture::Texture, ReplaceReport)> {
+        use crate::container::ustream::Storage;
+        use crate::resource::texture::{self, Texture};
+
+        let stream = self.open_stream(stream_index)?;
+        let layout = stream.layout();
+        let original = Texture::load(stream.data(), layout, pair)?;
+        let replacement = if is_png {
+            texture::from_png(&original.header, image)?
+        } else {
+            texture::from_dds(&original.header, image)?
+        };
+        let header_bytes = replacement.header.to_bytes()?;
+        let storage = |index: usize| {
+            if layout.is_compressed(index) {
+                Storage::RefPack
+            } else {
+                Storage::Raw
+            }
+        };
+        let replacements = [
+            Replacement {
+                index: pair.header,
+                data: &header_bytes,
+                storage: storage(pair.header),
+            },
+            Replacement {
+                index: pair.data,
+                data: &replacement.data,
+                storage: storage(pair.data),
+            },
+        ];
+        let replacements = replacements.to_vec();
+        drop(stream);
+        let report =
+            self.replace_resources(stream_index, &replacements, ReplaceOptions::default())?;
+        Ok((replacement, report))
+    }
+
+    /// Replaces string table (`lh2`) resource `index` of stream `stream_index`.
+    pub fn import_string_table(
+        &self,
+        stream_index: usize,
+        index: usize,
+        table: &crate::resource::lh2::StringTable,
+    ) -> Result<ReplaceReport> {
+        use crate::container::ustream::Storage;
+        let stream = self.open_stream(stream_index)?;
+        let storage = if stream.layout().is_compressed(index) {
+            Storage::RefPack
+        } else {
+            Storage::Raw
+        };
+        drop(stream);
+        let bytes = table.to_bytes()?;
+        self.replace_resources(
+            stream_index,
+            &[Replacement {
+                index,
+                data: &bytes,
+                storage,
+            }],
+            ReplaceOptions::default(),
+        )
+    }
+
+    /// Restores every file that has a backup and removes the backups.
+    /// Returns the relative paths of the restored files.
+    pub fn restore_backups(&self) -> Result<Vec<String>> {
+        let backup_root = self.root.join(BACKUP_DIR);
+        let mut restored = Vec::new();
+        if !backup_root.is_dir() {
+            return Ok(restored);
+        }
+        let mut files = Vec::new();
+        collect_files(&backup_root, "", &mut files)?;
+        files.sort();
+        for rel_path in files {
+            let backup = backup_root.join(&rel_path);
+            let target = self.root.join(&rel_path);
+            crate::atomic::copy(&backup, &target)?;
+            fs::remove_file(&backup).map_err(|e| Error::io(&backup, e))?;
+            restored.push(rel_path);
+        }
+        // Remove the now empty backup directories, up to and including the tool directory.
+        remove_empty_dirs(&backup_root)?;
+        if let Some(tool_dir) = backup_root.parent() {
+            let _ = fs::remove_dir(tool_dir);
+        }
+        Ok(restored)
+    }
+
+    /// Whether `file` has a backup of its original contents.
+    pub fn has_backup(&self, file: &GameFile) -> bool {
+        self.root.join(BACKUP_DIR).join(&file.rel_path).is_file()
+    }
+
+    /// Path of the backup of `file`, whether it exists or not.
+    pub fn backup_path(&self, file: &GameFile) -> PathBuf {
+        self.root.join(BACKUP_DIR).join(&file.rel_path)
+    }
+
+    /// Path of the original contents of `file`: its backup when one exists,
+    /// otherwise the file itself.
+    pub fn original_path(&self, file: &GameFile) -> PathBuf {
+        let backup = self.backup_path(file);
+        if backup.is_file() {
+            backup
+        } else {
+            file.path.clone()
+        }
+    }
+
+    /// Backs `file` up unless a backup exists. Returns whether a backup was made.
+    ///
+    /// The backup is written atomically: a torn backup would later be trusted
+    /// as the original.
+    pub fn ensure_backup(&self, file: &GameFile) -> Result<bool> {
+        let backup = self.backup_path(file);
+        if backup.exists() {
+            return Ok(false);
+        }
+        if let Some(parent) = backup.parent() {
+            fs::create_dir_all(parent).map_err(|e| Error::io(parent, e))?;
+        }
+        crate::atomic::copy(&file.path, &backup)?;
+        Ok(true)
+    }
+
+    /// Replaces the contents of `file` after backing it up, atomically.
+    pub(crate) fn write_with_backup(
+        &self,
+        file: &GameFile,
+        contents: &[u8],
+        report: &mut ReplaceReport,
+    ) -> Result<()> {
+        if self.ensure_backup(file)? {
+            report.backed_up.push(file.rel_path.clone());
+        }
+        // Write next to the target and rename, so a crash never leaves a torn
+        // file. A symbolic link is replaced, not written through.
+        crate::atomic::write(&file.path, contents)?;
+        report.written.push(file.rel_path.clone());
+        Ok(())
+    }
+
+    /// Sets the data size of stream `stream_index` in every table of contents
+    /// that lists it. Tables are backed up and written atomically.
+    pub fn update_toc_sizes(
+        &self,
+        stream_index: usize,
+        data_size: u64,
+        report: &mut ReplaceReport,
+    ) -> Result<()> {
+        let entry = self.streams.get(stream_index).ok_or_else(|| {
+            Error::InvalidArgument(format!("stream index {stream_index} out of range"))
+        })?;
+        let toc_size = u32::try_from(data_size)
+            .map_err(|_| Error::InvalidArgument("stream data exceeds 4 GiB".into()))?;
+        let name = entry.stream_name();
+        let mut updates = Vec::new();
+        for toc_file in &self.tocs {
+            let data = fs::read(&toc_file.path).map_err(|e| Error::io(&toc_file.path, e))?;
+            let mut table = Toc::parse(&data)?;
+            if let Some(file_index) = table.find_file(&name)
+                && table.files[file_index].data_size != toc_size
+            {
+                table.files[file_index].data_size = toc_size;
+                updates.push((toc_file, table.to_bytes()?));
+            }
+        }
+        for (toc_file, bytes) in updates {
+            self.write_with_backup(toc_file, &bytes, report)?;
+        }
+        Ok(())
+    }
+}
+
+/// The ancestors of `name` in a map from [`GameInstance::stream_parents`],
+/// nearest first.
+pub fn ancestors(parents: &HashMap<String, Vec<String>>, name: &str) -> Vec<String> {
+    let start = String::from_utf8_lossy(&toc::normalize_name(name.as_bytes())).into_owned();
+    let mut out: Vec<String> = Vec::new();
+    let mut todo = std::collections::VecDeque::from([start.trim_end_matches(".str").to_owned()]);
+    while let Some(current) = todo.pop_front() {
+        for parent in parents.get(&current).into_iter().flatten() {
+            if !out.contains(parent) {
+                out.push(parent.clone());
+                todo.push_back(parent.clone());
+            }
+        }
+    }
+    out
+}
+
+/// Finds materials and textures anywhere in the game for model export.
+///
+/// Textures are found through the resource index (their last id is the name
+/// hash). Materials are identified by the name hash inside their data, so the
+/// first material lookup reads every material of the game once.
+pub struct GameAssets {
+    game: std::sync::Arc<GameInstance>,
+    textures: HashMap<u32, (usize, usize)>,
+    materials: Option<HashMap<u32, (usize, usize)>>,
+    /// `rcb` resources as `(stream, resource)`, parsed on first use.
+    rig_locations: Vec<(usize, usize)>,
+    rigs: Option<Vec<crate::resource::rcb::Rig>>,
+    open: HashMap<usize, StreamFile>,
+}
+
+const TYPE_MATERIAL: u32 = crate::hash::sdbm(b"material");
+
+impl GameAssets {
+    pub fn new(game: std::sync::Arc<GameInstance>, index: &ResourceIndex) -> Self {
+        let mut textures = HashMap::new();
+        let mut rig_locations = Vec::new();
+        for entry in &index.entries {
+            let location = (entry.stream as usize, entry.resource as usize);
+            if entry.header.type_id == crate::resource::texture::TYPE_TG4H {
+                textures.entry(entry.header.ids[3]).or_insert(location);
+            } else if entry.header.type_id == crate::resource::rcb::TYPE_RCB {
+                rig_locations.push(location);
+            }
+        }
+        Self {
+            game,
+            textures,
+            materials: None,
+            rig_locations,
+            rigs: None,
+            open: HashMap::new(),
+        }
+    }
+
+    fn stream(&mut self, index: usize) -> Option<&StreamFile> {
+        if !self.open.contains_key(&index) {
+            let stream = self.game.open_stream(index).ok()?;
+            self.open.insert(index, stream);
+        }
+        self.open.get(&index)
+    }
+
+    /// `(stream, resource)` of the material whose name hash is `hash`.
+    pub fn material_location(&mut self, hash: u32) -> Option<(usize, usize)> {
+        self.material_map().get(&hash).copied()
+    }
+
+    /// `(stream, resource)` of the header (`tg4h`) of the texture `hash`.
+    pub fn texture_location(&self, hash: u32) -> Option<(usize, usize)> {
+        self.textures.get(&hash).copied()
+    }
+
+    /// Every rig of the game, parsed on first use.
+    pub fn rigs(&mut self) -> &[crate::resource::rcb::Rig] {
+        if self.rigs.is_none() {
+            let mut rigs = Vec::new();
+            for (s, r) in self.rig_locations.clone() {
+                if let Some(rig) = self
+                    .stream(s)
+                    .and_then(|stream| stream.resource_data(r).ok())
+                    .and_then(|data| crate::resource::rcb::Rig::parse(&data).ok())
+                {
+                    rigs.push(rig);
+                }
+            }
+            self.rigs = Some(rigs);
+        }
+        self.rigs.as_deref().unwrap_or_default()
+    }
+
+    fn material_map(&mut self) -> &HashMap<u32, (usize, usize)> {
+        let game = &self.game;
+        self.materials.get_or_insert_with(|| {
+            let found: Vec<(u32, usize, usize)> = (0..game.streams().len())
+                .into_par_iter()
+                .flat_map_iter(|s| {
+                    let Ok(stream) = game.open_stream(s) else {
+                        return Vec::new();
+                    };
+                    let layout = stream.layout();
+                    (0..layout.resources.len())
+                        .filter(|&r| layout.resources[r].header.type_id == TYPE_MATERIAL)
+                        .filter_map(|r| {
+                            let data = stream.resource_data(r).ok()?;
+                            let hash =
+                                crate::io::read_u32(&data, 8, crate::io::Endian::Little).ok()?;
+                            Some((hash, s, r))
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .collect();
+            let mut map = HashMap::new();
+            for (hash, s, r) in found {
+                map.entry(hash).or_insert((s, r));
+            }
+            map
+        })
+    }
+}
+
+impl crate::export::gltf::AssetSource for GameAssets {
+    fn rigs(&mut self) -> &[crate::resource::rcb::Rig] {
+        GameAssets::rigs(self)
+    }
+
+    fn material(&mut self, hash: u32) -> Option<crate::resource::material::Material> {
+        let &(s, r) = self.material_map().get(&hash)?;
+        let data = self.stream(s)?.resource_data(r).ok()?;
+        crate::resource::material::Material::parse(&data).ok()
+    }
+
+    fn texture(&mut self, hash: u32) -> Option<crate::resource::texture::Texture> {
+        let &(s, r) = self.textures.get(&hash)?;
+        let stream = self.stream(s)?;
+        let pair = crate::resource::texture::pair_of(stream.layout(), r)?;
+        crate::resource::texture::Texture::load(stream.data(), stream.layout(), pair).ok()
+    }
+
+    fn skeleton(&mut self, bones: &[(u32, u32)]) -> Option<crate::resource::rcb::Skeleton> {
+        self.rigs()
+            .iter()
+            .find_map(|rig| rig.skeleton_for(bones))
+            .cloned()
+    }
+}
+
+/// Whether `dir` or a folder up to `depth` levels below it has a `.str` or `.toc` file.
+/// The profile of the game installed in `dir`, when `dir` looks like a game
+/// directory: the executable of a known game and a folder of game files
+/// (`gf2/` with `.str` or `.toc` files). Quick: reads two directory listings.
+pub fn looks_like_game(dir: &Path) -> Option<GameProfile> {
+    let profile = GameProfile::detect(dir)?;
+    let data = fs::read_dir(dir)
+        .ok()?
+        .filter_map(|e| e.ok())
+        .find(|e| e.file_name().to_string_lossy().eq_ignore_ascii_case("gf2"))?
+        .path();
+    has_game_files(&data, 0).then_some(profile)
+}
+
+fn has_game_files(dir: &Path, depth: usize) -> bool {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return false;
+    };
+    let mut subdirs = Vec::new();
+    for entry in entries.filter_map(|e| e.ok()) {
+        let name = entry.file_name().to_string_lossy().to_ascii_lowercase();
+        if name.ends_with(".str") || name.ends_with(".toc") {
+            return true;
+        }
+        if depth > 0 && entry.file_type().is_ok_and(|t| t.is_dir()) {
+            subdirs.push(entry.path());
+        }
+    }
+    subdirs.iter().any(|sub| has_game_files(sub, depth - 1))
+}
+
+/// Recursively collects `.str` and `.toc` files below `dir`.
+fn scan(
+    dir: &Path,
+    rel: &str,
+    streams: &mut Vec<GameFile>,
+    tocs: &mut Vec<GameFile>,
+) -> Result<()> {
+    let entries = match fs::read_dir(dir) {
+        Ok(entries) => entries,
+        // A folder the user cannot read holds no game files; this happens when
+        // a directory above the game is chosen.
+        Err(e) if !rel.is_empty() && e.kind() == std::io::ErrorKind::PermissionDenied => {
+            return Ok(());
+        }
+        Err(e) => return Err(Error::io(dir, e)),
+    };
+    for entry in entries {
+        let entry = entry.map_err(|e| Error::io(dir, e))?;
+        let Ok(name) = entry.file_name().into_string() else {
+            continue;
+        };
+        let path = entry.path();
+        let rel_path = if rel.is_empty() {
+            name.clone()
+        } else {
+            format!("{rel}/{name}")
+        };
+        let lower = name.to_ascii_lowercase();
+        let game_file = lower.ends_with(".str") || lower.ends_with(".toc");
+        let metadata = match fs::metadata(&path) {
+            Ok(metadata) => metadata,
+            // A broken link or a socket of another program: not a game file.
+            Err(_) if !game_file => continue,
+            Err(e) => return Err(Error::io(&path, e)),
+        };
+        if metadata.is_dir() {
+            if !SKIPPED_DIRS.contains(&name.as_str()) {
+                scan(&path, &rel_path, streams, tocs)?;
+            }
+            continue;
+        }
+        let target = if lower.ends_with(".str") {
+            &mut *streams
+        } else if lower.ends_with(".toc") {
+            &mut *tocs
+        } else {
+            continue;
+        };
+        target.push(GameFile {
+            rel_path,
+            path,
+            len: metadata.len(),
+        });
+    }
+    Ok(())
+}
+
+/// Removes `dir` and its subdirectories if they contain no files.
+fn remove_empty_dirs(dir: &Path) -> Result<()> {
+    for entry in fs::read_dir(dir).map_err(|e| Error::io(dir, e))? {
+        let path = entry.map_err(|e| Error::io(dir, e))?.path();
+        if path.is_dir() {
+            remove_empty_dirs(&path)?;
+        }
+    }
+    // Fails harmlessly when the directory still holds files.
+    let _ = fs::remove_dir(dir);
+    Ok(())
+}
+
+/// Recursively collects the relative paths of all files below `dir`.
+fn collect_files(dir: &Path, rel: &str, out: &mut Vec<String>) -> Result<()> {
+    for entry in fs::read_dir(dir).map_err(|e| Error::io(dir, e))? {
+        let entry = entry.map_err(|e| Error::io(dir, e))?;
+        let Ok(name) = entry.file_name().into_string() else {
+            continue;
+        };
+        let path = entry.path();
+        let rel_path = if rel.is_empty() {
+            name
+        } else {
+            format!("{rel}/{name}")
+        };
+        if path.is_dir() {
+            collect_files(&path, &rel_path, out)?;
+        } else {
+            out.push(rel_path);
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::container::ustream::{FileHeader, Storage, StreamWriter};
+    use crate::hash::sdbm;
+    use crate::io::Endian;
+
+    fn resource_header(tag: &[u8], id: u32) -> ResourceHeader {
+        ResourceHeader {
+            mem_policy: sdbm(b"default"),
+            alignment: 0x10,
+            type_id: sdbm(tag),
+            ids: [id; 4],
+            data_size: 0,
+        }
+    }
+
+    fn stream_bytes(resources: &[(&[u8], u32, Vec<u8>)]) -> Vec<u8> {
+        let mut writer = StreamWriter::new(&FileHeader::GF2_PC, Endian::Little);
+        for (tag, id, data) in resources {
+            writer
+                .push_resource(&resource_header(tag, *id), data, Storage::Raw)
+                .unwrap();
+        }
+        writer.finish()
+    }
+
+    /// Builds a miniature game directory with two streams and twin tables of contents.
+    fn fake_game() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        fs::create_dir_all(root.join("gf2/Text")).unwrap();
+        fs::create_dir_all(root.join("_toolkit/backups/gf2")).unwrap();
+        fs::write(root.join("godfather2.exe"), b"MZ").unwrap();
+        fs::write(
+            root.join("gf2/frontend.str"),
+            stream_bytes(&[(b"tg4h", 1, vec![1; 100]), (b"tg4d", 1, vec![2; 5000])]),
+        )
+        .unwrap();
+        fs::write(
+            root.join("gf2/Text/ABCD.STR"),
+            stream_bytes(&[(b"lh2", 2, vec![3; 40])]),
+        )
+        .unwrap();
+        // A stream in the old toolkit's backup directory must be ignored.
+        fs::write(
+            root.join("_toolkit/backups/gf2/frontend.str"),
+            stream_bytes(&[]),
+        )
+        .unwrap();
+
+        let table = Toc::parse(&sample_toc_bytes()).unwrap();
+        fs::write(root.join("gf2/frontend.toc"), table.to_bytes().unwrap()).unwrap();
+        fs::write(
+            root.join("gf2/frontend_global.toc"),
+            table.to_bytes().unwrap(),
+        )
+        .unwrap();
+        dir
+    }
+
+    /// A table listing `gf2\frontend` (5100 bytes) and `gf2\text\abcd` (40 bytes).
+    fn sample_toc_bytes() -> Vec<u8> {
+        let mut out = Vec::new();
+        let names: [(&[u8], u32); 2] = [(b"gf2\\frontend", 0x11), (b"gf2\\text\\abcd", 0x22)];
+        let names_start = 0x10 + 2 * 20;
+        let deps_start = names_start + 2 * 8;
+        let pool_start = deps_start + 4;
+        out.extend_from_slice(&toc::MAGIC.to_le_bytes());
+        out.extend_from_slice(&10u32.to_le_bytes());
+        for value in [2u16, 2, 1, 0] {
+            out.extend_from_slice(&value.to_le_bytes());
+        }
+        // frontend: no dependencies; text: depends on frontend.
+        for (i, (size, flags, deps)) in [
+            (5100u32, [0u8; 4], 0u32),
+            (40, [0, 0, 1, 0], deps_start as u32),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            out.extend_from_slice(&((names_start + i * 8) as u32).to_le_bytes());
+            out.extend_from_slice(&size.to_le_bytes());
+            out.extend_from_slice(&flags);
+            out.extend_from_slice(&0u32.to_le_bytes());
+            out.extend_from_slice(&deps.to_le_bytes());
+        }
+        let mut string_offset = pool_start + 1;
+        for (name, hash) in names {
+            out.extend_from_slice(&hash.to_le_bytes());
+            out.extend_from_slice(&(string_offset as u32).to_le_bytes());
+            string_offset += name.len() + 1;
+        }
+        out.extend_from_slice(&(names_start as u32).to_le_bytes());
+        out.push(0);
+        for (name, _) in names {
+            out.extend_from_slice(name);
+            out.push(0);
+        }
+        out.resize(toc::PADDING, 0);
+        out
+    }
+
+    #[test]
+    fn scans_streams_and_tocs() {
+        let dir = fake_game();
+        let game = GameInstance::open(dir.path()).unwrap();
+        assert_eq!(game.profile().game, crate::profile::Game::Godfather2);
+        let names: Vec<_> = game.streams().iter().map(|s| s.rel_path.as_str()).collect();
+        assert_eq!(names, ["gf2/Text/ABCD.STR", "gf2/frontend.str"]);
+        assert_eq!(game.tocs().len(), 2);
+        assert_eq!(game.find_stream("gf2\\frontend"), Some(1));
+        assert_eq!(game.find_stream("GF2/TEXT/abcd.str"), Some(0));
+        assert_eq!(game.find_stream("nope"), None);
+        assert!(GameInstance::open(dir.path().join("missing")).is_err());
+        // A directory without game files, e.g. the parent of the game folder.
+        let empty = tempfile::tempdir().unwrap();
+        std::fs::create_dir(empty.path().join("docs")).unwrap();
+        assert!(matches!(
+            GameInstance::open(empty.path()),
+            Err(Error::NotAGame { .. })
+        ));
+    }
+
+    #[test]
+    fn builds_index_and_summary() {
+        let dir = fake_game();
+        let game = GameInstance::open(dir.path()).unwrap();
+        let seen = std::sync::atomic::AtomicUsize::new(0);
+        let (index, errors) = game.build_index(|_| {
+            seen.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        });
+        assert!(errors.is_empty());
+        assert_eq!(seen.into_inner(), 2);
+        assert_eq!(index.entries.len(), 3);
+        assert_eq!(index.entries[0].header.type_id, sdbm(b"lh2"));
+        let summary = index.type_summary();
+        assert_eq!(summary.len(), 3);
+        let tg4d = summary.iter().find(|s| s.type_id == sdbm(b"tg4d")).unwrap();
+        assert_eq!((tg4d.count, tg4d.data_bytes), (1, 5000));
+    }
+
+    #[test]
+    fn index_reports_broken_streams() {
+        let dir = fake_game();
+        fs::write(dir.path().join("gf2/broken.str"), b"not a stream").unwrap();
+        let game = GameInstance::open(dir.path()).unwrap();
+        let (index, errors) = game.build_index(|_| {});
+        assert_eq!(index.entries.len(), 3);
+        assert_eq!(errors.len(), 1);
+        assert_eq!(game.streams()[errors[0].0].rel_path, "gf2/broken.str");
+    }
+
+    #[test]
+    fn replace_backs_up_updates_toc_and_restores() {
+        let dir = fake_game();
+        let root = dir.path();
+        let game = GameInstance::open(root).unwrap();
+        let stream_index = game.find_stream("gf2/frontend").unwrap();
+        let original_stream = fs::read(root.join("gf2/frontend.str")).unwrap();
+        let original_toc = fs::read(root.join("gf2/frontend.toc")).unwrap();
+
+        let new_data = vec![9u8; 200_000];
+        let replacement = Replacement {
+            index: 1,
+            data: &new_data,
+            storage: Storage::RefPack,
+        };
+        let report = game
+            .replace_resources(
+                stream_index,
+                std::slice::from_ref(&replacement),
+                ReplaceOptions::default(),
+            )
+            .unwrap();
+        assert_eq!(report.old_data_size, 5100);
+        assert_eq!(report.new_data_size, 200_100);
+        assert_eq!(
+            report.written,
+            [
+                "gf2/frontend.str",
+                "gf2/frontend.toc",
+                "gf2/frontend_global.toc"
+            ]
+        );
+        assert_eq!(report.backed_up, report.written);
+
+        let stream = game.open_stream(stream_index).unwrap();
+        assert_eq!(stream.resource_data(0).unwrap(), vec![1; 100]);
+        assert_eq!(stream.resource_data(1).unwrap(), new_data);
+        drop(stream);
+        for toc_index in 0..2 {
+            let table = game.load_toc(toc_index).unwrap();
+            assert_eq!(
+                table.files[table.find_file("gf2/frontend").unwrap()].data_size,
+                200_100
+            );
+            assert_eq!(
+                table.files[table.find_file("gf2/text/abcd").unwrap()].data_size,
+                40
+            );
+        }
+        assert!(game.has_backup(&game.streams()[stream_index]));
+
+        // A second replacement keeps the first backup: it holds the true original.
+        let report = game
+            .replace_resources(
+                stream_index,
+                &[replacement],
+                ReplaceOptions { update_toc: false },
+            )
+            .unwrap();
+        assert!(report.backed_up.is_empty());
+        assert_eq!(report.written, ["gf2/frontend.str"]);
+        assert_eq!(
+            fs::read(root.join(BACKUP_DIR).join("gf2/frontend.str")).unwrap(),
+            original_stream
+        );
+
+        let restored = game.restore_backups().unwrap();
+        assert_eq!(restored.len(), 3);
+        assert_eq!(
+            fs::read(root.join("gf2/frontend.str")).unwrap(),
+            original_stream
+        );
+        assert_eq!(
+            fs::read(root.join("gf2/frontend.toc")).unwrap(),
+            original_toc
+        );
+        assert!(game.restore_backups().unwrap().is_empty());
+        assert!(
+            !root.join("_doctor_toolkit").exists(),
+            "backup directories are removed"
+        );
+    }
+
+    #[test]
+    fn replace_without_size_change_leaves_toc_alone() {
+        let dir = fake_game();
+        let game = GameInstance::open(dir.path()).unwrap();
+        let stream_index = game.find_stream("gf2/frontend").unwrap();
+        let new_data = vec![7u8; 5000];
+        let report = game
+            .replace_resources(
+                stream_index,
+                &[Replacement {
+                    index: 1,
+                    data: &new_data,
+                    storage: Storage::Raw,
+                }],
+                ReplaceOptions::default(),
+            )
+            .unwrap();
+        assert_eq!(report.written, ["gf2/frontend.str"]);
+        assert_eq!(report.new_data_size, report.old_data_size);
+    }
+
+    /// A miniature game with one stream holding a 4×4 DXT1 texture and a string table.
+    fn editable_game() -> (tempfile::TempDir, GameInstance) {
+        use crate::resource::lh2::StringTable;
+        use crate::resource::tg4::{PARAM_DATA_SIZE, PARAM_FORMAT, ParamValue, Tg4Header};
+
+        let mut header = Tg4Header {
+            version: 3,
+            budget_hash: 0,
+            package: "pkg".into(),
+            name_hash: 0x55,
+            name: "wall".into(),
+            data_size: 8,
+            width: 4,
+            height: 4,
+            padding: 0,
+            surface_count: 1,
+            params: Vec::new(),
+        };
+        header.set_param(PARAM_FORMAT, ParamValue::Str("DXT1c".into()));
+        header.set_param(PARAM_DATA_SIZE, ParamValue::Int(8));
+        let table = StringTable {
+            version: 1,
+            flags: 0x4000,
+            languages: Vec::new(),
+            hashes: vec![1, 2],
+            strings: vec![vec!["Hello".into(), "World".into()]],
+        };
+        let mut writer = StreamWriter::new(&FileHeader::GF2_PC, Endian::Little);
+        let mut tex_header = resource_header(b"tg4h", 0x55);
+        tex_header.ids = [0, sdbm(b"tg4h"), 7, 0x55];
+        writer
+            .push_resource(&tex_header, &header.to_bytes().unwrap(), Storage::Raw)
+            .unwrap();
+        let mut tex_data = resource_header(b"tg4d", 0x55);
+        tex_data.ids = [0, sdbm(b"tg4d"), 7, 0x55];
+        writer
+            .push_resource(&tex_data, &[0u8; 8], Storage::RefPack)
+            .unwrap();
+        writer
+            .push_resource(
+                &resource_header(b"lh2", 9),
+                &table.to_bytes().unwrap(),
+                Storage::Raw,
+            )
+            .unwrap();
+
+        let dir = tempfile::tempdir().unwrap();
+        fs::create_dir_all(dir.path().join("gf2")).unwrap();
+        fs::write(dir.path().join("gf2/level.str"), writer.finish()).unwrap();
+        let game = GameInstance::open(dir.path()).unwrap();
+        (dir, game)
+    }
+
+    #[test]
+    fn import_texture_from_png_and_dds() {
+        use crate::resource::{dds, pixels, texture};
+        let (_dir, game) = editable_game();
+        let stream = game.find_stream("gf2/level").unwrap();
+        let pair = texture::TexturePair { header: 0, data: 1 };
+
+        let rgba: Vec<u8> = (0..16 * 8)
+            .flat_map(|i| [i as u8, 0, 255 - i as u8, 255])
+            .collect();
+        let png = pixels::encode_png(16, 8, &rgba).unwrap();
+        let (texture, report) = game.import_texture(stream, pair, &png, true).unwrap();
+        assert_eq!(
+            (
+                texture.header.width,
+                texture.header.height,
+                texture.header.mip_count()
+            ),
+            (16, 8, 5)
+        );
+        assert_eq!(report.written, ["gf2/level.str"]);
+
+        let file = game.open_stream(stream).unwrap();
+        let loaded = texture::Texture::load(file.data(), file.layout(), pair).unwrap();
+        assert_eq!(loaded.header, texture.header);
+        assert_eq!(loaded.data, texture.data);
+        assert!(
+            file.layout().is_compressed(1),
+            "data keeps its RefPack storage"
+        );
+        assert_eq!(
+            file.resource_data(2).unwrap().len(),
+            file.layout().resources[2].header.data_size as usize
+        );
+        drop(file);
+
+        let dds_file = dds::write(&texture.header, &texture.data).unwrap();
+        let (again, _) = game.import_texture(stream, pair, &dds_file, false).unwrap();
+        assert_eq!(again.data, texture.data);
+        assert!(game.import_texture(stream, pair, b"garbage", true).is_err());
+    }
+
+    #[test]
+    fn import_string_table_keeps_other_resources() {
+        use crate::resource::lh2::StringTable;
+        let (_dir, game) = editable_game();
+        let stream = game.find_stream("gf2/level").unwrap();
+        let file = game.open_stream(stream).unwrap();
+        let mut table = StringTable::parse(&file.resource_data(2).unwrap()).unwrap();
+        let texture_before = file.resource_data(1).unwrap();
+        drop(file);
+        table.strings[0][1] = "Мир".into();
+        game.import_string_table(stream, 2, &table).unwrap();
+        let file = game.open_stream(stream).unwrap();
+        assert_eq!(
+            StringTable::parse(&file.resource_data(2).unwrap()).unwrap(),
+            table
+        );
+        assert_eq!(file.resource_data(1).unwrap(), texture_before);
+        drop(file);
+        assert_eq!(game.restore_backups().unwrap(), ["gf2/level.str"]);
+    }
+}

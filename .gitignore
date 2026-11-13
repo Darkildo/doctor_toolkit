@@ -1,0 +1,21 @@
+# Rust
+/target/
+
+# Python (research scripts)
+__pycache__/
+.venv/
+.pytest_cache/
+*.so
+
+# Game data and extraction output never belong in the repository
+/out/
+*.str
+*.toc
+
+# OS junk
+Thumbs.db
+.DS_Store
+/.claude/
+
+# Release archives (tools/release.sh)
+/dist/

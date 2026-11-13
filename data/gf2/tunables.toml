@@ -1,0 +1,1432 @@
+# Curated game parameters for the "Change game parameters" wizard.
+# Built by research/tunables.py; evidence in docs/analysis/tunables.md.
+version = 1
+
+[[tunable]]
+id = "weapons.pistol.damage"
+category = "weapons"
+label = "Pistol: damage"
+description = "Damage of one bullet, probably; the player has 4500 health. One value for all four upgrade levels; Gun 88, 92 and 96 repeat it, probably as unused copies (the multiplayer rifle was rebalanced in attribute 6 only)."
+source = "simgroup"
+resource = "gf2/globals_global:simgroup:00000000"
+class = "Gun"
+attribute = 6
+objects = ["d320c8321f543bee535a414b414c3230", "f81bc8322ed93150535a414b414c3230", "4d0fc858576170eb41545a3032373358", "34b4c75858e7753241545a3032373358"]  # weapon_pistol_level_01, weapon_pistol_level_02, weapon_pistol_level_03, weapon_pistol_level_04
+object_names = ["weapon_pistol_level_01", "weapon_pistol_level_02", "weapon_pistol_level_03", "weapon_pistol_level_04"]
+kind = "float"
+min = 1.0
+max = 100000.0
+
+[[tunable]]
+id = "weapons.pistol.clip_size"
+category = "weapons"
+label = "Pistol: clip size"
+description = "Rounds per magazine, probably (grows with the upgrade level). One value for all four levels; Gun attributes 90, 94 and 98 repeat it."
+source = "simgroup"
+resource = "gf2/globals_global:simgroup:00000000"
+class = "Gun"
+attribute = 7
+objects = ["d320c8321f543bee535a414b414c3230", "f81bc8322ed93150535a414b414c3230", "4d0fc858576170eb41545a3032373358", "34b4c75858e7753241545a3032373358"]  # weapon_pistol_level_01, weapon_pistol_level_02, weapon_pistol_level_03, weapon_pistol_level_04
+object_names = ["weapon_pistol_level_01", "weapon_pistol_level_02", "weapon_pistol_level_03", "weapon_pistol_level_04"]
+kind = "int"
+min = 1
+max = 999
+
+[[tunable]]
+id = "weapons.pistol.max_ammo"
+category = "weapons"
+label = "Pistol: ammo carried"
+description = "Most ammunition the player can carry for this gun, probably (grows with the level). One value for all four levels; Gun attributes 91, 95 and 99 hold a similar number."
+source = "simgroup"
+resource = "gf2/globals_global:simgroup:00000000"
+class = "Gun"
+attribute = 8
+objects = ["d320c8321f543bee535a414b414c3230", "f81bc8322ed93150535a414b414c3230", "4d0fc858576170eb41545a3032373358", "34b4c75858e7753241545a3032373358"]  # weapon_pistol_level_01, weapon_pistol_level_02, weapon_pistol_level_03, weapon_pistol_level_04
+object_names = ["weapon_pistol_level_01", "weapon_pistol_level_02", "weapon_pistol_level_03", "weapon_pistol_level_04"]
+kind = "int"
+min = 1
+max = 9999
+
+[[tunable]]
+id = "weapons.pistol.fire_interval"
+category = "weapons"
+label = "Pistol: time between shots"
+description = "Seconds between shots, probably: lower is faster (the Tommy gun goes from 0.09 at level 1 to 0.06 at level 4). One value for all four levels; Gun 89, 93 and 97 repeat it (with older values for the rifles)."
+source = "simgroup"
+resource = "gf2/globals_global:simgroup:00000000"
+class = "Gun"
+attribute = 15
+objects = ["d320c8321f543bee535a414b414c3230", "f81bc8322ed93150535a414b414c3230", "4d0fc858576170eb41545a3032373358", "34b4c75858e7753241545a3032373358"]  # weapon_pistol_level_01, weapon_pistol_level_02, weapon_pistol_level_03, weapon_pistol_level_04
+object_names = ["weapon_pistol_level_01", "weapon_pistol_level_02", "weapon_pistol_level_03", "weapon_pistol_level_04"]
+kind = "float"
+min = 0.01
+max = 10.0
+
+[[tunable]]
+id = "weapons.magnum.damage"
+category = "weapons"
+label = "Magnum: damage"
+description = "Damage of one bullet, probably; the player has 4500 health. One value for all four upgrade levels; Gun 88, 92 and 96 repeat it, probably as unused copies (the multiplayer rifle was rebalanced in attribute 6 only)."
+source = "simgroup"
+resource = "gf2/globals_global:simgroup:00000000"
+class = "Gun"
+attribute = 6
+objects = ["4db4c758011065b341545a3032373358", "4db4c758cc8504b741545a3032373358", "db20c83209b59d6d535a414b414c3230", "f0e2c8585d71e14f4b41545a36373932"]  # weapon_magnum_level_01, weapon_magnum_level_02, weapon_magnum_level_03, weapon_magnum_level_04
+object_names = ["weapon_magnum_level_01", "weapon_magnum_level_02", "weapon_magnum_level_03", "weapon_magnum_level_04"]
+kind = "float"
+min = 1.0
+max = 100000.0
+
+[[tunable]]
+id = "weapons.magnum.clip_size"
+category = "weapons"
+label = "Magnum: clip size"
+description = "Rounds per magazine, probably (grows with the upgrade level). One value for all four levels; Gun attributes 90, 94 and 98 repeat it."
+source = "simgroup"
+resource = "gf2/globals_global:simgroup:00000000"
+class = "Gun"
+attribute = 7
+objects = ["4db4c758011065b341545a3032373358", "4db4c758cc8504b741545a3032373358", "db20c83209b59d6d535a414b414c3230", "f0e2c8585d71e14f4b41545a36373932"]  # weapon_magnum_level_01, weapon_magnum_level_02, weapon_magnum_level_03, weapon_magnum_level_04
+object_names = ["weapon_magnum_level_01", "weapon_magnum_level_02", "weapon_magnum_level_03", "weapon_magnum_level_04"]
+kind = "int"
+min = 1
+max = 999
+
+[[tunable]]
+id = "weapons.magnum.max_ammo"
+category = "weapons"
+label = "Magnum: ammo carried"
+description = "Most ammunition the player can carry for this gun, probably (grows with the level). One value for all four levels; Gun attributes 91, 95 and 99 hold a similar number."
+source = "simgroup"
+resource = "gf2/globals_global:simgroup:00000000"
+class = "Gun"
+attribute = 8
+objects = ["4db4c758011065b341545a3032373358", "4db4c758cc8504b741545a3032373358", "db20c83209b59d6d535a414b414c3230", "f0e2c8585d71e14f4b41545a36373932"]  # weapon_magnum_level_01, weapon_magnum_level_02, weapon_magnum_level_03, weapon_magnum_level_04
+object_names = ["weapon_magnum_level_01", "weapon_magnum_level_02", "weapon_magnum_level_03", "weapon_magnum_level_04"]
+kind = "int"
+min = 1
+max = 9999
+
+[[tunable]]
+id = "weapons.magnum.fire_interval"
+category = "weapons"
+label = "Magnum: time between shots"
+description = "Seconds between shots, probably: lower is faster (the Tommy gun goes from 0.09 at level 1 to 0.06 at level 4). One value for all four levels; Gun 89, 93 and 97 repeat it (with older values for the rifles)."
+source = "simgroup"
+resource = "gf2/globals_global:simgroup:00000000"
+class = "Gun"
+attribute = 15
+objects = ["4db4c758011065b341545a3032373358", "4db4c758cc8504b741545a3032373358", "db20c83209b59d6d535a414b414c3230", "f0e2c8585d71e14f4b41545a36373932"]  # weapon_magnum_level_01, weapon_magnum_level_02, weapon_magnum_level_03, weapon_magnum_level_04
+object_names = ["weapon_magnum_level_01", "weapon_magnum_level_02", "weapon_magnum_level_03", "weapon_magnum_level_04"]
+kind = "float"
+min = 0.01
+max = 10.0
+
+[[tunable]]
+id = "weapons.tommy_gun.damage"
+category = "weapons"
+label = "Tommy gun: damage"
+description = "Damage of one bullet, probably; the player has 4500 health. One value for all four upgrade levels; Gun 88, 92 and 96 repeat it, probably as unused copies (the multiplayer rifle was rebalanced in attribute 6 only)."
+source = "simgroup"
+resource = "gf2/globals_global:simgroup:00000000"
+class = "Gun"
+attribute = 6
+objects = ["4db4c75875125aba41545a3032373358", "f61bc8322c8207ab535a414b414c3230", "500fc85828f2021741545a3032373358", "4f0fc858aa69c1c441545a3032373358"]  # weapon_automatic_level_01, weapon_automatic_level_02, weapon_automatic_level_03, weapon_automatic_level_04
+object_names = ["weapon_automatic_level_01", "weapon_automatic_level_02", "weapon_automatic_level_03", "weapon_automatic_level_04"]
+kind = "float"
+min = 1.0
+max = 100000.0
+
+[[tunable]]
+id = "weapons.tommy_gun.clip_size"
+category = "weapons"
+label = "Tommy gun: clip size"
+description = "Rounds per magazine, probably (grows with the upgrade level). One value for all four levels; Gun attributes 90, 94 and 98 repeat it."
+source = "simgroup"
+resource = "gf2/globals_global:simgroup:00000000"
+class = "Gun"
+attribute = 7
+objects = ["4db4c75875125aba41545a3032373358", "f61bc8322c8207ab535a414b414c3230", "500fc85828f2021741545a3032373358", "4f0fc858aa69c1c441545a3032373358"]  # weapon_automatic_level_01, weapon_automatic_level_02, weapon_automatic_level_03, weapon_automatic_level_04
+object_names = ["weapon_automatic_level_01", "weapon_automatic_level_02", "weapon_automatic_level_03", "weapon_automatic_level_04"]
+kind = "int"
+min = 1
+max = 999
+
+[[tunable]]
+id = "weapons.tommy_gun.max_ammo"
+category = "weapons"
+label = "Tommy gun: ammo carried"
+description = "Most ammunition the player can carry for this gun, probably (grows with the level). One value for all four levels; Gun attributes 91, 95 and 99 hold a similar number."
+source = "simgroup"
+resource = "gf2/globals_global:simgroup:00000000"
+class = "Gun"
+attribute = 8
+objects = ["4db4c75875125aba41545a3032373358", "f61bc8322c8207ab535a414b414c3230", "500fc85828f2021741545a3032373358", "4f0fc858aa69c1c441545a3032373358"]  # weapon_automatic_level_01, weapon_automatic_level_02, weapon_automatic_level_03, weapon_automatic_level_04
+object_names = ["weapon_automatic_level_01", "weapon_automatic_level_02", "weapon_automatic_level_03", "weapon_automatic_level_04"]
+kind = "int"
+min = 1
+max = 9999
+
+[[tunable]]
+id = "weapons.tommy_gun.fire_interval"
+category = "weapons"
+label = "Tommy gun: time between shots"
+description = "Seconds between shots, probably: lower is faster (the Tommy gun goes from 0.09 at level 1 to 0.06 at level 4). One value for all four levels; Gun 89, 93 and 97 repeat it (with older values for the rifles)."
+source = "simgroup"
+resource = "gf2/globals_global:simgroup:00000000"
+class = "Gun"
+attribute = 15
+objects = ["4db4c75875125aba41545a3032373358", "f61bc8322c8207ab535a414b414c3230", "500fc85828f2021741545a3032373358", "4f0fc858aa69c1c441545a3032373358"]  # weapon_automatic_level_01, weapon_automatic_level_02, weapon_automatic_level_03, weapon_automatic_level_04
+object_names = ["weapon_automatic_level_01", "weapon_automatic_level_02", "weapon_automatic_level_03", "weapon_automatic_level_04"]
+kind = "float"
+min = 0.01
+max = 10.0
+
+[[tunable]]
+id = "weapons.shotgun.damage"
+category = "weapons"
+label = "Shotgun: damage"
+description = "Damage of one bullet (one pellet), probably; the player has 4500 health. One value for all four upgrade levels; Gun 88, 92 and 96 repeat it, probably as unused copies (the multiplayer rifle was rebalanced in attribute 6 only)."
+source = "simgroup"
+resource = "gf2/globals_global:simgroup:00000000"
+class = "Gun"
+attribute = 6
+objects = ["4db4c758f598dcb841545a3032373358", "4e0fc85822454da141545a3032373358", "4d0fc858cf5f73ed41545a3032373358", "f0e2c85871c26bc04b41545a36373932"]  # weapon_shotgun_level_01, weapon_shotgun_level_02, weapon_shotgun_level_03, weapon_shotgun_level_04
+object_names = ["weapon_shotgun_level_01", "weapon_shotgun_level_02", "weapon_shotgun_level_03", "weapon_shotgun_level_04"]
+kind = "float"
+min = 1.0
+max = 100000.0
+
+[[tunable]]
+id = "weapons.shotgun.clip_size"
+category = "weapons"
+label = "Shotgun: clip size"
+description = "Rounds per magazine, probably (grows with the upgrade level). One value for all four levels; Gun attributes 90, 94 and 98 repeat it."
+source = "simgroup"
+resource = "gf2/globals_global:simgroup:00000000"
+class = "Gun"
+attribute = 7
+objects = ["4db4c758f598dcb841545a3032373358", "4e0fc85822454da141545a3032373358", "4d0fc858cf5f73ed41545a3032373358", "f0e2c85871c26bc04b41545a36373932"]  # weapon_shotgun_level_01, weapon_shotgun_level_02, weapon_shotgun_level_03, weapon_shotgun_level_04
+object_names = ["weapon_shotgun_level_01", "weapon_shotgun_level_02", "weapon_shotgun_level_03", "weapon_shotgun_level_04"]
+kind = "int"
+min = 1
+max = 999
+
+[[tunable]]
+id = "weapons.shotgun.max_ammo"
+category = "weapons"
+label = "Shotgun: ammo carried"
+description = "Most ammunition the player can carry for this gun, probably (grows with the level). One value for all four levels; Gun attributes 91, 95 and 99 hold a similar number."
+source = "simgroup"
+resource = "gf2/globals_global:simgroup:00000000"
+class = "Gun"
+attribute = 8
+objects = ["4db4c758f598dcb841545a3032373358", "4e0fc85822454da141545a3032373358", "4d0fc858cf5f73ed41545a3032373358", "f0e2c85871c26bc04b41545a36373932"]  # weapon_shotgun_level_01, weapon_shotgun_level_02, weapon_shotgun_level_03, weapon_shotgun_level_04
+object_names = ["weapon_shotgun_level_01", "weapon_shotgun_level_02", "weapon_shotgun_level_03", "weapon_shotgun_level_04"]
+kind = "int"
+min = 1
+max = 9999
+
+[[tunable]]
+id = "weapons.shotgun.fire_interval"
+category = "weapons"
+label = "Shotgun: time between shots"
+description = "Seconds between shots, probably: lower is faster (the Tommy gun goes from 0.09 at level 1 to 0.06 at level 4). One value for all four levels; Gun 89, 93 and 97 repeat it (with older values for the rifles)."
+source = "simgroup"
+resource = "gf2/globals_global:simgroup:00000000"
+class = "Gun"
+attribute = 15
+objects = ["4db4c758f598dcb841545a3032373358", "4e0fc85822454da141545a3032373358", "4d0fc858cf5f73ed41545a3032373358", "f0e2c85871c26bc04b41545a36373932"]  # weapon_shotgun_level_01, weapon_shotgun_level_02, weapon_shotgun_level_03, weapon_shotgun_level_04
+object_names = ["weapon_shotgun_level_01", "weapon_shotgun_level_02", "weapon_shotgun_level_03", "weapon_shotgun_level_04"]
+kind = "float"
+min = 0.01
+max = 10.0
+
+[[tunable]]
+id = "weapons.rifle.damage"
+category = "weapons"
+label = "Rifle: damage"
+description = "Damage of one bullet, probably; the player has 4500 health. One value for all four upgrade levels; Gun 88, 92 and 96 repeat it, probably as unused copies (the multiplayer rifle was rebalanced in attribute 6 only)."
+source = "simgroup"
+resource = "gf2/globals_global:simgroup:00000000"
+class = "Gun"
+attribute = 6
+objects = ["4e0fc858fc83cfa241545a3032373358", "500fc858f084f4b241545a3032373358", "500fc858f33308b541545a3032373358", "f0e2c858079c07904b41545a36373932"]  # weapon_rifle_level_01, weapon_rifle_level_02, weapon_rifle_level_03, weapon_rifle_level_04
+object_names = ["weapon_rifle_level_01", "weapon_rifle_level_02", "weapon_rifle_level_03", "weapon_rifle_level_04"]
+kind = "float"
+min = 1.0
+max = 100000.0
+
+[[tunable]]
+id = "weapons.rifle.clip_size"
+category = "weapons"
+label = "Rifle: clip size"
+description = "Rounds per magazine, probably (grows with the upgrade level). One value for all four levels; Gun attributes 90, 94 and 98 repeat it."
+source = "simgroup"
+resource = "gf2/globals_global:simgroup:00000000"
+class = "Gun"
+attribute = 7
+objects = ["4e0fc858fc83cfa241545a3032373358", "500fc858f084f4b241545a3032373358", "500fc858f33308b541545a3032373358", "f0e2c858079c07904b41545a36373932"]  # weapon_rifle_level_01, weapon_rifle_level_02, weapon_rifle_level_03, weapon_rifle_level_04
+object_names = ["weapon_rifle_level_01", "weapon_rifle_level_02", "weapon_rifle_level_03", "weapon_rifle_level_04"]
+kind = "int"
+min = 1
+max = 999
+
+[[tunable]]
+id = "weapons.rifle.max_ammo"
+category = "weapons"
+label = "Rifle: ammo carried"
+description = "Most ammunition the player can carry for this gun, probably (grows with the level). One value for all four levels; Gun attributes 91, 95 and 99 hold a similar number."
+source = "simgroup"
+resource = "gf2/globals_global:simgroup:00000000"
+class = "Gun"
+attribute = 8
+objects = ["4e0fc858fc83cfa241545a3032373358", "500fc858f084f4b241545a3032373358", "500fc858f33308b541545a3032373358", "f0e2c858079c07904b41545a36373932"]  # weapon_rifle_level_01, weapon_rifle_level_02, weapon_rifle_level_03, weapon_rifle_level_04
+object_names = ["weapon_rifle_level_01", "weapon_rifle_level_02", "weapon_rifle_level_03", "weapon_rifle_level_04"]
+kind = "int"
+min = 1
+max = 9999
+
+[[tunable]]
+id = "weapons.rifle.fire_interval"
+category = "weapons"
+label = "Rifle: time between shots"
+description = "Seconds between shots, probably: lower is faster (the Tommy gun goes from 0.09 at level 1 to 0.06 at level 4). One value for all four levels; Gun 89, 93 and 97 repeat it (with older values for the rifles)."
+source = "simgroup"
+resource = "gf2/globals_global:simgroup:00000000"
+class = "Gun"
+attribute = 15
+objects = ["4e0fc858fc83cfa241545a3032373358", "500fc858f084f4b241545a3032373358", "500fc858f33308b541545a3032373358", "f0e2c858079c07904b41545a36373932"]  # weapon_rifle_level_01, weapon_rifle_level_02, weapon_rifle_level_03, weapon_rifle_level_04
+object_names = ["weapon_rifle_level_01", "weapon_rifle_level_02", "weapon_rifle_level_03", "weapon_rifle_level_04"]
+kind = "float"
+min = 0.01
+max = 10.0
+
+[[tunable]]
+id = "weapons.shotgun.pellets"
+category = "weapons"
+label = "Shotgun: pellets per shot"
+description = "Pellets fired per shot, probably: 10 for every shotgun, 1 for every other gun."
+source = "simgroup"
+resource = "gf2/globals_global:simgroup:00000000"
+class = "Gun"
+attribute = 25
+objects = ["4db4c758f598dcb841545a3032373358", "4e0fc85822454da141545a3032373358", "4d0fc858cf5f73ed41545a3032373358", "f0e2c85871c26bc04b41545a36373932"]  # weapon_shotgun_level_01, weapon_shotgun_level_02, weapon_shotgun_level_03, weapon_shotgun_level_04
+object_names = ["weapon_shotgun_level_01", "weapon_shotgun_level_02", "weapon_shotgun_level_03", "weapon_shotgun_level_04"]
+kind = "int"
+min = 1
+max = 50
+
+[[tunable]]
+id = "weapons.molotov.damage"
+category = "weapons"
+label = "Molotov: explosion damage"
+description = "Damage of the explosion, probably (molotov 2500, dynamite 5000, bomb 7500)."
+source = "simgroup"
+resource = "gf2/globals_global:simgroup:00000000"
+class = "ThrowableItem"
+attribute = 7
+objects = ["bcdec75811bc16124b41545a36373932"]  # weapon_explosive_molotov
+object_names = ["weapon_explosive_molotov"]
+kind = "float"
+min = 0.0
+max = 100000.0
+
+[[tunable]]
+id = "weapons.molotov.radius"
+category = "weapons"
+label = "Molotov: blast radius"
+description = "Outer radius of the blast in metres, probably; ThrowableItem attribute 5 holds a smaller inner radius."
+source = "simgroup"
+resource = "gf2/globals_global:simgroup:00000000"
+class = "ThrowableItem"
+attribute = 6
+objects = ["bcdec75811bc16124b41545a36373932"]  # weapon_explosive_molotov
+object_names = ["weapon_explosive_molotov"]
+kind = "float"
+min = 0.5
+max = 50.0
+
+[[tunable]]
+id = "weapons.dynamite.damage"
+category = "weapons"
+label = "Dynamite: explosion damage"
+description = "Damage of the explosion, probably (molotov 2500, dynamite 5000, bomb 7500)."
+source = "simgroup"
+resource = "gf2/globals_global:simgroup:00000000"
+class = "ThrowableItem"
+attribute = 7
+objects = ["4f0fc858a0b4861741545a3032373358"]  # weapon_explosive_dynamite
+object_names = ["weapon_explosive_dynamite"]
+kind = "float"
+min = 0.0
+max = 100000.0
+
+[[tunable]]
+id = "weapons.dynamite.radius"
+category = "weapons"
+label = "Dynamite: blast radius"
+description = "Outer radius of the blast in metres, probably; ThrowableItem attribute 5 holds a smaller inner radius."
+source = "simgroup"
+resource = "gf2/globals_global:simgroup:00000000"
+class = "ThrowableItem"
+attribute = 6
+objects = ["4f0fc858a0b4861741545a3032373358"]  # weapon_explosive_dynamite
+object_names = ["weapon_explosive_dynamite"]
+kind = "float"
+min = 0.5
+max = 50.0
+
+[[tunable]]
+id = "weapons.bomb.damage"
+category = "weapons"
+label = "Bomb: explosion damage"
+description = "Damage of the explosion, probably (molotov 2500, dynamite 5000, bomb 7500)."
+source = "simgroup"
+resource = "gf2/globals_global:simgroup:00000000"
+class = "ThrowableItem"
+attribute = 7
+objects = ["5ae4c75836ab33704b41545a36373932"]  # weapon_explosive_bomb
+object_names = ["weapon_explosive_bomb"]
+kind = "float"
+min = 0.0
+max = 100000.0
+
+[[tunable]]
+id = "weapons.bomb.radius"
+category = "weapons"
+label = "Bomb: blast radius"
+description = "Outer radius of the blast in metres, probably; ThrowableItem attribute 5 holds a smaller inner radius."
+source = "simgroup"
+resource = "gf2/globals_global:simgroup:00000000"
+class = "ThrowableItem"
+attribute = 6
+objects = ["5ae4c75836ab33704b41545a36373932"]  # weapon_explosive_bomb
+object_names = ["weapon_explosive_bomb"]
+kind = "float"
+min = 0.5
+max = 50.0
+
+[[tunable]]
+id = "health.player.health"
+category = "health"
+label = "Player: health"
+description = "Initial health of the player (CMD_SetInitialHealth). Named by the metamodels; 4500 against 1800 for a civilian."
+source = "simgroup"
+resource = "gf2/globals_global:simgroup:00000000"
+class = "StandardDamageComponent"
+attribute = 0
+objects = ["04bdc758713a65b141545a3032373358"]  # _all
+object_names = ["_all"]
+kind = "float"
+min = 1.0
+max = 1000000.0
+
+[[tunable]]
+id = "health.carmine_soldiers.health"
+category = "health"
+label = "Carmine Rosato's soldiers: health"
+description = "Initial health of the Carmine Rosato family's rank-and-file NPC templates (CMD_SetInitialHealth), selected by character model; named lieutenants have their own templates and keep their values."
+source = "simgroup"
+resource = "gf2/globals_global:simgroup:00000000"
+class = "StandardDamageComponent"
+attribute = 0
+objects = [  # 200 objects
+  "7f9ac836f1ebd3cf5045525259363338", "7f9ac83696e911d05045525259363338", "7f9ac836de844dd05045525259363338",
+  "7f9ac836a1a992d05045525259363338", "7f9ac8361546afd05045525259363338", "7f9ac836aff6bfd05045525259363338",
+  "7f9ac836e844ced05045525259363338", "7f9ac836e189d7d35045525259363338", "7f9ac8361cd8e5d35045525259363338",
+  "7f9ac8365526f4d35045525259363338", "7f9ac836321200d45045525259363338", "7f9ac8366c600ed45045525259363338",
+  "7f9ac836a5ae1cd45045525259363338", "7f9ac836819a28d45045525259363338", "7f9ac83654cb3dd75045525259363338",
+  "7f9ac836ab4053d75045525259363338", "7f9ac836c07a6dd75045525259363338", "7f9ac836fcfa71da5045525259363338",
+  "7f9ac836d7e67dda5045525259363338", "7f9ac836b3d289da5045525259363338", "7f9ac836ed2098da5045525259363338",
+  "7f9ac836c80ca4da5045525259363338", "7f9ac836a3f8afda5045525259363338", "7f9ac836dd46beda5045525259363338",
+  "7f9ac836b932cada5045525259363338", "7f9ac8365415d1dd5045525259363338", "7f9ac8362d01dddd5045525259363338",
+  "7f9ac8362614f0dd5045525259363338", "7f9ac836dbeb07de5045525259363338", "7f9ac836b0ea26de5045525259363338",
+  "7f9ac836489b37de5045525259363338", "7f9ac836248743de5045525259363338", "7f9ac836ff724fde5045525259363338",
+  "7f9ac83639c15dde5045525259363338", "7f9ac836710f6cde5045525259363338", "7f9ac836ad5d7ade5045525259363338",
+  "7f9ac836e5ab88de5045525259363338", "7f9ac836c19794de5045525259363338", "7f9ac836fbe5a2de5045525259363338",
+  "7f9ac836f4f8b5de5045525259363338", "7f9ac836cfe4c1de5045525259363338", "7f9ac8366795d2de5045525259363338",
+  "a69ec836d7ba45e35045525259363338", "a69ec8362eb883e35045525259363338", "a69ec836bac9b5e35045525259363338",
+  "a69ec8368f16e3e35045525259363338", "a69ec83625eefae35045525259363338", "a69ec836626310e45045525259363338",
+  "a69ec836427623e45045525259363338", "a69ec836238936e45045525259363338", "a69ec836a62c42e75045525259363338",
+  "a69ec8363e045ae75045525259363338", "a69ec836d5db71e75045525259363338", "a69ec8366db389e75045525259363338",
+  "a69ec836068ba1e75045525259363338", "a69ec8364100b7e75045525259363338", "a69ec8362213cae75045525259363338",
+  "a69ec8365e88dfe75045525259363338", "a69ec8363f9bf2e75045525259363338", "a69ec8367a1008e85045525259363338",
+  "a69ec836b6851de85045525259363338", "a69ec836989830e85045525259363338", "a69ec8362e7048e85045525259363338",
+  "a69ec8360e835be85045525259363338", "a69ec836ee956ee85045525259363338", "a69ec836cfa881e85045525259363338",
+  "a69ec836afbb94e85045525259363338", "a69ec836ea30aae85045525259363338", "a69ec83627a6bfe85045525259363338",
+  "a69ec836d2a4dee85045525259363338", "a69ec8367fa3fde85045525259363338", "a69ec836bc1813e95045525259363338",
+  "a69ec8369b2b26e95045525259363338", "a69ec8367c3e39e95045525259363338", "a69ec836b6b34ee95045525259363338",
+  "a69ec83662b26de95045525259363338", "a69ec83656ec87e95045525259363338", "a69ec83693619de95045525259363338",
+  "a69ec836869bb7e95045525259363338", "a69ec836c310cde95045525259363338", "a69ec836b74ae7e95045525259363338",
+  "a69ec83676700dea5045525259363338", "a69ec836104825ea5045525259363338", "a69ec836a81f3dea5045525259363338",
+  "a69ec836e19452ea5045525259363338", "a69ec8361d0a68ea5045525259363338", "a69ec8366ea684ea5045525259363338",
+  "a69ec83662d399ed5045525259363338", "a69ec83643e6aced5045525259363338", "a69ec83624f9bfed5045525259363338",
+  "a69ec8365d6ed5ed5045525259363338", "a69ec8363f81e8ed5045525259363338", "a69ec8361f94fbed5045525259363338",
+  "a69ec8365b0911ee5045525259363338", "a69ec8363b1c24ee5045525259363338", "a69ec836779139ee5045525259363338",
+  "a69ec836b2064fee5045525259363338", "a69ec836941962ee5045525259363338", "a69ec836cd8e77ee5045525259363338",
+  "a69ec836afa18aee5045525259363338", "1f0ac9302dc8ad3744554d4f4e543737", "1f0ac9302963e93744554d4f4e543737",
+  "1f0ac93025fe243844554d4f4e543737", "1f0ac9307dfb623844554d4f4e543737", "1f0ac9301d349c3844554d4f4e543737",
+  "1f0ac930d193dc3844554d4f4e543737", "1f0ac930991a243944554d4f4e543737", "1f0ac93075c8723944554d4f4e543737",
+  "1f0ac9302928b33944554d4f4e543737", "1f0ac930dd87f33944554d4f4e543737", "1f0ac930cd5c493a44554d4f4e543737",
+  "1f0ac930f145933a44554d4f4e543737", "1f0ac9300108d63a44554d4f4e543737", "1f0ac930b567163b44554d4f4e543737",
+  "1f0ac930218c5b3b44554d4f4e543737", "1f0ac9308db0a03b44554d4f4e543737", "1f0ac9309d72e33b44554d4f4e543737",
+  "1f0ac93065f92a3c44554d4f4e543737", "1f0ac930d11d703c44554d4f4e543737", "1f0ac93099a4b73c44554d4f4e543737",
+  "1f0ac93005c9fc3c44554d4f4e543737", "1f0ac9308514493d44554d4f4e543737", "1f0ac930a9fd923d44554d4f4e543737",
+  "1f0ac930e10de43d44554d4f4e543737", "1f0ac9306159303e44554d4f4e543737", "1f0ac9303d077f3e44554d4f4e543737",
+  "1f0ac93061f0c83e44554d4f4e543737", "1f0ac9303d9e173f44554d4f4e543737", "1f0ac930bde9633f44554d4f4e543737",
+  "1f0ac930515cb73f44554d4f4e543737", "1f0ac9302d0a064044554d4f4e543737", "1f0ac930ad55524044554d4f4e543737",
+  "1f0ac9308903a14044554d4f4e543737", "1f0ac93065b1ef4044554d4f4e543737", "1f0ac930415f3e4144554d4f4e543737",
+  "1f0ac9301d0d8d4144554d4f4e543737", "1f0ac930551dde4144554d4f4e543737", "1f0ac93045f2334244554d4f4e543737",
+  "1f0ac930d964874244554d4f4e543737", "1f0ac9306dd7da4244554d4f4e543737", "1f0ac930a5e72b4344554d4f4e543737",
+  "1f0ac930ddf77c4344554d4f4e543737", "1f0ac9301508ce4344554d4f4e543737", "1f0ac930613f264444554d4f4e543737",
+  "1f0ac930ad767e4444554d4f4e543737", "1f0ac930f9add64444554d4f4e543737", "1f0ac930a147314544554d4f4e543737",
+  "1f0ac930ed7e894544554d4f4e543737", "1f0ac93039b6e14544554d4f4e543737", "1f0ac93085ed394644554d4f4e543737",
+  "1f0ac9302d87944644554d4f4e543737", "1f0ac9308de5f34644554d4f4e543737", "1f0ac93091e1504744554d4f4e543737",
+  "1f0ac93095ddad4744554d4f4e543737", "1f0ac93079ec1d4844554d4f4e543737", "1f0ac930d94a7d4844554d4f4e543737",
+  "1f0ac930dd46da4844554d4f4e543737", "1f0ac930e142374944554d4f4e543737", "1f0ac930b12aa04944554d4f4e543737",
+  "1f0ac93059c4fa4944554d4f4e543737", "1f0ac9306521794a44554d4f4e543737", "1f0ac930c57fd84a44554d4f4e543737",
+  "1f0ac93039053f4b44554d4f4e543737", "1f0ac93099639e4b44554d4f4e543737", "1f0ac930e59af64b44554d4f4e543737",
+  "1f0ac930e996534c44554d4f4e543737", "1f0ac930ed92b04c44554d4f4e543737", "1f0ac930952c0b4d44554d4f4e543737",
+  "1f0ac930d59d7d4d44554d4f4e543737", "1f0ac93035fcdc4d44554d4f4e543737", "1f0ac930a981434e44554d4f4e543737",
+  "1f0ac93009e0a24e44554d4f4e543737", "1f0ac9300ddcff4e44554d4f4e543737", "1f0ac9306d3a5f4f44554d4f4e543737",
+  "1f0ac930cd98be4f44554d4f4e543737", "1f0ac930d1941b5044554d4f4e543737", "1f0ac93031f37a5044554d4f4e543737",
+  "1f0ac93035efd75044554d4f4e543737", "1f0ac93039eb345144554d4f4e543737", "1f0ac9301dfaa45144554d4f4e543737",
+  "1f0ac9307d58045244554d4f4e543737", "1f0ac9308154615244554d4f4e543737", "1f0ac9308550be5244554d4f4e543737",
+  "1f0ac930894c1b5344554d4f4e543737", "1f0ac930e9aa7a5344554d4f4e543737", "1f0ac930eda6d75344554d4f4e543737",
+  "1f0ac9307553455444554d4f4e543737", "1f0ac930b5c4b75444554d4f4e543737", "1f0ac9303d71255544554d4f4e543737",
+  "1f0ac9302180955544554d4f4e543737", "1f0ac93075180f5644554d4f4e543737", "1f0ac93011ec835644554d4f4e543737",
+  "1f0ac9309998f15644554d4f4e543737", "1f0ac930f9f6505744554d4f4e543737", "1f0ac93081a3be5744554d4f4e543737",
+  "1f0ac930859f1b5844554d4f4e543737", "1f0ac9302d39765844554d4f4e543737", "1f0ac930c142625944554d4f4e543737",
+  "1f0ac930c53ebf5944554d4f4e543737", "1f0ac93081ff205a44554d4f4e543737",
+]
+kind = "float"
+min = 1.0
+max = 1000000.0
+
+[[tunable]]
+id = "health.tony_soldiers.health"
+category = "health"
+label = "Tony Rosato's soldiers: health"
+description = "Initial health of the Tony Rosato family's rank-and-file NPC templates (CMD_SetInitialHealth), selected by character model; named lieutenants have their own templates and keep their values."
+source = "simgroup"
+resource = "gf2/globals_global:simgroup:00000000"
+class = "StandardDamageComponent"
+attribute = 0
+objects = [  # 200 objects
+  "a79ec836529f7de65045525259363338", "a79ec836ca89a8e65045525259363338", "a79ec836d2eac9e65045525259363338",
+  "a79ec8367fe9e8e65045525259363338", "a79ec8362ae807e75045525259363338", "a79ec836d7e626e75045525259363338",
+  "a79ec836df4748e75045525259363338", "a79ec836894667e75045525259363338", "a79ec836221e7fe75045525259363338",
+  "a79ec836bbf596e75045525259363338", "a79ec83653cdaee75045525259363338", "a79ec836eaa4c6e75045525259363338",
+  "a79ec83696a3e5e75045525259363338", "a79ec83643a204e85045525259363338", "a79ec836efa023e85045525259363338",
+  "a79ec836e1da3de85045525259363338", "a79ec8361f5053e85045525259363338", "a79ec836b7276be85045525259363338",
+  "a79ec8364eff82e85045525259363338", "a79ec836e7d69ae85045525259363338", "a79ec8367faeb2e85045525259363338",
+  "a79ec8361686cae85045525259363338", "a79ec836ae5de2e85045525259363338", "a79ec8364635fae85045525259363338",
+  "a79ec836065b20e95045525259363338", "a79ec836fa943ae95045525259363338", "a79ec836936c52e95045525259363338",
+  "a79ec83629446ae95045525259363338", "a79ec836c21b82e95045525259363338", "a79ec83612b89ee95045525259363338",
+  "a79ec8362d40c7e95045525259363338", "a79ec83692f6e5ec5045525259363338", "a79ec836f6b909ed5045525259363338",
+  "a79ec836ff1a2bed5045525259363338", "a79ec836aa194aed5045525259363338", "a79ec83643f161ed5045525259363338",
+  "a79ec8364b5283ed5045525259363338", "a79ec8363e8c9ded5045525259363338", "a79ec836e99da4dd5045525259363338",
+  "a79ec836b324ecdd5045525259363338", "a79ec836adbf27de5045525259363338", "a79ec8365abe46de5045525259363338",
+  "a79ec83606bd65de5045525259363338", "a79ec836faf67fde5045525259363338", "a79ec8364b939cde5045525259363338",
+  "a79ec8363dcdb6de5045525259363338", "a79ec836670ec0e15045525259363338", "a79ec836120ddfe15045525259363338",
+  "a79ec836bf0bfee15045525259363338", "a79ec8367d241fe55045525259363338", "a79ec8369aac47e55045525259363338",
+  "a79ec8365bd26de55045525259363338", "a79ec836be9591e55045525259363338", "a79ec8362359b5e55045525259363338",
+  "a79ec83672f5d1e55045525259363338", "a79ec8361ef4f0e55045525259363338", "a79ec8366f900de65045525259363338",
+  "a79ec836be2c2ae65045525259363338", "a79ec836d9b452e65045525259363338", "809ac83679b0c2a25045525259363338",
+  "809ac83643c2f4a25045525259363338", "809ac8366e3629a35045525259363338", "809ac83636bbaea35045525259363338",
+  "809ac8368543d7a35045525259363338", "809ac836407b2fa45045525259363338", "809ac8367bc93da45045525259363338",
+  "809ac83656b549a45045525259363338", "809ac836f09750a75045525259363338", "809ac836fce47da75045525259363338",
+  "809ac836a3e2bba75045525259363338", "809ac836af2fe9a75045525259363338", "809ac836ab74f2aa5045525259363338",
+  "809ac836e5c200ab5045525259363338", "809ac8367c7311ab5045525259363338", "809ac836595f1dab5045525259363338",
+  "809ac83693ad2bab5045525259363338", "809ac836cdfb39ab5045525259363338", "809ac83665ac4aab5045525259363338",
+  "809ac836a0fa58ab5045525259363338", "809ac836f66f6eab5045525259363338", "809ac836883392ab5045525259363338",
+  "809ac8367f46a5ab5045525259363338", "809ac83618f7b5ab5045525259363338", "809ac8365477baae5045525259363338",
+  "809ac836ec27cbae5045525259363338", "809ac8362676d9ae5045525259363338", "809ac8369a12f6ae5045525259363338",
+  "809ac83634c306af5045525259363338", "809ac8362bd619af5045525259363338", "809ac836261b23b25045525259363338",
+  "809ac836616931b25045525259363338", "809ac836f81942b25045525259363338", "809ac83691ca52b25045525259363338",
+  "809ac8362b7b63b25045525259363338", "809ac83681f078b25045525259363338", "809ac836bd3e87b25045525259363338",
+  "809ac836f78c95b25045525259363338", "809ac8368e3da6b25045525259363338", "809ac83627eeb6b25045525259363338",
+  "809ac8367f63ccb25045525259363338", "1f0ac930792fb56744554d4f4e543737", "1f0ac93089f1f76744554d4f4e543737",
+  "1f0ac930858c336844554d4f4e543737", "1f0ac930dd89716844554d4f4e543737", "1f0ac9303587af6844554d4f4e543737",
+  "1f0ac9304549f26844554d4f4e543737", "1f0ac930f9a8326944554d4f4e543737", "1f0ac930ad08736944554d4f4e543737",
+  "1f0ac930f93fcb6944554d4f4e543737", "1f0ac9301d29156a44554d4f4e543737", "1f0ac930d188556a44554d4f4e543737",
+  "1f0ac930990f9d6a44554d4f4e543737", "1f0ac9302d82f06a44554d4f4e543737", "1f0ac930f508386b44554d4f4e543737",
+  "1f0ac9302d19896b44554d4f4e543737", "1f0ac930993dce6b44554d4f4e543737", "1f0ac9300562136c44554d4f4e543737",
+  "1f0ac9307186586c44554d4f4e543737", "1f0ac930ddaa9d6c44554d4f4e543737", "1f0ac93049cfe26c44554d4f4e543737",
+  "1f0ac93011562a6d44554d4f4e543737", "1f0ac930d9dc716d44554d4f4e543737", "1f0ac930a163b96d44554d4f4e543737",
+  "1f0ac930c54c036e44554d4f4e543737", "1f0ac930e9354d6e44554d4f4e543737", "1f0ac930c5e39b6e44554d4f4e543737",
+  "1f0ac930a191ea6e44554d4f4e543737", "1f0ac9307d3f396f44554d4f4e543737", "1f0ac930b54f8a6f44554d4f4e543737",
+  "1f0ac930ed5fdb6f44554d4f4e543737", "1f0ac93081d22e7044554d4f4e543737", "1f0ac930b9e27f7044554d4f4e543737",
+  "1f0ac9304d55d37044554d4f4e543737", "1f0ac930e1c7267144554d4f4e543737", "1f0ac930753a7a7144554d4f4e543737",
+  "1f0ac930c171d27144554d4f4e543737", "1f0ac9300da92a7244554d4f4e543737", "1f0ac930fd7d807244554d4f4e543737",
+  "1f0ac93091f0d37244554d4f4e543737", "1f0ac93081c5297344554d4f4e543737", "1f0ac930295f847344554d4f4e543737",
+  "1f0ac930d1f8de7344554d4f4e543737", "1f0ac930d5f43b7444554d4f4e543737", "1f0ac9307d8e967444554d4f4e543737",
+  "1f0ac930818af37444554d4f4e543737", "1f0ac9308586507544554d4f4e543737", "1f0ac9308982ad7544554d4f4e543737",
+  "1f0ac9308d7e0a7644554d4f4e543737", "1f0ac930917a677644554d4f4e543737", "1f0ac930f1d8c67644554d4f4e543737",
+  "1f0ac930f5d4237744554d4f4e543737", "1f0ac930f9d0807744554d4f4e543737", "1f0ac930592fe07744554d4f4e543737",
+  "1f0ac93001c93a7844554d4f4e543737", "1f0ac930a962957844554d4f4e543737", "1f0ac93009c1f47844554d4f4e543737",
+  "1f0ac9300dbd517944554d4f4e543737", "1f0ac93025e0b57944554d4f4e543737", "1f0ac930cd79107a44554d4f4e543737",
+  "1f0ac930893a727a44554d4f4e543737", "1f0ac930e998d17a44554d4f4e543737", "1f0ac93049f7307b44554d4f4e543737",
+  "1f0ac93005b8927b44554d4f4e543737", "1f0ac93009b4ef7b44554d4f4e543737", "1f0ac930c574517c44554d4f4e543737",
+  "1f0ac9308135b37c44554d4f4e543737", "1f0ac930e193127d44554d4f4e543737", "1f0ac930f9b6767d44554d4f4e543737",
+  "1f0ac9305915d67d44554d4f4e543737", "1f0ac930b973357e44554d4f4e543737", "1f0ac93019d2947e44554d4f4e543737",
+  "1f0ac9301dcef17e44554d4f4e543737", "1f0ac930c5674c7f44554d4f4e543737", "1f0ac930c963a97f44554d4f4e543737",
+  "1f0ac930cd5f068044554d4f4e543737", "1f0ac93041e56c8044554d4f4e543737", "1f0ac93045e1c98044554d4f4e543737",
+  "1f0ac93001a22b8144554d4f4e543737", "1f0ac930059e888144554d4f4e543737", "1f0ac930099ae58144554d4f4e543737",
+  "1f0ac93021bd498244554d4f4e543737", "1f0ac930811ba98244554d4f4e543737", "1f0ac930e179088344554d4f4e543737",
+  "1f0ac93041d8678344554d4f4e543737", "1f0ac93059fbcb8344554d4f4e543737", "1f0ac93015bc2d8444554d4f4e543737",
+  "1f0ac930751a8d8444554d4f4e543737", "1f0ac93031dbee8444554d4f4e543737", "1f0ac93049fe528544554d4f4e543737",
+  "1f0ac930d1aac08544554d4f4e543737", "1f0ac930fdf42b8644554d4f4e543737", "1f0ac9305d538b8644554d4f4e543737",
+  "1f0ac930359c158744554d4f4e543737", "1f0ac930e596918744554d4f4e543737", "1f0ac9304d56128844554d4f4e543737",
+  "1f0ac93059b3908844554d4f4e543737", "1f0ac93009ae0c8944554d4f4e543737", "1f0ac930491f7f8944554d4f4e543737",
+  "1f0ac9304155f68944554d4f4e543737", "1f0ac930dd286b8a44554d4f4e543737",
+]
+kind = "float"
+min = 1.0
+max = 1000000.0
+
+[[tunable]]
+id = "health.granados_soldiers.health"
+category = "health"
+label = "Granados soldiers: health"
+description = "Initial health of the Granados family's rank-and-file NPC templates (CMD_SetInitialHealth), selected by character model; named lieutenants have their own templates and keep their values."
+source = "simgroup"
+resource = "gf2/globals_global:simgroup:00000000"
+class = "StandardDamageComponent"
+attribute = 0
+objects = [  # 200 objects
+  "ef8ec8361e15417f5045525259363338", "ef8ec83619e6e88e5045525259363338", "ef8ec836c114a1915045525259363338",
+  "ef8ec8361ba4d4925045525259363338", "ef8ec836430fc3935045525259363338", "ef8ec83641059c945045525259363338",
+  "ef8ec8368b3670955045525259363338", "ef8ec836e38e4b965045525259363338", "ef8ec836e7292d985045525259363338",
+  "ef8ec836936c33995045525259363338", "ef8ec836cd1de2b35045525259363338", "ef8ec83627ad15b55045525259363338",
+  "ef8ec83627da46b65045525259363338", "ef8ec8362d7f4fb75045525259363338", "ef8ec8367f5f53b85045525259363338",
+  "ef8ec836ed8d65b95045525259363338", "ef8ec836a7f772ba5045525259363338", "ef8ec836832766bb5045525259363338",
+  "ef8ec836ab9254bc5045525259363338", "ef8ec83687c247bd5045525259363338", "ef8ec83655cb33be5045525259363338",
+  "809ac836b10c43075045525259363338", "809ac8361dbc72075045525259363338", "809ac8360de298075045525259363338",
+  "809ac836267cf3075045525259363338", "809ac8360268ff075045525259363338", "809ac8363cb60d085045525259363338",
+  "809ac83618a219085045525259363338", "809ac83650f027085045525259363338", "809ac8362cdc33085045525259363338",
+  "809ac83607c83f085045525259363338", "809ac836a07850085045525259363338", "809ac836dac65e085045525259363338",
+  "809ac83615156d085045525259363338", "809ac8364e637b085045525259363338", "809ac836e7138c085045525259363338",
+  "809ac83621629a085045525259363338", "809ac836fd4da6085045525259363338", "809ac836d839b2085045525259363338",
+  "809ac8361188c0085045525259363338", "809ac836099bd3085045525259363338", "809ac83644e9e1085045525259363338",
+  "a79ec836b2ca70715045525259363338", "a79ec8360ac8ae715045525259363338", "a79ec836f23be3715045525259363338",
+  "a79ec8367f4d15725045525259363338", "a79ec836cde931725045525259363338", "a79ec8360a5f47725045525259363338",
+  "a79ec83646d45c725045525259363338", "a79ec836dd9e6f755045525259363338", "a79ec836e7ff90755045525259363338",
+  "a79ec836379cad755045525259363338", "a79ec8368538ca755045525259363338", "a79ec8367972e4755045525259363338",
+  "a79ec836f25c0f765045525259363338", "a79ec836562033765045525259363338", "a79ec8365e8154765045525259363338",
+  "a79ec83699f669765045525259363338", "a79ec836d66b7f765045525259363338", "a79ec836b77e92765045525259363338",
+  "a79ec836aab8ac765045525259363338", "a79ec8364490c4765045525259363338", "a79ec8367f05da765045525259363338",
+  "a79ec8362b04f9765045525259363338", "a79ec836d50218775045525259363338", "a79ec8362d0056775045525259363338",
+  "a79ec836c6d76d775045525259363338", "a79ec8363ec298775045525259363338", "a79ec8367a37ae775045525259363338",
+  "a79ec836120fc6775045525259363338", "a79ec8364e84db775045525259363338", "a79ec8368af9f0775045525259363338",
+  "a79ec836c56e06785045525259363338", "a79ec83601e41b785045525259363338", "a79ec8363d5931785045525259363338",
+  "a79ec83679ce46785045525259363338", "a79ec83614a65e785045525259363338", "a79ec836aa7d76785045525259363338",
+  "a79ec836e7f28b785045525259363338", "a79ec8362368a1785045525259363338", "a79ec8365fddb6785045525259363338",
+  "a79ec8369c52cc785045525259363338", "a79ec836312ae4785045525259363338", "a79ec8363a8b05795045525259363338",
+  "a79ec83663cc0e7c5045525259363338", "a79ec8369f41247c5045525259363338", "a79ec836dbb6397c5045525259363338",
+  "a79ec83651a1647c5045525259363338", "a79ec8368f167a7c5045525259363338", "a79ec836cb8b8f7c5045525259363338",
+  "a79ec8360701a57c5045525259363338", "a79ec8364376ba7c5045525259363338", "a79ec8367febcf7c5045525259363338",
+  "a79ec8367125ea7c5045525259363338", "a79ec8360bfd017d5045525259363338", "a79ec8364872177d5045525259363338",
+  "a79ec836dd492f7d5045525259363338", "a79ec83619bf447d5045525259363338", "a79ec83656345a7d5045525259363338",
+  "4cf3c836882157d45045525259363338", "1e0ac930c91237b344554d4f4e543737", "1e0ac930694b70b344554d4f4e543737",
+  "1e0ac930ad21a7b344554d4f4e543737", "1e0ac930f1f7ddb344554d4f4e543737", "1e0ac930913017b444554d4f4e543737",
+  "1e0ac930e92d55b444554d4f4e543737", "1e0ac9302d048cb444554d4f4e543737", "1e0ac93071dac2b444554d4f4e543737",
+  "1e0ac930c9d700b544554d4f4e543737", "1e0ac930a5854fb544554d4f4e543737", "1e0ac930fd828db544554d4f4e543737",
+  "1e0ac930216cd7b544554d4f4e543737", "1e0ac930a1b723b644554d4f4e543737", "1e0ac9309d525fb644554d4f4e543737",
+  "1e0ac93051b29fb644554d4f4e543737", "1e0ac9300512e0b644554d4f4e543737", "1e0ac9305d0f1eb744554d4f4e543737",
+  "1e0ac930116f5eb744554d4f4e543737", "1e0ac930c5ce9eb744554d4f4e543737", "1e0ac930792edfb744554d4f4e543737",
+  "1e0ac930e55224b844554d4f4e543737", "1e0ac930517769b844554d4f4e543737", "1e0ac9306139acb844554d4f4e543737",
+  "1e0ac9308522f6b844554d4f4e543737", "1e0ac930a90b40b944554d4f4e543737", "1e0ac930cdf489b944554d4f4e543737",
+  "1e0ac930f1ddd3b944554d4f4e543737", "1e0ac930b9641bba44554d4f4e543737", "1e0ac930dd4d65ba44554d4f4e543737",
+  "1e0ac9300137afba44554d4f4e543737", "1e0ac9308182fbba44554d4f4e543737", "1e0ac93001ce47bb44554d4f4e543737",
+  "1e0ac93025b791bb44554d4f4e543737", "1e0ac9300165e0bb44554d4f4e543737", "1e0ac93081b02cbc44554d4f4e543737",
+  "1e0ac9305d5e7bbc44554d4f4e543737", "1e0ac930f1d0cebc44554d4f4e543737", "1e0ac930cd7e1dbd44554d4f4e543737",
+  "1e0ac930058f6ebd44554d4f4e543737", "1e0ac930e13cbdbd44554d4f4e543737", "1e0ac93075af10be44554d4f4e543737",
+  "1e0ac930c17d01bf44554d4f4e543737", "1e0ac930c5795ebf44554d4f4e543737", "1e0ac930b54eb4bf44554d4f4e543737",
+  "1e0ac930a5230ac044554d4f4e543737", "1e0ac93095f85fc044554d4f4e543737", "1e0ac9303d92bac044554d4f4e543737",
+  "1e0ac930b11721c144554d4f4e543737", "1e0ac93061129dc144554d4f4e543737", "1e0ac93045210dc244554d4f4e543737",
+  "1e0ac930716b78c244554d4f4e543737", "1e0ac930f917e6c244554d4f4e543737", "1e0ac930dd2656c344554d4f4e543737",
+  "1e0ac9300971c1c344554d4f4e543737", "1e0ac93049e233c444554d4f4e543737", "1e0ac930752c9fc444554d4f4e543737",
+  "1e0ac93025271bc544554d4f4e543737", "1e0ac93085857ac544554d4f4e543737", "1e0ac9302d1fd5c544554d4f4e543737",
+  "1e0ac930596940c644554d4f4e543737", "1e0ac9305d659dc644554d4f4e543737", "1e0ac93069c21bc744554d4f4e543737",
+  "1e0ac9306dbe78c744554d4f4e543737", "1e0ac93071bad5c744554d4f4e543737", "1e0ac93075b632c844554d4f4e543737",
+  "1e0ac93079b28fc844554d4f4e543737", "1e0ac9307daeecc844554d4f4e543737", "1e0ac930dd0c4cc944554d4f4e543737",
+  "1e0ac93065b9b9c944554d4f4e543737", "1e0ac930b95133ca44554d4f4e543737", "1e0ac93005898bca44554d4f4e543737",
+  "1e0ac93065e7eaca44554d4f4e543737", "1e0ac93069e347cb44554d4f4e543737", "1e0ac930117da2cb44554d4f4e543737",
+  "1e0ac9305db4facb44554d4f4e543737", "1e0ac930a9eb52cc44554d4f4e543737", "1e0ac9305185adcc44554d4f4e543737",
+  "1e0ac93055810acd44554d4f4e543737", "1e0ac930455660cd44554d4f4e543737", "1e0ac930352bb6cd44554d4f4e543737",
+  "1e0ac93025000cce44554d4f4e543737", "1e0ac93029fc68ce44554d4f4e543737", "1e0ac9309d81cfce44554d4f4e543737",
+  "1e0ac930c9cb3acf44554d4f4e543737", "1e0ac930b9a090cf44554d4f4e543737", "1e0ac9304d13e4cf44554d4f4e543737",
+  "1e0ac9303de839d044554d4f4e543737", "1e0ac930891f92d044554d4f4e543737", "1e0ac93031b9ecd044554d4f4e543737",
+  "1e0ac9307df044d144554d4f4e543737", "1e0ac930258a9fd144554d4f4e543737", "1e0ac930cd23fad144554d4f4e543737",
+  "1e0ac9302d8259d244554d4f4e543737", "1e0ac930317eb6d244554d4f4e543737", "1e0ac930ed3e18d344554d4f4e543737",
+  "1e0ac9304d9d77d344554d4f4e543737", "1e0ac930f536d2d344554d4f4e543737", "1e0ac930e50b28d444554d4f4e543737",
+  "1e0ac930e90785d444554d4f4e543737", "1e0ac930d9dcdad444554d4f4e543737",
+]
+kind = "float"
+min = 1.0
+max = 1000000.0
+
+[[tunable]]
+id = "crew.corleone_associates.health"
+category = "crew"
+label = "Corleone associates: health"
+description = "Initial health of the 200 Corleone associate NPC templates (model corleoneassociate_*), probably the family soldiers that guard the player's businesses; hired made men use other templates."
+source = "simgroup"
+resource = "gf2/globals_global:simgroup:00000000"
+class = "StandardDamageComponent"
+attribute = 0
+objects = [  # 200 objects
+  "7f9ac8369c17f1ae5045525259363338", "7f9ac8364a021caf5045525259363338", "7f9ac836b6b14baf5045525259363338",
+  "7f9ac836c3fe78af5045525259363338", "7f9ac8365135f0af5045525259363338", "7f9ac8362b21fcaf5045525259363338",
+  "7f9ac836a8aa05b05045525259363338", "7f9ac83625340fb05045525259363338", "7f9ac836a1bd18b05045525259363338",
+  "7f9ac8361d4722b05045525259363338", "7f9ac836f8322eb05045525259363338", "7f9ac83633b332b35045525259363338",
+  "7f9ac8366e0141b35045525259363338", "7f9ac836833b5bb35045525259363338", "7f9ac8367a4e6eb35045525259363338",
+  "7f9ac836143175b65045525259363338", "7f9ac8364f7f83b65045525259363338", "7f9ac836cc088db65045525259363338",
+  "7f9ac836a7f498b65045525259363338", "7f9ac836971abfb65045525259363338", "7f9ac836d068cdb65045525259363338",
+  "7f9ac836ab54d9b65045525259363338", "7f9ac8368740e5b65045525259363338", "7f9ac836622cf1b65045525259363338",
+  "7f9ac8363d18fdb65045525259363338", "7f9ac836170409b75045525259363338", "7f9ac836515217b75045525259363338",
+  "7f9ac83648652ab75045525259363338", "7f9ac83683b338b75045525259363338", "7f9ac8365e9f44b75045525259363338",
+  "7f9ac83698ed52b75045525259363338", "7f9ac83674d95eb75045525259363338", "7f9ac83629b176b75045525259363338",
+  "7f9ac836df888eb75045525259363338", "7f9ac8361ad79cb75045525259363338", "7f9ac836b187adb75045525259363338",
+  "7f9ac8366a91bbba5045525259363338", "7f9ac836e71ac5ba5045525259363338", "7f9ac8362069d3ba5045525259363338",
+  "7f9ac836fc54dfba5045525259363338", "7f9ac836d740ebba5045525259363338", "7f9ac836118ff9ba5045525259363338",
+  "a69ec83666a3ac825045525259363338", "a69ec836b1da04835045525259363338", "a69ec836ef4f1a835045525259363338",
+  "a69ec836862732835045525259363338", "a69ec8367b614c835045525259363338", "a69ec8365a745f835045525259363338",
+  "a69ec83697e974835045525259363338", "a69ec8362ec18c835045525259363338", "a69ec8366a36a2835045525259363338",
+  "a69ec8364b49b5835045525259363338", "a69ec83686beca835045525259363338", "a69ec8368e1fec835045525259363338",
+  "a69ec836bece1b845045525259363338", "a69ec836b20836845045525259363338", "a69ec83637b946845045525259363338",
+  "a69ec83616cc59845045525259363338", "a69ec836f5de6c845045525259363338", "a69ec836325482845045525259363338",
+  "a69ec836278e9c845045525259363338", "a69ec836be65b4845045525259363338", "a69ec8369f78c7845045525259363338",
+  "a69ec8367e8bda845045525259363338", "a69ec8365e9eed845045525259363338", "a69ec8363db100855045525259363338",
+  "a69ec836c46111855045525259363338", "a69ec836fed626855045525259363338", "a69ec836063848855045525259363338",
+  "a69ec8368ce858855045525259363338", "a69ec8366bfb6b855045525259363338", "a69ec8364a0e7f855045525259363338",
+  "a69ec836292192855045525259363338", "a69ec836afd1a2855045525259363338", "a69ec8368ee4b5855045525259363338",
+  "a69ec836cb59cb855045525259363338", "a69ec8366331e3855045525259363338", "a69ec8364244f6855045525259363338",
+  "a69ec836215709865045525259363338", "a69ec836a8071a865045525259363338", "a69ec836871a2d865045525259363338",
+  "a69ec836672d40865045525259363338", "a69ec836474053865045525259363338", "a69ec8362eb487865045525259363338",
+  "a69ec8360dc79a865045525259363338", "a69ec8367e439f895045525259363338", "a69ec8365d56b2895045525259363338",
+  "a69ec836e406c3895045525259363338", "a69ec836c319d6895045525259363338", "a69ec836a32ce9895045525259363338",
+  "a69ec8363904018a5045525259363338", "a69ec836c0b4118a5045525259363338", "a69ec8369fc7248a5045525259363338",
+  "a69ec8367fda378a5045525259363338", "a69ec8365eed4a8a5045525259363338", "a69ec8363f005e8a5045525259363338",
+  "a69ec8361e13718a5045525259363338", "a69ec836fe25848a5045525259363338", "a69ec83684d6948a5045525259363338",
+  "a69ec83663e9a78a5045525259363338", "1e0ac930f9965b5f44554d4f4e543737", "1e0ac930e96bb15f44554d4f4e543737",
+  "1e0ac93015b61c6044554d4f4e543737", "1e0ac930dd3c646044554d4f4e543737", "1e0ac930edfea66044554d4f4e543737",
+  "1e0ac9306d4af36044554d4f4e543737", "1e0ac93015e44d6144554d4f4e543737", "1e0ac930611ba66144554d4f4e543737",
+  "1e0ac93009b5006244554d4f4e543737", "1e0ac9307d3a676244554d4f4e543737", "1e0ac9308136c46244554d4f4e543737",
+  "1e0ac9306545346344554d4f4e543737", "1e0ac93041f3826344554d4f4e543737", "1e0ac930f552c36344554d4f4e543737",
+  "1e0ac9300515066444554d4f4e543737", "1e0ac93071394b6444554d4f4e543737", "1e0ac93081fb8d6444554d4f4e543737",
+  "1e0ac93091bdd06444554d4f4e543737", "1e0ac930a17f136544554d4f4e543737", "1e0ac9300da4586544554d4f4e543737",
+  "1e0ac930318da26544554d4f4e543737", "1e0ac9309db1e76544554d4f4e543737", "1e0ac93065382f6644554d4f4e543737",
+  "1e0ac9302dbf766644554d4f4e543737", "1e0ac930f545be6644554d4f4e543737", "1e0ac93075910a6744554d4f4e543737",
+  "1e0ac9303d18526744554d4f4e543737", "1e0ac930bd639e6744554d4f4e543737", "1e0ac93085eae56744554d4f4e543737",
+  "1e0ac9300536326844554d4f4e543737", "1e0ac93085817e6844554d4f4e543737", "1e0ac930bd91cf6844554d4f4e543737",
+  "1e0ac930993f1e6944554d4f4e543737", "1e0ac930d14f6f6944554d4f4e543737", "1e0ac9300960c06944554d4f4e543737",
+  "1e0ac9304170116a44554d4f4e543737", "1e0ac9303145676a44554d4f4e543737", "1e0ac9306955b86a44554d4f4e543737",
+  "1e0ac9304503076b44554d4f4e543737", "1e0ac9307d13586b44554d4f4e543737", "1e0ac930b523a96b44554d4f4e543737",
+  "1e0ac9305dbd036c44554d4f4e543737", "1e0ac930bd1b636c44554d4f4e543737", "1e0ac930adf0b86c44554d4f4e543737",
+  "1e0ac9309dc50e6d44554d4f4e543737", "1e0ac930455f696d44554d4f4e543737", "1e0ac930a5bdc86d44554d4f4e543737",
+  "1e0ac930a9b9256e44554d4f4e543737", "1e0ac930adb5826e44554d4f4e543737", "1e0ac930b1b1df6e44554d4f4e543737",
+  "1e0ac9306d72416f44554d4f4e543737", "1e0ac930cdd0a06f44554d4f4e543737", "1e0ac9302d2f007044554d4f4e543737",
+  "1e0ac930a915887044554d4f4e543737", "1e0ac9301d9bee7044554d4f4e543737", "1e0ac930c534497144554d4f4e543737",
+  "1e0ac9306dcea37144554d4f4e543737", "1e0ac9305da3f97144554d4f4e543737", "1e0ac930053d547244554d4f4e543737",
+  "1e0ac930c1fdb57244554d4f4e543737", "1e0ac9306997107344554d4f4e543737", "1e0ac9306d936d7344554d4f4e543737",
+  "1e0ac9301929257444554d4f4e543737", "1e0ac930314c897444554d4f4e543737", "1e0ac93085e4027544554d4f4e543737",
+  "1e0ac93041a5647544554d4f4e543737", "1e0ac930fd65c67544554d4f4e543737", "1e0ac930499d1e7644554d4f4e543737",
+  "1e0ac930a9fb7d7644554d4f4e543737", "1e0ac930adf7da7644554d4f4e543737", "1e0ac9300d563a7744554d4f4e543737",
+  "1e0ac9301152977744554d4f4e543737", "1e0ac9305d89ef7744554d4f4e543737", "1e0ac93005234a7844554d4f4e543737",
+  "1e0ac930515aa27844554d4f4e543737", "1e0ac9309d91fa7844554d4f4e543737", "1e0ac930e9c8527944554d4f4e543737",
+  "1e0ac93099c3ce7944554d4f4e543737", "1e0ac930415d297a44554d4f4e543737", "1e0ac9308d94817a44554d4f4e543737",
+  "1e0ac9304955e37a44554d4f4e543737", "1e0ac930bdda497b44554d4f4e543737", "1e0ac9301d39a97b44554d4f4e543737",
+  "1e0ac930c5d2037c44554d4f4e543737", "1e0ac93039586a7c44554d4f4e543737", "1e0ac9303d54c77c44554d4f4e543737",
+  "1e0ac930e5ed217d44554d4f4e543737", "1e0ac9308d877c7d44554d4f4e543737", "1e0ac930d9bed47d44554d4f4e543737",
+  "1e0ac93025f62c7e44554d4f4e543737", "1e0ac93015cb827e44554d4f4e543737", "1e0ac9306102db7e44554d4f4e543737",
+  "1e0ac930c1603a7f44554d4f4e543737", "1e0ac93069fa947f44554d4f4e543737", "1e0ac9301194ef7f44554d4f4e543737",
+  "1e0ac9305dcb478044554d4f4e543737", "1e0ac9304da09d8044554d4f4e543737", "1e0ac930f539f88044554d4f4e543737",
+  "1e0ac930f935558144554d4f4e543737", "1e0ac930718fca7344554d4f4e543737",
+]
+kind = "float"
+min = 1.0
+max = 1000000.0
+
+[[tunable]]
+id = "crew.bullet_proof_vests.multiplier"
+category = "crew"
+label = "Bullet Proof Vests: bonus"
+description = "Damage taken multiplier given by the Bullet Proof Vests crime-ring bonus, probably (0.8 = 20% less damage; 1.0 in every other upgrade)."
+source = "simgroup"
+resource = "gf2/globals_global:simgroup:00000000"
+class = "UpgradeData"
+attribute = 14
+objects = ["3590c831a29d660c50414e5355524941"]  # Bullet Proof Vests
+object_names = ["Bullet Proof Vests"]
+kind = "float"
+min = 0.0
+max = 10.0
+
+[[tunable]]
+id = "crew.armor_piercing_bullets.multiplier"
+category = "crew"
+label = "Armor Piercing Bullets: bonus"
+description = "Damage dealt multiplier given by the Armor Piercing Bullets crime-ring bonus, probably (1.25; 1.0 in every other upgrade)."
+source = "simgroup"
+resource = "gf2/globals_global:simgroup:00000000"
+class = "UpgradeData"
+attribute = 16
+objects = ["fce1c837a231717d4d41414853323034"]  # Armor Piercing Bullets
+object_names = ["Armor Piercing Bullets"]
+kind = "float"
+min = 0.0
+max = 10.0
+
+[[tunable]]
+id = "crew.ammo_holsters.multiplier"
+category = "crew"
+label = "Ammo Holsters: bonus"
+description = "Ammunition capacity multiplier given by the Ammo Holsters crime-ring bonus, probably (1.5; 1.0 in every other upgrade)."
+source = "simgroup"
+resource = "gf2/globals_global:simgroup:00000000"
+class = "UpgradeData"
+attribute = 17
+objects = ["1ee2c8377a0841d74d41414853323034"]  # Ammo Holsters
+object_names = ["Ammo Holsters"]
+kind = "float"
+min = 0.0
+max = 10.0
+
+[[tunable]]
+id = "crew.brass_knuckles.multiplier"
+category = "crew"
+label = "Brass Knuckles: bonus"
+description = "Melee damage multiplier given by the Brass Knuckles crime-ring bonus, probably (1.25; 1.0 in every other upgrade)."
+source = "simgroup"
+resource = "gf2/globals_global:simgroup:00000000"
+class = "UpgradeData"
+attribute = 18
+objects = ["81e3c837ae482b8b4d41414853323034"]  # Brass Knuckles
+object_names = ["Brass Knuckles"]
+kind = "float"
+min = 0.0
+max = 10.0
+
+[[tunable]]
+id = "crew.jail_break.multiplier"
+category = "crew"
+label = "Jail Break: time multiplier"
+description = "Multiplier of the Jail Break skill, probably on the time a jailed made man is out (0.5; 1.0 in every other upgrade)."
+source = "simgroup"
+resource = "gf2/globals_global:simgroup:00000000"
+class = "UpgradeData"
+attribute = 13
+objects = ["8bd5c8376921c5124d41414853323034"]  # Jail Break
+object_names = ["Jail Break"]
+kind = "float"
+min = 0.0
+max = 10.0
+
+[[tunable]]
+id = "player.carry_more_explosives.max_molotovs"
+category = "player"
+label = "Carry More Explosives: molotovs"
+description = "How many molotovs the player can carry with the Carry More Explosives bonus, probably; every other upgrade stores the base count (4 molotovs, 3 dynamite, 1 bomb)."
+source = "simgroup"
+resource = "gf2/globals_global:simgroup:00000000"
+class = "UpgradeData"
+attribute = 21
+objects = ["b324c937db6117634d41414853323034"]  # Carry More Explosives
+object_names = ["Carry More Explosives"]
+kind = "int"
+min = 1
+max = 99
+
+[[tunable]]
+id = "player.carry_more_explosives.max_dynamite"
+category = "player"
+label = "Carry More Explosives: dynamite"
+description = "How many dynamite the player can carry with the Carry More Explosives bonus, probably; every other upgrade stores the base count (4 molotovs, 3 dynamite, 1 bomb)."
+source = "simgroup"
+resource = "gf2/globals_global:simgroup:00000000"
+class = "UpgradeData"
+attribute = 22
+objects = ["b324c937db6117634d41414853323034"]  # Carry More Explosives
+object_names = ["Carry More Explosives"]
+kind = "int"
+min = 1
+max = 99
+
+[[tunable]]
+id = "player.carry_more_explosives.max_bombs"
+category = "player"
+label = "Carry More Explosives: bombs"
+description = "How many bombs the player can carry with the Carry More Explosives bonus, probably; every other upgrade stores the base count (4 molotovs, 3 dynamite, 1 bomb)."
+source = "simgroup"
+resource = "gf2/globals_global:simgroup:00000000"
+class = "UpgradeData"
+attribute = 23
+objects = ["b324c937db6117634d41414853323034"]  # Carry More Explosives
+object_names = ["Carry More Explosives"]
+kind = "int"
+min = 1
+max = 99
+
+[[tunable]]
+id = "player.health_regen_1.multiplier"
+category = "player"
+label = "Health Regen level 1: rate"
+description = "Health regeneration multiplier of the Health Regen skill, probably (1.25 at level 1, 1.5 at level 2)."
+source = "simgroup"
+resource = "gf2/globals_global:simgroup:00000000"
+class = "UpgradeData"
+attribute = 31
+objects = ["d78ac831551a3b0750414e5355524941"]  # Health Regen Level 1
+object_names = ["Health Regen Level 1"]
+kind = "float"
+min = 0.0
+max = 10.0
+
+[[tunable]]
+id = "player.health_regen_2.multiplier"
+category = "player"
+label = "Health Regen level 2: rate"
+description = "Health regeneration multiplier of the Health Regen skill, probably (1.25 at level 1, 1.5 at level 2)."
+source = "simgroup"
+resource = "gf2/globals_global:simgroup:00000000"
+class = "UpgradeData"
+attribute = 31
+objects = ["e58ac8319934708c50414e5355524941"]  # Health Regen Level 2
+object_names = ["Health Regen Level 2"]
+kind = "float"
+min = 0.0
+max = 10.0
+
+[[tunable]]
+id = "player.quick_heal.multiplier"
+category = "player"
+label = "Quick Heal: time multiplier"
+description = "Multiplier of the Quick Heal skill, probably on the time healing takes (0.5; 1.0 in every other upgrade)."
+source = "simgroup"
+resource = "gf2/globals_global:simgroup:00000000"
+class = "UpgradeData"
+attribute = 12
+objects = ["e58ac831f5f2d48e50414e5355524941"]  # Quick Heal
+object_names = ["Quick Heal"]
+kind = "float"
+min = 0.0
+max = 10.0
+
+[[tunable]]
+id = "player.heart_1.bonus"
+category = "player"
+label = "Heart level 1: health bonus"
+description = "Extra health of the Heart skill, probably in percent (10, 20, 30 at levels 1-3)."
+source = "simgroup"
+resource = "gf2/globals_global:simgroup:00000000"
+class = "UpgradeData"
+attribute = 35
+objects = ["70d1c83758b64b134d41414853323034"]  # Heart Level 1
+object_names = ["Heart Level 1"]
+kind = "float"
+min = 0.0
+max = 1000.0
+
+[[tunable]]
+id = "player.heart_2.bonus"
+category = "player"
+label = "Heart level 2: health bonus"
+description = "Extra health of the Heart skill, probably in percent (10, 20, 30 at levels 1-3)."
+source = "simgroup"
+resource = "gf2/globals_global:simgroup:00000000"
+class = "UpgradeData"
+attribute = 35
+objects = ["70d1c837c2515a204d41414853323034"]  # Heart Level 2
+object_names = ["Heart Level 2"]
+kind = "float"
+min = 0.0
+max = 1000.0
+
+[[tunable]]
+id = "player.heart_3.bonus"
+category = "player"
+label = "Heart level 3: health bonus"
+description = "Extra health of the Heart skill, probably in percent (10, 20, 30 at levels 1-3)."
+source = "simgroup"
+resource = "gf2/globals_global:simgroup:00000000"
+class = "UpgradeData"
+attribute = 35
+objects = ["70d1c837cb24cf204d41414853323034"]  # Heart Level 3
+object_names = ["Heart Level 3"]
+kind = "float"
+min = 0.0
+max = 1000.0
+
+[[tunable]]
+id = "player.heavy_hitter_1.multiplier"
+category = "player"
+label = "Heavy Hitter level 1: damage"
+description = "Melee damage multiplier of the Heavy Hitter skill, probably (1.25 at level 1, 1.5 at level 2)."
+source = "simgroup"
+resource = "gf2/globals_global:simgroup:00000000"
+class = "UpgradeData"
+attribute = 32
+objects = ["88d1c83749cc79ef4d41414853323034"]  # Heavy Hitter Level 1
+object_names = ["Heavy Hitter Level 1"]
+kind = "float"
+min = 0.0
+max = 10.0
+
+[[tunable]]
+id = "player.heavy_hitter_2.multiplier"
+category = "player"
+label = "Heavy Hitter level 2: damage"
+description = "Melee damage multiplier of the Heavy Hitter skill, probably (1.25 at level 1, 1.5 at level 2)."
+source = "simgroup"
+resource = "gf2/globals_global:simgroup:00000000"
+class = "UpgradeData"
+attribute = 32
+objects = ["88d1c837923587f04d41414853323034"]  # Heavy Hitter Level 2
+object_names = ["Heavy Hitter Level 2"]
+kind = "float"
+min = 0.0
+max = 10.0
+
+[[tunable]]
+id = "economy.reduced_law_costs.multiplier_a"
+category = "economy"
+label = "Reduced Law Costs: cost multiplier A"
+description = "First of two cost multipliers of the Reduced Law Costs crime-ring bonus (0.5), probably the price of bribes; which law cost each one scales is not known."
+source = "simgroup"
+resource = "gf2/globals_global:simgroup:00000000"
+class = "UpgradeData"
+attribute = 19
+objects = ["d4e5c8372f47dd324d41414853323034"]  # Reduced Law Costs
+object_names = ["Reduced Law Costs"]
+kind = "float"
+min = 0.0
+max = 10.0
+
+[[tunable]]
+id = "economy.reduced_law_costs.multiplier_b"
+category = "economy"
+label = "Reduced Law Costs: cost multiplier B"
+description = "Second cost multiplier of the Reduced Law Costs crime-ring bonus (0.5), probably another law cost; which one is not known."
+source = "simgroup"
+resource = "gf2/globals_global:simgroup:00000000"
+class = "UpgradeData"
+attribute = 20
+objects = ["d4e5c8372f47dd324d41414853323034"]  # Reduced Law Costs
+object_names = ["Reduced Law Costs"]
+kind = "float"
+min = 0.0
+max = 10.0
+
+[[tunable]]
+id = "economy.banks.cash_a"
+category = "economy"
+label = "Banks: cash value A"
+description = "Money amount of the four Bank objects (10000), probably the larger of two cash amounts of a bank job; not verified."
+source = "simgroup"
+resource = "gf2/globals_global:simgroup:00000000"
+class = "Bank"
+attribute = 0
+objects = ["13bac8580cec6016444f574431363436", "51d2c837710b553643484156455a3139", "51d2c837219ea84e43484156455a3139", "51d2c837add1456a43484156455a3139"]  # bank_29_pickup, bank_28_pickup, bank_31_pickup, bank_26_pickup
+object_names = ["bank_29_pickup", "bank_28_pickup", "bank_31_pickup", "bank_26_pickup"]
+kind = "int"
+min = 0
+max = 10000000
+
+[[tunable]]
+id = "economy.banks.cash_b"
+category = "economy"
+label = "Banks: cash value B"
+description = "Second money amount of the four Bank objects (5000), probably the smaller cash amount of a bank job; not verified."
+source = "simgroup"
+resource = "gf2/globals_global:simgroup:00000000"
+class = "Bank"
+attribute = 1
+objects = ["13bac8580cec6016444f574431363436", "51d2c837710b553643484156455a3139", "51d2c837219ea84e43484156455a3139", "51d2c837add1456a43484156455a3139"]  # bank_29_pickup, bank_28_pickup, bank_31_pickup, bank_26_pickup
+object_names = ["bank_29_pickup", "bank_28_pickup", "bank_31_pickup", "bank_26_pickup"]
+kind = "int"
+min = 0
+max = 10000000
+
+[[tunable]]
+id = "police.wanted_2.heat_threshold"
+category = "police"
+label = "Wanted level 2: heat threshold"
+description = "Heat at which the police chase escalates to level 2, probably; the three cities' ChaseConfig objects all hold 75, and attribute 11 of the level below holds the same boundary."
+source = "simgroup"
+resource = "gf2/globals_global:simgroup:00000000"
+class = "ChaseConfig"
+attribute = 10
+objects = ["8c84c832198d7a28535a414b414c3230", "57ddc8321a9bb340535a414b414c3230", "85d5c83262143f8f504554455253454e"]  # ChaseConfig, ChaseConfig, ChaseConfig
+kind = "float"
+min = 0.0
+max = 100000.0
+
+[[tunable]]
+id = "police.wanted_3.heat_threshold"
+category = "police"
+label = "Wanted level 3: heat threshold"
+description = "Heat at which the police chase escalates to level 3, probably; the three cities' ChaseConfig objects all hold 150, and attribute 11 of the level below holds the same boundary."
+source = "simgroup"
+resource = "gf2/globals_global:simgroup:00000000"
+class = "ChaseConfig"
+attribute = 10
+objects = ["9484c832c3550343535a414b414c3230", "57ddc832199bb340535a414b414c3230", "85d5c83261143f8f504554455253454e"]  # ChaseConfig, ChaseConfig, ChaseConfig
+kind = "float"
+min = 0.0
+max = 100000.0
+
+[[tunable]]
+id = "police.wanted_4.heat_threshold"
+category = "police"
+label = "Wanted level 4: heat threshold"
+description = "Heat at which the police chase escalates to level 4, probably; the three cities' ChaseConfig objects all hold 225, and attribute 11 of the level below holds the same boundary."
+source = "simgroup"
+resource = "gf2/globals_global:simgroup:00000000"
+class = "ChaseConfig"
+attribute = 10
+objects = ["9484c8327be19344535a414b414c3230", "57ddc832189bb340535a414b414c3230", "85d5c83260143f8f504554455253454e"]  # ChaseConfig, ChaseConfig, ChaseConfig
+kind = "float"
+min = 0.0
+max = 100000.0
+
+[[tunable]]
+id = "police.wanted_4.heat_max"
+category = "police"
+label = "Wanted level 4: heat cap"
+description = "Upper heat bound of the highest chase level (1000), probably the most heat the player can have."
+source = "simgroup"
+resource = "gf2/globals_global:simgroup:00000000"
+class = "ChaseConfig"
+attribute = 11
+objects = ["9484c8327be19344535a414b414c3230", "57ddc832189bb340535a414b414c3230", "85d5c83260143f8f504554455253454e"]  # ChaseConfig, ChaseConfig, ChaseConfig
+kind = "float"
+min = 0.0
+max = 100000.0
+
+[[tunable]]
+id = "police.officers.health"
+category = "police"
+label = "Police officers: health"
+description = "Initial health of the Miami and New York police officer and Cuban police sergeant templates (2200, CMD_SetInitialHealth)."
+source = "simgroup"
+resource = "gf2/globals_global:simgroup:00000000"
+class = "StandardDamageComponent"
+attribute = 0
+objects = [  # 65 objects
+  "fa48c93030c3708544554d4f4e543737", "fa48c930c435c48544554d4f4e543737", "fa48c93058a8178644554d4f4e543737",
+  "fa48c9305ca4748644554d4f4e543737", "fa48c930f016c88644554d4f4e543737", "fa48c930f412258744554d4f4e543737",
+  "fa48c930404a7d8744554d4f4e543737", "fa48c930fc0adf8744554d4f4e543737", "fa48c93000073c8844554d4f4e543737",
+  "fa48c9304c3e948844554d4f4e543737", "819ac836515cd1595045525259363338", "819ac8365fa9fe595045525259363338",
+  "819ac836d7a55b5a5045525259363338", "819ac836b491675a5045525259363338", "819ac836eedf755a5045525259363338",
+  "819ac836bfde945a5045525259363338", "819ac83640c8de5a5045525259363338", "819ac83614c7fd5a5045525259363338",
+  "819ac836ad770e5b5045525259363338", "819ac83646281f5b5045525259363338", "819ac83651bfdf615045525259363338",
+  "819ac836ffa90a625045525259363338", "819ac836985a1b625045525259363338", "819ac836320b2c625045525259363338",
+  "819ac8362a1e3f625045525259363338", "819ac836c2ce4f625045525259363338", "819ac8365a7f60625045525259363338",
+  "819ac836f52f71625045525259363338", "819ac836eb4284625045525259363338", "819ac83685f394625045525259363338",
+  "06edc83602b9c2405045525259363338", "06edc836181ae4405045525259363338", "06edc83645a20c415045525259363338",
+  "06edc836b86530415045525259363338", "06edc836cec651415045525259363338", "06edc836e42773415045525259363338",
+  "06edc83657eb96415045525259363338", "06edc8366d4cb8415045525259363338", "06edc83683add9415045525259363338",
+  "06edc836b03502425045525259363338", "3bf8c8368482a6225045525259363338", "1b0ac930b5efa17c44554d4f4e543737",
+  "1b0ac930c916a97c44554d4f4e543737", "1b0ac9302679ab7c44554d4f4e543737", "1b0ac930dd3db07c44554d4f4e543737",
+  "1b0ac9309502b57c44554d4f4e543737", "bd1ac93048bfbf2944554d4f4e543737", "bd1ac930a848c92944554d4f4e543737",
+  "bd1ac93002abcb2944554d4f4e543737", "bd1ac930c0bdde2944554d4f4e543737", "bd1ac9301920e12944554d4f4e543737",
+  "bd1ac930c8e4e52944554d4f4e543737", "bd1ac9302047e82944554d4f4e543737", "bd1ac93080d0f12944554d4f4e543737",
+  "809ac836b4fdb1495045525259363338", "809ac8367722f7495045525259363338", "809ac836b070054a5045525259363338",
+  "809ac8368d5c114a5045525259363338", "809ac8362a6d624a5045525259363338", "809ac83606596e4a5045525259363338",
+  "809ac8369e097f4a5045525259363338", "809ac836d8578d4a5045525259363338", "809ac83613a69b4a5045525259363338",
+  "809ac836aa56ac4a5045525259363338", "809ac836e5a4ba4a5045525259363338",
+]
+kind = "float"
+min = 1.0
+max = 1000000.0
+
+[[tunable]]
+id = "police.sergeants_swat.health"
+category = "police"
+label = "Police sergeants and SWAT: health"
+description = "Initial health of the Miami and New York police sergeant and SWAT templates (2750, CMD_SetInitialHealth)."
+source = "simgroup"
+resource = "gf2/globals_global:simgroup:00000000"
+class = "StandardDamageComponent"
+attribute = 0
+objects = [  # 30 objects
+  "fa48c9307875179944554d4f4e543737", "fa48c930c4ac6f9944554d4f4e543737", "fa48c9306c46ca9944554d4f4e543737",
+  "fa48c9307042279a44554d4f4e543737", "fa48c930bc10189b44554d4f4e543737", "fa48c930a019a5a844554d4f4e543737",
+  "fa48c93048b3ffa844554d4f4e543737", "fa48c930388855a944554d4f4e543737", "fa48c93050abb9a944554d4f4e543737",
+  "fa48c9309ce211aa44554d4f4e543737", "819ac83696b0475b5045525259363338", "819ac8362d61585b5045525259363338",
+  "819ac836c611695b5045525259363338", "819ac83661c2795b5045525259363338", "819ac836fa728a5b5045525259363338",
+  "819ac8369a2daf625045525259363338", "819ac83633debf625045525259363338", "819ac8366e2cce625045525259363338",
+  "819ac836653fe1625045525259363338", "819ac836feeff1625045525259363338", "8522c930cc10fc7d44554d4f4e543737",
+  "8522c930e137037e44554d4f4e543737", "8522c9303d9a057e44554d4f4e543737", "8522c9303f9a057e44554d4f4e543737",
+  "8522c93098fc077e44554d4f4e543737", "8522c9308c09309444554d4f4e543737", "8522c9301bcbb09444554d4f4e543737",
+  "8522c9300d7b1e9544554d4f4e543737", "8522c9302166879544554d4f4e543737", "8522c9301316f59544554d4f4e543737",
+]
+kind = "float"
+min = 1.0
+max = 1000000.0
+
+[[tunable]]
+id = "vehicles.sedans.health"
+category = "vehicles"
+label = "Sedans, taxi and wagon: health"
+description = "Initial health of the sedans, taxi and wagon vehicle templates (CMD_SetInitialHealth on StandardDamageComponent); models sedan50_01, sedan50_02, sedan60_01, sedan60_02, sedan60_03, taxi, wagon60_01."
+source = "simgroup"
+resource = "gf2/globals_global:simgroup:00000000"
+class = "StandardDamageComponent"
+attribute = 0
+objects = [  # 7 objects
+  "eab1c7302b309c7d4b4552534c414b45", "1341c832f952b99c535a414b414c3230", "0e27c83218bc6fd5535a414b414c3230",
+  "3f5dc83226b16cce535a414b414c3230", "30bdc832110e911d535a414b414c3230", "f1cfc8328782a70a535a414b414c3230",
+  "fb19c93279103d9e535a414b414c3230",
+]
+kind = "float"
+min = 1.0
+max = 10000000.0
+
+[[tunable]]
+id = "vehicles.sports_cars.health"
+category = "vehicles"
+label = "Sports cars: health"
+description = "Initial health of the sports cars vehicle templates (CMD_SetInitialHealth on StandardDamageComponent); models sportscar_01, sportscar_02."
+source = "simgroup"
+resource = "gf2/globals_global:simgroup:00000000"
+class = "StandardDamageComponent"
+attribute = 0
+objects = ["3485c832a25f455d535a414b414c3230", "6ee7c832d70829cb535a414b414c3230"]  # AICarBehavior, AICarBehavior
+kind = "float"
+min = 1.0
+max = 10000000.0
+
+[[tunable]]
+id = "vehicles.muscle_cars.health"
+category = "vehicles"
+label = "Muscle cars: health"
+description = "Initial health of the muscle cars vehicle templates (CMD_SetInitialHealth on StandardDamageComponent); models muscle60_01, muscle60_02, muscle60_03."
+source = "simgroup"
+resource = "gf2/globals_global:simgroup:00000000"
+class = "StandardDamageComponent"
+attribute = 0
+objects = ["295ec83282dfc80e535a414b414c3230", "4cb5c832f735bf4b535a414b414c3230", "30bdc8323f06e626535a414b414c3230", "f124c9320113ffbb535a414b414c3230"]  # AICarBehavior, AICarBehavior, AICarBehavior, AICarBehavior
+kind = "float"
+min = 1.0
+max = 10000000.0
+
+[[tunable]]
+id = "vehicles.vans.health"
+category = "vehicles"
+label = "Vans: health"
+description = "Initial health of the vans vehicle templates (CMD_SetInitialHealth on StandardDamageComponent); models van60_01, van60_02."
+source = "simgroup"
+resource = "gf2/globals_global:simgroup:00000000"
+class = "StandardDamageComponent"
+attribute = 0
+objects = ["f9f0c8322de794b4535a414b414c3230", "5f39c932c3f93f9a535a414b414c3230"]  # AICarBehavior, AICarBehavior
+kind = "float"
+min = 1.0
+max = 10000000.0
+
+[[tunable]]
+id = "vehicles.pickups.health"
+category = "vehicles"
+label = "Pickups and flatbed: health"
+description = "Initial health of the pickups and flatbed vehicle templates (CMD_SetInitialHealth on StandardDamageComponent); models truck_pickup, truck_pickup_stepside, truck_flatbed."
+source = "simgroup"
+resource = "gf2/globals_global:simgroup:00000000"
+class = "StandardDamageComponent"
+attribute = 0
+objects = ["a675c8327b7e12b2535a414b414c3230", "f9f0c83243adaab9535a414b414c3230", "641bc9323cb51686535a414b414c3230"]  # AICarBehavior, AICarBehavior, AICarBehavior
+kind = "float"
+min = 1.0
+max = 10000000.0
+
+[[tunable]]
+id = "vehicles.heavy_trucks.health"
+category = "vehicles"
+label = "Heavy trucks: health"
+description = "Initial health of the heavy trucks vehicle templates (CMD_SetInitialHealth on StandardDamageComponent); models truck_heavy_racket, truck_heavy_racket_queens, truck_heavy_tow."
+source = "simgroup"
+resource = "gf2/globals_global:simgroup:00000000"
+class = "StandardDamageComponent"
+attribute = 0
+objects = ["3485c832ff3e9863535a414b414c3230", "40f3c832c9e5348c535a414b414c3230", "5f39c932b97bea9e535a414b414c3230"]  # AICarBehavior, AICarBehavior, AICarBehavior
+kind = "float"
+min = 1.0
+max = 10000000.0
+
+[[tunable]]
+id = "vehicles.family_cars.health"
+category = "vehicles"
+label = "Family (thug) cars: health"
+description = "Initial health of the family (thug) cars vehicle templates (CMD_SetInitialHealth on StandardDamageComponent); models thug60."
+source = "simgroup"
+resource = "gf2/globals_global:simgroup:00000000"
+class = "StandardDamageComponent"
+attribute = 0
+objects = [  # 7 objects
+  "f798c85872a6243041545a3032373358", "c7c5c832ebf28303535a414b414c3230", "ab1ac932c53218b1535a414b414c3230",
+  "581bc958a78f35f94b41545a30323839", "bc33c9351a8c1af65752454445313438", "733fc9356ff2ac6b5752454445313438",
+  "4e9fc833d20a6f06464f535445523137",
+]
+kind = "float"
+min = 1.0
+max = 10000000.0
+
+[[tunable]]
+id = "vehicles.armored_family_cars.health"
+category = "vehicles"
+label = "Armored family cars: health"
+description = "Initial health of the armored family cars vehicle templates (CMD_SetInitialHealth on StandardDamageComponent); models thug60_armored."
+source = "simgroup"
+resource = "gf2/globals_global:simgroup:00000000"
+class = "StandardDamageComponent"
+attribute = 0
+objects = ["a4b7c858782e1a4b4d41525237373632", "ab1ac932c43218b1535a414b414c3230", "581bc958acb9cbfc4b41545a30323839", "2920c938b003276e47524f5353455232"]  # AICarBehavior, AICarBehavior, AICarBehavior, AICarBehavior
+kind = "float"
+min = 1.0
+max = 10000000.0
+
+[[tunable]]
+id = "vehicles.police_cars.health"
+category = "vehicles"
+label = "Police cars and jeeps: health"
+description = "Initial health of the police cars and jeeps vehicle templates (CMD_SetInitialHealth on StandardDamageComponent); models police_miami, police_queens, jeep60_01."
+source = "simgroup"
+resource = "gf2/globals_global:simgroup:00000000"
+class = "StandardDamageComponent"
+attribute = 0
+objects = [  # 10 objects
+  "6b68c83268c3d78b504554455253454e", "efd0c832c6bba834504554455253454e", "5fddc832564df9d0535a414b414c3230",
+  "7c26c935b9b1825a5752454445313438", "5b68c832a6dc1154535a414b414c3230", "d7a0c83294589964535a414b414c3230",
+  "65ddc832a8b2271f535a414b414c3230", "8c84c832dee3b9a7535a414b414c3230", "60ddc832a17b7426535a414b414c3230",
+  "85d5c83223421bb2504554455253454e",
+]
+kind = "float"
+min = 1.0
+max = 10000000.0
+
+[[tunable]]
+id = "vehicles.police_wagons.health"
+category = "vehicles"
+label = "Police wagons and army trucks: health"
+description = "Initial health of the police wagons and army trucks vehicle templates (CMD_SetInitialHealth on StandardDamageComponent); models police_wagon, truck_heavy_02_military."
+source = "simgroup"
+resource = "gf2/globals_global:simgroup:00000000"
+class = "StandardDamageComponent"
+attribute = 0
+objects = [  # 6 objects
+  "d7a0c83210a4a569535a414b414c3230", "d9a4c8321a6f3640535a414b414c3230", "65ddc832a9b2271f535a414b414c3230",
+  "fda3c83253de8aeb535a414b414c3230", "60ddc832a27b7426535a414b414c3230", "85d5c83256e22fbb504554455253454e",
+]
+kind = "float"
+min = 1.0
+max = 10000000.0
+
+[[tunable]]
+id = "vehicles.family_cars.damage_factor"
+category = "vehicles"
+label = "Family (thug) cars: damage factor"
+description = "VehicleDamageComponent attribute 14, probably how strongly the car takes damage: 0.6 sports cars, 0.55 sedans, 0.4 family cars, 0.1 armored cars and heavy trucks."
+source = "simgroup"
+resource = "gf2/globals_global:simgroup:00000000"
+class = "VehicleDamageComponent"
+attribute = 14
+objects = [  # 7 objects
+  "f798c85872a6243041545a3032373358", "c7c5c832ebf28303535a414b414c3230", "ab1ac932c53218b1535a414b414c3230",
+  "581bc958a78f35f94b41545a30323839", "bc33c9351a8c1af65752454445313438", "733fc9356ff2ac6b5752454445313438",
+  "4e9fc833d20a6f06464f535445523137",
+]
+kind = "float"
+min = 0.0
+max = 10.0
+
+[[tunable]]
+id = "vehicles.armored_family_cars.damage_factor"
+category = "vehicles"
+label = "Armored family cars: damage factor"
+description = "VehicleDamageComponent attribute 14, probably how strongly the car takes damage: 0.6 sports cars, 0.55 sedans, 0.4 family cars, 0.1 armored cars and heavy trucks."
+source = "simgroup"
+resource = "gf2/globals_global:simgroup:00000000"
+class = "VehicleDamageComponent"
+attribute = 14
+objects = ["a4b7c858782e1a4b4d41525237373632", "ab1ac932c43218b1535a414b414c3230", "581bc958acb9cbfc4b41545a30323839", "2920c938b003276e47524f5353455232"]  # AICarBehavior, AICarBehavior, AICarBehavior, AICarBehavior
+kind = "float"
+min = 0.0
+max = 10.0
+
+[[tunable]]
+id = "world.rosato_carmine.strength"
+category = "world"
+label = "Carmine Rosato family: strength"
+description = "Family attribute 8, probably a strength or difficulty multiplier: 1.0 for most families, rising along the story (Carmine 1.0, Tony 1.05, Granados 1.1, Mangano 1.2, Almeida 1.4)."
+source = "simgroup"
+resource = "gf2/globals_global:simgroup:00000000"
+class = "Family"
+attribute = 8
+objects = ["1cf7c730da7c6069464f574c45523230"]  # rosato_carmine
+object_names = ["rosato_carmine"]
+kind = "float"
+min = 0.0
+max = 10.0
+
+[[tunable]]
+id = "world.rosato_tony.strength"
+category = "world"
+label = "Tony Rosato family: strength"
+description = "Family attribute 8, probably a strength or difficulty multiplier: 1.0 for most families, rising along the story (Carmine 1.0, Tony 1.05, Granados 1.1, Mangano 1.2, Almeida 1.4)."
+source = "simgroup"
+resource = "gf2/globals_global:simgroup:00000000"
+class = "Family"
+attribute = 8
+objects = ["1cf7c7309657559b464f574c45523230"]  # rosato_tony
+object_names = ["rosato_tony"]
+kind = "float"
+min = 0.0
+max = 10.0
+
+[[tunable]]
+id = "world.granados.strength"
+category = "world"
+label = "Granados family: strength"
+description = "Family attribute 8, probably a strength or difficulty multiplier: 1.0 for most families, rising along the story (Carmine 1.0, Tony 1.05, Granados 1.1, Mangano 1.2, Almeida 1.4)."
+source = "simgroup"
+resource = "gf2/globals_global:simgroup:00000000"
+class = "Family"
+attribute = 8
+objects = ["1cf7c7304ecc1fb7464f574c45523230"]  # granados
+object_names = ["granados"]
+kind = "float"
+min = 0.0
+max = 10.0
+
+[[tunable]]
+id = "world.mangano.strength"
+category = "world"
+label = "Mangano family: strength"
+description = "Family attribute 8, probably a strength or difficulty multiplier: 1.0 for most families, rising along the story (Carmine 1.0, Tony 1.05, Granados 1.1, Mangano 1.2, Almeida 1.4)."
+source = "simgroup"
+resource = "gf2/globals_global:simgroup:00000000"
+class = "Family"
+attribute = 8
+objects = ["8372c83300e30dea4147415932303238"]  # mangano
+object_names = ["mangano"]
+kind = "float"
+min = 0.0
+max = 10.0
+
+[[tunable]]
+id = "world.almeida.strength"
+category = "world"
+label = "Almeida family: strength"
+description = "Family attribute 8, probably a strength or difficulty multiplier: 1.0 for most families, rising along the story (Carmine 1.0, Tony 1.05, Granados 1.1, Mangano 1.2, Almeida 1.4)."
+source = "simgroup"
+resource = "gf2/globals_global:simgroup:00000000"
+class = "Family"
+attribute = 8
+objects = ["1cf7c730ed636ef2464f574c45523230"]  # almeida
+object_names = ["almeida"]
+kind = "float"
+min = 0.0
+max = 10.0

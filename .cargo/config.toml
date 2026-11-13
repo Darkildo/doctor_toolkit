@@ -1,0 +1,7 @@
+[env]
+# The Python extension module (crates/doctor-toolkit-py) is abi3 and is loaded
+# by an interpreter, so it never links libpython and needs no interpreter to
+# build: `cargo build --workspace` and `cargo test --workspace` work on
+# machines without Python. Values set in the environment take precedence.
+PYO3_BUILD_EXTENSION_MODULE = "1"
+PYO3_NO_PYTHON = "1"

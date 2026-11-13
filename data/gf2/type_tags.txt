@@ -1,0 +1,51 @@
+# Resource type tags of The Godfather II (PC).
+# The 32-bit type id stored in a stream is the SDBM hash of the tag.
+# Recovered by hashing candidate strings against the ids found in the game files
+# (research/name_candidates.py). `hka` (Havok collision) and `emx` (door
+# sounds, `Door.CMD_SetCloseAudio`) occur only as types of metamodel
+# references, never in streams.
+apx
+auc
+bnk
+bricknmortarres
+cec
+chv
+covernodetable
+dlg
+emx
+ffn
+get
+graph
+grt
+hka
+hkx
+ism
+lh2
+lhr
+lighttoc
+lua
+material
+materialswaplistresource
+mesh
+meshvolatile
+metamodel
+mix
+mnl
+mobface
+pad
+partsdb
+rcb
+sbk
+score
+shk
+simgroup
+smb
+tg4d
+tg4h
+tob
+trb
+treemodel
+trinity_seq_master
+variabledictionary
+vfx
+wgi
