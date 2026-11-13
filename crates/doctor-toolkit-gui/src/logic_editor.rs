@@ -26,6 +26,8 @@ use doctor_toolkit::workspace::Workspace;
 use doctor_toolkit_mods::i18n::{tr, trf, trn};
 use egui::{Color32, Pos2, RichText};
 
+mod run_mode;
+
 use crate::node_graph::{
     self as ng, Badge, ContextTarget, Graph, GraphEvent, GraphView, LayoutStore, NodeId, Pin,
     PinAddr, Wire, WireStyle,
@@ -137,6 +139,8 @@ pub struct LogicEditor {
     find_after_load: Option<String>,
     /// Show the found node in the level once loaded (the environment preset).
     pub preset_show: bool,
+    /// «Run» mode: the logic runs without the game (stage 38).
+    runm: run_mode::RunMode,
 }
 
 impl LogicEditor {
@@ -169,6 +173,7 @@ impl LogicEditor {
             workspace_dir: None,
             find_after_load: None,
             preset_show: false,
+            runm: run_mode::RunMode::default(),
         }
     }
 
@@ -306,6 +311,7 @@ impl LogicEditor {
                     .and_then(|n| self.graph.as_ref()?.nodes.get(n)?.object());
                 self.spec = Some(spec);
                 self.graph = Some(graph);
+                self.run_reset();
                 self.rebuild_shown();
                 self.place_nodes(new_scope);
                 if let Some(sel) = self.pending_select.take().or(selected) {
@@ -651,6 +657,7 @@ impl LogicEditor {
             self.wire_of.push(Some(wi));
         }
         shown.comments = std::mem::take(&mut self.shown.comments);
+        self.run_highlight(&mut shown);
         self.shown = shown;
     }
 
@@ -686,6 +693,12 @@ impl LogicEditor {
                 ui.label(tr("logic.empty_hint"));
             });
             return None;
+        }
+        if self.runm.on {
+            egui::Panel::bottom("logic-run")
+                .resizable(true)
+                .default_size(280.0)
+                .show(ui, |ui| self.run_panel(ui, ws));
         }
         egui::Panel::right("logic-side")
             .resizable(true)
@@ -759,6 +772,13 @@ impl LogicEditor {
                 .clicked()
             {
                 self.view.frame_all();
+            }
+            if ui
+                .toggle_value(&mut self.runm.on, tr("logic_run.mode"))
+                .on_hover_text(tr("logic_run.mode_hint"))
+                .changed()
+            {
+                self.rebuild_shown_keep_positions();
             }
             ui.checkbox(&mut self.view.show_minimap, tr("logic.minimap"));
             let before = self.filters;

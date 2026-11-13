@@ -11,6 +11,7 @@ mod level_cmd;
 mod live_cmd;
 mod logic_cmd;
 mod logic_graph_cmd;
+mod logic_run_cmd;
 mod lua_cmd;
 mod mcp_cmd;
 mod model_cmd;
@@ -605,6 +606,13 @@ enum Command {
     /// List the missions (directories of streams under objectives/ and checkpoints/)
     LogicMissions(logic_graph_cmd::MissionsArgs),
 
+    /// Run the logic of a mission without the game: messages, variables, timers, Lua
+    ///
+    /// Prints the journal of who sent what to whom and when (`--json` for
+    /// JSON), stops at a time, a step count or breakpoints, and compares with
+    /// a journal of the game (`--compare`). See docs/logic-graph.md §9.
+    LogicRun(logic_run_cmd::RunArgs),
+
     /// What the schema of SimGroup pins (messages heard and sent, links) covers
     LogicSchema {
         /// Print JSON
@@ -868,6 +876,7 @@ fn run(command: Command) -> Result<()> {
         Command::LogicGraph(args) => logic_graph_cmd::graph(&args),
         Command::Messages(args) => logic_graph_cmd::messages(&args),
         Command::LogicMissions(args) => logic_graph_cmd::missions(&args),
+        Command::LogicRun(args) => logic_run_cmd::run(&args),
         Command::LogicConnect(args) => logic_graph_cmd::connect(&args),
         Command::LogicSchema { json } => logic_graph_cmd::schema(json),
         Command::Mcp(args) => mcp_cmd::run(args),

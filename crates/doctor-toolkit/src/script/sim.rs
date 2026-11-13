@@ -78,6 +78,9 @@ pub struct SimState {
     pub player: [f64; 3],
     /// Message relays: when the first arrives, the second is sent.
     pub relays: Vec<(String, String)>,
+    /// `SendMessage` only logs the message: the host delivers it (the run of
+    /// a mission's logic, `logic_graph::run`, has its own message bus).
+    pub external_bus: bool,
     receivers: Vec<Receiver>,
     timers: Vec<Timer>,
     groups: BTreeMap<String, Value>,
@@ -327,6 +330,33 @@ impl Sim {
         v
     }
 
+    /// Whether some receiver listens to `message` (letter case does not
+    /// matter, as with the game's hash of names).
+    pub fn listens(&self, message: &str) -> bool {
+        self.state
+            .borrow()
+            .receivers
+            .iter()
+            .any(|r| r.alive && r.messages.iter().any(|m| m.eq_ignore_ascii_case(message)))
+    }
+
+    /// Scripts that registered functions (`RegisterFunction`), in order of
+    /// name.
+    pub fn scripts(&self) -> Vec<String> {
+        self.state.borrow().registry.keys().cloned().collect()
+    }
+
+    /// Game time (seconds) when the next timer fires.
+    pub fn next_timer(&self) -> Option<f64> {
+        self.state
+            .borrow()
+            .timers
+            .iter()
+            .filter(|t| !t.deleted)
+            .filter_map(|t| t.due)
+            .min_by(f64::total_cmp)
+    }
+
     /// Number of running timers.
     pub fn running_timers(&self) -> usize {
         self.state
@@ -353,7 +383,7 @@ fn deliver(
         .borrow()
         .receivers
         .iter()
-        .filter(|r| r.alive && r.messages.iter().any(|m| m == message))
+        .filter(|r| r.alive && r.messages.iter().any(|m| m.eq_ignore_ascii_case(message)))
         .map(|r| (r.function.clone(), r.object.clone()))
         .collect();
     for (f, obj) in targets {
@@ -366,7 +396,7 @@ fn deliver(
         .borrow()
         .relays
         .iter()
-        .filter(|(from, _)| from == message)
+        .filter(|(from, _)| from.eq_ignore_ascii_case(message))
         .map(|(_, to)| to.clone())
         .collect();
     for to in relayed {
@@ -427,6 +457,9 @@ fn install(vm: &mut Vm, state: &Rc<RefCell<SimState>>) {
         Ok(Vec::new())
     });
     vm.register("RegisterScriptName", |_, _| Ok(Vec::new()));
+    // Empty functions in the Lua code of the exe (`mission-logic.md` §2.3).
+    vm.register("debug_print", |_, _| Ok(Vec::new()));
+    vm.register("debug_screenprint", |_, _| Ok(Vec::new()));
 
     // Messages.
     let st = state.clone();
@@ -439,7 +472,9 @@ fn install(vm: &mut Vm, state: &Rc<RefCell<SimState>>) {
             message: message.clone(),
             data,
         });
-        deliver(vm, &st, &message, arg(&args, 1), arg(&args, 2))?;
+        if !st.borrow().external_bus {
+            deliver(vm, &st, &message, arg(&args, 1), arg(&args, 2))?;
+        }
         Ok(Vec::new())
     });
     let st = state.clone();

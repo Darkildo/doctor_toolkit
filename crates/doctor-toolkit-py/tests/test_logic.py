@@ -40,3 +40,37 @@ def test_mission_graph_and_messages():
     assert len(who["listeners"]) >= 3
     found = dt.logic_messages(game, "cp_737_", search=True, original=True)
     assert any(m["name"] == "cp_737_loaded" for m in found)
+
+
+def test_sample_game_runs_an_empty_logic(sample):
+    game, _, _ = sample
+    r = dt.logic_run(game, "game", events=["load", "wait:1", "send:hello"])
+    assert r["stop"]["stop"] == "idle"
+    kinds = [e["kind"] for e in r["journal"]]
+    assert kinds.count("input") == 2 and "send" in kinds
+    with pytest.raises(dt.InvalidArgumentError):
+        dt.logic_run(game, "game", events=["jump:high"])
+
+
+@pytest.mark.skipif(corpus_dir() is None, reason="needs EARS_GF2_DIR")
+def test_checkpoint_runs_without_the_game():
+    game = dt.Game(corpus_dir())
+    r = dt.logic_run(
+        game,
+        "checkpoint:737",
+        events=["load", "send:cp_737_loaded", "send:cp_737_was_started"],
+        until=30,
+        original=True,
+    )
+    sent = [e["message"] for e in r["journal"] if e["kind"] == "send"]
+    assert "cp_737_loaded_ag" in sent
+    assert any(a["model"] == "black_box" for a in r["actors"])
+    game_journal = '[{"kind": "message", "message": "cp_737_loaded", "sim_time_ms": 5000}]'
+    again = dt.logic_run(
+        game,
+        "checkpoint:737",
+        events=["load", "send:cp_737_loaded"],
+        compare=game_journal,
+        original=True,
+    )
+    assert len(again["comparison"]["matched"]) == 1

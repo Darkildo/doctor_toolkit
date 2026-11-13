@@ -45,6 +45,7 @@ shots=(
   "character|gf2/globalfolder/characters/allcharacters|DOCTOR_TOOLKIT_GUI_SELECT=6905 DOCTOR_TOOLKIT_GUI_CHARACTER=window,set=_all,lod=0,yaw=0.5"
   "level|-|DOCTOR_TOOLKIT_GUI_LEVEL=gf2/cuba/local;eye=305,9,395;look=283,2,371 DOCTOR_TOOLKIT_GUI_SHOT_FRAMES=200"
   "logic|-|DOCTOR_TOOLKIT_GUI_LOGIC=checkpoint:737 DOCTOR_TOOLKIT_GUI_SHOT_FRAMES=150"
+  "logic-run|-|DOCTOR_TOOLKIT_GUI_LOGIC=checkpoint:737;run=load,send:cp_737_loaded,send:cp_737_was_started,wait:5,enter:#19;until=12 DOCTOR_TOOLKIT_GUI_SHOT_FRAMES=200"
   "cutscene|gf2/cuba/global/objectives/chapter60-mission08-killingcastro/cp_734/_734_igc_content|DOCTOR_TOOLKIT_GUI_SELECT=2 DOCTOR_TOOLKIT_GUI_CUTSCENE=time=6,load,zoom=30 DOCTOR_TOOLKIT_GUI_SHELL=max DOCTOR_TOOLKIT_GUI_SHOT_FRAMES=150|0,410,1200,325"
   "dialogue|gf2/globalfolder/dlg/03ccd0bc|DOCTOR_TOOLKIT_GUI_SELECT=15 DOCTOR_TOOLKIT_GUI_SHELL=max|0,390,1200,345"
   "movies|-|DOCTOR_TOOLKIT_GUI_MOVIES=FMV02:900"

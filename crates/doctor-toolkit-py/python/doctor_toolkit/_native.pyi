@@ -113,6 +113,25 @@ def logic_missions(game: "Game") -> list[dict[str, Any]]:
 def logic_schema() -> dict[str, Any]:
     """What the schema of SimGroup pins covers."""
 
+def logic_run(
+    game: "Game",
+    scope: str,
+    events: list[str] | None = None,
+    until: float | None = None,
+    steps: int = 20000,
+    seed: int = 1,
+    lua: bool = True,
+    reactions: list[dict[str, Any]] | None = None,
+    breaks: list[str] | None = None,
+    compare: str | None = None,
+    original: bool = False,
+) -> dict[str, Any]:
+    """Runs the logic of a scope without the game: `journal` (who sent what
+    to whom and when), `stop`, `time`, `steps`, `actors`, `variables` and
+    `comparison` with a journal of the game (`compare`: its JSON text).
+    `events` as in `logic-run --events` (default `["load"]`). See
+    docs/logic-graph.md §9."""
+
 def script_compile(graph_json: str) -> dict[str, Any]:
     """Compiles a visual script graph (JSON text): `source` (Lua), `chunk`
     (bytes, or `None` with errors) and `diagnostics` (dicts with `severity`,

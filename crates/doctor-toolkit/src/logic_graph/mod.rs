@@ -23,6 +23,7 @@
 
 pub mod edit;
 pub mod index;
+pub mod run;
 pub mod schema;
 pub mod scope;
 

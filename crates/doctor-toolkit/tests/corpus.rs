@@ -6221,3 +6221,91 @@ fn player_spawns_of_the_cities() {
     let (near, _) = start::nearest_spawn(&cuba, terrace.position.unwrap()).unwrap();
     assert!(near.message.is_none());
 }
+
+#[test]
+fn logic_runs_of_missions_go_without_the_game() {
+    use doctor_toolkit::logic_graph::ScopeSpec;
+    use doctor_toolkit::logic_graph::run::{
+        self, Input, Model, Run, RunOptions, Stop, Until, What,
+    };
+    let Some(dir) = game_dir() else { return };
+    let game = GameInstance::open(&dir).unwrap();
+    let (index, _) = game.build_index(|_| {});
+    // Inputs: load, the engine's checkpoint messages, the player walking
+    // into every trigger volume one second after another.
+    let start = |spec: &ScopeSpec| {
+        let (input, errors) = run::load(&game, &index, None, spec).unwrap();
+        assert!(errors.is_empty(), "{:?}", errors.first());
+        let mut r = Run::new(input, RunOptions::default());
+        r.schedule(0.0, Input::Load);
+        r.schedule(0.0, Input::Message("iMsgNewCheckpointLoaded".into()));
+        r.schedule(0.5, Input::Message("iMsgNewCheckpointStarted".into()));
+        let triggers: Vec<usize> = (0..r.actors().len())
+            .filter(|&i| matches!(r.actors()[i].model, Model::Trigger { .. }))
+            .collect();
+        for (k, i) in triggers.iter().enumerate() {
+            r.schedule(1.0 + k as f64, Input::Enter(format!("#{i}")));
+        }
+        r
+    };
+    let spec = ScopeSpec::parse(&game, "mission:killingcastro").unwrap();
+    let mut r = start(&spec);
+    let stop = r.run(Until::Time(600.0), 20_000);
+    assert!(
+        matches!(stop, Stop::Time | Stop::Idle | Stop::Limit),
+        "{stop:?}"
+    );
+    let sends = r
+        .journal()
+        .iter()
+        .filter(|e| matches!(e.what, What::Send { .. }))
+        .count();
+    let black = r.actors().iter().filter(|a| a.model.is_black_box()).count();
+    eprintln!(
+        "killingcastro: {} objects ({black} black boxes), {} steps, {} entries, {sends} messages, {:.1} s",
+        r.actors().len(),
+        r.steps(),
+        r.journal().len(),
+        r.time()
+    );
+    assert!(sends > 20, "{sends} messages");
+    // Deterministic: the same inputs give the same journal.
+    let mut again = start(&spec);
+    again.run(Until::Time(600.0), 20_000);
+    assert_eq!(
+        serde_json::to_string(r.journal()).unwrap(),
+        serde_json::to_string(again.journal()).unwrap()
+    );
+
+    // Every mission runs without a panic.
+    let mut totals = [0usize; 4];
+    for m in doctor_toolkit::logic_graph::scope::missions(&game) {
+        let mut r = start(&ScopeSpec::Mission(m.name.clone()));
+        r.run(Until::Time(600.0), 20_000);
+        totals[0] += 1;
+        totals[1] += r.actors().len();
+        totals[2] += r.actors().iter().filter(|a| a.model.is_black_box()).count();
+        totals[3] += r
+            .journal()
+            .iter()
+            .filter(|e| matches!(e.what, What::Send { .. }))
+            .count();
+    }
+    eprintln!("missions, objects, black boxes, messages: {totals:?}");
+    assert!(totals[0] >= 70 && totals[3] > 500, "{totals:?}");
+
+    // The sound scripts of the game start on the Lua VM.
+    let spec = ScopeSpec::parse(&game, "stream:gf2/globals_global").unwrap();
+    let (input, _) = run::load(&game, &index, None, &spec).unwrap();
+    assert!(input.chunks.len() >= 25, "{} chunks", input.chunks.len());
+    let mut r = Run::new(input, RunOptions::default());
+    r.schedule(0.0, Input::Load);
+    r.run(Until::Time(30.0), 20_000);
+    let loaded = r
+        .journal()
+        .iter()
+        .filter(|e| matches!(&e.what, What::Lua { text } if text.ends_with("loaded, startup")))
+        .count();
+    eprintln!("globals_global: {loaded} scripts started");
+    assert!(loaded >= 5, "{loaded} scripts started");
+}

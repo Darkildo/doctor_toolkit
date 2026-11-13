@@ -9,15 +9,21 @@ use super::dock::{DockOp, Pane};
 use crate::logic_editor::{LogicAction, LogicEditor};
 
 impl BrowserApp {
-    /// `DOCTOR_TOOLKIT_GUI_LOGIC=<scope>[;find=<text>][;show]` opens a logic
-    /// tab shown alone (for screenshots and checks); `show` then shows the
-    /// first found node in the level view.
+    /// `DOCTOR_TOOLKIT_GUI_LOGIC=<scope>[;find=<text>][;show][;run=<inputs>][;until=<s>]`
+    /// opens a logic tab shown alone (for screenshots and checks); `show`
+    /// then shows the first found node in the level view; `run` switches the
+    /// run mode on with these start inputs (`|` between them) and runs to
+    /// `until` seconds (or until nothing is left).
     pub(super) fn logic_preset(&mut self) {
         let Ok(spec) = std::env::var("DOCTOR_TOOLKIT_GUI_LOGIC") else {
             return;
         };
         let mut parts = spec.split(';');
         let scope = parts.next().unwrap_or_default().to_owned();
+        let until = spec
+            .split(';')
+            .find_map(|p| p.strip_prefix("until="))
+            .and_then(|t| t.parse::<f64>().ok());
         self.open_logic_tab(&scope, None);
         let id = self.logics.keys().copied().next();
         for part in parts {
@@ -28,6 +34,8 @@ impl BrowserApp {
                 editor.find_after_load(find);
             } else if part == "show" {
                 editor.preset_show = true;
+            } else if let Some(inputs) = part.strip_prefix("run=") {
+                editor.preset_run(&inputs.replace('|', ";"), until);
             }
         }
         if let Some(id) = id {

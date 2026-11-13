@@ -129,6 +129,8 @@ dt.logic_messages(game, "cp_737_loaded")              # senders, listeners ил�
 dt.logic_messages(game, "cp_737_", search=True)       # список сообщений
 dt.logic_missions(game)                               # [{"name", "streams"}]
 dt.logic_schema()                                     # покрытие схемы пинов
+r = dt.logic_run(game, "checkpoint:737", events=["load", "send:cp_737_loaded"], until=60)
+r["journal"]                                          # кто кому послал (logic-graph.md §9)
 ```
 
 `logic_graph(game, scope, hubs=True, all=False, original=False)`: `hubs` —

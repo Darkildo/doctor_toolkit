@@ -33,8 +33,9 @@ original files are never lost.
   their parts, make new outfits.
 - **Levels:** the cities in 3D with every object, move, duplicate and add
   objects, start the game right there.
-- **Game logic:** the message graph of missions, visual scripts in the style
-  of Blueprints, Lua scripts, dialogue trees, cut-scenes with a timeline.
+- **Game logic:** the message graph of missions and a run of it without the
+  game, visual scripts in the style of Blueprints, Lua scripts, dialogue
+  trees, cut-scenes with a timeline.
 - **Media:** VP6 movie player and encoder, sound banks and streamed sounds,
   textures to and from DDS and PNG, interface text in every language.
 - **Safe changes:** a workspace with undo, redo and compare; mods as packages
@@ -205,7 +206,11 @@ This is a **beta**: back up your game folder before writing into it.
   level, who sends and who hears any message across the game, dangling
   messages; connect, disconnect, add and remove nodes as workspace edits
   (`logic-graph`, `messages`, `logic-connect`, GUI tab **Logic**,
-  `docs/logic-graph.md`).
+  `docs/logic-graph.md`). The logic runs without the game step by step:
+  messages, variables, timers and Lua scripts, with the handlers of the main
+  classes read from the exe, other objects as black boxes, breakpoints and a
+  journal of who sent what to whom, compared with a journal of the game
+  (`logic-run`, mode **Run** of the tab).
 - Mods: a single ZIP file with a manifest, built from the workspace; a mod
   manager with load order, conflicts, compatibility checks, apply and restore;
   patches of the old closed toolkit (`.vpat`) install as mods.
@@ -533,7 +538,7 @@ ABI for CPython 3.9+) gives scripts and notebooks the same library: games,
 streams and resources; textures (PNG, DDS, RGBA pixels), string tables, game
 logic as dicts, models (vertices, triangles, binary glTF), rigs, fonts, sounds
 (WAV, PCM); Lua scripts (`lua_decompile`, `lua_compile`, `lua_listing`); the
-logic graph (`logic_graph`, `logic_messages`, `logic_missions`); the
+logic graph (`logic_graph`, `logic_messages`, `logic_missions`, `logic_run`); the
 index with search and references; the workspace with undo,
 diff, apply and unapply; mods. Library errors are Python exceptions with the
 library's message; long operations release the GIL.
