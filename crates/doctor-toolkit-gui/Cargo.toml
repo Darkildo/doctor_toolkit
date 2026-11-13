@@ -25,6 +25,9 @@ serde_json = "1"
 bytemuck = { version = "1.25", features = ["derive"] }
 pollster = "1"
 rayon.workspace = true
+# Walking a level (stage 37): static colliders from the Havok shapes and a
+# kinematic character controller. Apache-2.0.
+rapier3d = "=0.36.1"
 cpal = { version = "0.16", optional = true }
 
 # The game in a tab (stage 33): on Linux a nested X server, its frames read

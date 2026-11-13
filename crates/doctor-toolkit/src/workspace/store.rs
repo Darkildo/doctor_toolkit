@@ -12,6 +12,9 @@ use sha2::{Digest, Sha256};
 
 use crate::{Error, Result};
 
+/// SHA-256 of no data.
+const EMPTY_SHA256: &str = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+
 /// A piece of data stored in the workspace, named by its SHA-256.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Blob {
@@ -132,6 +135,11 @@ impl PayloadStore {
                 "bad payload hash `{}`",
                 blob.sha256
             )));
+        }
+        // No data needs no file: the "original" of an added resource is
+        // empty and was never stored.
+        if blob.size == 0 && blob.sha256 == EMPTY_SHA256 {
+            return Ok(Vec::new());
         }
         let path = self.path(&blob.sha256);
         let data = match self.staged_map() {
@@ -289,6 +297,15 @@ fn hints(path: &Path) -> (Option<u128>, Option<u64>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn empty_data_is_read_without_a_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = PayloadStore::new(dir.path().join("payloads"));
+        let empty = Blob::of(&[]);
+        assert_eq!(empty.sha256, EMPTY_SHA256);
+        assert_eq!(store.get(&empty).unwrap(), Vec::<u8>::new());
+    }
 
     #[test]
     fn stores_once_and_verifies() {

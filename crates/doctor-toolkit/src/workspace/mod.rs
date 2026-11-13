@@ -556,7 +556,24 @@ impl Workspace {
 
     /// Opens the workspace in `dir`.
     pub fn open(dir: impl Into<PathBuf>) -> Result<Self> {
-        let dir = dir.into();
+        let mut workspace = Self::read(dir.into())?;
+        if workspace.reconcile() {
+            workspace.save()?;
+        }
+        Ok(workspace)
+    }
+
+    /// Opens the workspace in `dir` for reading only: nothing is written,
+    /// not even the repair of a save that was interrupted (the repaired
+    /// state is kept in memory). Recording operations on it is a mistake;
+    /// use [`Self::open`] for that.
+    pub fn open_read_only(dir: impl Into<PathBuf>) -> Result<Self> {
+        let mut workspace = Self::read(dir.into())?;
+        workspace.reconcile();
+        Ok(workspace)
+    }
+
+    fn read(dir: PathBuf) -> Result<Self> {
         let mut manifest: Manifest = read_json(&dir.join(MANIFEST_FILE))?;
         if manifest.format != FORMAT {
             return Err(Error::InvalidArgument(format!(
@@ -594,7 +611,7 @@ impl Workspace {
             .collect();
         // Older versions are read as they are and saved in the current version.
         manifest.version = VERSION;
-        let mut workspace = Self {
+        let workspace = Self {
             store: PayloadStore::new(dir.join(PAYLOAD_DIR)),
             dir,
             manifest,
@@ -605,7 +622,6 @@ impl Workspace {
             applied,
             saved: true,
         };
-        workspace.reconcile()?;
         Ok(workspace)
     }
 
@@ -633,15 +649,16 @@ impl Workspace {
     }
 
     /// Makes the manifest agree with the log after an interrupted save. The
-    /// log is written first, so it is the newer of the two.
-    fn reconcile(&mut self) -> Result<()> {
+    /// log is written first, so it is the newer of the two. Returns whether
+    /// anything changed (and should be saved).
+    fn reconcile(&mut self) -> bool {
         let head = self.log.head.min(self.log.operations.len());
         self.log.head = head;
         let seq_in_effect = head
             .checked_sub(1)
             .map_or(0, |i| self.log.operations[i].seq);
         if seq_in_effect == self.manifest.log_seq {
-            return Ok(());
+            return false;
         }
         // Number of operations the manifest's state includes.
         let position = if self.manifest.log_seq == 0 {
@@ -682,7 +699,7 @@ impl Workspace {
                 self.log.head = 0;
             }
         }
-        self.save()
+        true
     }
 
     /// Re-reads the workspace from disk, e.g. after another program changed it.

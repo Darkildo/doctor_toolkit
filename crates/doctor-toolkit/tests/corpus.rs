@@ -3778,6 +3778,73 @@ fn encoder_quality_on_movie_soundtracks() {
     assert!(results.len() >= 10);
 }
 
+/// Stage 37: the collision of levels placed in the world. Every placement
+/// of the three cities reads; terrain objects (`ZoneRenderLOD`) of the
+/// `medium` zones carry collision (the ground of the streets).
+#[test]
+fn level_collision_is_placed_in_the_world() {
+    use doctor_toolkit::level::{Catalog, Level, LevelSource, Lookup, Overrides, Scope};
+    use std::collections::HashMap;
+    use std::sync::Arc;
+
+    let Some(dir) = game_dir() else { return };
+    let game = Arc::new(GameInstance::open(&dir).unwrap());
+    let (index, _) = game.build_index(|_| {});
+    let catalog = Catalog::new(&game, &index);
+    let lookup = Arc::new(Lookup::new(&index));
+    let parents = game.stream_parents().unwrap();
+    let failures = Failures::default();
+    // (placements, of terrain objects) by the kind of zone.
+    let mut by_kind: HashMap<&str, (usize, usize)> = HashMap::new();
+    for name in ["gf2/miami", "gf2/cuba", "gf2/queens"] {
+        let streams: Vec<usize> = catalog.under(name).map(|z| z.stream).collect();
+        let scope = Scope::new(&game, &parents, &streams);
+        let source = Arc::new(LevelSource::new(
+            game.clone(),
+            lookup.clone(),
+            Overrides::default(),
+            scope,
+        ));
+        let level = Level::load(source.clone(), &streams).unwrap();
+        let placements = level.collision_placements();
+        let mut ids: Vec<u32> = placements.iter().map(|p| p.hkx).collect();
+        ids.sort_unstable();
+        ids.dedup();
+        ids.par_iter().for_each(|&id| {
+            if let Err(error) = source.physics(id) {
+                failures.push(format!("{name}: hkx {id:08x}: {error}"));
+            }
+        });
+        for p in &placements {
+            let group = &level.groups[p.group];
+            let object = &group.objects[p.object];
+            let stream = game.streams()[group.location.stream].stream_name();
+            let kind = ["/high/", "/medium/", "/low/", "/interior/"]
+                .into_iter()
+                .find(|k| stream.contains(k))
+                .unwrap_or("other");
+            let entry = by_kind.entry(kind).or_default();
+            entry.0 += 1;
+            entry.1 += usize::from(object.class_name == Some("ZoneRenderLOD"));
+            // The placement is the part's matrix in the object's.
+            assert_eq!(p.matrix[3][3], 1.0);
+        }
+    }
+    failures.assert_empty();
+    let mut kinds: Vec<_> = by_kind.iter().collect();
+    kinds.sort();
+    eprintln!("collision placements (all, of terrain) by zone kind: {kinds:?}");
+    // How much of the streets each kind covers is measured with the
+    // physics of the editor (`level_view::walk::build` tests): high zones
+    // alone hold up the player under few of their objects.
+    let medium = by_kind.get("/medium/").copied().unwrap_or_default();
+    assert!(
+        medium.1 > 2000,
+        "terrain collision in medium zones: {medium:?}"
+    );
+    assert!(by_kind.values().map(|k| k.0).sum::<usize>() > 30_000);
+}
+
 #[test]
 fn every_level_loads_and_shows_its_models() {
     use doctor_toolkit::level::{Catalog, Level, LevelSource, Lookup, Overrides, Scope};

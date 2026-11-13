@@ -13,6 +13,7 @@ path = "src/main.rs"
 
 [dependencies]
 doctor-toolkit.workspace = true
+doctor-toolkit-mcp.workspace = true
 anyhow.workspace = true
 clap.workspace = true
 rayon.workspace = true
@@ -20,4 +21,5 @@ serde_json = { version = "1", features = ["preserve_order"] }
 toml = "1"
 
 [dev-dependencies]
+doctor-toolkit = { workspace = true, features = ["testing"] }
 tempfile = "3"

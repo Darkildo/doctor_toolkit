@@ -19,13 +19,18 @@
 //! `rotate`, `finest`, `points`, `eye=<x>,<y>,<z>`, `look=<x>,<y>,<z>`,
 //! `yaw=<rad>`, `pitch=<rad>`, `act=<edit>` (see [`LevelView::preset_action`]),
 //! `nav[=<graph>:<node>]` (show navigation graphs, select a node),
-//! `spin` (turn and print frame times).
+//! `spin` (turn and print frame times), `walk` (walk from the camera),
+//! `route=<ax>,<ay>,<az>,<bx>,<by>,<bz>` (check the walk from A to B).
+//!
+//! **Walk** ([`walk`], stage 37): a first-person capsule with the Havok
+//! collision of the loaded zones, gravity, steps; problem marks and A to B.
 
 pub mod camera;
 mod gizmo;
 pub mod loader;
 pub mod nav;
 pub mod scene;
+pub mod walk;
 
 use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use std::sync::Arc;
@@ -121,6 +126,7 @@ struct RenderKey {
     gizmo: (gizmo::Mode, Option<usize>),
     collision: Option<(ObjRef, RowMatrix)>,
     nav: u64,
+    walk: u64,
 }
 
 struct Drag {
@@ -145,6 +151,10 @@ struct Preset {
     /// Edits to make once the level is loaded, one per frame, on the
     /// selected object (for checks without input).
     actions: VecDeque<String>,
+    /// Walk from the camera once the level is loaded.
+    walk: bool,
+    /// Check the walk from A to B once the level is loaded.
+    route: Option<([f32; 3], [f32; 3])>,
 }
 
 pub struct LevelView {
@@ -222,6 +232,8 @@ pub struct LevelView {
     nav: nav::NavLayer,
     /// An edit from the navigation panel, returned by the next `ui`.
     nav_action: Option<LevelAction>,
+    /// Walking the level (stage 37).
+    walk: walk::Walk,
 }
 
 impl LevelView {
@@ -282,6 +294,7 @@ impl LevelView {
             collisions: HashMap::new(),
             nav: nav::NavLayer::default(),
             nav_action: None,
+            walk: walk::Walk::default(),
             center: [0.0; 3],
             index_stale: false,
         };
@@ -310,6 +323,7 @@ impl LevelView {
             || self.autoload.is_some()
             || self.pending_autoload
             || self.preset.as_ref().is_some_and(|p| !p.actions.is_empty())
+            || self.walk.busy()
     }
 
     fn apply_preset(&mut self, spec: &str) {
@@ -341,6 +355,13 @@ impl LevelView {
                     }
                 }
                 "spin" => preset.spin = Some(Vec::new()),
+                "walk" => preset.walk = true,
+                "route" if floats.len() == 6 => {
+                    preset.route = Some((
+                        [floats[0], floats[1], floats[2]],
+                        [floats[3], floats[4], floats[5]],
+                    ))
+                }
                 "act" => preset.actions.push_back(value.to_owned()),
                 "eye" if floats.len() == 3 => preset.eye = Some([floats[0], floats[1], floats[2]]),
                 "look" if floats.len() == 3 => {
@@ -357,6 +378,7 @@ impl LevelView {
     /// The game was opened: build the zone list.
     pub fn open_game(&mut self, game: Arc<GameInstance>, index: Arc<ResourceIndex>) {
         self.job = None;
+        self.walk.reset();
         self.level = None;
         self.items.clear();
         self.scene.instances.clear();
@@ -476,6 +498,7 @@ impl LevelView {
                     );
                     self.group_generation = vec![0; level.groups.len()];
                     self.level = Some(level);
+                    self.walk.level_changed();
                     self.assets = Some(assets);
                     self.rebuild_items();
                     match self.keep_view.take() {
@@ -637,6 +660,10 @@ impl LevelView {
         if let Some(target) = preset.look {
             self.camera.turn_to(target);
         }
+        let walk = std::mem::take(&mut preset.walk);
+        if let Some((a, b)) = preset.route.take() {
+            self.walk.request_route(a, b);
+        }
         let select = preset.select.take();
         preset.selected_once |= select.is_some();
         let has_eye = preset.eye.is_some();
@@ -646,7 +673,20 @@ impl LevelView {
                 self.focus();
             }
         }
+        if walk {
+            self.enter_walk(self.camera.eye);
+        }
         self.refill = true;
+    }
+
+    /// Starts walking at `at` (the ground below it).
+    fn enter_walk(&mut self, at: [f32; 3]) {
+        let (Some(level), Some(input)) = (&self.level, &self.input) else {
+            return;
+        };
+        self.walk.enter(at, level, &self.catalog, &input.parents);
+        self.drag = None;
+        self.hover_axis = None;
     }
 
     /// The next edit of the environment preset, once the level is ready:
@@ -777,6 +817,7 @@ impl LevelView {
             ));
         }
         self.rebuild_items();
+        self.walk.level_changed();
         self.drag = None;
         if let Some((location, object)) = select
             && let Some(group) = self
@@ -834,6 +875,7 @@ impl LevelView {
             return;
         }
         self.reindex();
+        self.walk.forget_cache();
         let loaded = self.level.as_ref().map(|l| l.streams.clone());
         let camera = self.camera;
         let selected = self.filter.selected;
@@ -1217,6 +1259,18 @@ impl LevelView {
         if self.level.is_some() {
             ui.separator();
             self.filters(ui);
+            ui.separator();
+            let selected = self.filter.selected.and_then(|r| self.object_transform(r));
+            match self.walk.panel(ui, &self.camera, selected.is_some()) {
+                Some(walk::PanelAction::EnterAtCamera) => self.enter_walk(self.camera.eye),
+                Some(walk::PanelAction::EnterAtSelected) => {
+                    if let Some(m) = selected {
+                        // Beside the object, on what is below.
+                        self.enter_walk([m[3][0] + 1.5, m[3][1] + 2.0, m[3][2]]);
+                    }
+                }
+                None => {}
+            }
         }
         load
     }
@@ -1778,7 +1832,9 @@ impl LevelView {
         let pointer = response
             .hover_pos()
             .or(ui.input(|i| i.pointer.interact_pos()));
-        if let (Some(origin), None) = (gizmo_at, &self.drag) {
+        if self.walk.active {
+            self.hover_axis = None;
+        } else if let (Some(origin), None) = (gizmo_at, &self.drag) {
             let size = gizmo::size(&view, origin);
             self.hover_axis = pointer
                 .filter(|_| response.hovered())
@@ -1872,7 +1928,19 @@ impl LevelView {
                     });
                 }
             }
-        } else {
+        } else if let (Some(level), Some(input)) = (&self.level, &self.input)
+            && self.walk.update(
+                ui,
+                &response,
+                &mut self.camera,
+                level,
+                &self.catalog,
+                &input.parents,
+            )
+        {
+            self.refill = true;
+            self.camera_moved = true;
+        } else if !self.walk.active {
             let pivot = gizmo_at.unwrap_or_else(|| {
                 math::add(self.camera.eye, math::scale(self.camera.forward(), 20.0))
             });
@@ -1991,6 +2059,26 @@ impl LevelView {
             let lines = self.collision_lines(r, &m);
             self.scene.overlay_lines.extend(lines);
         }
+        // Walking: problem marks, the route, and the collision of the
+        // objects of the workspace.
+        self.scene.overlay_lines.extend(self.walk.lines());
+        if self.walk.active {
+            let own: Vec<ObjRef> = self
+                .walk
+                .own()
+                .iter()
+                .map(|o| ObjRef {
+                    group: o.object.0,
+                    object: o.object.1,
+                })
+                .collect();
+            for r in own {
+                if let Some(m) = self.object_transform(r) {
+                    let lines = self.collision_lines(r, &m);
+                    self.scene.overlay_lines.extend(lines);
+                }
+            }
+        }
         let key = RenderKey {
             camera: self.camera,
             size: pixels,
@@ -1999,6 +2087,7 @@ impl LevelView {
             gizmo: (self.gizmo, self.hover_axis),
             collision,
             nav: self.nav.generation,
+            walk: self.walk.revision,
         };
         if self.last_render.as_ref() != Some(&key) {
             let mut renderer = gpu.lock();
@@ -2083,7 +2172,10 @@ impl LevelView {
             }
         }
         text += "\n";
-        text += tr("level.overlay_keys");
+        match &self.level {
+            Some(level) if self.walk.active => text += &self.walk.hud(level),
+            _ => text += tr("level.overlay_keys"),
+        }
         let painter = ui.painter_at(rect);
         let galley = painter.layout_no_wrap(text, egui::FontId::monospace(11.0), Color32::WHITE);
         let at = rect.left_top() + Vec2::splat(6.0);

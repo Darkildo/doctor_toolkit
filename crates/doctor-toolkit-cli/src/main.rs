@@ -12,6 +12,7 @@ mod live_cmd;
 mod logic_cmd;
 mod logic_graph_cmd;
 mod lua_cmd;
+mod mcp_cmd;
 mod model_cmd;
 mod mods_cmd;
 mod nav_cmd;
@@ -610,6 +611,14 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+
+    /// Serve the game to an AI client (Claude Code, Claude Desktop) over the
+    /// Model Context Protocol on stdin/stdout, read-only
+    ///
+    /// Tools: search, resource info and JSON, hash names, strings, the logic
+    /// graph, level objects, workspace and project status. Nothing in the
+    /// game, the workspace or the project is written. See docs/mcp.md.
+    Mcp(mcp_cmd::McpArgs),
 }
 
 fn main() -> std::process::ExitCode {
@@ -854,6 +863,7 @@ fn run(command: Command) -> Result<()> {
         Command::LogicMissions(args) => logic_graph_cmd::missions(&args),
         Command::LogicConnect(args) => logic_graph_cmd::connect(&args),
         Command::LogicSchema { json } => logic_graph_cmd::schema(json),
+        Command::Mcp(args) => mcp_cmd::run(args),
     }
 }
 

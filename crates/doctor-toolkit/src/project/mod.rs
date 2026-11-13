@@ -287,6 +287,13 @@ impl Project {
         Ok(status)
     }
 
+    /// [`Self::status`] without writing anything: the build cache that
+    /// spares reading unchanged files next time is read but not updated.
+    pub fn status_read_only(&self, ws: &Workspace) -> Result<ProjectStatus> {
+        let mut cache = BuildCache::read(&self.root);
+        self.status_with(ws, &mut cache)
+    }
+
     fn status_with(&self, ws: &Workspace, cache: &mut BuildCache) -> Result<ProjectStatus> {
         let mut status = ProjectStatus::default();
         let mut known: BTreeSet<String> = BTreeSet::new();

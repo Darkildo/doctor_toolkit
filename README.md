@@ -43,6 +43,9 @@ original files are never lost.
   at a point, see it in an editor tab (with DXVK under Wine), and talk to the
   running game through a live link: player, camera, objects, teleport,
   messages, Lua (the in-game module is built from source for now).
+- **AI assistants:** `doctor-toolkit mcp` lets Claude Code, Claude Desktop or
+  any MCP client search the game, read resources as JSON and follow the
+  logic of missions (read-only).
 
 ## Screenshots
 
@@ -213,6 +216,10 @@ This is a **beta**: back up your game folder before writing into it.
   strings; "uses" and "used by" for any resource; a name dictionary for hashes.
 - `unpack` / `pack`: resources as PNG, glTF, JSON and raw files with a
   manifest; edited files go back into the workspace.
+- An MCP server for AI assistants (`doctor-toolkit mcp`, read-only): Claude
+  Code, Claude Desktop or any MCP client searches the game, reads resources
+  as JSON, follows the logic graph and lists level objects
+  ([below](#ai-assistants-mcp)).
 - A level editor: zones of every level in 3D (models with LODs, terrain,
   markers for objects without a mesh), fly camera, picking, move and rotate
   gizmos; duplicate, remove and add objects (with an existing or cloned
@@ -553,6 +560,47 @@ objects of a class with positions, replace text in every string table); type
 stubs in `crates/doctor-toolkit-py/python/doctor_toolkit/_native.pyi`; a guide
 in `docs/python.md` (Russian). `cargo build --workspace` builds the module
 without a Python interpreter (`.cargo/config.toml`).
+
+## AI assistants (MCP)
+
+`doctor-toolkit mcp GAME` is a [Model Context Protocol](https://modelcontextprotocol.io)
+server on stdin/stdout (no network): an AI client such as Claude Code or
+Claude Desktop reads the game through the toolkit. It only reads — nothing in
+the game, the workspace or the project is written (stage 51 will add edits
+through the workspace).
+
+```sh
+# Claude Code
+claude mcp add doctor-toolkit -- doctor-toolkit mcp "/path/to/The Godfather II"
+# with a workspace or a mod project
+claude mcp add doctor-toolkit -- doctor-toolkit mcp "$GAME" --project ~/mods/my-mod
+```
+
+Claude Desktop, `claude_desktop_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "doctor-toolkit": {
+      "command": "/path/to/doctor-toolkit",
+      "args": ["mcp", "/path/to/The Godfather II"]
+    }
+  }
+}
+```
+
+Tools: `game_info`, `list_streams`, `search` (names, hashes, keys, types,
+text of strings), `resource_info` (names, references, users),
+`resource_json` (SimGroup, metamodel, strings, dialogues, cut-scene shots,
+navigation graph, rigs, materials and more as JSON, Lua as decompiled source;
+paged), `lookup_hash`, `strings`, `logic_graph` (object → messages →
+listeners over N hops, a message across the game, a mission overview),
+`level_objects` (placed objects with positions), `workspace_status`,
+`workspace_diff`, `project_status`. Resources: the format documents
+(`docs/formats/*.md`, built into the binary), the schema of logic pins, the
+engine's message names, the messages and missions of the game. Game data in
+results is fenced off as untrusted data, results are limited in size
+(`--max-response-chars`). Details: `docs/mcp.md`, guide chapter 21 (Russian).
 
 ## External editors and Blender
 
