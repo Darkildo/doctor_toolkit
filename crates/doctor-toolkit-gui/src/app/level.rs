@@ -21,6 +21,10 @@ impl BrowserApp {
             self.play_here(tab, *eye, streams);
             return;
         }
+        if let LevelAction::LiveTeleport { .. } | LevelAction::LiveCamera(_) = &action {
+            self.live_level_action(action);
+            return;
+        }
         let (Some(game), Some(index)) = (self.game.clone(), self.index.clone()) else {
             return;
         };
@@ -114,9 +118,10 @@ impl BrowserApp {
             })
             .map_err(|e| e.to_string()),
             LevelAction::StartWizard { .. } => Ok(("".to_owned(), None)),
-            LevelAction::ShowLogic { .. } | LevelAction::PlayHere { .. } => {
-                Ok((tr("logic.no_change").to_owned(), None))
-            }
+            LevelAction::ShowLogic { .. }
+            | LevelAction::PlayHere { .. }
+            | LevelAction::LiveTeleport { .. }
+            | LevelAction::LiveCamera(_) => Ok((tr("logic.no_change").to_owned(), None)),
             LevelAction::Graph {
                 graph,
                 renumbered,

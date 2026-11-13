@@ -99,7 +99,7 @@ fn serve(mut stream: TcpStream, config: &Config) {
                 }
             }
             Ok(_) if !greeted => Response::error(ErrorCode::Denied, "send Hello first"),
-            Ok(request) => answer(request, config),
+            Ok(request) => answer(request, config, header.version),
         };
         let kind = if header.kind == 0 {
             kind::HELLO
@@ -117,7 +117,7 @@ fn serve(mut stream: TcpStream, config: &Config) {
     }
 }
 
-fn answer(request: Request, config: &Config) -> Response {
+fn answer(request: Request, config: &Config, version: u16) -> Response {
     if let Err(e) = edition_state() {
         return Response::error(ErrorCode::Edition, e);
     }
@@ -142,8 +142,14 @@ fn answer(request: Request, config: &Config) -> Response {
         Request::Camera => return Response::Camera(snapshot().and_then(|s| s.camera)),
         // The journal is answered from its ring at once.
         Request::Events { after, kinds, max } => {
+            let kinds = doctor_toolkit_live::journal::mask::for_version(kinds, version);
             return Response::Events(crate::journal::events(after, kinds, max));
         }
+        // Debugging: state the hooks read (stage 35).
+        Request::Break { rules, hold_s } => return crate::debug::set_rules(rules, hold_s),
+        Request::Control(c) => return crate::debug::control(c),
+        Request::Debug => return Response::Debug(crate::debug::debug_state()),
+        Request::SetCamera { camera } => return crate::debug::set_camera(camera),
         _ => {}
     }
     let (tx, rx) = sync_channel(1);

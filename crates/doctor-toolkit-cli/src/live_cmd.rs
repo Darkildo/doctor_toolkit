@@ -1,5 +1,6 @@
 //! `live`: the live link with the running game (stage 34); the game's
-//! journal and every object (stage 49).
+//! journal and every object (stage 49); breakpoints, pause and step, the
+//! free camera and textures without a restart (stage 35).
 
 use std::io::Write as _;
 use std::path::PathBuf;
@@ -229,11 +230,99 @@ pub enum LiveCommand {
         port: u16,
         #[arg(long)]
         writes: bool,
+        /// Make the game's own traffic every second: a trigger sends
+        /// doctor_ping, a traced node of doctor_demo prints, an engine
+        /// message goes out sixty times
+        #[arg(long)]
+        activity: bool,
+    },
+    /// Breakpoints: stop the game when a message goes through the bus, the
+    /// game prints a text (a traced node of a visual script) or Lua fails.
+    /// Without a rule: print the breakpoints and whether the game stands
+    Break {
+        /// A message (name or 0x hash)
+        #[arg(long)]
+        message: Vec<String>,
+        /// With --message: only when this object (GUID) gets it
+        #[arg(long, value_name = "GUID")]
+        to: Option<String>,
+        /// Printed text that contains this (dt:SCRIPT:NODE; for a node)
+        #[arg(long)]
+        print: Vec<String>,
+        /// Any Lua error
+        #[arg(long)]
+        lua_error: bool,
+        /// Each rule goes away after its first hit
+        #[arg(long)]
+        once: bool,
+        /// Keep the breakpoints set before and add these
+        #[arg(long)]
+        add: bool,
+        /// Remove every breakpoint
+        #[arg(long, conflicts_with_all = ["message", "print", "lua_error", "add"])]
+        clear: bool,
+        /// Seconds a stop lasts at most before the game goes on by itself
+        /// [default: 120, at most 900]
+        #[arg(long, default_value_t = 0)]
+        hold: u16,
+        /// Wait until the game stops and print where
+        #[arg(long)]
+        wait: bool,
+        #[command(flatten)]
+        link: LinkArgs,
+    },
+    /// Stop the game in its next level frame
+    Pause(LinkArgs),
+    /// Let a stopped game go on (or one frame with --step)
+    Continue {
+        #[arg(long)]
+        step: bool,
+        #[command(flatten)]
+        link: LinkArgs,
+    },
+    /// The free camera: the game draws from this point (a write: needs
+    /// --yes); --release gives the game its camera back
+    Freecam {
+        /// X,Y,Z [default: where the game's camera is]
+        #[arg(allow_hyphen_values = true)]
+        position: Option<String>,
+        /// Heading in degrees (0 = +Z) [default: the camera's]
+        #[arg(long, allow_hyphen_values = true)]
+        yaw: Option<f32>,
+        /// Pitch in degrees, up is positive [default: the camera's]
+        #[arg(long, allow_hyphen_values = true)]
+        pitch: Option<f32>,
+        #[arg(long, conflicts_with_all = ["position", "yaw", "pitch"])]
+        release: bool,
+        #[arg(long)]
+        yes: bool,
+        #[command(flatten)]
+        link: LinkArgs,
+    },
+    /// Put the edited textures of the workspace into the running game
+    /// without a restart (same size, format and levels; a write: needs
+    /// --yes). Needs --game
+    Texture {
+        /// Only this texture: its name hash (0x…, the last id of its
+        /// tg4h/tg4d) [default: every edited texture]
+        name: Option<String>,
+        /// A check instead of the workspace: every texture of this stream
+        /// (e.g. gf2/cuba/local/yuri/high/terrain3), painted --tint
+        #[arg(long, requires = "tint")]
+        stream: Option<String>,
+        /// The colour of --stream, RRGGBB
+        #[arg(long, requires = "stream")]
+        tint: Option<String>,
+        #[arg(long)]
+        yes: bool,
+        #[command(flatten)]
+        link: LinkArgs,
     },
 }
 
 impl LiveCommand {
     pub fn may_write_game(&self) -> bool {
+        // Texture reads the workspace; it writes the running game only.
         matches!(self, Self::Install { .. } | Self::Uninstall { .. })
     }
 }
@@ -338,7 +427,91 @@ fn event_lines(e: &Event, names: Option<&LiveNames>) -> Vec<String> {
             }
             vec![line]
         }
+        EventBody::MessageCounts { window_ms, counts } => {
+            let mut top = counts.clone();
+            top.sort_by_key(|x| std::cmp::Reverse(x.1));
+            let list: Vec<String> = top
+                .iter()
+                .map(|(h, n)| format!("{} x{n}", message_name(names, *h)))
+                .collect();
+            vec![format!(
+                "{head} messages without own events in {:.1} s: {}",
+                f64::from(*window_ms) / 1000.0,
+                list.join(", ")
+            )]
+        }
     }
+}
+
+/// One line about breakpoints and whether the game stands.
+fn debug_lines(d: &proto::DebugState, names: Option<&LiveNames>) -> Vec<String> {
+    let mut out = Vec::new();
+    for r in &d.rules {
+        let once = if r.once { " (once)" } else { "" };
+        out.push(match &r.on {
+            proto::BreakOn::Message { hash, receiver } => format!(
+                "break on message {}{}{once}",
+                message_name(names, *hash),
+                receiver
+                    .map(|g| format!(" to {}", object_label(names, &g)))
+                    .unwrap_or_default()
+            ),
+            proto::BreakOn::Output { text } => format!("break on print `{text}`{once}"),
+            proto::BreakOn::LuaError => format!("break on Lua errors{once}"),
+        });
+    }
+    if d.rules.is_empty() {
+        out.push("no breakpoints".into());
+    }
+    match &d.stop {
+        Some(stop) => {
+            let why = match &stop.reason {
+                proto::StopReason::Pause => "pause".to_owned(),
+                proto::StopReason::Step => "step".to_owned(),
+                proto::StopReason::Message {
+                    hash, receivers, ..
+                } => {
+                    let to: Vec<String> =
+                        receivers.iter().map(|g| object_label(names, g)).collect();
+                    format!(
+                        "message {} to {}",
+                        message_name(names, *hash),
+                        if to.is_empty() {
+                            "-".to_owned()
+                        } else {
+                            to.join(", ")
+                        }
+                    )
+                }
+                proto::StopReason::Output { text, script, line } => {
+                    format!("print {script}:{line}: {text}")
+                }
+                proto::StopReason::LuaError { message } => format!("Lua error: {message}"),
+            };
+            out.push(format!(
+                "STOPPED in the {} at frame {}, {:.1} s game time: {why}; journal #{}; for {:.1} s, goes on by itself in {:.0} s",
+                stop.place.name(),
+                stop.frame,
+                f64::from(stop.sim_time_ms) / 1000.0,
+                stop.seq,
+                f64::from(stop.held_ms) / 1000.0,
+                f64::from(stop.resume_in_ms) / 1000.0
+            ));
+        }
+        None if d.pending => out.push("running; stops in the next level frame".into()),
+        None => out.push("running".into()),
+    }
+    out.push(format!(
+        "{} hit(s); a stop lasts at most {} s{}",
+        d.hits,
+        d.hold_limit_s,
+        if d.camera.is_some() {
+            "; free camera on"
+        } else {
+            ""
+        }
+    ));
+    out
 }
 
 fn event_json(e: &Event, names: Option<&LiveNames>) -> serde_json::Value {
@@ -396,6 +569,20 @@ fn event_json(e: &Event, names: Option<&LiveNames>) -> serde_json::Value {
                     .collect::<Vec<_>>()
             );
             v["by_link"] = json!(*origin == MessageOrigin::Link);
+        }
+        EventBody::MessageCounts { window_ms, counts } => {
+            v["kind"] = json!("message_counts");
+            v["window_ms"] = json!(window_ms);
+            v["counts"] = json!(
+                counts
+                    .iter()
+                    .map(|(h, n)| json!({
+                        "hash": format!("{h:#010x}"),
+                        "name": names.and_then(|x| x.message(*h)),
+                        "count": n,
+                    }))
+                    .collect::<Vec<_>>()
+            );
         }
     }
     v
@@ -474,6 +661,50 @@ fn print_world(world: &World, names: Option<&LiveNames>, json_out: bool, stream:
             ""
         }
     );
+}
+
+/// Breakpoints and the rest of stage 35 need a module of protocol 3.
+fn need_debug(c: &Client) -> Result<()> {
+    if !c.has_debug() {
+        bail!(
+            "the module in the game speaks protocol {}: breakpoints, pause, the free camera and textures need the module of this toolkit",
+            c.version()
+        );
+    }
+    Ok(())
+}
+
+/// A free camera at `at` (else where `now` is), turned to `yaw` and
+/// `pitch` in degrees (else as `now` looks).
+fn free_camera(
+    now: proto::CameraView,
+    at: Option<[f32; 3]>,
+    yaw: Option<f32>,
+    pitch: Option<f32>,
+) -> proto::CameraView {
+    let f = now.pose.forward;
+    let now_yaw = f[0].atan2(f[2]);
+    let now_pitch = f[1].clamp(-1.0, 1.0).asin();
+    let y = yaw.map_or(now_yaw, f32::to_radians);
+    let p = pitch.map_or(now_pitch, f32::to_radians).clamp(-1.55, 1.55);
+    let forward = [y.sin() * p.cos(), p.sin(), y.cos() * p.cos()];
+    let pose = live::pose_looking(at.unwrap_or(now.pose.position), forward);
+    proto::CameraView { pose, fov: now.fov }
+}
+
+fn debug_json(d: &proto::DebugState, names: Option<&LiveNames>) -> serde_json::Value {
+    json!({
+        "lines": debug_lines(d, names),
+        "stopped": d.stop.is_some(),
+        "place": d.stop.as_ref().map(|s| s.place.name()),
+        "frame": d.stop.as_ref().map(|s| s.frame),
+        "journal_seq": d.stop.as_ref().map(|s| s.seq),
+        "rules": d.rules.len(),
+        "hits": d.hits,
+        "pending": d.pending,
+        "hold_limit_s": d.hold_limit_s,
+        "free_camera": d.camera.is_some(),
+    })
 }
 
 fn confirm(yes: bool, what: &str) -> Result<()> {
@@ -677,7 +908,7 @@ pub fn run(command: LiveCommand) -> Result<()> {
             let kinds = if errors {
                 mask::LUA_ERROR
             } else if messages {
-                mask::ALL
+                mask::ALL_V3
             } else {
                 mask::OUTPUT | mask::LUA_ERROR
             };
@@ -697,6 +928,7 @@ pub fn run(command: LiveCommand) -> Result<()> {
             let mut told = std::time::Instant::now();
             loop {
                 let b = c.events(next, kinds, 500)?;
+                let kinds = mask::for_version(kinds, c.version());
                 if b.recording & kinds != kinds && warned == 0 {
                     warned = 1;
                     eprintln!(
@@ -842,7 +1074,11 @@ pub fn run(command: LiveCommand) -> Result<()> {
                 out!("no module of the toolkit in {}", game_dir.display());
             }
         }
-        LiveCommand::Fake { port, writes } => {
+        LiveCommand::Fake {
+            port,
+            writes,
+            activity,
+        } => {
             let game = live::fake::FakeGame::start_on(
                 port,
                 Config {
@@ -854,8 +1090,195 @@ pub fn run(command: LiveCommand) -> Result<()> {
                 },
             )?;
             out!("fake game on 127.0.0.1:{} (Ctrl+C to stop)", game.port);
+            let mut beat = 0u64;
             loop {
-                std::thread::sleep(Duration::from_secs(3600));
+                if activity {
+                    std::thread::sleep(Duration::from_secs(1));
+                    game.world
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .activity(beat);
+                    beat += 1;
+                } else {
+                    std::thread::sleep(Duration::from_secs(3600));
+                }
+            }
+        }
+        LiveCommand::Break {
+            message,
+            to,
+            print,
+            lua_error,
+            once,
+            add,
+            clear,
+            hold,
+            wait,
+            link,
+        } => {
+            let names = link.names(false)?;
+            let mut c = link.connect()?;
+            need_debug(&c)?;
+            let target = to
+                .as_deref()
+                .map(|t| proto::parse_guid(t).with_context(|| format!("`{t}` is not a GUID")))
+                .transpose()?;
+            let mut rules: Vec<proto::BreakRule> = message
+                .iter()
+                .map(|m| proto::BreakRule {
+                    on: proto::BreakOn::Message {
+                        hash: MessageId::parse(m).hash(),
+                        receiver: target,
+                    },
+                    once,
+                })
+                .chain(print.iter().map(|t| proto::BreakRule {
+                    on: proto::BreakOn::Output { text: t.clone() },
+                    once,
+                }))
+                .collect();
+            if lua_error {
+                rules.push(proto::BreakRule {
+                    on: proto::BreakOn::LuaError,
+                    once,
+                });
+            }
+            if !rules.is_empty() || clear || hold != 0 {
+                if add || (rules.is_empty() && !clear) {
+                    let mut old = c.debug_state()?.rules;
+                    old.extend(rules);
+                    rules = old;
+                }
+                c.set_breaks(rules, hold)?;
+            }
+            let mut d = c.debug_state()?;
+            if wait {
+                let mut announced = false;
+                while d.stop.is_none() {
+                    if !announced {
+                        eprintln!("waiting for the game to stop (Ctrl+C to give up)…");
+                        announced = true;
+                    }
+                    std::thread::sleep(Duration::from_millis(200));
+                    d = c.debug_state()?;
+                }
+            }
+            if link.json {
+                out!("{}", debug_json(&d, names.as_ref()));
+            } else {
+                for l in debug_lines(&d, names.as_ref()) {
+                    out!("{l}");
+                }
+            }
+        }
+        LiveCommand::Pause(link) => {
+            let mut c = link.connect()?;
+            need_debug(&c)?;
+            out!("{}", c.control(proto::Control::Pause)?.note);
+        }
+        LiveCommand::Continue { step, link } => {
+            let mut c = link.connect()?;
+            need_debug(&c)?;
+            let control = if step {
+                proto::Control::Step
+            } else {
+                proto::Control::Continue
+            };
+            out!("{}", c.control(control)?.note);
+        }
+        LiveCommand::Freecam {
+            position,
+            yaw,
+            pitch,
+            release,
+            yes,
+            link,
+        } => {
+            confirm(yes, "freecam")?;
+            let mut c = link.connect()?;
+            need_debug(&c)?;
+            if release {
+                out!("{}", c.set_camera(None)?.note);
+                return Ok(());
+            }
+            let now = c
+                .camera()?
+                .context("the game has no camera now (not in a level)")?;
+            let at = position.as_deref().map(vec3).transpose()?;
+            let view = free_camera(now, at, yaw, pitch);
+            let done = c.set_camera(Some(view))?;
+            out!(
+                "{} at ({:.2}, {:.2}, {:.2})",
+                done.note,
+                view.pose.position[0],
+                view.pose.position[1],
+                view.pose.position[2]
+            );
+        }
+        LiveCommand::Texture {
+            name,
+            stream,
+            tint,
+            yes,
+            link,
+        } => {
+            let dir = link
+                .game
+                .as_deref()
+                .context("the textures come from the workspace of a game folder: add --game DIR")?;
+            let want = name
+                .as_deref()
+                .map(|n| {
+                    u32::from_str_radix(n.trim().trim_start_matches("0x"), 16)
+                        .with_context(|| format!("`{n}` is not a 0x hash"))
+                })
+                .transpose()?;
+            let textures = if let (Some(stream), Some(tint)) = (&stream, &tint) {
+                let rgb = u32::from_str_radix(tint.trim_start_matches('#'), 16)
+                    .ok()
+                    .filter(|_| tint.trim_start_matches('#').len() == 6)
+                    .with_context(|| format!("`{tint}` is not RRGGBB"))?;
+                let game = doctor_toolkit::game::GameInstance::open(dir)?;
+                let mut list = live::tinted_textures(
+                    &game,
+                    stream,
+                    [(rgb >> 16) as u8, (rgb >> 8) as u8, rgb as u8],
+                )?;
+                list.retain(|t| want.is_none_or(|w| w == t.name));
+                list
+            } else {
+                let ws_dir = doctor_toolkit::workspace::Workspace::default_dir(dir);
+                if !doctor_toolkit::workspace::Workspace::exists(&ws_dir) {
+                    bail!("{} has no workspace", dir.display());
+                }
+                let ws = doctor_toolkit::workspace::Workspace::open(&ws_dir)?;
+                live::hot_textures(&ws, want)?
+            };
+            if textures.is_empty() {
+                bail!(
+                    "no edited texture in the workspace{}",
+                    if want.is_some() {
+                        " with this name"
+                    } else {
+                        ""
+                    }
+                );
+            }
+            confirm(yes, "texture")?;
+            let mut c = link.connect()?;
+            need_debug(&c)?;
+            let mut failed = 0;
+            for t in textures {
+                match c.texture(t.name, t.data) {
+                    Ok(d) => out!("{:#010x} ({}): {}", t.name, t.stream, d.note),
+                    Err(e) => {
+                        failed += 1;
+                        out!("{:#010x} ({}): {e}", t.name, t.stream);
+                    }
+                }
+            }
+            if failed > 0 {
+                bail!("{failed} texture(s) not replaced");
             }
         }
     }

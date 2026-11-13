@@ -1341,3 +1341,52 @@ doctor-toolkit live find venue_132_vault --game $S/shadow
   кольцо попадало 2 500+ событий тактов).
 - `winedbg` к процессу игры стенда не подключается (`error 5`), поэтому
   место зависания найдено по журналу модуля, а не по стеку.
+
+## 22. Этап 35: отладка вживую (2026-11-13)
+
+Быстрый стенд, как в §21: `-stream gf2 cuba`, `DXVK=1`, `SERVER=xvfb`,
+1024×768, новая тень (GF2ASI в ней выключен), модуль `live install
+--writes` (протокол 3), `WINEDLLOVERRIDES=dinput8=n,b`; проверки — CLI
+`live …`; снимки окна редактора — под своим Xvfb (`DOCTOR_TOOLKIT_GUI_SHOT`
+с `DOCTOR_TOOLKIT_GUI_LIVE=ПОРТ:ТОКЕН`). Для скрипта-Blueprint тень
+собрана с настоящей копией `gf2/cuba/local.str` (`shadow … gf2/cuba/local.str`),
+граф размещён `script-deploy --direct` в неё. Адреса и устройство —
+`live-link.md` §12. Снимки, журналы и сценарий — в рабочей папке проверки.
+
+```sh
+doctor-toolkit live camera --game $S/shadow
+doctor-toolkit live freecam 283.9,20,380 --yaw 180 --pitch -67 --yes --game $S/shadow
+doctor-toolkit live break --message iMsgRunningPostTick --once --hold 60 --wait --game $S/shadow
+doctor-toolkit live texture --stream gf2/cuba/local/yuri/high/terrain3 --tint FF00FF --yes --game $S/shadow
+DISPLAY=:93 DOCTOR_TOOLKIT_GUI_SHOT=logic.png DOCTOR_TOOLKIT_GUI_SHOT_FRAMES=2200 \
+    DOCTOR_TOOLKIT_GUI_LOGIC="stream:gf2/cuba/local;find=m1_pa_announcement;live" \
+    DOCTOR_TOOLKIT_GUI_LIVE="47835:ТОКЕН" doctor-toolkit-gui $S/shadow
+```
+
+| Проверка | Результат |
+|---|---|
+| Модуль | протокол 3, издание — 58 мест совпали, перехваты как в §21 |
+| Камера игры → редактор | `live camera`: (288,20; 1,75; 372,96), вперёд (−0,91; −0,10; −0,40) — камера смотрит на игрока в (283,9; 0; 371,8); вкладка уровня с «Следовать за камерой игры» (`DOCTOR_TOOLKIT_GUI_LIVE_FOLLOW=1`) показывает те же ворота аэропорта и метку игрока там же, где он в кадре игры |
+| Свободная камера | `freecam 283.9,20,380 --yaw 180 --pitch -67` — кадр игры сверху (самолёт, игрок, NPC, отметка задания); `live camera` отвечает (283,9; 20; 380); `--release` — камера игры снова (288,2; 1,75; 373,0) |
+| Точка на сообщении связи | `break --message iMsgPlayerControlEnable`, `live send` → «STOPPED in the frame … message iMsgPlayerControlEnable to 04bdc758…» (игрок); кадр 2905 не растёт 15 с, `live objects` и `live lua 'return 1+1'` отвечают; `continue --step` — ровно кадр 2906; `continue` — игра идёт |
+| Точка в шине | `iMsgRunningPostTick` (каждый кадр) → стоп в шине через 0,2 с; все объекты (7 029 без матрицы из 8 666) читаются, `live lua` и телепорт — отказ «стоит внутри своего кода»; `continue` |
+| Триггер | точка на `aud_enter_tunnel_medium` (`EnterExitTrigger` зоны `yuri/high/terrain3`), телепорт игрока в триггер (221,1; 1; 385,0) → игра встала в шине на этом сообщении; лента `log --messages` — счётчики «messages without own events in 1.0 s: … x25» |
+| Граф логики вживую | вкладка `stream:gf2/cuba/local` (348 узлов) с «Вживую», `live send m1_pa_announcement_start` и `_done` каждые 2 с: лента «`m1_pa_announcement_start` MultiManager (…) -> PlayAudioStream», рамки отправителей и получателей; точка на этом сообщении для `MultiManager 38bdc838…` — красная точка на узле, игра встала, на графе — красная рамка и «Игра стоит перед доставкой сообщения» |
+| Blueprint | граф `doctor_dbg` с отметками узлов: при загрузке уровня `dt:doctor_dbg:1;`, `:2;` (`doctor_dbg.lua:97`, `:98`); на `live send doctor_dbg_ping` — `:3;`, `:4;`; `break --print 'dt:doctor_dbg:4;'` → стоп (`Output … line 108`); редактор скриптов: «×1», «×7», точка и рамка на узле 4, «Игра стоит на узле 4» |
+| Текстуры | `texture --stream …/terrain3..5 --tint FF00FF`: 11 текстур (256×256 DXT1 43 704 байт, 512×256 87 400, 128×64…) — «on screen in the next frame»; кадр игры: плакаты, провода и надписи у ворот пурпурные (сравнение снимков до и после) |
+| Долго | первый запуск 1 074 с (камера, точки, телепорты, триггер, текстуры), второй 949 с (снимки редактора), третий — 922 с, из них 610 с по сценарию: статус каждые 10 с (46 из 46), `live log --follow --messages` всё время (9 668 строк), 15 циклов «точка в шине → все объекты → дальше → пауза → Lua в кадре → шаг → дальше → точка на узле Blueprint через `send` → дальше → свободная камера на 3 с → текстуры другого цвета → ошибка Lua → 2 с ходьбы и поворот»; 31 срабатывание точек; падений и исключений нет (`wine.log`), после — игрок ходит. `live uninstall`, `verify`: оригиналы не менялись (28 файлов) |
+
+Найдено:
+
+- Камера `0x01207DB0` — не объект, а слот пула видов; поток отрисовки
+  держит свои копии видов, поэтому запись матрицы после обновления на
+  экран не попадает — только сеттером вида до записи команд кадра
+  (`iMsgBeforeRender`, `live-link.md` §12.2).
+- Точка на сообщении, которое шлёт сама связь, не может остановить игру
+  на месте: клиент ждёт ответа на этот же запрос — остановка переносится в
+  следующий кадр уровня.
+- Сообщение, на котором стоит точка, сначала записывается в журнал, потом
+  игра встаёт (иначе после долгой остановки окно записи сообщений
+  истекало, и журнал не показывал причину).
+- Окно редактора: в моноширинном шрифте нет стрелок «→» и значков «⏸»,
+  в ленте и на кнопках — ASCII и слова.

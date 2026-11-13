@@ -17,7 +17,13 @@ pub(super) fn editor_from_env() -> ScriptEditor {
             .and_then(|t| {
                 doctor_toolkit::script::ScriptGraph::from_json(&t).map_err(|e| e.to_string())
             }) {
-            Ok(graph) => editor.load(graph, Some(path)),
+            Ok(graph) => {
+                editor.load(graph, Some(path));
+                // With the live link of a check (stage 35): the game's tab.
+                if std::env::var_os("DOCTOR_TOOLKIT_GUI_LIVE").is_some() {
+                    editor.show_game_journal();
+                }
+            }
             Err(error) => {
                 editor.status = error;
                 editor.open = true;

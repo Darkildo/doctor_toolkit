@@ -27,6 +27,7 @@ mod external;
 mod gametab;
 mod level;
 mod live;
+mod live_debug;
 pub use live::LiveMarks;
 mod logic;
 mod menu;

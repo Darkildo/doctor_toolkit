@@ -258,7 +258,7 @@ fn the_journal_through_the_client() {
     assert!(c.has_journal());
     let first = c.events(0, mask::ALL, 100).unwrap();
     assert!(first.events.is_empty());
-    assert_eq!(first.recording, mask::ALL);
+    assert_eq!(first.recording, mask::ALL_V3);
     c.lua("print(\"hello\")").unwrap();
     assert!(!c.lua("this is bad").unwrap().ok);
     c.send(MessageId::Name("doctor_ping".into()), None).unwrap();
@@ -375,4 +375,203 @@ fn a_frame_of_version_1_cannot_carry_a_request_of_version_2() {
         panic!("not an error");
     };
     assert_eq!(f.code, ErrorCode::Unsupported);
+}
+
+#[test]
+fn breakpoints_pause_and_step_through_the_client() {
+    use proto::{BreakOn, BreakRule, Control, StopPlace, StopReason};
+    let game = FakeGame::start(config("", true)).unwrap();
+    let mut c = Client::connect(&game.endpoint(""), "test", T).unwrap();
+    assert!(c.has_debug());
+    let d = c.debug_state().unwrap();
+    assert!(d.stop.is_none() && d.rules.is_empty());
+    // A break on a message to one object.
+    let ping = proto::name_hash("doctor_ping");
+    c.set_breaks(vec![BreakRule::message(ping, Some([4; 16]))], 30)
+        .unwrap();
+    assert_eq!(c.debug_state().unwrap().hold_limit_s, 30);
+    // The game's own traffic hits it in the bus: the game stands there.
+    game.world.lock().unwrap().activity(0);
+    let d = c.debug_state().unwrap();
+    let stop = d.stop.unwrap();
+    assert_eq!(stop.place, StopPlace::Bus);
+    let StopReason::Message {
+        hash, receivers, ..
+    } = &stop.reason
+    else {
+        panic!("{stop:?}");
+    };
+    assert_eq!(*hash, ping);
+    assert!(receivers.contains(&[4; 16]));
+    assert_eq!(d.hits, 1);
+    // Standing: the frame does not move, writes inside the game's code are
+    // refused, reads answer.
+    let frame = c.status().unwrap().frame;
+    assert_eq!(c.status().unwrap().frame, frame);
+    assert_eq!(
+        c.teleport([0.0; 3], None).unwrap_err().code(),
+        Some(ErrorCode::NotReady)
+    );
+    assert!(c.player().unwrap().is_some());
+    c.control(Control::Continue).unwrap();
+    assert!(c.debug_state().unwrap().stop.is_none());
+    assert!(c.status().unwrap().frame > frame);
+    // Pause and step stand in a frame, where writes run.
+    c.control(Control::Pause).unwrap();
+    let d = c.debug_state().unwrap();
+    assert_eq!(d.stop.as_ref().unwrap().place, StopPlace::Frame);
+    assert_eq!(c.teleport([1.0, 0.0, 1.0], None).unwrap().count, 1);
+    let before = c.status().unwrap().frame;
+    c.control(Control::Step).unwrap();
+    let d = c.debug_state().unwrap();
+    assert_eq!(d.stop.unwrap().reason, StopReason::Step);
+    assert_eq!(c.status().unwrap().frame, before + 1);
+    c.control(Control::Continue).unwrap();
+    // A message the link sends stops in the next frame; a one-shot rule
+    // goes away after its hit.
+    c.set_breaks(
+        vec![BreakRule {
+            on: BreakOn::Message {
+                hash: ping,
+                receiver: None,
+            },
+            once: true,
+        }],
+        0,
+    )
+    .unwrap();
+    c.send(MessageId::Name("doctor_ping".into()), None).unwrap();
+    let d = c.debug_state().unwrap();
+    assert_eq!(d.stop.unwrap().place, StopPlace::Frame);
+    assert!(d.rules.is_empty());
+    c.control(Control::Continue).unwrap();
+    // A traced node of a visual script, and Lua errors.
+    c.set_breaks(
+        vec![
+            BreakRule {
+                on: BreakOn::Output {
+                    text: "dt:doctor_demo:3;".into(),
+                },
+                once: false,
+            },
+            BreakRule {
+                on: BreakOn::LuaError,
+                once: false,
+            },
+        ],
+        0,
+    )
+    .unwrap();
+    game.world.lock().unwrap().activity(0);
+    assert!(c.debug_state().unwrap().stop.is_none(), "node 2 printed");
+    game.world.lock().unwrap().activity(1);
+    let stop = c.debug_state().unwrap().stop.unwrap();
+    assert_eq!(stop.place, StopPlace::Print);
+    c.control(Control::Continue).unwrap();
+    assert!(!c.lua("this is bad").unwrap().ok);
+    assert!(matches!(
+        c.debug_state().unwrap().stop.unwrap().reason,
+        StopReason::LuaError { .. }
+    ));
+    c.control(Control::Continue).unwrap();
+    c.set_breaks(Vec::new(), 0).unwrap();
+    assert!(c.debug_state().unwrap().rules.is_empty());
+}
+
+#[test]
+fn free_camera_and_texture_through_the_client() {
+    let game = FakeGame::start(config("", true)).unwrap();
+    let mut c = Client::connect(&game.endpoint(""), "test", T).unwrap();
+    let mut view = c.camera().unwrap().unwrap();
+    view.pose.position = [10.0, 20.0, 30.0];
+    c.set_camera(Some(view)).unwrap();
+    assert_eq!(
+        c.camera().unwrap().unwrap().pose.position,
+        [10.0, 20.0, 30.0]
+    );
+    assert_eq!(c.debug_state().unwrap().camera, Some(view));
+    c.set_camera(None).unwrap();
+    assert_ne!(
+        c.camera().unwrap().unwrap().pose.position,
+        [10.0, 20.0, 30.0]
+    );
+    let name = proto::name_hash(super::fake::FAKE_TEXTURE);
+    assert_eq!(c.texture(name, vec![0; 84]).unwrap().count, 1);
+    assert_eq!(
+        c.texture(name, vec![0; 10]).unwrap_err().code(),
+        Some(ErrorCode::Failed)
+    );
+    assert_eq!(
+        c.texture(7, vec![0; 84]).unwrap_err().code(),
+        Some(ErrorCode::Failed)
+    );
+    assert_eq!(game.world.lock().unwrap().replaced, [(name, 84)]);
+    // Writes need writes=1; breakpoints are not writes.
+    let ro = FakeGame::start(config("", false)).unwrap();
+    let mut r = Client::connect(&ro.endpoint(""), "test", T).unwrap();
+    assert_eq!(
+        r.set_camera(None).unwrap_err().code(),
+        Some(ErrorCode::Denied)
+    );
+    assert!(r.set_breaks(Vec::new(), 0).is_ok());
+}
+
+#[test]
+fn counts_of_messages_go_to_new_clients_only() {
+    use proto::journal::{EventBody, mask};
+    let game = FakeGame::start(config("", true)).unwrap();
+    game.world.lock().unwrap().activity(0);
+    let mut c = Client::connect(&game.endpoint(""), "test", T).unwrap();
+    let b = c.events(0, mask::ALL_V3, 100).unwrap();
+    assert!(
+        b.events
+            .iter()
+            .any(|e| matches!(e.body, EventBody::MessageCounts { .. }))
+    );
+    // A client of protocol 2 asks with every bit and still gets only what
+    // it can read.
+    let mut s = std::net::TcpStream::connect(("127.0.0.1", game.port)).unwrap();
+    s.write_all(
+        &Request::Hello {
+            token: String::new(),
+            client: "old".into(),
+        }
+        .to_frame_of(2, 1),
+    )
+    .unwrap();
+    read_frame(&mut s).unwrap();
+    s.write_all(
+        &Request::Events {
+            after: 0,
+            kinds: 0xFF,
+            max: 100,
+        }
+        .to_frame_of(2, 2),
+    )
+    .unwrap();
+    let (h, payload) = read_frame(&mut s).unwrap();
+    assert_eq!(h.version, 2);
+    let Response::Events(b) = Response::decode(h.kind, &payload).unwrap() else {
+        panic!("not events");
+    };
+    assert!(
+        !b.events
+            .iter()
+            .any(|e| matches!(e.body, EventBody::MessageCounts { .. }))
+    );
+    assert_eq!(b.recording, mask::ALL);
+}
+
+#[test]
+fn a_module_of_protocol_2_still_answers() {
+    let game = FakeGame::start(config("t", true)).unwrap();
+    game.world.lock().unwrap().protocol = 2;
+    let mut c = Client::connect(&game.endpoint("t"), "test", T).unwrap();
+    assert_eq!(c.version(), 2);
+    assert!(c.has_journal() && !c.has_debug());
+    assert!(c.events(0, proto::journal::mask::ALL, 10).is_ok());
+    assert_eq!(
+        c.debug_state().unwrap_err().code(),
+        Some(ErrorCode::Unsupported)
+    );
 }

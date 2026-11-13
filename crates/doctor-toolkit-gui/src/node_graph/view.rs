@@ -151,6 +151,24 @@ impl GraphView {
         self.frame = Some(true);
     }
 
+    /// Screen position of point `p` of the graph on `canvas` (the rect of
+    /// the last [`Self::show`]'s response) — for layers drawn over the
+    /// widget.
+    pub fn graph_to_screen(&self, canvas: Rect, p: Pos2) -> Pos2 {
+        self.to_screen(canvas, p)
+    }
+
+    /// Screen points of the wire `from` → `to` as the widget draws it.
+    pub fn wire_screen_points(
+        &self,
+        graph: &Graph,
+        canvas: Rect,
+        from: (NodeId, usize),
+        to: (NodeId, usize),
+    ) -> Option<Vec<Pos2>> {
+        self.wire_points(graph, canvas, from, to)
+    }
+
     fn to_screen(&self, canvas: Rect, p: Pos2) -> Pos2 {
         canvas.min + self.pan + p.to_vec2() * self.zoom
     }

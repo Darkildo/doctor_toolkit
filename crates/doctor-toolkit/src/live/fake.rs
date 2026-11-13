@@ -8,12 +8,18 @@
 //! it, Lua answers a few expressions. Its journal records `print(…)` and
 //! failing Lua code, and the messages it delivers; it speaks protocol 1 and
 //! 2 like the module (or only 1, as a module of stage 34:
-//! [`FakeWorld::protocol`]).
+//! [`FakeWorld::protocol`]). Protocol 3 (stage 35): breakpoints stop the
+//! fake game (its frame and time stand still), pause and step, the free
+//! camera, textures by name; [`FakeWorld::activity`] makes the game's own
+//! traffic for trying the editor (`live fake --activity`).
 
 use std::net::{Ipv4Addr, TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
+use doctor_toolkit_live::debug::{
+    BreakOn, BreakRule, Control, DebugState, HOLD_DEFAULT_S, Stop, StopPlace, StopReason,
+};
 use doctor_toolkit_live::journal::{EventBody, MessageOrigin, OutputSource, Ring, mask};
 use doctor_toolkit_live::{
     CameraView, Done, ErrorCode, Guid, Hello, LoopState, LuaReply, ObjectInfo, PROTOCOL_VERSION,
@@ -45,7 +51,16 @@ pub struct FakeWorld {
     pub sent: Vec<(u32, u32)>,
     /// The build is not the known one.
     pub wrong_edition: bool,
+    /// Breakpoints, stop, free camera (protocol 3).
+    pub debug: DebugState,
+    /// Loaded textures: name hash and the bytes their levels take.
+    pub textures: Vec<(u32, u64)>,
+    /// Textures replaced: name hash and bytes.
+    pub replaced: Vec<(u32, usize)>,
 }
+
+/// The texture of the fake game: 4 × 4 A8R8G8B8, three levels (84 bytes).
+pub const FAKE_TEXTURE: &str = "doctor_fake_texture";
 
 impl Default for FakeWorld {
     fn default() -> Self {
@@ -104,6 +119,12 @@ impl Default for FakeWorld {
             protocol: PROTOCOL_VERSION,
             sent: Vec::new(),
             wrong_edition: false,
+            debug: DebugState {
+                hold_limit_s: HOLD_DEFAULT_S,
+                ..DebugState::default()
+            },
+            textures: vec![(doctor_toolkit_live::name_hash(FAKE_TEXTURE), 84)],
+            replaced: Vec::new(),
         }
     }
 }
@@ -210,6 +231,7 @@ fn serve(mut stream: TcpStream, config: &Config, world: &Mutex<FakeWorld>) {
                 Ok(r) => answer(
                     r,
                     config,
+                    header.version,
                     &mut world.lock().unwrap_or_else(|e| e.into_inner()),
                 ),
             }
@@ -232,9 +254,121 @@ impl FakeWorld {
         self.journal
             .push(second, self.frame, self.sim_time_ms, body);
     }
+
+    /// Whether the game stands at a breakpoint.
+    pub fn stopped(&self) -> bool {
+        self.debug.stop.is_some()
+    }
+
+    fn stop(&mut self, reason: StopReason, place: StopPlace) {
+        self.debug.hits += 1;
+        self.debug.stop = Some(Stop {
+            reason,
+            place,
+            frame: self.frame,
+            sim_time_ms: self.sim_time_ms,
+            seq: self.journal.next_seq(),
+            held_ms: 0,
+            resume_in_ms: u32::from(self.debug.hold_limit_s) * 1000,
+        });
+    }
+
+    /// The first rule `hit` matches; one-shot rules go away.
+    fn take_hit(&mut self, hit: impl Fn(&BreakRule) -> bool) -> bool {
+        let Some(i) = self.debug.rules.iter().position(hit) else {
+            return false;
+        };
+        if self.debug.rules[i].once {
+            self.debug.rules.remove(i);
+        }
+        true
+    }
+
+    /// The game's bus delivers `hash` to the objects that listen to it
+    /// (recorded, and stopped at by a breakpoint, like the module does):
+    /// `origin` is who sent it, `place` where a hit stops.
+    pub fn deliver(&mut self, hash: u32, origin: MessageOrigin, place: StopPlace) -> u32 {
+        let receivers: Vec<Guid> = self
+            .objects
+            .iter()
+            .map(|(o, listens)| (o.guid, listens))
+            .chain(self.logic.iter().map(|(g, _, listens)| (*g, listens)))
+            .filter(|(_, listens)| listens.contains(&hash))
+            .map(|(g, _)| g)
+            .collect();
+        if !self.stopped() && self.take_hit(|r| r.hit_by_message(hash, &mut || receivers.clone())) {
+            self.stop(
+                StopReason::Message {
+                    hash,
+                    data: 0,
+                    receivers: receivers.clone(),
+                },
+                place,
+            );
+        }
+        let count = receivers.len() as u32;
+        if count > 0 {
+            self.record(EventBody::Message {
+                hash,
+                data: 0,
+                forced: false,
+                listeners: count,
+                receivers,
+                origin,
+            });
+        }
+        count
+    }
+
+    /// The game prints `text` from `script` (Lua `print`).
+    pub fn print(&mut self, text: &str, script: &str, line: i32) {
+        self.record(EventBody::Output {
+            source: OutputSource::Print,
+            text: text.to_owned(),
+            script: script.to_owned(),
+            line,
+        });
+        if !self.stopped() && self.take_hit(|r| r.hit_by_output(text)) {
+            self.stop(
+                StopReason::Output {
+                    text: text.to_owned(),
+                    script: script.to_owned(),
+                    line,
+                },
+                StopPlace::Print,
+            );
+        }
+    }
+
+    /// One beat of the game's own traffic (`live fake --activity`): a
+    /// trigger sends `doctor_ping` to two objects, a traced node of the
+    /// visual script `doctor_demo` prints, and a message of the engine goes
+    /// out sixty times — recorded as a count (the rate limit per message).
+    /// Nothing happens while the game stands.
+    pub fn activity(&mut self, beat: u64) {
+        if self.stopped() {
+            return;
+        }
+        self.frame += 30;
+        self.sim_time_ms += 1000;
+        self.deliver(
+            doctor_toolkit_live::name_hash("doctor_ping"),
+            MessageOrigin::Game,
+            StopPlace::Bus,
+        );
+        self.print(
+            &format!("dt:doctor_demo:{};", 2 + beat % 2),
+            "doctor_demo.lua",
+            40,
+        );
+        self.record(EventBody::MessageCounts {
+            window_ms: 1000,
+            counts: vec![(doctor_toolkit_live::name_hash("iMsgRunningTick"), 60)],
+        });
+    }
 }
 
-fn answer(request: Request, config: &Config, w: &mut FakeWorld) -> Response {
+fn answer(request: Request, config: &Config, version: u16, w: &mut FakeWorld) -> Response {
     if w.wrong_edition {
         return Response::error(ErrorCode::Edition, "not PC 1.0.789.0");
     }
@@ -244,8 +378,22 @@ fn answer(request: Request, config: &Config, w: &mut FakeWorld) -> Response {
             "writes are switched off in doctor_live.cfg",
         );
     }
-    w.frame += 1;
-    w.sim_time_ms += 50;
+    if w.stopped() {
+        let in_frame = w
+            .debug
+            .stop
+            .as_ref()
+            .is_some_and(|s| s.place.allows_writes());
+        if request.writes() && !in_frame {
+            return Response::error(
+                ErrorCode::NotReady,
+                "the game stands at a breakpoint inside its code",
+            );
+        }
+    } else {
+        w.frame += 1;
+        w.sim_time_ms += 50;
+    }
     match request {
         Request::Hello { .. } => unreachable!("handled by serve"),
         Request::Status => Response::Status(Status {
@@ -256,7 +404,7 @@ fn answer(request: Request, config: &Config, w: &mut FakeWorld) -> Response {
             time_of_day: Some([12, 0, 0]),
         }),
         Request::Player => Response::Player(w.player),
-        Request::Camera => Response::Camera(w.camera),
+        Request::Camera => Response::Camera(w.debug.camera.or(w.camera)),
         Request::Streams => Response::Streams(
             w.streams
                 .iter()
@@ -307,6 +455,20 @@ fn answer(request: Request, config: &Config, w: &mut FakeWorld) -> Response {
                 ),
             })
         }
+        Request::Send {
+            message,
+            target: None,
+        } => {
+            // A message the link sends stops in the next frame (the module
+            // must answer the request first).
+            let hash = message.hash();
+            let count = w.deliver(hash, MessageOrigin::Link, StopPlace::Frame);
+            w.sent.push((hash, count));
+            Response::Done(Done {
+                count,
+                note: format!("{count} listener(s)"),
+            })
+        }
         Request::Send { message, target } => {
             let hash = message.hash();
             let receivers: Vec<Guid> = w
@@ -340,12 +502,7 @@ fn answer(request: Request, config: &Config, w: &mut FakeWorld) -> Response {
                 .strip_prefix("print(\"")
                 .and_then(|r| r.strip_suffix("\")"))
             {
-                w.record(EventBody::Output {
-                    source: OutputSource::Print,
-                    text: text.to_owned(),
-                    script: "doctor_live".into(),
-                    line: 1,
-                });
+                w.print(text, "doctor_live", 1);
                 return Response::Lua(LuaReply {
                     ok: true,
                     values: Vec::new(),
@@ -375,6 +532,14 @@ fn answer(request: Request, config: &Config, w: &mut FakeWorld) -> Response {
                     line: 1,
                     traceback: vec!["[C]: ?".into()],
                 });
+                if !w.stopped() && w.take_hit(|r| matches!(r.on, BreakOn::LuaError)) {
+                    w.stop(
+                        StopReason::LuaError {
+                            message: message.clone(),
+                        },
+                        StopPlace::Frame,
+                    );
+                }
                 Response::Lua(LuaReply {
                     ok: false,
                     values: vec![message],
@@ -382,10 +547,69 @@ fn answer(request: Request, config: &Config, w: &mut FakeWorld) -> Response {
             }
         }
         Request::Events { after, kinds, max } => {
+            let kinds = mask::for_version(kinds, version);
             let mut b = w.journal.after(after, kinds, usize::from(max.max(1)));
-            b.recording = mask::ALL;
+            b.recording = mask::for_version(mask::ALL_V3, version);
             Response::Events(b)
         }
+        Request::Break { rules, hold_s } => {
+            let n = rules.len() as u32;
+            w.debug.rules = rules;
+            w.debug.hold_limit_s = if hold_s == 0 { HOLD_DEFAULT_S } else { hold_s };
+            Response::Done(Done {
+                count: n,
+                note: format!("{n} breakpoint(s)"),
+            })
+        }
+        Request::Control(c) => {
+            let note = match c {
+                Control::Pause if !w.stopped() => {
+                    w.stop(StopReason::Pause, StopPlace::Frame);
+                    "paused"
+                }
+                Control::Pause => "already stopped",
+                Control::Continue => {
+                    w.debug.stop = None;
+                    "goes on"
+                }
+                Control::Step => {
+                    w.debug.stop = None;
+                    w.frame += 1;
+                    w.sim_time_ms += 50;
+                    w.stop(StopReason::Step, StopPlace::Frame);
+                    "one frame"
+                }
+            };
+            Response::Done(Done {
+                count: 0,
+                note: note.into(),
+            })
+        }
+        Request::Debug => Response::Debug(w.debug.clone()),
+        Request::SetCamera { camera } => {
+            w.debug.camera = camera;
+            Response::Done(Done {
+                count: u32::from(camera.is_some()),
+                note: "free camera".into(),
+            })
+        }
+        Request::Texture { name, data } => match w.textures.iter().find(|t| t.0 == name) {
+            None => Response::error(
+                ErrorCode::Failed,
+                format!("no loaded texture is named {name:#010x}"),
+            ),
+            Some(&(_, need)) if (data.len() as u64) < need => Response::error(
+                ErrorCode::Failed,
+                format!("{} bytes, the texture needs {need}", data.len()),
+            ),
+            Some(&(_, need)) => {
+                w.replaced.push((name, data.len()));
+                Response::Done(Done {
+                    count: 1,
+                    note: format!("{need} bytes to the render thread"),
+                })
+            }
+        },
         Request::World { filter, max } => {
             let mut out = World {
                 streams: vec![(1, "gf2\\cuba.str".into())],

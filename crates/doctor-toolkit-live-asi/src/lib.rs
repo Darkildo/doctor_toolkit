@@ -10,7 +10,8 @@
 //!    which runs the game's own function afterwards — every read and write
 //!    of game data happens there, on the main thread between frames;
 //! 4. with `journal=1` (the default), hooks what the game prints, the
-//!    errors of Lua and the message bus ([`journal`], stage 49);
+//!    errors of Lua and the message bus ([`journal`], stage 49) — the same
+//!    hooks carry breakpoints and the free camera ([`debug`], stage 35);
 //! 5. listens on `127.0.0.1:PORT` in a thread of its own.
 //!
 //! Nothing here unwinds into the game: every entry point catches panics.
@@ -18,6 +19,7 @@
 
 #![allow(clippy::missing_safety_doc)]
 
+mod debug;
 mod game;
 mod journal;
 mod server;
@@ -131,7 +133,7 @@ fn finish(job: Job) {
         )
     } else {
         let request = job.request.clone();
-        std::panic::catch_unwind(move || execute(request)).unwrap_or_else(|_| {
+        std::panic::catch_unwind(move || debug::as_job(|| execute(request))).unwrap_or_else(|_| {
             Response::error(doctor_toolkit_live::ErrorCode::Failed, "the module failed")
         })
     };
@@ -177,6 +179,32 @@ fn run_writes() {
     }
 }
 
+/// While the game stands at a breakpoint ([`debug`]): answers the requests
+/// that came — reads always, writes and Lua only when it stands in a level
+/// frame (`writes`), else they are refused.
+pub(crate) fn serve_held(writes: bool) {
+    if let Ok(rx) = jobs().1.try_lock() {
+        for _ in 0..8 {
+            let Ok(job) = rx.try_recv() else { break };
+            if !job.request.writes() {
+                finish(job);
+            } else if writes {
+                if let Ok(mut w) = WRITES.lock() {
+                    w.push(job);
+                }
+            } else {
+                let _ = job.reply.try_send(Response::error(
+                    doctor_toolkit_live::ErrorCode::NotReady,
+                    "the game stands at a breakpoint inside its code; writes and Lua run when it stands in a frame (pause or step)",
+                ));
+            }
+        }
+    }
+    if writes {
+        run_writes();
+    }
+}
+
 fn execute(request: Request) -> Response {
     let r = match &request {
         Request::Objects {
@@ -191,6 +219,7 @@ fn execute(request: Request) -> Response {
         Request::Lua { code } => game::lua(code),
         Request::Peek { address, len } => game::peek(*address, *len),
         Request::World { filter, max } => game::world(filter, *max),
+        Request::Texture { name, data } => debug::texture(*name, data),
         _ => Response::error(
             doctor_toolkit_live::ErrorCode::BadRequest,
             "not a main-thread request",
@@ -239,6 +268,8 @@ fn check_input() {
 extern "C" fn frame_hook() -> u32 {
     let frame = FRAME.fetch_add(1, Ordering::Relaxed) + 1;
     let _ = std::panic::catch_unwind(|| {
+        debug::mark_main_thread();
+        journal::tick();
         let snap = game::snapshot(frame);
         let state = doctor_toolkit_live::LoopState::from_u8(snap.state);
         STATE.store(snap.state, Ordering::Relaxed);
@@ -260,6 +291,7 @@ extern "C" fn frame_hook() -> u32 {
 /// `0x0067D160`): runs the queued writes, then the game's update, whose
 /// status it returns.
 extern "thiscall" fn update_hook(this: u32) -> u32 {
+    let _ = std::panic::catch_unwind(debug::frame_point);
     let _ = std::panic::catch_unwind(run_writes);
     // SAFETY: the method the vtable held before (checked bytes).
     let original: extern "thiscall" fn(u32) -> u32 =

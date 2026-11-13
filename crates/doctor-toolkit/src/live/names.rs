@@ -206,6 +206,27 @@ pub fn describe(e: &super::proto::Event, names: Option<&LiveNames>) -> String {
             }
             line
         }
+        EventBody::MessageCounts { window_ms, counts } => {
+            let total: u64 = counts.iter().map(|(_, n)| u64::from(*n)).sum();
+            let mut top = counts.clone();
+            top.sort_by_key(|x| std::cmp::Reverse(x.1));
+            let list: Vec<String> = top
+                .iter()
+                .take(5)
+                .map(|(h, n)| {
+                    let name = names
+                        .and_then(|x| x.message(*h))
+                        .map_or_else(|| format!("{h:#010x}"), str::to_owned);
+                    format!("{name} ×{n}")
+                })
+                .collect();
+            format!(
+                "messages without own events in {:.1} s: {total} of {} kind(s): {}",
+                f64::from(*window_ms) / 1000.0,
+                counts.len(),
+                list.join(", ")
+            )
+        }
     }
 }
 

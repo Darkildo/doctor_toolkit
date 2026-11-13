@@ -463,3 +463,35 @@ fn every_node_kind_compiles() {
     sim.start("all.lua").unwrap();
     sim.advance(5.0).unwrap();
 }
+
+#[test]
+fn traced_nodes_print_when_they_run() {
+    use super::compile::{parse_trace, trace_text};
+    let mut g = ScriptGraph::new("traced");
+    let ev = g.add(node("event.message").param("message", "iMsgPing"));
+    let send = g.add(node("action.send_message").input("message", "doctor_pong"));
+    g.connect((ev, "then"), (send, "exec"));
+    let plain = compile(&g);
+    assert!(!plain.source.contains("dt:traced"));
+    g.trace_nodes = true;
+    let c = compile(&g);
+    // The trace line belongs to its node (errors and the journal map back).
+    let line = c
+        .source
+        .lines()
+        .position(|l| l.contains(&format!("print(\"{}\")", trace_text("traced", send))))
+        .unwrap();
+    assert_eq!(c.node_at_line(line as u32 + 1), Some(send));
+    let mut sim = run(&g);
+    sim.send("iMsgPing").unwrap();
+    assert_eq!(
+        sim.vm.printed,
+        [trace_text("traced", ev), trace_text("traced", send)]
+    );
+    assert_eq!(parse_trace(&sim.vm.printed[1]), Some(("traced", send)));
+    assert_eq!(parse_trace("dt:a:b:12;"), Some(("a:b", 12)));
+    assert_eq!(parse_trace("hello"), None);
+    // The flag is kept in the JSON only when set.
+    assert!(g.to_json().contains("trace_nodes"));
+    assert!(!ScriptGraph::new("x").to_json().contains("trace_nodes"));
+}

@@ -23,9 +23,9 @@ use std::time::Duration;
 pub use doctor_toolkit_live as proto;
 pub use doctor_toolkit_live::config::Config;
 use doctor_toolkit_live::{
-    CONFIG_FILE, CameraView, Done, ErrorCode, EventBatch, Failure, Hello, LOG_FILE, LuaReply,
-    MODULE_FILE, MessageId, OLDEST_PROTOCOL_VERSION, ObjectInfo, PROTOCOL_VERSION, Pose, Request,
-    Response, Status, StreamInfo, World, WorldFilter, read_frame,
+    BreakRule, CONFIG_FILE, CameraView, Control, DebugState, Done, ErrorCode, EventBatch, Failure,
+    Hello, LOG_FILE, LuaReply, MODULE_FILE, MessageId, OLDEST_PROTOCOL_VERSION, ObjectInfo,
+    PROTOCOL_VERSION, Pose, Request, Response, Status, StreamInfo, World, WorldFilter, read_frame,
 };
 
 use crate::{Error, Result};
@@ -155,19 +155,26 @@ impl Client {
     /// while at 1–2 frames a second). A module that speaks only protocol 1
     /// (stage 34) refuses the first Hello and closes: then the client
     /// connects again with version 1 and does without the journal and the
-    /// list of every object.
+    /// list of every object. A module of protocol 2 (stage 49) the same
+    /// way: the client tries the versions from the newest down.
     pub fn connect(endpoint: &Endpoint, client: &str, timeout: Duration) -> LinkResult<Self> {
-        match Self::connect_with(endpoint, client, timeout, PROTOCOL_VERSION) {
-            Err(first) if first.code() == Some(ErrorCode::Version) => {
-                match Self::connect_with(endpoint, client, timeout, OLDEST_PROTOCOL_VERSION) {
-                    // The module refused for a reason of its own.
-                    Err(e) if e.code().is_some_and(|c| c != ErrorCode::Version) => Err(e),
-                    Err(_) => Err(first),
-                    ok => ok,
+        let mut first = None;
+        for version in (OLDEST_PROTOCOL_VERSION..=PROTOCOL_VERSION).rev() {
+            match Self::connect_with(endpoint, client, timeout, version) {
+                Err(e) if e.code() == Some(ErrorCode::Version) => {
+                    first.get_or_insert(e);
                 }
+                // A first refusal for a reason of its own stands; after a
+                // version refusal, an error of an older try does not hide it.
+                Err(e) if first.is_some() && e.code().is_none() => {
+                    return Err(first.unwrap_or(e));
+                }
+                other => return other,
             }
-            other => other,
         }
+        Err(first.unwrap_or_else(|| {
+            LinkError::Unexpected("no protocol version was accepted".to_owned())
+        }))
     }
 
     fn connect_with(
@@ -221,6 +228,12 @@ impl Client {
     /// (protocol 2, stage 49).
     pub fn has_journal(&self) -> bool {
         self.version >= 2
+    }
+
+    /// Whether the module has breakpoints, pause, the free camera and the
+    /// texture replacement (protocol 3, stage 35).
+    pub fn has_debug(&self) -> bool {
+        self.version >= 3
     }
 
     /// Changes how long answers may take.
@@ -351,6 +364,48 @@ impl Client {
     pub fn events(&mut self, after: u64, kinds: u8, max: u16) -> LinkResult<EventBatch> {
         match self.request(&Request::Events { after, kinds, max })? {
             Response::Events(b) => Ok(b),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    /// Breakpoints, and whether and where the game stands.
+    pub fn debug_state(&mut self) -> LinkResult<DebugState> {
+        match self.request(&Request::Debug)? {
+            Response::Debug(d) => Ok(d),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    /// Sets every breakpoint (an empty list clears them); a stop lasts at
+    /// most `hold_s` seconds (0: the module's default).
+    pub fn set_breaks(&mut self, rules: Vec<BreakRule>, hold_s: u16) -> LinkResult<Done> {
+        match self.request(&Request::Break { rules, hold_s })? {
+            Response::Done(d) => Ok(d),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    /// Pause, go on, one frame.
+    pub fn control(&mut self, control: Control) -> LinkResult<Done> {
+        match self.request(&Request::Control(control))? {
+            Response::Done(d) => Ok(d),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    /// The free camera: the game draws with `camera` until `None` (a write).
+    pub fn set_camera(&mut self, camera: Option<CameraView>) -> LinkResult<Done> {
+        match self.request(&Request::SetCamera { camera })? {
+            Response::Done(d) => Ok(d),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    /// New pixels for a loaded texture: the whole `tg4d` payload of the
+    /// texture named `name` (a write).
+    pub fn texture(&mut self, name: u32, data: Vec<u8>) -> LinkResult<Done> {
+        match self.request(&Request::Texture { name, data })? {
+            Response::Done(d) => Ok(d),
             other => Err(unexpected(other)),
         }
     }
@@ -596,6 +651,185 @@ pub fn free_port() -> u16 {
         }
     }
     proto::DEFAULT_PORT
+}
+
+/// A texture of the workspace that can go to the running game
+/// ([`Client::texture`]): its name hash (the last id of its `tg4h`/`tg4d`),
+/// stream and the edited `tg4d` payload.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HotTexture {
+    pub name: u32,
+    pub stream: String,
+    pub data: Vec<u8>,
+}
+
+/// Edited textures of a workspace (their `tg4d` changed), optionally only
+/// the one named `name` — what can be swapped in the running game without a
+/// restart (same size, format and levels as the loaded one; the module
+/// checks).
+pub fn hot_textures(
+    ws: &crate::workspace::Workspace,
+    name: Option<u32>,
+) -> Result<Vec<HotTexture>> {
+    let mut out = Vec::new();
+    for change in ws.changes() {
+        let key = &change.key;
+        if key.type_id != crate::resource::texture::TYPE_TG4D
+            || name.is_some_and(|n| n != key.ids[3])
+        {
+            continue;
+        }
+        if let Some(data) = ws.data(key)? {
+            out.push(HotTexture {
+                name: key.ids[3],
+                stream: key.stream.clone(),
+                data,
+            });
+        }
+    }
+    out.sort_by(|a, b| (a.name, &a.stream).cmp(&(b.name, &b.stream)));
+    out.dedup_by_key(|t| t.name);
+    Ok(out)
+}
+
+/// A world matrix as the game keeps it (rows right, up, forward — `+0x40`
+/// of a view, `+0xD0` of an entity) for an eye at `position` looking along
+/// `forward`, level (no roll): right = up × forward, up = forward × right.
+pub fn pose_looking(position: [f32; 3], forward: [f32; 3]) -> Pose {
+    let norm = |v: [f32; 3]| {
+        let l = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
+        if l > 1e-6 {
+            [v[0] / l, v[1] / l, v[2] / l]
+        } else {
+            [0.0, 0.0, 1.0]
+        }
+    };
+    let cross = |a: [f32; 3], b: [f32; 3]| {
+        [
+            a[1] * b[2] - a[2] * b[1],
+            a[2] * b[0] - a[0] * b[2],
+            a[0] * b[1] - a[1] * b[0],
+        ]
+    };
+    let f = norm(forward);
+    // Straight up or down: keep a heading along +Z.
+    let r = if f[0].abs() < 1e-4 && f[2].abs() < 1e-4 {
+        [1.0, 0.0, 0.0]
+    } else {
+        norm(cross([0.0, 1.0, 0.0], f))
+    };
+    Pose {
+        position,
+        right: r,
+        up: cross(f, r),
+        forward: f,
+    }
+}
+
+/// The textures of one stream of the game, every level painted one colour
+/// (`rgb`) — a check of the texture replacement that is seen at once in the
+/// game. 2D textures of known formats only; normal maps are left out.
+pub fn tinted_textures(
+    game: &crate::game::GameInstance,
+    stream: &str,
+    rgb: [u8; 3],
+) -> Result<Vec<HotTexture>> {
+    use crate::resource::texture::pairs;
+    use crate::resource::tg4::{Format, Kind, Tg4Header};
+    let Some(index) = game.find_stream(stream) else {
+        return Ok(Vec::new());
+    };
+    let file = game.open_stream(index)?;
+    let mut out = Vec::new();
+    for pair in pairs(file.layout()) {
+        let (Ok(head), Ok(mut data)) = (
+            file.resource_data(pair.header),
+            file.resource_data(pair.data),
+        ) else {
+            continue;
+        };
+        let Ok(header) = Tg4Header::parse(&head) else {
+            continue;
+        };
+        if header.kind() != Kind::Flat {
+            continue;
+        }
+        let format = header.format();
+        if matches!(format, Format::Dxt5Nm | Format::Other(_)) {
+            continue;
+        }
+        tint(&format, &mut data, rgb);
+        out.push(HotTexture {
+            name: file.layout().resources[pair.data].header.ids[3],
+            stream: stream.to_owned(),
+            data,
+        });
+    }
+    Ok(out)
+}
+
+/// Paints texture data of `format` one colour, in place (alpha is kept).
+pub fn tint(format: &crate::resource::tg4::Format, data: &mut [u8], rgb: [u8; 3]) {
+    use crate::resource::tg4::Format;
+    let c565 =
+        (u16::from(rgb[0] >> 3) << 11) | (u16::from(rgb[1] >> 2) << 5) | u16::from(rgb[2] >> 3);
+    let colour_block = |b: &mut [u8]| {
+        b[0..2].copy_from_slice(&c565.to_le_bytes());
+        b[2..4].copy_from_slice(&c565.to_le_bytes());
+        b[4..8].fill(0);
+    };
+    match format {
+        Format::Dxt1c | Format::Dxt1a => data.chunks_exact_mut(8).for_each(colour_block),
+        Format::Dxt5 | Format::Dxt5Nm => data
+            .chunks_exact_mut(16)
+            .for_each(|b| colour_block(&mut b[8..16])),
+        Format::Rgba8 => data.chunks_exact_mut(4).for_each(|p| {
+            // D3DFMT_A8R8G8B8 in memory: B, G, R, A.
+            p[0] = rgb[2];
+            p[1] = rgb[1];
+            p[2] = rgb[0];
+        }),
+        Format::L8 | Format::L8A8 | Format::A8 | Format::Other(_) => {}
+    }
+}
+
+#[cfg(test)]
+mod pose_tests {
+    use super::*;
+
+    #[test]
+    fn poses_look_where_asked() {
+        let p = pose_looking([1.0, 2.0, 3.0], [0.0, 0.0, 2.0]);
+        assert_eq!(
+            (p.right, p.up, p.forward),
+            ([1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0])
+        );
+        // Turned 90° to +X and looking down a little: still a world matrix.
+        let p = pose_looking([0.0; 3], [1.0, -0.5, 0.0]);
+        let m = [
+            p.right[0],
+            p.right[1],
+            p.right[2],
+            0.0,
+            p.up[0],
+            p.up[1],
+            p.up[2],
+            0.0,
+            p.forward[0],
+            p.forward[1],
+            p.forward[2],
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            1.0,
+        ];
+        assert!(proto::is_world_matrix(&m, false));
+        assert!((p.yaw() - std::f32::consts::FRAC_PI_2).abs() < 1e-5);
+        assert!(p.up[1] > 0.0);
+        let down = pose_looking([0.0; 3], [0.0, -1.0, 0.0]);
+        assert!(down.right == [1.0, 0.0, 0.0]);
+    }
 }
 
 #[cfg(test)]

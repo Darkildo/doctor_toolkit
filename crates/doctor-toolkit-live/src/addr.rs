@@ -254,3 +254,48 @@ pub const OBJECT_LISTENER_FLAGS: u32 = 0x40;
 /// `+0x1C` is the group of every object it made (`0x00446E9D`,
 /// `0x00405F40`).
 pub const STREAM_ID: u32 = 0x1C;
+
+// --- Stage 35: live debugging ---------------------------------------------------------
+
+/// The variable holding the hash of `iMsgBeforeRender` (registered at start
+/// up): the drawing of a level frame (`0x0040E1F0`) sends it through the bus
+/// first, before it picks the view and records the commands of the frame.
+/// The free camera of the module sets the view in its bus hook then.
+pub const BEFORE_RENDER_HASH: u32 = 0x0120_6960;
+/// The drawing of a level frame: `call 0x00408A00` with `iMsgBeforeRender`
+/// (`0x0040E222`), then the view `*(*0x0122339C + 0x14)` (or slot 0 of TLS
+/// `+0x24`).
+pub const FRAME_DRAW: u32 = 0x0040_E1F0;
+/// Sets the world matrix of a view: `EAX` the view, `ESI` the matrix (16
+/// floats aligned on 16 — `MOVAPS`), on the stack `bool invert` (the callee
+/// pops it, `RET 4`). Copies it to `+0x40`, makes the inverse (`+0`,
+/// `0x0056C640`) and the planes (`+0x80`, `0x00423900`) and, on the main
+/// thread, records the command that hands it to the render thread's copy
+/// of the view (`0x00422C50`).
+pub const VIEW_SET_MATRIX: u32 = 0x0042_2D40;
+/// Textures by name hash: `*0x012058E0` — 4096 buckets by `hash & 0xFFF`;
+/// a node is the texture object: name hash `+0x34`, next `+0x38`, handle
+/// `+4` (lookup `0x00611000`).
+pub const TEXTURE_MAP: u32 = 0x0120_58E0;
+pub const TEXTURE_NODE_NAME: u32 = 0x34;
+pub const TEXTURE_NODE_NEXT: u32 = 0x38;
+pub const TEXTURE_NODE_HANDLE: u32 = 0x04;
+/// The table of textures: 4096 entries of 0x38 bytes, a handle is the
+/// index. Entry: `+0` state (2–3 made, 4 locked), `+1` levels, `+2` width,
+/// `+4` height (u16), `+8` format (index of `0x00F15860`), `+0xC` flags (2
+/// cube, 4 volume, 8 render target), `+0x14` the `IDirect3DBaseTexture9`,
+/// `+0x30` pool (1 managed) — `0x00618640`, `0x00606AC0`.
+pub const TEXTURE_TABLE: u32 = 0x011A_0F28;
+pub const TEXTURE_ENTRY: u32 = 0x38;
+/// The command "fill the levels of texture `handle` from `data`" of the
+/// texture loader (`0x00619EF0` writes it, the render thread runs
+/// `0x0061A5F0` → `0x00619F50` → `0x00606AC0`): four words in the frame's
+/// command buffer — this pointer, the handle, the size, the data.
+pub const TEXTURE_FILL_COMMAND: u32 = 0x0112_78A4;
+/// The texture loader (`*0x01223558`): its list of uploads in flight `+0x20`
+/// (entries of 0x14 bytes, handle at `+4`), their number `+0x24`
+/// (`0x00619EA0`). A texture in that list is being loaded by the game: the
+/// module leaves it alone.
+pub const TEXTURE_LOADER: u32 = 0x0122_3558;
+pub const TEXTURE_LOADER_PENDING: u32 = 0x20;
+pub const TEXTURE_LOADER_PENDING_COUNT: u32 = 0x24;

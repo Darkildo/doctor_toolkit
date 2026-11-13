@@ -69,6 +69,8 @@ pub struct Display {
     number: u32,
     size: [u32; 2],
     server: String,
+    /// Keeps the thread that started the server (and so the server) alive.
+    _keeper: std::sync::mpsc::Sender<()>,
 }
 
 #[cfg(unix)]
@@ -111,9 +113,29 @@ impl Display {
                 });
             }
         }
-        let mut child = command
-            .spawn()
-            .map_err(|e| format!("{}: {e}", server.name()))?;
+        // The server dies with the thread that started it (above), and the
+        // tools of the MCP server run on tokio's blocking pool, whose threads
+        // end after some idle seconds: that killed Xvfb (and with it the
+        // game) about ten seconds after `play`. The server is started from a
+        // thread of its own that lives as long as this `Display`.
+        let (spawned_tx, spawned_rx) = std::sync::mpsc::channel();
+        let (keeper, keep) = std::sync::mpsc::channel::<()>();
+        let name = server.name();
+        std::thread::Builder::new()
+            .name("x-server".into())
+            .spawn(move || {
+                let spawned = command.spawn().map_err(|e| format!("{name}: {e}"));
+                let ok = spawned.is_ok();
+                let _ = spawned_tx.send(spawned);
+                if ok {
+                    // Until the `Display` is dropped (its sender goes).
+                    let _ = keep.recv();
+                }
+            })
+            .map_err(|e| format!("cannot start a thread for the X server: {e}"))?;
+        let mut child = spawned_rx
+            .recv()
+            .map_err(|_| "the X server thread ended".to_owned())??;
         let stdout = child.stdout.take().expect("piped");
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
@@ -139,6 +161,7 @@ impl Display {
             number,
             size,
             server: server.name(),
+            _keeper: keeper,
         })
     }
 
@@ -438,6 +461,39 @@ pub fn base64(data: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Tools run on tokio's blocking threads, which end when idle: the X
+    /// server started from one must outlive it (it killed the game ten
+    /// seconds after `play`), and still go with the `Display`.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn the_x_server_outlives_the_thread_that_asked_for_it() {
+        let server = XServer::Custom(
+            "sh".into(),
+            vec!["-c".into(), "echo 62; exec sleep 60".into()],
+        );
+        let mut display = std::thread::spawn(move || Display::start(&server, [320, 200]).unwrap())
+            .join()
+            .unwrap();
+        std::thread::sleep(Duration::from_millis(300));
+        assert!(
+            display.alive(),
+            "the X server died with the thread that started it"
+        );
+        let pid = display.child.id();
+        drop(display);
+        // Dropped: the keeper thread ends and the kernel kills the server.
+        let dead = || {
+            std::fs::read_to_string(format!("/proc/{pid}/stat"))
+                .map(|s| s.rsplit_once(") ").is_some_and(|(_, r)| r.starts_with('Z')))
+                .unwrap_or(true)
+        };
+        let until = Instant::now() + Duration::from_secs(10);
+        while !dead() && Instant::now() < until {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(dead(), "the X server outlived its Display");
+    }
 
     #[test]
     fn base64_matches_the_standard() {

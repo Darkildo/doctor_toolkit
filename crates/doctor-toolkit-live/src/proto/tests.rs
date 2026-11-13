@@ -63,6 +63,46 @@ fn requests() -> Vec<Request> {
             filter: WorldFilter::default(),
             max: 0,
         },
+        Request::Break {
+            rules: vec![
+                BreakRule::message(0xABCD_0001, Some([3; 16])),
+                BreakRule::message(0xABCD_0002, None),
+                BreakRule {
+                    on: BreakOn::Output {
+                        text: "dt:hello:4;".into(),
+                    },
+                    once: true,
+                },
+                BreakRule {
+                    on: BreakOn::LuaError,
+                    once: false,
+                },
+            ],
+            hold_s: 60,
+        },
+        Request::Break {
+            rules: Vec::new(),
+            hold_s: 0,
+        },
+        Request::Control(Control::Pause),
+        Request::Control(Control::Step),
+        Request::Debug,
+        Request::SetCamera {
+            camera: Some(CameraView {
+                pose: Pose {
+                    position: [1.0, 2.0, 3.0],
+                    right: [1.0, 0.0, 0.0],
+                    up: [0.0, 1.0, 0.0],
+                    forward: [0.0, 0.0, 1.0],
+                },
+                fov: Some(50.0),
+            }),
+        },
+        Request::SetCamera { camera: None },
+        Request::Texture {
+            name: 0x1234_5678,
+            data: vec![1, 2, 3, 4, 5],
+        },
     ]
 }
 
@@ -193,7 +233,68 @@ fn responses() -> Vec<(u16, Response)> {
                             origin: MessageOrigin::Link,
                         },
                     },
+                    Event {
+                        seq: 45,
+                        frame: 903,
+                        sim_time_ms: 12_150,
+                        body: EventBody::MessageCounts {
+                            window_ms: 1000,
+                            counts: vec![(0x1234_5678, 57), (7, 1)],
+                        },
+                    },
                 ],
+            }),
+        ),
+        (
+            kind::DEBUG,
+            Response::Debug(DebugState {
+                rules: vec![BreakRule::message(5, None)],
+                stop: Some(Stop {
+                    reason: StopReason::Message {
+                        hash: 5,
+                        data: 0,
+                        receivers: vec![[9; 16]],
+                    },
+                    place: StopPlace::Bus,
+                    frame: 77,
+                    sim_time_ms: 1500,
+                    seq: 120,
+                    held_ms: 3000,
+                    resume_in_ms: 117_000,
+                }),
+                pending: false,
+                hits: 1,
+                hold_limit_s: 120,
+                camera: None,
+            }),
+        ),
+        (kind::DEBUG, Response::Debug(DebugState::default())),
+        (
+            kind::DEBUG,
+            Response::Debug(DebugState {
+                stop: Some(Stop {
+                    reason: StopReason::Output {
+                        text: "dt:a:1;".into(),
+                        script: "a.lua".into(),
+                        line: 9,
+                    },
+                    place: StopPlace::Print,
+                    frame: 1,
+                    sim_time_ms: 2,
+                    seq: 3,
+                    held_ms: 4,
+                    resume_in_ms: 5,
+                }),
+                pending: true,
+                camera: Some(CameraView { pose, fov: None }),
+                ..DebugState::default()
+            }),
+        ),
+        (
+            kind::CONTROL,
+            Response::Done(Done {
+                count: 0,
+                note: "paused".into(),
             }),
         ),
         (
@@ -261,7 +362,7 @@ fn writes_are_marked() {
         writes,
         [
             false, false, false, false, false, false, false, true, true, true, true, true, false,
-            false, false, false
+            false, false, false, false, false, false, false, false, true, true, true
         ]
     );
 }
@@ -271,7 +372,7 @@ fn header_layout_is_fixed() {
     let bytes = Request::Status.to_frame(0x0102_0304);
     assert_eq!(
         bytes,
-        [b'D', b'T', b'L', b'V', 2, 0, 2, 0, 4, 3, 2, 1, 0, 0, 0, 0]
+        [b'D', b'T', b'L', b'V', 3, 0, 2, 0, 4, 3, 2, 1, 0, 0, 0, 0]
     );
     // A client of stage 34 sends version 1, and gets its answer in it.
     let old = Request::Status.to_frame_of(1, 0x0102_0304);
@@ -294,12 +395,20 @@ fn header_layout_is_fixed() {
 
 #[test]
 fn versions_and_their_requests() {
-    assert!(supported(1) && supported(2));
-    assert!(!supported(0) && !supported(3));
+    assert!(supported(1) && supported(2) && supported(3));
+    assert!(!supported(0) && !supported(4));
     assert_eq!(OLDEST_PROTOCOL_VERSION, 1);
     for r in requests() {
-        let new = matches!(r, Request::Events { .. } | Request::World { .. });
-        assert_eq!(r.since(), if new { 2 } else { 1 }, "{r:?}");
+        let since = match r {
+            Request::Events { .. } | Request::World { .. } => 2,
+            Request::Break { .. }
+            | Request::Control(_)
+            | Request::Debug
+            | Request::SetCamera { .. }
+            | Request::Texture { .. } => 3,
+            _ => 1,
+        };
+        assert_eq!(r.since(), since, "{r:?}");
         assert!(r.since() <= PROTOCOL_VERSION);
     }
 }

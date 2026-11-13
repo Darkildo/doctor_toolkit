@@ -110,16 +110,22 @@ fn fov_from_planes(planes: &[f32; 24], up: [f32; 3]) -> Option<f32> {
     (1.0..170.0).contains(&fov).then_some(fov)
 }
 
+/// The view the game draws with: the camera manager's current one, or the
+/// view of slot 0 of TLS (`0x0040E1F0`, `0x0040E0A0`).
+pub fn current_view(m: &mut Mem) -> Option<u32> {
+    let manager = m.ptr(CAMERA_MANAGER)?;
+    if m.u32(manager + CAMERA_FLAG)? == 0 {
+        let tls = m.ptr(tls_slot0())?;
+        m.ptr(tls + 0x24)
+    } else {
+        m.ptr(manager + CAMERA_CURRENT)
+    }
+}
+
 /// The camera the game renders from: the camera manager's current camera
 /// (`0x0040E0A0`; its world matrix at `+0x40`, frustum planes at `+0x80`).
 pub fn camera(m: &mut Mem) -> Option<CameraView> {
-    let manager = m.ptr(CAMERA_MANAGER)?;
-    let cam = if m.u32(manager + CAMERA_FLAG)? == 0 {
-        let tls = m.ptr(tls_slot0())?;
-        m.ptr(tls + 0x24)?
-    } else {
-        m.ptr(manager + CAMERA_CURRENT)?
-    };
+    let cam = current_view(m)?;
     let f: [f32; 16] = m.f32s(cam + CAMERA_MATRIX)?;
     if !doctor_toolkit_live::is_world_matrix(&f, false) {
         return None;

@@ -44,6 +44,7 @@ unsafe extern "system" {
         id: *mut u32,
     ) -> Handle;
     pub fn CloseHandle(handle: Handle) -> i32;
+    pub fn GetCurrentThreadId() -> u32;
 }
 
 /// Whether `[address, address + len)` is committed, readable memory.

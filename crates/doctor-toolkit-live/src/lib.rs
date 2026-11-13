@@ -15,13 +15,16 @@
 //!   token, whether writes are allowed);
 //! - [`journal`]: events of the game's journal (stage 49) — what it prints,
 //!   Lua errors, messages of the bus — and the ring the module keeps them in;
-//! - [`world`]: every SimGroup object, logic included (stage 49).
+//! - [`world`]: every SimGroup object, logic included (stage 49);
+//! - [`debug`]: breakpoints, pause and step, the free camera and the
+//!   replacement of a texture (stage 35).
 //!
 //! The crate has no dependencies: the module builds it for
 //! `i686-pc-windows-gnu`, the editor for the host.
 
 pub mod addr;
 pub mod config;
+pub mod debug;
 pub mod edition;
 pub mod journal;
 pub mod proto;

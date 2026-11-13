@@ -36,6 +36,9 @@ impl BrowserApp {
                 editor.preset_show = true;
             } else if let Some(inputs) = part.strip_prefix("run=") {
                 editor.preset_run(&inputs.replace('|', ";"), until);
+            } else if part == "live" {
+                // Stage 35: the Live layer on (with DOCTOR_TOOLKIT_GUI_LIVE).
+                editor.live.on = true;
             }
         }
         if let Some(id) = id {

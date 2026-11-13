@@ -141,6 +141,8 @@ pub struct LogicEditor {
     pub preset_show: bool,
     /// «Run» mode: the logic runs without the game (stage 38).
     runm: run_mode::RunMode,
+    /// Messages as they go, from the running game (stage 35).
+    pub live: crate::logic_live::LiveOverlay,
 }
 
 impl LogicEditor {
@@ -174,6 +176,21 @@ impl LogicEditor {
             find_after_load: None,
             preset_show: false,
             runm: run_mode::RunMode::default(),
+            live: crate::logic_live::LiveOverlay::default(),
+        }
+    }
+
+    /// Messages that went in the game (or a run of the logic): the "Live"
+    /// layer lights them when it is on.
+    pub fn live_feed(&mut self, events: &[doctor_toolkit::logic_graph::trace::TraceEvent]) {
+        if let Some(graph) = &self.graph {
+            let selected: HashSet<usize> = self
+                .view
+                .selection()
+                .iter()
+                .map(|id| id.0 as usize)
+                .collect();
+            self.live.feed(graph, events, &selected);
         }
     }
 
@@ -310,6 +327,7 @@ impl LogicEditor {
                     .selected
                     .and_then(|n| self.graph.as_ref()?.nodes.get(n)?.object());
                 self.spec = Some(spec);
+                self.live.graph_changed(&graph);
                 self.graph = Some(graph);
                 self.run_reset();
                 self.rebuild_shown();
@@ -687,6 +705,7 @@ impl LogicEditor {
             action = Some(LogicAction::ShowInLevel { group, object });
         }
         self.toolbar(ui, ws);
+        ui.horizontal_wrapped(|ui| self.live.toolbar(ui, self.graph.as_ref()));
         if self.graph.is_none() {
             ui.add_space(20.0);
             ui.vertical_centered(|ui| {
@@ -707,6 +726,9 @@ impl LogicEditor {
                 egui::ScrollArea::vertical()
                     .auto_shrink(false)
                     .show(ui, |ui| {
+                        if let Some(g) = &self.graph {
+                            self.live.side_panel(ui, g, self.selected);
+                        }
                         action = self.side_panel(ui).or(action.take());
                     });
             });
@@ -722,6 +744,25 @@ impl LogicEditor {
                     .or(menu_cmd.take());
             }
         });
+        if let Some(g) = &self.graph {
+            self.live.paint(
+                ui,
+                response.response.rect,
+                &self.view,
+                &self.shown,
+                &self.wire_of,
+                g,
+            );
+            if self.live.animating() {
+                ui.ctx().request_repaint();
+            }
+        }
+        if let Some(nodes) = self.live.take_selection() {
+            self.view
+                .set_selection(nodes.iter().map(|&n| NodeId(n as u64)));
+            self.selected = nodes.first().copied();
+            self.view.frame_selection();
+        }
         if let Some(cmd) = menu_cmd {
             menu_action = self.run_menu(cmd);
         }

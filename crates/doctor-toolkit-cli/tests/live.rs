@@ -377,3 +377,107 @@ fn a_module_without_the_journal() {
     assert!(o.status.success(), "{}", stderr(&o));
     assert!(stdout(&o).contains("(protocol 1)"), "{}", stdout(&o));
 }
+
+#[test]
+fn breakpoints_pause_freecam_and_textures() {
+    let game = fake(true);
+    let logs = tempfile::tempdir().unwrap();
+    let port = game.port.to_string();
+    let link = ["--port", port.as_str(), "--token", "tok"];
+    let cmd = |sub: &[&str]| {
+        let mut args = vec!["live"];
+        args.extend_from_slice(sub);
+        args.extend_from_slice(&link);
+        run(&args, logs.path())
+    };
+
+    let o = cmd(&["break"]);
+    assert!(o.status.success(), "{}", stderr(&o));
+    assert!(stdout(&o).contains("no breakpoints"), "{}", stdout(&o));
+    let o = cmd(&[
+        "break",
+        "--message",
+        "doctor_ping",
+        "--to",
+        "04040404040404040404040404040404",
+        "--hold",
+        "30",
+    ]);
+    assert!(o.status.success(), "{}", stderr(&o));
+    let text = stdout(&o);
+    assert!(text.contains("break on message"), "{text}");
+    assert!(text.contains("at most 30 s"), "{text}");
+    // --add keeps the rules set before.
+    let o = cmd(&["break", "--lua-error", "--add"]);
+    assert!(stdout(&o).contains("break on Lua errors"), "{}", stdout(&o));
+    assert_eq!(game.world.lock().unwrap().debug.rules.len(), 2);
+    // The game's traffic stops it in the bus.
+    game.world.lock().unwrap().activity(0);
+    let o = cmd(&["break", "--wait", "--json"]);
+    let v: serde_json::Value = serde_json::from_str(stdout(&o).trim()).unwrap();
+    assert_eq!(v["stopped"], true);
+    assert_eq!(v["place"], "message bus");
+    let o = cmd(&["continue"]);
+    assert!(stdout(&o).contains("goes on"), "{}", stdout(&o));
+    let o = cmd(&["pause"]);
+    assert!(stdout(&o).contains("paused"), "{}", stdout(&o));
+    let o = cmd(&["continue", "--step"]);
+    assert!(stdout(&o).contains("one frame"), "{}", stdout(&o));
+    let o = cmd(&["break"]);
+    assert!(
+        stdout(&o).contains("STOPPED in the frame"),
+        "{}",
+        stdout(&o)
+    );
+    cmd(&["continue"]);
+    let o = cmd(&["break", "--clear"]);
+    assert!(stdout(&o).contains("no breakpoints"), "{}", stdout(&o));
+    // The journal's counts of messages.
+    let o = cmd(&["log", "--messages"]);
+    assert!(
+        stdout(&o).contains("messages without own events"),
+        "{}",
+        stdout(&o)
+    );
+
+    // The free camera: a write, needs --yes.
+    let o = cmd(&["freecam", "1,2,3", "--yaw", "90"]);
+    assert!(!o.status.success());
+    let o = cmd(&["freecam", "1,2,3", "--yaw", "90", "--yes"]);
+    assert!(o.status.success(), "{}", stderr(&o));
+    let o = cmd(&["camera"]);
+    assert!(
+        stdout(&o).starts_with("1.000 2.000 3.000 looking 1.0000"),
+        "{}",
+        stdout(&o)
+    );
+    let o = cmd(&["freecam", "--release", "--yes"]);
+    assert!(o.status.success(), "{}", stderr(&o));
+    assert!(game.world.lock().unwrap().debug.camera.is_none());
+
+    // Textures come from the workspace of --game.
+    let o = cmd(&["texture", "--yes"]);
+    assert!(!o.status.success());
+    assert!(stderr(&o).contains("--game"), "{}", stderr(&o));
+}
+
+#[test]
+fn a_module_without_debugging() {
+    let game = fake(true);
+    game.world.lock().unwrap().protocol = 2;
+    let logs = tempfile::tempdir().unwrap();
+    let port = game.port.to_string();
+    let o = run(
+        &["live", "pause", "--port", &port, "--token", "tok"],
+        logs.path(),
+    );
+    assert!(!o.status.success());
+    assert!(stderr(&o).contains("protocol 2"), "{}", stderr(&o));
+    // The rest still answers.
+    let o = run(
+        &["live", "status", "--port", &port, "--token", "tok"],
+        logs.path(),
+    );
+    assert!(o.status.success(), "{}", stderr(&o));
+    assert!(stdout(&o).contains("(protocol 2)"), "{}", stdout(&o));
+}

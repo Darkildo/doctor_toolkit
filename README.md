@@ -43,7 +43,8 @@ original files are never lost.
 - **Play and debug:** start the game from the editor straight into a city or
   at a point, see it in an editor tab (with DXVK under Wine), and talk to the
   running game through a live link: player, camera, objects, teleport,
-  messages, Lua (the in-game module is built from source for now).
+  messages, Lua; breakpoints on messages, pause and step, the logic graph
+  lighting up as messages go (`doctor_live.asi` comes with the release).
 - **AI assistants:** `doctor-toolkit mcp` lets Claude Code, Claude Desktop or
   any MCP client search the game, read resources as JSON and follow the
   logic of missions; with flags it also edits through the workspace (each
@@ -66,12 +67,12 @@ documentation of this tool only.
 
 1. Download the package for your system from the
    [latest release](https://github.com/Darkildo/doctor_toolkit/releases)
-   (Linux x86_64; Windows x86_64 and macOS from the next release on) or
+   (Linux x86_64, Windows x86_64, macOS) or
    [build from source](#building-from-source).
 2. Unpack it and start the editor with the folder of your game:
 
    ```sh
-   tar xzf doctor_toolkit-0.0.1-linux-x86_64.tar.gz && cd doctor_toolkit-0.0.1-linux-x86_64
+   tar xzf doctor_toolkit-0.0.2-linux-x86_64.tar.gz && cd doctor_toolkit-0.0.2-linux-x86_64
    ./doctor-toolkit-gui "/path/to/The Godfather II"
    ```
 
@@ -268,7 +269,7 @@ Download `doctor_toolkit-<version>-linux-x86_64.tar.gz` from the releases,
 unpack it anywhere and run the programs from that folder:
 
 ```sh
-tar xzf doctor_toolkit-0.0.1-linux-x86_64.tar.gz && cd doctor_toolkit-0.0.1-linux-x86_64
+tar xzf doctor_toolkit-0.0.2-linux-x86_64.tar.gz && cd doctor_toolkit-0.0.2-linux-x86_64
 ./doctor-toolkit-gui "/path/to/The Godfather II"     # the editor
 ./doctor-toolkit-mods "/path/to/The Godfather II"    # the mod manager for players
 ./doctor-toolkit --help                              # the command line

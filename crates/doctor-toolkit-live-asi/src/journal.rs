@@ -27,8 +27,8 @@ use std::time::Instant;
 use doctor_toolkit_live::LoopState;
 use doctor_toolkit_live::addr::*;
 use doctor_toolkit_live::journal::{
-    EventBatch, EventBody, MAX_RECEIVERS, MAX_TRACEBACK, MessageOrigin, OutputSource, Ring, clip,
-    mask,
+    Counts, EventBatch, EventBody, MAX_RECEIVERS, MAX_TRACEBACK, MessageOrigin, OutputSource, Ring,
+    clip, mask,
 };
 
 use crate::win::{self, Mem};
@@ -40,6 +40,9 @@ static RECORDING: AtomicU8 = AtomicU8::new(0);
 /// Until when (milliseconds since start) messages are recorded: a client
 /// that asks for them keeps this ahead.
 static MESSAGES_UNTIL: AtomicU32 = AtomicU32::new(0);
+/// Messages over the rate limit of their hash, counted for the next
+/// [`EventBody::MessageCounts`], and when the last one was recorded.
+static COUNTS: Mutex<Option<(Counts, u32)>> = Mutex::new(None);
 /// The live link itself sends a message now (the bus records it as ours).
 static LINK_SENDING: AtomicBool = AtomicBool::new(false);
 /// What the import slot of `OutputDebugStringA` held.
@@ -126,6 +129,28 @@ pub fn events(after: u64, kinds: u8, max: u16) -> EventBatch {
     }
 }
 
+/// Number the next event will get.
+pub fn next_seq() -> u64 {
+    ring().as_ref().map_or(0, Ring::next_seq)
+}
+
+/// Once per pass of the main loop: about once a second, the counts of
+/// messages over their rate limit become an event.
+pub fn tick() {
+    let now = now_ms();
+    let Ok(mut c) = COUNTS.try_lock() else { return };
+    let (counts, last) = c.get_or_insert_with(|| (Counts::default(), now));
+    let window = now.wrapping_sub(*last);
+    if window < 1000 {
+        return;
+    }
+    *last = now;
+    if let Some(body) = counts.take(window) {
+        drop(c);
+        record(body);
+    }
+}
+
 /// Marks the messages sent while `f` runs as sent by the live link.
 pub fn as_link<T>(f: impl FnOnce() -> T) -> T {
     LINK_SENDING.store(true, Ordering::Relaxed);
@@ -169,6 +194,7 @@ extern "system" fn output_hook(text: *const u8) {
                 line: 0,
             });
         }
+        crate::debug::after_output(t, "", 0);
     });
     let original = OUTPUT_ORIGINAL.load(Ordering::Relaxed);
     if original != 0 {
@@ -183,9 +209,6 @@ extern "system" fn output_hook(text: *const u8) {
 /// caller and the printed text (`0x0046BF77`, `cdecl`).
 extern "C" fn print_hook(script: *const u8, line: i32, what: *const u8, text: *const u8) {
     let _ = std::panic::catch_unwind(|| {
-        if !admit(mask::OUTPUT) {
-            return;
-        }
         // SAFETY: strings of the Lua state and of the game's print.
         let (s, t) = unsafe { (c_text(script), c_text(text)) };
         let script = if s.starts_with(['@', '=']) {
@@ -193,12 +216,15 @@ extern "C" fn print_hook(script: *const u8, line: i32, what: *const u8, text: *c
         } else {
             s
         };
-        record(EventBody::Output {
-            source: OutputSource::Print,
-            text: clip(&t),
-            script,
-            line,
-        });
+        if admit(mask::OUTPUT) {
+            record(EventBody::Output {
+                source: OutputSource::Print,
+                text: clip(&t),
+                script: script.clone(),
+                line,
+            });
+        }
+        crate::debug::after_output(&t, &script, line);
     });
     let original = PRINT_ORIGINAL.load(Ordering::Relaxed);
     if original != 0 {
@@ -403,11 +429,18 @@ extern "C" fn protected_hook(l: u32, f: u32, ud: u32) -> i32 {
     let status = original(l, f, ud);
     if status != 0 {
         let _ = std::panic::catch_unwind(|| {
-            if admit(mask::LUA_ERROR)
-                && let Some(body) = lua_error(l, status)
-            {
+            let admitted = admit(mask::LUA_ERROR);
+            let Some(body) = lua_error(l, status) else {
+                return;
+            };
+            let message = match &body {
+                EventBody::LuaError { message, .. } => message.clone(),
+                _ => String::new(),
+            };
+            if admitted {
                 record(body);
             }
+            crate::debug::after_lua_error(&message);
         });
     }
     status
@@ -450,15 +483,33 @@ fn admit_hash(hash: u32) -> bool {
 /// Records a message the bus is about to deliver (called by the thunk with
 /// the bus's arguments).
 extern "C" fn on_bus(message: *const Message, force: u32) {
-    if now_ms() > MESSAGES_UNTIL.load(Ordering::Relaxed) || message.is_null() {
+    if message.is_null() {
         return;
     }
     let _ = std::panic::catch_unwind(|| {
         // SAFETY: the message the game passes to its bus.
         let (hash, data) = unsafe { ((*message).hash, (*message).data) };
+        record_message(hash, data, force);
+        // Breakpoints and the free camera (stage 35), recorded or not: after
+        // the record, so the journal shows the message a break stops at.
+        crate::debug::before_message(hash, data, force & 0xFF != 0);
+    });
+}
+
+/// Records a message of the bus while a client asks for them.
+fn record_message(hash: u32, data: u32, force: u32) {
+    {
+        if now_ms() > MESSAGES_UNTIL.load(Ordering::Relaxed) {
+            return;
+        }
         if !admit_hash(hash) {
             if let Some(r) = ring().as_mut() {
                 r.lose(second(), mask::MESSAGE);
+            }
+            if let Ok(mut c) = COUNTS.try_lock() {
+                c.get_or_insert_with(|| (Counts::default(), now_ms()))
+                    .0
+                    .add(hash);
             }
             return;
         }
@@ -481,7 +532,7 @@ extern "C" fn on_bus(message: *const Message, force: u32) {
                 MessageOrigin::Game
             },
         ));
-    });
+    }
 }
 
 /// The event of a message delivered to `listeners`.
@@ -673,7 +724,7 @@ pub fn install() -> Vec<&'static str> {
     // relative operand); installed from DllMain, before the game's threads
     // run its code.
     if unsafe { jump(MESSAGE_SEND, thunk) } {
-        recording |= mask::MESSAGE;
+        recording |= mask::MESSAGE | mask::MESSAGE_COUNTS;
     } else {
         failed.push("message bus");
     }

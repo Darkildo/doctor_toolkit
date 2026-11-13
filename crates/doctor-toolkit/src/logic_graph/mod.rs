@@ -19,6 +19,8 @@
 //!
 //! Edits of the graph (connect, disconnect, add and remove nodes, change
 //! parameters) are SimGroup edits recorded in a workspace: [`edit`].
+//! Messages as they go — from the running game or a run without it — are
+//! matched to nodes and wires by [`trace`].
 //! See `docs/logic-graph.md`.
 
 pub mod edit;
@@ -26,6 +28,7 @@ pub mod index;
 pub mod run;
 pub mod schema;
 pub mod scope;
+pub mod trace;
 
 #[cfg(test)]
 mod tests;

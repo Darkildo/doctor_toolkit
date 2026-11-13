@@ -26,6 +26,13 @@
 //! version 2 then connects again with version 1 and does without the new
 //! requests (a module of stage 34).
 //!
+//! Version 3 (stage 35) adds live debugging ([`crate::debug`]):
+//! breakpoints ([`Request::Break`]), pause and step ([`Request::Control`]),
+//! their state ([`Request::Debug`]), the free camera
+//! ([`Request::SetCamera`]), the replacement of a texture
+//! ([`Request::Texture`]) and counts of the messages the journal does not
+//! record one by one ([`crate::journal::mask::MESSAGE_COUNTS`]).
+//!
 //! Writes into the game ([`Request::Teleport`], [`Request::Send`],
 //! [`Request::Lua`]) are separate requests: the editor asks before it sends
 //! them, and the module refuses them when its configuration says
@@ -34,6 +41,7 @@
 use std::fmt;
 use std::io::{Read, Write};
 
+pub use crate::debug::{BreakOn, BreakRule, Control, DebugState, Stop, StopPlace, StopReason};
 pub use crate::journal::{Event, EventBatch, EventBody, MessageOrigin, OutputSource};
 use crate::wire::{Reader, Writer};
 pub use crate::world::{World, WorldFilter, WorldObject};
@@ -41,7 +49,7 @@ pub use crate::world::{World, WorldFilter, WorldObject};
 /// Magic of every frame.
 pub const MAGIC: [u8; 4] = *b"DTLV";
 /// Version of this protocol: what a client sends first.
-pub const PROTOCOL_VERSION: u16 = 2;
+pub const PROTOCOL_VERSION: u16 = 3;
 /// Oldest version a module still answers.
 pub const OLDEST_PROTOCOL_VERSION: u16 = 1;
 
@@ -51,8 +59,9 @@ pub fn supported(version: u16) -> bool {
 }
 /// Size of a frame header.
 pub const HEADER_LEN: usize = 16;
-/// Largest payload either side sends or accepts.
-pub const MAX_PAYLOAD: usize = 1 << 20;
+/// Largest payload either side sends or accepts (32 MB since protocol 3:
+/// a texture with its levels; the rest stays far below 1 MB).
+pub const MAX_PAYLOAD: usize = 32 << 20;
 /// Kind bit of a reply.
 pub const REPLY: u16 = 0x8000;
 /// Kind of an error reply.
@@ -256,6 +265,22 @@ pub enum Request {
     /// Version 2: every SimGroup object of the game that passes `filter`,
     /// at most `max` ([`crate::world::MAX_WORLD_OBJECTS`]).
     World { filter: WorldFilter, max: u32 },
+    /// Version 3: the breakpoints (all of them: an empty list clears) and
+    /// how long a stop may last before the game goes on by itself
+    /// (seconds, at most [`crate::debug::HOLD_MAX_S`]). Not a write: the
+    /// game's data stay as they are.
+    Break { rules: Vec<BreakRule>, hold_s: u16 },
+    /// Version 3: pause, go on, one frame.
+    Control(Control),
+    /// Version 3: breakpoints, whether and where the game stands.
+    Debug,
+    /// Version 3, writes: render with this camera instead of the game's,
+    /// every frame, until `None`.
+    SetCamera { camera: Option<CameraView> },
+    /// Version 3, writes: new pixels for the loaded texture whose name hash
+    /// (the last id of its `tg4h`/`tg4d` resources) is `name`: the whole
+    /// `tg4d` payload, every level, of the same size and format.
+    Texture { name: u32, data: Vec<u8> },
 }
 
 /// Kinds of requests.
@@ -272,6 +297,11 @@ pub mod kind {
     pub const PEEK: u16 = 10;
     pub const EVENTS: u16 = 11;
     pub const WORLD: u16 = 12;
+    pub const BREAK: u16 = 13;
+    pub const CONTROL: u16 = 14;
+    pub const DEBUG: u16 = 15;
+    pub const SET_CAMERA: u16 = 16;
+    pub const TEXTURE: u16 = 17;
 }
 
 impl Request {
@@ -289,6 +319,11 @@ impl Request {
             Self::Peek { .. } => kind::PEEK,
             Self::Events { .. } => kind::EVENTS,
             Self::World { .. } => kind::WORLD,
+            Self::Break { .. } => kind::BREAK,
+            Self::Control(_) => kind::CONTROL,
+            Self::Debug => kind::DEBUG,
+            Self::SetCamera { .. } => kind::SET_CAMERA,
+            Self::Texture { .. } => kind::TEXTURE,
         }
     }
 
@@ -296,6 +331,11 @@ impl Request {
     pub fn since(&self) -> u16 {
         match self {
             Self::Events { .. } | Self::World { .. } => 2,
+            Self::Break { .. }
+            | Self::Control(_)
+            | Self::Debug
+            | Self::SetCamera { .. }
+            | Self::Texture { .. } => 3,
             _ => 1,
         }
     }
@@ -304,7 +344,11 @@ impl Request {
     pub fn writes(&self) -> bool {
         matches!(
             self,
-            Self::Teleport { .. } | Self::Send { .. } | Self::Lua { .. }
+            Self::Teleport { .. }
+                | Self::Send { .. }
+                | Self::Lua { .. }
+                | Self::SetCamera { .. }
+                | Self::Texture { .. }
         )
     }
 
@@ -386,6 +430,18 @@ impl Request {
                 });
                 w.u32(*max);
             }
+            Self::Break { rules, hold_s } => {
+                crate::debug::put_rules(&mut w, rules);
+                w.u16(*hold_s);
+            }
+            Self::Control(c) => w.u8(*c as u8),
+            Self::Debug => {}
+            Self::SetCamera { camera } => crate::debug::put_camera(&mut w, camera),
+            Self::Texture { name, data } => {
+                w.u32(*name);
+                w.u32(data.len() as u32);
+                w.bytes(data);
+            }
         }
         w.buf
     }
@@ -449,6 +505,24 @@ impl Request {
                     },
                 },
                 max: r.u32()?,
+            },
+            kind::BREAK => Self::Break {
+                rules: crate::debug::get_rules(&mut r)?,
+                hold_s: r.u16()?,
+            },
+            kind::CONTROL => {
+                Self::Control(Control::from_u8(r.u8()?).ok_or(DecodeError::BadValue("control"))?)
+            }
+            kind::DEBUG => Self::Debug,
+            kind::SET_CAMERA => Self::SetCamera {
+                camera: crate::debug::get_camera(&mut r)?,
+            },
+            kind::TEXTURE => Self::Texture {
+                name: r.u32()?,
+                data: {
+                    let n = r.count(1)?;
+                    r.take(n)?.to_vec()
+                },
             },
             other => return Err(DecodeError::UnknownKind(other)),
         };
@@ -655,6 +729,8 @@ pub enum Response {
     Events(EventBatch),
     /// Version 2: answer to [`Request::World`].
     World(World),
+    /// Version 3: answer to [`Request::Debug`].
+    Debug(DebugState),
     Error(Failure),
 }
 
@@ -767,6 +843,7 @@ impl Response {
             }
             Self::Events(b) => put_events(&mut w, b),
             Self::World(world) => put_world(&mut w, world),
+            Self::Debug(d) => crate::debug::put_state(&mut w, d),
             Self::Error(e) => {
                 w.u16(e.code as u16);
                 w.str(&e.message);
@@ -841,7 +918,12 @@ impl Response {
                     }
                     Self::Objects(list)
                 }
-                kind::TELEPORT | kind::SEND => Self::Done(Done {
+                kind::TELEPORT
+                | kind::SEND
+                | kind::BREAK
+                | kind::CONTROL
+                | kind::SET_CAMERA
+                | kind::TEXTURE => Self::Done(Done {
                     count: r.u32()?,
                     note: r.str()?,
                 }),
@@ -860,6 +942,7 @@ impl Response {
                 }
                 kind::EVENTS => Self::Events(get_events(&mut r)?),
                 kind::WORLD => Self::World(get_world(&mut r)?),
+                kind::DEBUG => Self::Debug(crate::debug::get_state(&mut r)?),
                 other => return Err(DecodeError::UnknownKind(other | REPLY)),
             }
         };
@@ -936,6 +1019,15 @@ fn put_events(w: &mut Writer, b: &EventBatch) {
                 }
                 w.u8(*origin as u8);
             }
+            EventBody::MessageCounts { window_ms, counts } => {
+                w.u8(4);
+                w.u32(*window_ms);
+                w.u32(counts.len() as u32);
+                for (h, n) in counts {
+                    w.u32(*h);
+                    w.u32(*n);
+                }
+            }
         }
     }
 }
@@ -988,6 +1080,17 @@ fn get_events(r: &mut Reader<'_>) -> Result<EventBatch, DecodeError> {
                     0 => MessageOrigin::Game,
                     1 => MessageOrigin::Link,
                     _ => return Err(DecodeError::BadValue("message origin")),
+                },
+            },
+            4 => EventBody::MessageCounts {
+                window_ms: r.u32()?,
+                counts: {
+                    let n = r.count(8)?;
+                    let mut list = Vec::with_capacity(n);
+                    for _ in 0..n {
+                        list.push((r.u32()?, r.u32()?));
+                    }
+                    list
                 },
             },
             _ => return Err(DecodeError::BadValue("event")),

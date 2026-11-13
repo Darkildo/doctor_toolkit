@@ -215,6 +215,11 @@ pub struct ScriptGraph {
     /// in the game, so errors show up in a file trace.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub trace_errors: bool,
+    /// Every node prints `dt:<script>:<node>;` when it runs (stage 35): the
+    /// game's journal (live link) then shows which nodes fired, and a
+    /// breakpoint on that text stops the game at the node.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub trace_nodes: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub variables: Vec<Variable>,
     #[serde(default)]
@@ -240,6 +245,7 @@ impl ScriptGraph {
             description: String::new(),
             start: StartSettings::default(),
             trace_errors: false,
+            trace_nodes: false,
             variables: Vec::new(),
             nodes: Vec::new(),
             links: Vec::new(),

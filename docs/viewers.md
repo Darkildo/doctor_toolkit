@@ -203,7 +203,8 @@ RGBA-текстуры.
 | `DOCTOR_TOOLKIT_GUI_RENDERER=glow` | Принудительно OpenGL и программный просмотр моделей |
 | `DOCTOR_TOOLKIT_GUI_LEVEL=<зона>[;опции]` | Открыть вкладку уровня (развёрнутой на всё окно) и загрузить зоны (`docs/levels.md` §5) |
 | `DOCTOR_TOOLKIT_GUI_MOVIES=<ролик>[:<кадр>][,play][,full]` | Открыть окно Movies с роликом и кадром; `play` — играть, `full` — на всё окно (`docs/formats/video.md` §5.1) |
-| `DOCTOR_TOOLKIT_GUI_LOGIC=<область>[;find=<текст>][;show][;run=<события>][;until=<с>]` | Открыть граф логики на всё окно, выделить найденное, `show` — показать его в уровне (`docs/logic-graph.md` §6); `run` — режим «Прогон» с начальными событиями (через `,`) до времени `until` (§9) |
+| `DOCTOR_TOOLKIT_GUI_LOGIC=<область>[;find=<текст>][;show][;run=<события>][;until=<с>][;live]` | Открыть граф логики на всё окно, выделить найденное, `show` — показать его в уровне (`docs/logic-graph.md` §6); `live` — включить слой «Вживую»; `run` — режим «Прогон» с начальными событиями (через `,`) до времени `until` (§9) |
+| `DOCTOR_TOOLKIT_GUI_LIVE=<порт>[:<токен>]` | Подключиться к модулю живой связи при старте; с `DOCTOR_TOOLKIT_GUI_LIVE_FOLLOW=1` вкладки уровня следуют за камерой игры, с `DOCTOR_TOOLKIT_GUI_SCRIPT` редактор скриптов открывает вкладку «Игра» (`docs/shell.md` §9.2) |
 | `DOCTOR_TOOLKIT_GUI_SHELL=…`, `DOCTOR_TOOLKIT_CONFIG_DIR=…` | Окна оболочки и каталог настроек (`docs/shell.md` §8) |
 | `DOCTOR_TOOLKIT_GUI_WIZARD=<мастер>[,опция…]` | Открыть мастер и пройти шаги (`docs/shell.md` §8, §10) |
 | `DOCTOR_TOOLKIT_GUI_BENCH=instances:5000` или `model:<поток>:<ресурс>` или `level:<зона>` | Замер рендера без окна (1600×900, 300 кадров с ожиданием GPU, число — `DOCTOR_TOOLKIT_GUI_BENCH_FRAMES`); `DOCTOR_TOOLKIT_GUI_BENCH_SHOT=<png>` сохраняет кадр |

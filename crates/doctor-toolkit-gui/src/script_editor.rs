@@ -41,6 +41,8 @@ enum Bottom {
     Problems,
     Lua,
     Run,
+    /// The script's journal in the running game (stage 35).
+    Game,
 }
 
 pub struct ScriptEditor {
@@ -66,6 +68,8 @@ pub struct ScriptEditor {
     redo: Vec<ScriptGraph>,
     pub status: String,
     dirty: bool,
+    /// The script in the running game: nodes that fired, errors, breakpoints.
+    pub live: crate::script_live::ScriptLive,
 }
 
 impl Default for ScriptEditor {
@@ -152,6 +156,7 @@ impl ScriptEditor {
             redo: Vec::new(),
             status: String::new(),
             dirty: false,
+            live: crate::script_live::ScriptLive::default(),
         };
         e.rebuild();
         e.view.frame_all();
@@ -169,6 +174,16 @@ impl ScriptEditor {
 
     pub fn graph(&self) -> &ScriptGraph {
         &self.graph
+    }
+
+    /// Shows the script's journal in the game (the bottom panel).
+    pub fn show_game_journal(&mut self) {
+        self.bottom = Bottom::Game;
+    }
+
+    /// Prints and Lua errors of the running game (stage 35).
+    pub fn live_feed(&mut self, events: &[doctor_toolkit::live::proto::Event]) {
+        self.live.feed(&self.graph, &self.compiled, events);
     }
 
     pub fn has_unsaved_edits(&self) -> bool {
@@ -543,6 +558,16 @@ impl ScriptEditor {
                 menu = Some(cmd);
             }
         });
+        self.live.paint(
+            ui,
+            response.response.rect,
+            &self.view,
+            &self.shown,
+            &self.graph,
+        );
+        if self.live.animating() {
+            ui.ctx().request_repaint();
+        }
         for event in response.events {
             self.on_event(event);
         }
@@ -749,6 +774,7 @@ impl ScriptEditor {
         ui.heading(def.title);
         ui.label(RichText::new(format!("#{id} {}", def.kind)).weak());
         ui.label(def.help);
+        self.live.node_ui(ui, &self.graph, id);
         if !def.verified {
             ui.label(RichText::new(tr("script.unverified")).italics());
         }
@@ -916,6 +942,8 @@ impl ScriptEditor {
         g.start.stop_message = Some(stop.trim().to_owned()).filter(|s| !s.is_empty());
         ui.checkbox(&mut g.trace_errors, tr("script.trace_errors"))
             .on_hover_text(tr("script.trace_errors_hint"));
+        ui.checkbox(&mut g.trace_nodes, tr("debug.trace_nodes"))
+            .on_hover_text(tr("debug.trace_nodes_hint"));
         ui.label(tr("script.description"));
         ui.text_edit_multiline(&mut g.description);
         ui.separator();
@@ -974,6 +1002,7 @@ impl ScriptEditor {
             );
             ui.selectable_value(&mut self.bottom, Bottom::Lua, tr("script.lua"));
             ui.selectable_value(&mut self.bottom, Bottom::Run, tr("script.run"));
+            ui.selectable_value(&mut self.bottom, Bottom::Game, tr("debug.script_game"));
         });
         ui.separator();
         match self.bottom {
@@ -1016,6 +1045,13 @@ impl ScriptEditor {
                             .desired_width(f32::INFINITY),
                     );
                 });
+            }
+            Bottom::Game => {
+                if let Some(id) = self.live.journal_ui(ui, &self.graph) {
+                    self.selected = Some(id);
+                    self.view.set_selection([NodeId(u64::from(id))]);
+                    self.view.frame_selection();
+                }
             }
             Bottom::Run => {
                 ui.horizontal(|ui| {

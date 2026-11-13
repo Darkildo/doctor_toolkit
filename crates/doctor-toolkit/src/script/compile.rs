@@ -95,6 +95,18 @@ impl Compiled {
     }
 }
 
+/// The text a traced node prints when it runs ([`ScriptGraph::trace_nodes`]).
+pub fn trace_text(script: &str, node: u32) -> String {
+    format!("dt:{script}:{node};")
+}
+
+/// The script and node of a text a traced node printed.
+pub fn parse_trace(text: &str) -> Option<(&str, u32)> {
+    let rest = text.trim().strip_prefix("dt:")?.strip_suffix(';')?;
+    let (script, node) = rest.rsplit_once(':')?;
+    Some((script, node.parse().ok()?))
+}
+
 /// Prefix of the global functions a script defines (timer callbacks).
 pub fn global_prefix(script: &str) -> String {
     format!("dts_{script}_")
@@ -956,8 +968,22 @@ impl<'a> Compiler<'a> {
         self.out.push(indent, Some(id), text);
     }
 
+    /// With [`ScriptGraph::trace_nodes`]: the node says it runs.
+    fn trace(&mut self, indent: usize, id: u32) {
+        if self.graph.trace_nodes {
+            let name = if is_identifier(&self.graph.name) {
+                self.graph.name.as_str()
+            } else {
+                "script"
+            };
+            let text = lua_string(&trace_text(name, id));
+            self.out.push(indent, Some(id), &format!("print({text})"));
+        }
+    }
+
     #[allow(clippy::too_many_lines)]
     fn statement(&mut self, ind: usize, id: u32, pin: &str) {
+        self.trace(ind, id);
         let kind = self.nodes[&id].def.kind;
         match (kind, pin) {
             ("flow.branch", _) => {
@@ -1372,6 +1398,7 @@ impl<'a> Compiler<'a> {
                 "event.load" | "event.stop" => {
                     self.comment(0, id, "");
                     self.line(0, id, &format!("E.n{id} = function()"));
+                    self.trace(1, id);
                     self.follow(1, id, "then");
                     self.line(0, id, "end");
                     if kind == "event.load" {
@@ -1384,6 +1411,7 @@ impl<'a> Compiler<'a> {
                     let m = self.param_str(id, "message");
                     self.comment(0, id, &m);
                     self.line(0, id, &format!("E.n{id} = function(data, dtype)"));
+                    self.trace(1, id);
                     self.line(1, id, &format!("{} = data", slot(id, "data")));
                     self.line(1, id, &format!("{} = dtype", slot(id, "type")));
                     self.follow(1, id, "then");
@@ -1394,6 +1422,7 @@ impl<'a> Compiler<'a> {
                     let t = self.param_str(id, "name");
                     self.comment(0, id, &t);
                     self.line(0, id, &format!("E.n{id} = function()"));
+                    self.trace(1, id);
                     self.follow(1, id, "then");
                     self.line(0, id, "end");
                     self.line(0, id, &format!("{}t{id} = function()", global_prefix(name)));

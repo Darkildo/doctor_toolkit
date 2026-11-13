@@ -6,6 +6,10 @@
 //! object of the game (logic too) and a search by GUID or name — names come
 //! from the SimGroups of the game and its workspace.
 //!
+//! Stage 35: breakpoints, pause and step, the free camera and textures
+//! without a restart (`super::live_debug`); messages of the game for the
+//! "Live" layer of logic tabs, the camera of the game for level tabs.
+//!
 //! A background thread talks to the module in the game
 //! (`doctor_toolkit::live::Client`): it reconnects every 2 s while the
 //! game starts, polls state, player and camera four times a second and
@@ -37,11 +41,17 @@ use super::{BrowserApp, Level};
 pub struct LiveMarks {
     pub player: Option<([f32; 3], [f32; 3])>,
     pub camera: Option<([f32; 3], [f32; 3])>,
+    /// The game's camera as it is (stage 35: the level view follows it).
+    pub game_camera: Option<CameraView>,
+    /// The module has the free camera (protocol 3) and writes are on.
+    pub can_free_camera: bool,
+    /// The free camera is on.
+    pub free_camera: bool,
 }
 
 /// What the thread last learnt.
 #[derive(Default)]
-struct Shared {
+pub(super) struct Shared {
     connected: bool,
     hello: Option<Hello>,
     status: Option<Status>,
@@ -66,6 +76,14 @@ struct Shared {
     lost: u64,
     /// The last answer of "All objects" or a search.
     world: Option<World>,
+    /// The module has breakpoints and the rest of stage 35 (protocol 3).
+    pub(super) debug_ok: bool,
+    /// Breakpoints and whether the game stands.
+    pub(super) debug: Option<proto::DebugState>,
+    /// Message events not yet given to the logic tabs.
+    pub(super) trace: Vec<Event>,
+    /// Prints and Lua errors not yet given to the script editor.
+    pub(super) script_events: Vec<Event>,
 }
 
 /// Events the panel keeps.
@@ -73,18 +91,32 @@ const JOURNAL_KEEP: usize = 2000;
 
 /// An action for the thread.
 #[derive(Debug, Clone, PartialEq)]
-enum Cmd {
+pub(super) enum Cmd {
     Teleport([f32; 3], Option<f32>),
     Send(MessageId, Option<Guid>),
     Lua(String),
     Objects(f32),
     Streams,
     World(WorldFilter),
+    /// Stage 35: every breakpoint and the hold limit.
+    Break(Vec<proto::BreakRule>, u16),
+    Control(proto::Control),
+    /// The free camera (a write).
+    Camera(Option<CameraView>),
+    /// Edited textures of the workspace into the game (a write).
+    Textures(Vec<live::HotTexture>),
 }
 
 impl Cmd {
-    fn writes(&self) -> bool {
-        matches!(self, Self::Teleport(..) | Self::Send(..) | Self::Lua(_))
+    pub(super) fn writes(&self) -> bool {
+        matches!(
+            self,
+            Self::Teleport(..)
+                | Self::Send(..)
+                | Self::Lua(_)
+                | Self::Camera(Some(_))
+                | Self::Textures(_)
+        )
     }
 }
 
@@ -102,7 +134,7 @@ pub(super) struct LiveState {
     target: String,
     lua: String,
     radius: f32,
-    confirm: Option<Cmd>,
+    pub(super) confirm: Option<Cmd>,
     /// The ASI loader of the open game, looked up once.
     loader: Option<(PathBuf, Option<Loader>)>,
     /// Kinds of events the panel asks for ([`mask`]).
@@ -120,6 +152,14 @@ pub(super) struct LiveState {
     names: Arc<Mutex<NamesState>>,
     /// A Lua error was shown as a warning (once per link).
     warned_lua: bool,
+    /// Kinds of events asked for besides those of the panel: messages while
+    /// a logic tab follows the game (stage 35).
+    pub(super) extra_kinds: Arc<AtomicU8>,
+    /// Breakpoints being written in the panel.
+    pub(super) break_message: String,
+    pub(super) break_target: String,
+    pub(super) break_print: String,
+    pub(super) hold_s: u16,
 }
 
 /// The index of names for the live link.
@@ -155,12 +195,29 @@ impl Default for LiveState {
             find: String::new(),
             names: Arc::default(),
             warned_lua: false,
+            extra_kinds: Arc::new(AtomicU8::new(0)),
+            break_message: String::new(),
+            break_target: String::new(),
+            break_print: String::new(),
+            hold_s: proto::debug::HOLD_DEFAULT_S,
         }
     }
 }
 
 fn shared(s: &Mutex<Shared>) -> std::sync::MutexGuard<'_, Shared> {
     s.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// What the thread learnt, for the debugging glue (stage 35).
+pub(super) fn shared_debug(state: &LiveState) -> std::sync::MutexGuard<'_, Shared> {
+    shared(&state.shared)
+}
+
+impl Shared {
+    /// Events of the journal lost since the link came up.
+    pub(super) fn lost_total(&self) -> u64 {
+        self.lost
+    }
 }
 
 fn run(client: &mut Client, cmd: Cmd, s: &Mutex<Shared>) -> Result<String, live::LinkError> {
@@ -207,6 +264,29 @@ fn run(client: &mut Client, cmd: Cmd, s: &Mutex<Shared>) -> Result<String, live:
             shared(s).world = Some(world);
             text
         }
+        Cmd::Break(rules, hold) => client.set_breaks(rules, hold)?.note,
+        Cmd::Control(c) => client.control(c)?.note,
+        Cmd::Camera(c) => client.set_camera(c)?.note,
+        Cmd::Textures(list) => {
+            let mut done = 0;
+            let mut errors = Vec::new();
+            for t in list {
+                match client.texture(t.name, t.data) {
+                    Ok(_) => done += 1,
+                    Err(e) => errors.push(format!("{:#010x}: {e}", t.name)),
+                }
+            }
+            if !errors.is_empty() {
+                return Err(live::LinkError::Refused(proto::Failure {
+                    code: proto::ErrorCode::Failed,
+                    message: trf(
+                        "debug.textures_failed",
+                        &[("done", &done), ("errors", &errors.join("; "))],
+                    ),
+                }));
+            }
+            trf("debug.textures_done", &[("count", &done)])
+        }
     })
 }
 
@@ -224,9 +304,19 @@ fn poll_journal(
     sh.lost += b.lost;
     let any = !b.events.is_empty();
     for e in b.events {
+        match e.body {
+            EventBody::Message { .. } | EventBody::MessageCounts { .. } => {
+                sh.trace.push(e.clone());
+            }
+            _ => sh.script_events.push(e.clone()),
+        }
         sh.fresh.push(e.clone());
         sh.journal.push_back(e);
     }
+    let excess = sh.trace.len().saturating_sub(4 * JOURNAL_KEEP);
+    sh.trace.drain(..excess);
+    let excess = sh.script_events.len().saturating_sub(4 * JOURNAL_KEEP);
+    sh.script_events.drain(..excess);
     let excess = sh.journal.len().saturating_sub(JOURNAL_KEEP);
     sh.journal.drain(..excess);
     let fresh_excess = sh.fresh.len().saturating_sub(JOURNAL_KEEP);
@@ -240,6 +330,7 @@ fn worker(
     rx: Receiver<Cmd>,
     stop: Arc<AtomicBool>,
     kinds: Arc<AtomicU8>,
+    extra_kinds: Arc<AtomicU8>,
     ctx: egui::Context,
 ) {
     let mut client: Option<Client> = None;
@@ -260,6 +351,7 @@ fn worker(
                     sh.connected = true;
                     sh.hello = Some(c.hello().clone());
                     sh.journal_ok = c.has_journal();
+                    sh.debug_ok = c.has_debug();
                     sh.error = None;
                     client = Some(c);
                     next = 0;
@@ -313,8 +405,15 @@ fn worker(
                 }
             }
             if !broken && c.has_journal() {
-                match poll_journal(c, &mut next, kinds.load(Ordering::Relaxed), &s) {
+                let asked = kinds.load(Ordering::Relaxed) | extra_kinds.load(Ordering::Relaxed);
+                match poll_journal(c, &mut next, asked, &s) {
                     Ok(_) => {}
+                    Err(e) => broken = !matches!(e, live::LinkError::Refused(_)),
+                }
+            }
+            if !broken && c.has_debug() {
+                match c.debug_state() {
+                    Ok(d) => shared(&s).debug = Some(d),
                     Err(e) => broken = !matches!(e, live::LinkError::Refused(_)),
                 }
             }
@@ -337,14 +436,15 @@ impl LiveState {
         let stop = Arc::new(AtomicBool::new(false));
         self.shared = Arc::default();
         {
-            let (s, stop, ctx, endpoint, kinds) = (
+            let (s, stop, ctx, endpoint, kinds, extra) = (
                 self.shared.clone(),
                 stop.clone(),
                 ctx.clone(),
                 endpoint.clone(),
                 self.kinds.clone(),
+                self.extra_kinds.clone(),
             );
-            std::thread::spawn(move || worker(endpoint, s, rx, stop, kinds, ctx));
+            std::thread::spawn(move || worker(endpoint, s, rx, stop, kinds, extra, ctx));
         }
         self.tx = Some(tx);
         self.stop = stop;
@@ -376,6 +476,11 @@ impl LiveState {
         });
     }
 
+    /// The names, when loaded (for the debugging glue).
+    pub(super) fn names_now(&self) -> Option<Arc<LiveNames>> {
+        self.names()
+    }
+
     /// The names, when loaded.
     fn names(&self) -> Option<Arc<LiveNames>> {
         match &*self.names.lock().unwrap_or_else(|e| e.into_inner()) {
@@ -396,7 +501,7 @@ impl LiveState {
         shared(&self.shared).connected = false;
     }
 
-    fn connected(&self) -> bool {
+    pub(super) fn connected(&self) -> bool {
         self.tx.is_some() && shared(&self.shared).connected
     }
 
@@ -406,13 +511,17 @@ impl LiveState {
             return None;
         }
         let s = shared(&self.shared);
+        let writes = s.hello.as_ref().is_some_and(|h| h.writes && h.edition_ok);
         Some(LiveMarks {
             player: s.player.map(|p| (p.position, p.forward)),
             camera: s.camera.map(|c| (c.pose.position, c.pose.forward)),
+            game_camera: s.camera,
+            can_free_camera: s.debug_ok && writes,
+            free_camera: s.debug.as_ref().is_some_and(|d| d.camera.is_some()),
         })
     }
 
-    fn send(&self, cmd: Cmd) {
+    pub(super) fn send(&self, cmd: Cmd) {
         if let Some(tx) = &self.tx {
             let _ = tx.send(cmd);
         }
@@ -510,7 +619,10 @@ impl BrowserApp {
         }
         let names = self.play.live.names();
         for e in &fresh {
-            if matches!(e.body, EventBody::Message { .. }) {
+            if matches!(
+                e.body,
+                EventBody::Message { .. } | EventBody::MessageCounts { .. }
+            ) {
                 continue;
             }
             let text = trf(
@@ -818,6 +930,7 @@ impl BrowserApp {
             self.live_journal(ui);
             ui.separator();
         }
+        self.live_debug_panel(ui);
 
         // Writes.
         ui.label(RichText::new(tr("live.writes_title")).strong());
@@ -897,6 +1010,7 @@ impl BrowserApp {
                 self.play.live.confirm = Some(Cmd::Lua(self.play.live.lua.clone()));
             }
         });
+        self.live_textures_button(ui, writes && !busy);
         if !lua_out.is_empty() {
             ui.label(RichText::new(lua_out.join("\n")).monospace().small());
         }
@@ -912,11 +1026,10 @@ impl BrowserApp {
                 ui.colored_label(doctor_toolkit_mods::BAD, text);
             }
         }
-        self.live_confirm(ui.ctx());
     }
 
     /// Asks before a write goes to the game.
-    fn live_confirm(&mut self, ctx: &egui::Context) {
+    pub(super) fn live_confirm(&mut self, ctx: &egui::Context) {
         let Some(cmd) = self.play.live.confirm.clone() else {
             return;
         };
@@ -946,7 +1059,17 @@ impl BrowserApp {
                 ],
             ),
             Cmd::Lua(code) => trf("live.confirm_lua", &[("lines", &code.lines().count())]),
-            Cmd::Objects(_) | Cmd::Streams | Cmd::World(_) => String::new(),
+            Cmd::Camera(Some(c)) => trf(
+                "debug.confirm_camera",
+                &[("position", &vec3_text(c.pose.position))],
+            ),
+            Cmd::Textures(list) => trf("debug.confirm_textures", &[("count", &list.len())]),
+            Cmd::Objects(_)
+            | Cmd::Streams
+            | Cmd::World(_)
+            | Cmd::Break(..)
+            | Cmd::Control(_)
+            | Cmd::Camera(None) => String::new(),
         };
         let mut answer = None;
         egui::Modal::new(egui::Id::unique("live-confirm")).show(ctx, |ui| {
@@ -1298,6 +1421,47 @@ mod tests {
             .world
             .as_ref()
             .is_some_and(|w| w.objects.len() == 1)));
+        // Stage 35: breakpoints, pause, the free camera, messages for the
+        // logic tabs.
+        assert!(wait_for(&state, |s| s.debug_ok && s.debug.is_some()));
+        let ping = proto::name_hash("doctor_ping");
+        state.send(Cmd::Break(vec![proto::BreakRule::message(ping, None)], 30));
+        assert!(wait_for(&state, |s| s
+            .debug
+            .as_ref()
+            .is_some_and(|d| d.rules.len() == 1)));
+        state
+            .extra_kinds
+            .store(mask::MESSAGE | mask::MESSAGE_COUNTS, Ordering::Relaxed);
+        game.world.lock().unwrap().activity(0);
+        assert!(wait_for(&state, |s| s
+            .debug
+            .as_ref()
+            .is_some_and(|d| d.stop.is_some())));
+        assert!(wait_for(&state, |s| s
+            .trace
+            .iter()
+            .any(|e| matches!(e.body, EventBody::MessageCounts { .. }))));
+        state.send(Cmd::Control(proto::Control::Continue));
+        assert!(wait_for(&state, |s| s
+            .debug
+            .as_ref()
+            .is_some_and(|d| d.stop.is_none())));
+        let marks = state.marks().unwrap();
+        assert!(marks.can_free_camera && !marks.free_camera);
+        let mut view = marks.game_camera.unwrap();
+        view.pose.position = [5.0, 6.0, 7.0];
+        state.send(Cmd::Camera(Some(view)));
+        assert!(wait_for(&state, |s| s
+            .camera
+            .is_some_and(|c| c.pose.position == [5.0, 6.0, 7.0])));
+        // `wait_for` holds the lock of `Shared` while it asks: read the
+        // state it hands over, never `state.marks()` (that locks again).
+        assert!(wait_for(&state, |s| s
+            .debug
+            .as_ref()
+            .is_some_and(|d| d.camera.is_some())));
+        assert!(state.marks().is_some_and(|m| m.free_camera));
         state.disconnect();
         assert!(state.marks().is_none());
     }

@@ -20,7 +20,24 @@ pub mod mask {
     pub const LUA_ERROR: u8 = 2;
     /// Messages of the SimGroup bus with their receivers.
     pub const MESSAGE: u8 = 4;
+    /// Protocol 3 (stage 35): once a second, how many messages of each
+    /// hash the bus delivered beyond those recorded one by one (the rate
+    /// limit per message keeps their events out, not their count).
+    pub const MESSAGE_COUNTS: u8 = 8;
+    /// The kinds of protocol 2.
     pub const ALL: u8 = OUTPUT | LUA_ERROR | MESSAGE;
+    /// The kinds of protocol 3.
+    pub const ALL_V3: u8 = ALL | MESSAGE_COUNTS;
+
+    /// The kinds a client of protocol `version` may get: a module answers
+    /// older clients without the newer kinds, which they cannot read.
+    pub fn for_version(kinds: u8, version: u16) -> u8 {
+        if version >= 3 {
+            kinds & ALL_V3
+        } else {
+            kinds & ALL
+        }
+    }
 }
 
 /// Where printed text comes from.
@@ -97,6 +114,12 @@ pub enum EventBody {
         receivers: Vec<Guid>,
         origin: MessageOrigin,
     },
+    /// Protocol 3: messages of these hashes that went through the bus in
+    /// the last `window_ms` without an event of their own, and how many.
+    MessageCounts {
+        window_ms: u32,
+        counts: Vec<(u32, u32)>,
+    },
 }
 
 impl EventBody {
@@ -106,6 +129,7 @@ impl EventBody {
             Self::Output { .. } => mask::OUTPUT,
             Self::LuaError { .. } => mask::LUA_ERROR,
             Self::Message { .. } => mask::MESSAGE,
+            Self::MessageCounts { .. } => mask::MESSAGE_COUNTS,
         }
     }
 }
@@ -147,6 +171,38 @@ pub const RING_SIZE: usize = 4096;
 pub const RATE_OUTPUT: u32 = 200;
 pub const RATE_LUA_ERROR: u32 = 50;
 pub const RATE_MESSAGE: u32 = 300;
+pub const RATE_MESSAGE_COUNTS: u32 = 20;
+/// Hashes one [`EventBody::MessageCounts`] lists at most.
+pub const MAX_COUNTS: usize = 512;
+
+/// Counts of messages that passed the bus without an event of their own
+/// (over the rate limit of their hash), gathered between two
+/// [`EventBody::MessageCounts`].
+#[derive(Debug, Clone, Default)]
+pub struct Counts {
+    counts: std::collections::BTreeMap<u32, u32>,
+}
+
+impl Counts {
+    pub fn add(&mut self, hash: u32) {
+        if self.counts.len() < MAX_COUNTS || self.counts.contains_key(&hash) {
+            *self.counts.entry(hash).or_default() += 1;
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.counts.is_empty()
+    }
+
+    /// The event for the last `window_ms`, and a fresh start.
+    pub fn take(&mut self, window_ms: u32) -> Option<EventBody> {
+        if self.counts.is_empty() {
+            return None;
+        }
+        let counts = std::mem::take(&mut self.counts).into_iter().collect();
+        Some(EventBody::MessageCounts { window_ms, counts })
+    }
+}
 
 /// `text` cut to [`MAX_TEXT`] bytes on a character boundary, without a line
 /// break at its end.
@@ -169,7 +225,7 @@ pub struct Ring {
     /// gap).
     dropped: VecDeque<u64>,
     /// Per kind: the second and the count of events in it.
-    window: [(u64, u32); 3],
+    window: [(u64, u32); 4],
 }
 
 impl Default for Ring {
@@ -185,7 +241,7 @@ impl Ring {
             capacity: capacity.max(1),
             next: 1,
             dropped: VecDeque::new(),
-            window: [(u64::MAX, 0); 3],
+            window: [(u64::MAX, 0); 4],
         }
     }
 
@@ -198,6 +254,7 @@ impl Ring {
         match kind {
             mask::OUTPUT => (0, RATE_OUTPUT),
             mask::LUA_ERROR => (1, RATE_LUA_ERROR),
+            mask::MESSAGE_COUNTS => (3, RATE_MESSAGE_COUNTS),
             _ => (2, RATE_MESSAGE),
         }
     }
@@ -402,6 +459,33 @@ mod tests {
         assert_eq!(b.next, 4);
         let m = r.after(0, mask::MESSAGE, 100);
         assert_eq!(m.events.len(), 1);
+    }
+
+    #[test]
+    fn counts_of_messages_over_the_limit() {
+        let mut c = Counts::default();
+        assert!(c.take(1000).is_none());
+        for _ in 0..1000 {
+            c.add(0xAB);
+        }
+        c.add(0xCD);
+        let e = c.take(1000).unwrap();
+        assert_eq!(
+            e,
+            EventBody::MessageCounts {
+                window_ms: 1000,
+                counts: vec![(0xAB, 1000), (0xCD, 1)],
+            }
+        );
+        assert!(c.is_empty());
+        // Older clients do not get them.
+        assert_eq!(mask::for_version(0xFF, 2), mask::ALL);
+        assert_eq!(mask::for_version(0xFF, 3), mask::ALL_V3);
+        let mut r = Ring::new(16);
+        r.push(0, 0, 0, e);
+        r.push(0, 0, 0, message(1));
+        assert_eq!(r.after(0, mask::ALL, 100).events.len(), 1);
+        assert_eq!(r.after(0, mask::ALL_V3, 100).events.len(), 2);
     }
 
     #[test]

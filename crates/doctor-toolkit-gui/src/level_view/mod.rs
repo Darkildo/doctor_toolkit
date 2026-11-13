@@ -27,6 +27,7 @@
 
 pub mod camera;
 mod gizmo;
+mod live;
 pub mod loader;
 pub mod nav;
 pub mod scene;
@@ -107,6 +108,15 @@ pub enum LevelAction {
         eye: [f32; 3],
         streams: Vec<usize>,
     },
+    /// Move the player of the running game here (stage 35; the Link panel
+    /// asks first).
+    LiveTeleport {
+        position: [f32; 3],
+        yaw: f32,
+    },
+    /// The game draws with this camera (the module's free camera), or with
+    /// its own again (`None`).
+    LiveCamera(Option<doctor_toolkit::live::proto::CameraView>),
     /// An edited navigation graph; `renumbered` (after a removed node) makes
     /// links of other graphs into it follow.
     Graph {
@@ -234,6 +244,8 @@ pub struct LevelView {
     nav_action: Option<LevelAction>,
     /// Walking the level (stage 37).
     walk: walk::Walk,
+    /// The camera follows the game's (stage 35).
+    live_follow: bool,
 }
 
 impl LevelView {
@@ -295,6 +307,7 @@ impl LevelView {
             nav: nav::NavLayer::default(),
             nav_action: None,
             walk: walk::Walk::default(),
+            live_follow: false,
             center: [0.0; 3],
             index_stale: false,
         };
@@ -1063,6 +1076,11 @@ impl LevelView {
 
     /// The whole view: browser on the left, details on the right, scene in
     /// the middle. Returns an edit to record.
+    /// Follow the camera of the running game (stage 35).
+    pub fn follow_game(&mut self, on: bool) {
+        self.live_follow = on;
+    }
+
     pub fn ui(&mut self, ui: &mut egui::Ui, ws: Option<&Workspace>) -> Option<LevelAction> {
         let ctx = ui.ctx().clone();
         if std::mem::take(&mut self.pending_autoload) {
@@ -1781,6 +1799,17 @@ impl LevelView {
             return None;
         }
         self.spin(ui);
+        // Game → editor: the camera follows the game's.
+        match self.live.and_then(|m| m.game_camera) {
+            Some(c) if self.live_follow => {
+                if live::fly_from_game(&c, &mut self.camera) {
+                    self.refill = true;
+                    self.camera_moved = true;
+                }
+            }
+            None if self.live.is_none() => self.live_follow = false,
+            _ => {}
+        }
         let size = ui.available_size().max(Vec2::splat(64.0));
         let (rect, response) = ui.allocate_exact_size(size, Sense::click_and_drag());
         let ppp = ui.ctx().pixels_per_point();
@@ -2113,6 +2142,9 @@ impl LevelView {
         self.overlay_text(ui, rect);
         if let Some(marks) = self.live {
             live_marks(ui, rect, &to_screen, &marks);
+            if let Some(a) = live::bar(ui, rect, &marks, &mut self.live_follow, &self.camera) {
+                action = Some(a);
+            }
         }
         action
     }
