@@ -11,6 +11,7 @@ First supported game: **The Godfather II (PC)**.
 [![Release](https://img.shields.io/github/v/release/Darkildo/doctor_toolkit?include_prereleases&label=release)](https://github.com/Darkildo/doctor_toolkit/releases)
 [![License: GPL-3.0](https://img.shields.io/badge/license-GPL--3.0-blue.svg)](LICENSE)
 ![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20Windows%20%7C%20macOS-lightgrey)
+[![Discord](https://img.shields.io/badge/Discord-join%20the%20community-5865F2?logo=discord&logoColor=white)](https://discord.gg/MatbKKdFR)
 
 <img src="docs/images/overview.png" alt="The editor: files of the game, a stream, details of a model" width="900">
 
@@ -790,6 +791,17 @@ macOS and the live-link module and puts them on a draft release
 (`release.yml`).
 
 Documentation of the file formats is in `docs/formats/` (Russian).
+
+## Community
+
+Join the Discord server of the community: questions, help with mods, bug
+reports, news and work in progress.
+
+<p align="center">
+  <a href="https://discord.gg/MatbKKdFR"><img src="https://img.shields.io/badge/Discord-Join%20the%20server-5865F2?style=for-the-badge&logo=discord&logoColor=white" alt="Join the Discord server"></a>
+</p>
+
+Invite: https://discord.gg/MatbKKdFR
 
 ## Credits
 
