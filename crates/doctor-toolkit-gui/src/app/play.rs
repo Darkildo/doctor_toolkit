@@ -565,7 +565,12 @@ impl BrowserApp {
             self.notify(Level::Error, trf("play.cannot_start", &[("error", &error)]));
             return;
         }
-        let live_module = self.install_live(game.root(), &config.live);
+        let mut live_module = self.install_live(game.root(), &config.live);
+        // Straight into a level the player has no controller without the
+        // module (live-link.md §5.1): install it for that alone.
+        if live_module.is_none() && !config.live.enabled && !options.streams.is_empty() {
+            live_module = self.install_for_input(game.root());
+        }
         // Start in a level (settings: play.start): the game reads cmd.txt.
         let cmd_file = match play::start::restore_stale(game.root()).and_then(|_| {
             (!options.is_empty())

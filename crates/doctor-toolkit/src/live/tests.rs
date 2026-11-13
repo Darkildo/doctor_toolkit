@@ -10,6 +10,7 @@ fn config(token: &str, writes: bool) -> Config {
         port: 0,
         token: token.into(),
         writes,
+        fix_input: true,
     }
 }
 
@@ -218,4 +219,31 @@ fn finds_the_loader() {
 fn tokens_differ() {
     assert_ne!(new_token(), new_token());
     assert_eq!(new_token().len(), 32);
+}
+
+#[test]
+fn a_start_in_a_level_installs_the_module_for_the_input() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    // Without a loader nothing is written: the module could not load.
+    assert!(matches!(
+        install_for_input(root).unwrap(),
+        InputFix::NoLoader
+    ));
+    assert!(!root.join("scripts").exists());
+    std::fs::write(root.join("dinput8.dll"), b"xx Ultimate ASI Loader xx").unwrap();
+    match install_for_input(root).unwrap() {
+        InputFix::Installed(install) => {
+            // Only the input fix: no teleport, messages or Lua.
+            assert!(!install.config().writes);
+            assert!(install.config().fix_input);
+            let text = std::fs::read_to_string(root.join("scripts/doctor_live.cfg")).unwrap();
+            assert!(text.contains("fix_input=1") && text.contains("writes=0"));
+            assert!(install.restore().unwrap());
+            assert!(!root.join("scripts").exists());
+        }
+        // The module is not built on this machine.
+        InputFix::NoModule => assert!(module_binary().is_none()),
+        InputFix::NoLoader => panic!("the loader is there"),
+    }
 }

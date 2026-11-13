@@ -381,6 +381,8 @@ pub fn play(args: &PlayArgs) -> Result<()> {
     };
     let live_module = if args.live {
         Some(install_live(args, game.root())?)
+    } else if !args.stream.is_empty() {
+        input_fix(game.root())?
     } else {
         None
     };
@@ -490,6 +492,32 @@ fn join(pids: &[u32]) -> String {
         .join(", ")
 }
 
+/// `play --stream` without `--live`: the module only so that the player
+/// can move (`live::install_for_input`).
+fn input_fix(root: &std::path::Path) -> Result<Option<doctor_toolkit::live::ModuleInstall>> {
+    use doctor_toolkit::live::{self, InputFix};
+    Ok(match live::install_for_input(root)? {
+        InputFix::Installed(install) => {
+            out!(
+                "live: module installed for this launch so that the player can move after a start straight into a level (writes off)"
+            );
+            Some(install)
+        }
+        InputFix::NoLoader => {
+            out!(
+                "warning: no ASI loader (dinput8.dll) in the game folder: after a start straight into a level the player cannot move (the game gives him no controller); put Ultimate ASI Loader there or start from a save"
+            );
+            None
+        }
+        InputFix::NoModule => {
+            out!(
+                "warning: the live module is not built (tools/build-live-module.sh): after a start straight into a level the player cannot move"
+            );
+            None
+        }
+    })
+}
+
 /// `play --live`: the module and its configuration in the game folder.
 fn install_live(
     args: &PlayArgs,
@@ -517,6 +545,7 @@ fn install_live(
         port: args.live_port.unwrap_or_else(live::free_port),
         token: live::new_token(),
         writes: args.live_writes,
+        fix_input: true,
     };
     let install = live::ModuleInstall::write(root, &bytes, &config)?;
     out!(

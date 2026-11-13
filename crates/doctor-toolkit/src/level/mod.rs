@@ -18,6 +18,7 @@ pub mod catalog;
 pub mod compat;
 pub mod edit;
 pub mod model;
+pub mod navgraph;
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};

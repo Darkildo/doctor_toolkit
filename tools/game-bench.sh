@@ -88,7 +88,8 @@
 #                 that file), e.g. "-stream gf2 cuba": straight into Havana
 #                 without menus or saves, see docs/analysis/launch-flags.md;
 #                 `doctor-toolkit play --stream … --dry-run` prints the line.
-#                 A run without it takes away the cmd.txt of an earlier run
+#                 The bench takes its cmd.txt away when the run ends (and
+#                 a run without it, the cmd.txt of an earlier bench run)
 #   SAVES        directory made by `saves`: profiles and saves to start with
 #                 (they replace those of the bench prefix)
 #   SIZE        nested screen and Wine desktop size (default 1024x768)
@@ -345,6 +346,7 @@ cleanup() {
     fi
     WINEPREFIX=$prefix wineserver -k9 2>/dev/null
     dxvk_remove
+    game_options_remove
     [[ -n $xephyr_pid ]] && kill "$xephyr_pid" 2>/dev/null && wait "$xephyr_pid" 2>/dev/null
     [[ -n $parent_pid ]] && kill "$parent_pid" 2>/dev/null && wait "$parent_pid" 2>/dev/null
     game_pid='' xephyr_pid='' parent_pid=''
@@ -503,6 +505,19 @@ game_options() {
     printf '%s\r\n' "$GAME_OPTIONS" >"$file"
     cp -- "$file" "$mark"
     echo "game options: $GAME_OPTIONS" >>"$out/timeline.txt"
+}
+
+# After the run: the bench's cmd.txt goes with the game. Left in place, its
+# mark would make a later run take away an equal cmd.txt that someone else
+# wrote meanwhile (`doctor-toolkit play --stream` with the same options).
+game_options_remove() {
+    local file=$shadow/cmd.txt mark=$shadow/.game-bench/cmd.txt
+    [[ -f $mark ]] || return 0
+    if cmp -s -- "$mark" "$file"; then
+        rm -f -- "$file" "$mark"
+    elif [[ ! -e $file ]]; then
+        rm -f -- "$mark"
+    fi
 }
 
 # Every second while the game runs: a symbolic link under drive_c that leads

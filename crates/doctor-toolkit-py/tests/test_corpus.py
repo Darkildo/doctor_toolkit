@@ -295,3 +295,16 @@ def test_model_formats(corpus, tmp_path):
         assert [t for _, t in parts] == [t for _, t in counts], ext
     obj = dt.read_model(tmp_path / "m.obj")
     assert any("skeleton" in w for w in obj["warnings"])
+
+
+def test_navigation_graph(corpus):
+    stream = "gf2/miami/local/betsy/high/terrain1"
+    data = next(r for r in corpus.resources("graph", streams=[stream]) if r.data_size > 1000).read()
+    graph = dt.navigation_graph(data)
+    assert graph["version"] == 16 and graph["info"]["nodes"] == len(graph["nodes"]) == 81
+    assert dt.navigation_graph_bytes(graph) == data
+    # Moving a node: the lengths of its links follow.
+    graph["nodes"][0]["position"][0] += 2.0
+    moved = dt.navigation_graph(dt.navigation_graph_bytes(graph))
+    assert moved["info"]["stale_lengths"] == 0
+    assert moved["nodes"][0]["links"][0]["length"] != graph["nodes"][0]["links"][0]["length"]

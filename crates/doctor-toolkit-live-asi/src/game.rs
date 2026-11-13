@@ -92,24 +92,6 @@ fn tls_slot0() -> u32 {
     teb_tls
 }
 
-/// Whether 16 floats are a world matrix: unit, orthogonal rows and a last
-/// column 0, 0, 0, 1 (as `tools/bench/gamemem.py` finds them).
-fn is_world_matrix(f: &[f32; 16]) -> bool {
-    if f[3] != 0.0 || f[7] != 0.0 || f[11] != 0.0 || f[15] != 1.0 {
-        return false;
-    }
-    let row = |i: usize| [f[i * 4], f[i * 4 + 1], f[i * 4 + 2]];
-    let dot = |a: [f32; 3], b: [f32; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
-    let (r, u, w) = (row(0), row(1), row(2));
-    [dot(r, r), dot(u, u), dot(w, w)]
-        .iter()
-        .all(|l| (l - 1.0).abs() < 1.0e-3)
-        && [dot(r, u), dot(r, w), dot(u, w)]
-            .iter()
-            .all(|d| d.abs() < 1.0e-3)
-        && f[12..15].iter().all(|v| v.is_finite() && v.abs() < 1.0e5)
-}
-
 /// Vertical field of view in degrees from the camera's frustum planes
 /// (`+0x80`: six planes, normal and distance; the two whose normals lean
 /// most along the camera's up axis bound it vertically).
@@ -138,7 +120,7 @@ pub fn camera(m: &mut Mem) -> Option<CameraView> {
         m.ptr(manager + CAMERA_CURRENT)?
     };
     let f: [f32; 16] = m.f32s(cam + CAMERA_MATRIX)?;
-    if !is_world_matrix(&f) {
+    if !doctor_toolkit_live::is_world_matrix(&f, false) {
         return None;
     }
     let pose = pose_at(m, cam + CAMERA_MATRIX)?;
@@ -171,6 +153,90 @@ pub fn snapshot(frame: u32) -> Snapshot {
         sim_time_ms: m.u32(SIM_TIME_MS).filter(|_| in_game),
         time_of_day: if in_game { time_of_day(&mut m) } else { None },
     }
+}
+
+/// What [`fix_input`] changed.
+pub struct InputFix {
+    pub player: u32,
+    pub old: u32,
+    pub port: u32,
+    /// Names of the action maps moved from the old port to the new one.
+    pub maps: Vec<String>,
+}
+
+/// Gives the player the port of the controller manager when he was made
+/// before the manager had one (a start with `-stream`), as if he had been
+/// made after it:
+///
+/// 1. what the constructor of `Player` does at `0x007A2A5A` — the port into
+///    `Player+0x2498` and `0x00444D20(port, 1)` (its byte in the input
+///    manager);
+/// 2. the action maps the player pushed on his old port (`0x0079B5EE`,
+///    `basic_aiming_player`) go to the new one: pushed there by name
+///    (`0x00464960`), then popped from the old port (`0x00464A10`). The
+///    player asks for his actions on his port only.
+pub fn fix_input(m: &mut Mem) -> Option<InputFix> {
+    let player = player(m)?;
+    let manager = m.ptr(CONTROLLER_MANAGER)?;
+    let manager_port = m.u8(manager + CONTROLLER_PORT)?;
+    let old = m.u32(player + PLAYER_INPUT_PORT)?;
+    let port = doctor_toolkit_live::input_port_fix(manager_port, old)?;
+    let input = m.ptr(INPUT_MANAGER)?;
+    let in_use = input + INPUT_PORT_RECORDS + port * INPUT_PORT_RECORD_SIZE;
+    let maps_obj = m.ptr(ACTION_MAPS)?;
+    let old_block = maps_obj + old * ACTION_MAPS_PORT_SIZE;
+    let count = m.u32(old_block + ACTION_MAPS_COUNT)?;
+    if count > 16 {
+        return None;
+    }
+    // The maps of the old port, bottom first, and their names (in the map,
+    // alive while the map table holds it).
+    let mut names = Vec::new();
+    for i in 0..count {
+        let map = m.ptr(old_block + ACTION_MAPS_STACK + i * 4)?;
+        let name = map + ACTION_MAP_NAME;
+        let mut buf = [0u8; 64];
+        let len = (0..64u32)
+            .take_while(|&j| m.u8(name + j).is_some_and(|b| b != 0))
+            .count();
+        if len == 0 || len == 64 || !m.bytes(name, &mut buf[..len]) {
+            return None;
+        }
+        names.push((name, String::from_utf8_lossy(&buf[..len]).into_owned()));
+    }
+    // Both fields readable before anything is written.
+    m.u8(in_use)?;
+    // SAFETY: fields checked by `edition::check` (the constructor of
+    // `Player` writes the same two), read just above; the main thread is
+    // between two passes of its loop.
+    unsafe {
+        std::ptr::write_volatile((player + PLAYER_INPUT_PORT) as usize as *mut u32, port);
+        std::ptr::write_volatile(in_use as usize as *mut u8, 1);
+    }
+    let push: extern "thiscall" fn(u32, u32, u32, u32) -> u8 =
+        // SAFETY: `0x00464960`, checked by `edition::check`.
+        unsafe { std::mem::transmute(ACTION_MAP_PUSH as usize) };
+    let pop: extern "thiscall" fn(u32, u32) -> u32 =
+        // SAFETY: `0x00464A10`, checked by `edition::check`.
+        unsafe { std::mem::transmute(ACTION_MAP_POP as usize) };
+    let mut maps = Vec::new();
+    for (name, text) in &names {
+        if push(maps_obj, port, *name, 0) & 1 != 0 {
+            maps.push(text.clone());
+        }
+    }
+    // Only when every map got onto the new port: else the player keeps them.
+    if maps.len() == names.len() {
+        for _ in 0..count {
+            pop(maps_obj, old);
+        }
+    }
+    Some(InputFix {
+        player,
+        old,
+        port,
+        maps,
+    })
 }
 
 /// Bytes of memory for `Peek`.
@@ -287,7 +353,7 @@ pub fn objects(center: Option<[f32; 3]>, radius: f32, class: Option<u32>, max: u
                         break 'buckets;
                     }
                     if let Some(f) = m.f32s::<16>(object + ENTITY_MATRIX)
-                        && is_world_matrix(&f)
+                        && doctor_toolkit_live::is_world_matrix(&f, true)
                     {
                         let pos = [f[12], f[13], f[14]];
                         let d = ((pos[0] - center[0]).powi(2)

@@ -326,6 +326,36 @@ fn functions_custom_lua_and_calls() {
     );
 }
 
+/// `PlayEmx` finds a sound only by its file name with `.emx` (stage 45, a
+/// new emitter of `sound-add --new` in the game): the node adds it.
+#[test]
+fn play_sound_names_the_emx_file() {
+    let mut g = ScriptGraph::new("beep");
+    let start = g.add(node("event.load"));
+    let plain = g.add(
+        node("audio.play_emx")
+            .input("sound", "doctor_beep")
+            .input("volume", 1.0),
+    );
+    let full = g.add(
+        node("audio.play_emx")
+            .input("sound", "Fanfare.EMX")
+            .input("volume", 1.0),
+    );
+    g.connect((start, "then"), (plain, "exec"));
+    g.connect((plain, "then"), (full, "exec"));
+    let sim = run(&g);
+    let names: Vec<_> = sim
+        .take_log()
+        .into_iter()
+        .filter_map(|e| match e {
+            SimEvent::Call { function, args, .. } if function == "PlayEmx" => args.first().cloned(),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(names, ["doctor_beep.emx", "Fanfare.EMX"]);
+}
+
 #[test]
 fn errors_point_at_nodes() {
     let mut g = ScriptGraph::new("bad");

@@ -6,6 +6,7 @@ mod create_cmd;
 mod cutscene_cmd;
 mod dialogue_cmd;
 mod edit_cmd;
+mod graph_cmd;
 mod level_cmd;
 mod live_cmd;
 mod logic_cmd;
@@ -531,6 +532,21 @@ enum Command {
     /// A new emitter takes the parameters of `--like` (default: the first).
     SoundAdd(sbk_cmd::AddArgs),
 
+    /// Show a navigation graph (`graph`): type, nodes, links, neighbouring
+    /// graphs, properties, R-tree and precomputed paths
+    GraphInfo(graph_cmd::InfoArgs),
+
+    /// Export a navigation graph as JSON (`graph-import` reads it back)
+    GraphExport(graph_cmd::ExportArgs),
+
+    /// Import a navigation graph from JSON (recorded in the workspace); link
+    /// lengths, R-tree and precomputed paths follow edited positions and links
+    GraphImport(graph_cmd::ImportArgs),
+
+    /// Edit a navigation graph: move, add, attach and remove nodes, add and
+    /// remove links, set flags (recorded in the workspace)
+    GraphEdit(graph_cmd::EditArgs),
+
     /// List the face-to-face dialogues (`dlg`) and who starts them, or search them
     Dialogues(dialogue_cmd::ListArgs),
 
@@ -818,6 +834,10 @@ fn run(command: Command) -> Result<()> {
         Command::SbkInfo(args) => sbk_cmd::info(&args),
         Command::SbkEdit(args) => sbk_cmd::edit(&args),
         Command::SoundAdd(args) => sbk_cmd::add(&args),
+        Command::GraphInfo(args) => graph_cmd::info(&args),
+        Command::GraphExport(args) => graph_cmd::export(&args),
+        Command::GraphImport(args) => graph_cmd::import(&args),
+        Command::GraphEdit(args) => graph_cmd::edit(&args),
         Command::Dialogues(args) => dialogue_cmd::list(args),
         Command::Dialogue(args) => dialogue_cmd::show(args),
         Command::DialogueExport(args) => dialogue_cmd::export(args),

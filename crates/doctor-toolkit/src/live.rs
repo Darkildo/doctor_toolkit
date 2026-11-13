@@ -51,6 +51,7 @@ impl LiveOptions {
             port: free_port(),
             token: new_token(),
             writes: self.writes,
+            fix_input: true,
         }
     }
 }
@@ -402,6 +403,44 @@ impl Drop for ModuleInstall {
             let _ = restore_stale(&self.root);
         }
     }
+}
+
+/// A start straight into a level (`-stream`, stage 32) leaves the player
+/// without control: the game makes him before it knows the controller, so
+/// he reads port 0 while the keyboard is port 15 (`docs/analysis/
+/// live-link.md` §5.1). The module fixes it ([`Config::fix_input`]). What
+/// "Play" does about it when the live link is not switched on anyway.
+#[derive(Debug)]
+pub enum InputFix {
+    /// The module is installed for this launch, writes off: the player moves.
+    Installed(ModuleInstall),
+    /// No ASI loader in the game folder: the module cannot load and the
+    /// player will not move.
+    NoLoader,
+    /// The module is not built (`tools/build-live-module.sh`).
+    NoModule,
+}
+
+/// Installs the module for the player's input of a start straight into a
+/// level, when the live link is off. With the link on its own installation
+/// already fixes the input.
+pub fn install_for_input(root: &Path) -> Result<InputFix> {
+    if loader::find(root).is_none() {
+        return Ok(InputFix::NoLoader);
+    }
+    let Some(path) = module_binary() else {
+        return Ok(InputFix::NoModule);
+    };
+    let bytes = std::fs::read(&path).map_err(|e| Error::io(&path, e))?;
+    let config = Config {
+        port: free_port(),
+        token: new_token(),
+        writes: false,
+        fix_input: true,
+    };
+    Ok(InputFix::Installed(ModuleInstall::write(
+        root, &bytes, &config,
+    )?))
 }
 
 /// Whether the toolkit's module is installed in `root` now.

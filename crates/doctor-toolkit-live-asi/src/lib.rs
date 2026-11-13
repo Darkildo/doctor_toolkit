@@ -37,6 +37,10 @@ static MODULE: AtomicU32 = AtomicU32::new(0);
 static FRAME: AtomicU32 = AtomicU32::new(0);
 static HOOKED: AtomicBool = AtomicBool::new(false);
 static UPDATE_HOOKED: AtomicBool = AtomicBool::new(false);
+/// `fix_input` of the configuration ([`game::fix_input`]).
+static FIX_INPUT: AtomicBool = AtomicBool::new(false);
+/// The player whose input port was checked (once per player object).
+static INPUT_CHECKED: AtomicU32 = AtomicU32::new(0);
 static EDITION: OnceLock<Result<(), String>> = OnceLock::new();
 static SNAPSHOT: Mutex<Option<game::Snapshot>> = Mutex::new(None);
 /// The queue of jobs: the network threads send, the main thread receives.
@@ -184,6 +188,37 @@ fn execute(request: Request) -> Response {
     r
 }
 
+/// Once per player object, after the controller manager got its port:
+/// gives the player that port if he was made without it (`-stream`).
+fn check_input() {
+    let mut m = win::Mem::default();
+    let Some(player) = game::player(&mut m) else {
+        return;
+    };
+    if INPUT_CHECKED.load(Ordering::Relaxed) == player {
+        return;
+    }
+    // Wait until the manager has a device: the update of GameMainLoop gives
+    // it one when the level is loaded.
+    let has_port = m
+        .ptr(addr::CONTROLLER_MANAGER)
+        .and_then(|c| m.u8(c + addr::CONTROLLER_PORT))
+        .is_some_and(|p| p < 0x10);
+    if !has_port {
+        return;
+    }
+    INPUT_CHECKED.store(player, Ordering::Relaxed);
+    if let Some(fix) = game::fix_input(&mut m) {
+        log(&format!(
+            "player {:#010x} read input port {}, given the controller's port {} and moved action maps [{}] (start without the menus)",
+            fix.player,
+            fix.old,
+            fix.port,
+            fix.maps.join(", ")
+        ));
+    }
+}
+
 /// The frame hook: the game calls it instead of `0x00439FA0` once per pass
 /// of its main loop; it records a snapshot, runs queued jobs and then calls
 /// the original function, whose result the loop uses.
@@ -194,6 +229,9 @@ extern "C" fn frame_hook() -> u32 {
         let state = doctor_toolkit_live::LoopState::from_u8(snap.state);
         if let Ok(mut s) = SNAPSHOT.try_lock() {
             *s = Some(snap);
+        }
+        if state == doctor_toolkit_live::LoopState::Game && FIX_INPUT.load(Ordering::Relaxed) {
+            check_input();
         }
         run_jobs(state);
     });
@@ -249,11 +287,13 @@ unsafe extern "system" fn start(_: *mut c_void) -> u32 {
         let config = std::fs::read_to_string(dir.join(doctor_toolkit_live::CONFIG_FILE))
             .map(|t| Config::parse(&t))
             .unwrap_or_default();
+        FIX_INPUT.store(config.fix_input, Ordering::Relaxed);
         log(&format!(
-            "{MODULE_VERSION} loaded from {}; port {}, writes {}",
+            "{MODULE_VERSION} loaded from {}; port {}, writes {}, fix_input {}",
             dir.display(),
             config.port,
-            config.writes
+            config.writes,
+            config.fix_input
         ));
         match edition_state() {
             Ok(()) => log(&format!(

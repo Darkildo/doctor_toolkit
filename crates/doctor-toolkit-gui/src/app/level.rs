@@ -117,6 +117,25 @@ impl BrowserApp {
             LevelAction::ShowLogic { .. } | LevelAction::PlayHere { .. } => {
                 Ok((tr("logic.no_change").to_owned(), None))
             }
+            LevelAction::Graph {
+                graph,
+                renumbered,
+                label,
+            } => doctor_toolkit::level::navgraph::save_graph(
+                &game,
+                ws,
+                &graph,
+                renumbered.as_deref(),
+                &label,
+            )
+            .map(|others| {
+                let mut text = trf("logic.recorded", &[("what", &label)]);
+                if others > 0 {
+                    text += &trf("navgraph.others_renumbered", &[("count", &others)]);
+                }
+                (text, None)
+            })
+            .map_err(|e| e.to_string()),
             LevelAction::Save { group, data, label } => {
                 doctor_toolkit::level::compat::check_resource_data(
                     &game,

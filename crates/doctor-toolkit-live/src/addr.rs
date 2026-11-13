@@ -58,6 +58,45 @@ pub const PLAYER_PREPARE_ARG: u32 = 0x46F5_C7B4;
 /// `PlayerTeleportRelay` calls (`0x007DD117`).
 pub const PLAYER_TELEPORT: u32 = 0x0079_E3C0;
 
+// --- Input ------------------------------------------------------------------
+
+/// Controller manager (pointer); `+0x14`: the port (byte) of the controller
+/// that plays — `0x0F` the keyboard and mouse, below `0x10` a device,
+/// `0x12`/`0x13` none (`0x0068CBC0`, `0x0068C7A0`, `0x0068C7E0`).
+pub const CONTROLLER_MANAGER: u32 = 0x0112_9814;
+pub const CONTROLLER_PORT: u32 = 0x14;
+/// Port (`u32`) the player reads his input from. Only the constructor of
+/// `Player` sets it, from the controller manager (`0x007A2A5A`): below
+/// `0x10` that port, else 0; `0x12` in network play. A start with `-stream`
+/// makes the player before the manager has a port (the update of
+/// `GameMainLoop` gives it one when the level is loaded, `0x0067D1ED`), so
+/// the player listens to port 0 and the keyboard (15) does nothing.
+pub const PLAYER_INPUT_PORT: u32 = 0x2498;
+/// Input manager (pointer): per port a record of `0x18` bytes from `+0x14`,
+/// whose first byte says the port is in use; the constructor of `Player`
+/// sets it with `0x00444D20(port, 1)`.
+pub const INPUT_MANAGER: u32 = 0x0122_3430;
+pub const INPUT_PORT_RECORDS: u32 = 0x14;
+pub const INPUT_PORT_RECORD_SIZE: u32 = 0x18;
+/// Action maps of the ports (pointer): per port a block of `0x168` bytes;
+/// `+0x10` the number of maps on the port's stack, `+0x14` the stack (map
+/// pointers, the top last). The player asks for an action on his port
+/// (`0x0079E920` → `0x00465700`, `0x00465660`), so his maps must be on it.
+/// A map: `+8` count of users (byte), `+9` its name (`0x00464930`), e.g.
+/// `basic_aiming_player`.
+pub const ACTION_MAPS: u32 = 0x0122_3464;
+pub const ACTION_MAPS_PORT_SIZE: u32 = 0x168;
+pub const ACTION_MAPS_COUNT: u32 = 0x10;
+pub const ACTION_MAPS_STACK: u32 = 0x14;
+pub const ACTION_MAP_NAME: u32 = 9;
+/// `bool Push(this, u8 port, const char* name, bool)` — `thiscall`, callee
+/// pops 12 bytes: puts the map of that name on the port (`0x0079B5EE`, the
+/// player's message handler, pushes with his port).
+pub const ACTION_MAP_PUSH: u32 = 0x0046_4960;
+/// `Pop(this, u8 port)` — `thiscall`, callee pops 4 bytes: takes the top map
+/// off the port (`0x007A7485`, the destructor of `Player`).
+pub const ACTION_MAP_POP: u32 = 0x0046_4A10;
+
 // --- Camera ---------------------------------------------------------------
 
 /// Camera manager (pointer). When `+0x154` is not zero, `+0x14` is the

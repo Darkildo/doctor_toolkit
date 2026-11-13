@@ -1064,6 +1064,34 @@ fn sound_bank<'py>(py: Python<'py>, data: Vec<u8>) -> PyResult<Bound<'py, PyAny>
     to_python(py, &value)
 }
 
+/// A navigation graph (`graph`) as a dict, the JSON form of `graph-export`
+/// (`nodes` with their `links`, `neighbours`, properties, `visibility`,
+/// `precomputed_paths`, `rtree`), with a summary under `info`.
+#[pyfunction]
+fn navigation_graph<'py>(py: Python<'py>, data: Vec<u8>) -> PyResult<Bound<'py, PyAny>> {
+    use doctor_toolkit::resource::graph::Graph;
+    let graph = py.detach(|| Graph::parse(&data)).py()?;
+    let mut value = serde_json::to_value(&graph).map_err(|e| invalid(e.to_string()))?;
+    value["info"] = serde_json::to_value(graph.info()).map_err(|e| invalid(e.to_string()))?;
+    to_python(py, &value)
+}
+
+/// Resource data of a navigation graph from a dict as `navigation_graph`
+/// gives it (`info` is ignored). Link lengths, the R-tree and the
+/// precomputed paths are brought up to date with edited positions and links.
+#[pyfunction]
+fn navigation_graph_bytes<'py>(
+    py: Python<'py>,
+    graph: &Bound<'py, PyAny>,
+) -> PyResult<Bound<'py, pyo3::types::PyBytes>> {
+    use doctor_toolkit::resource::graph::Graph;
+    let mut graph: Graph =
+        pythonize::depythonize(graph).map_err(|e| invalid(format!("not a graph: {e}")))?;
+    graph.repair_derived();
+    let data = graph.to_bytes().py()?;
+    Ok(util::bytes(py, &data))
+}
+
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Texture>()?;
     m.add_class::<StringTable>()?;
@@ -1073,5 +1101,7 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(decode_py, m)?)?;
     m.add_function(wrap_pyfunction!(sound_from_snu, m)?)?;
     m.add_function(wrap_pyfunction!(sound_bank, m)?)?;
+    m.add_function(wrap_pyfunction!(navigation_graph, m)?)?;
+    m.add_function(wrap_pyfunction!(navigation_graph_bytes, m)?)?;
     Ok(())
 }

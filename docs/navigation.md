@@ -258,7 +258,7 @@ $T pack "$GAME" out [--workspace-dir DIR] [--dry-run]
 | текстура (`tg4h` + `tg4d`) | PNG первой поверхности; DDS для кубических и объёмных или с `--dds` | да: импорт как `texture-import` |
 | строки `lh2` | JSON в формате `text-export` (подходит и для `text-import`) | да |
 | модель `mesh` | `.glb` с материалами, текстурами и скелетом (`--geometry-only` — без них); `--model-format fbx\|obj\|usd\|usda\|usdc\|usdz` — другой формат, файлы рядом (`.mtl`, текстуры) — в `<имя>_textures/` | да: импорт поверх меша, как `model-import` (этап 25) |
-| игровая логика (`simgroup`, `metamodel`, `variabledictionary`, `partsdb`, `graph`), `rcb` | JSON | нет; правится `.bin` |
+| игровая логика (`simgroup`, `metamodel`, `variabledictionary`, `partsdb`, `graph`), `rcb` | JSON | нет; правится `.bin` (граф — `graph-import`, этап 42) |
 | банк звуков `sbk` | `<имя>/<номер>.snu` или `.wav` (`--wav`) | нет; правится `.bin` |
 | скрипт `lua` | `.luac` | да (как есть) |
 | `apx` | `.apx` | да (как есть) |

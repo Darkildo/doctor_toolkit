@@ -150,6 +150,16 @@ local function dt_stop_timer(key)
   end
 end
 
+-- PlayEmx finds a sound by its file name, `.emx` included (stage 45: the
+-- name alone finds nothing).
+local function dt_emx(name)
+  name = tostring(name)
+  if string.find(string.lower(name), "%.emx$") then
+    return name
+  end
+  return name .. ".emx"
+end
+
 local function dt_get(name)
   return VariableGet(FindVariable(name))
 end
@@ -1115,6 +1125,11 @@ impl<'a> Compiler<'a> {
                     },
                 );
                 let vol = self.input(id, "volume");
+                let name = if kind == "audio.play_emx" {
+                    format!("dt_emx({name})")
+                } else {
+                    name
+                };
                 self.line(
                     ind,
                     id,

@@ -29,7 +29,7 @@ pub enum Kind {
     /// it was when the project was made, then the patch of `patches/` (SimGroup).
     Logic,
     /// A whole document as JSON: dialogue (`dlg`), speech events (`chv`),
-    /// cut-scene shot (`trinity_seq_master`).
+    /// cut-scene shot (`trinity_seq_master`), navigation graph (`graph`).
     Document,
     /// A Lua script as source; compiled for the game.
     Script,
@@ -41,7 +41,7 @@ pub enum Kind {
     Animations,
     /// The data of a resource as it is in the stream.
     Raw,
-    /// A conversion for reading only (JSON of `graph`, `rcb`, `mobface`);
+    /// A conversion for reading only (JSON of `rcb`, `mobface`);
     /// the resource is built from its raw file.
     View,
 }

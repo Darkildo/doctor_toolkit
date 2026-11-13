@@ -10,7 +10,8 @@ The Godfather 1/2, Dead Space 1/2/3, Dante's Inferno, The Simpsons Game.
 | `geometry.md` | EARSGeom V33/V42/V50 + вершинные дескрипторы; запись мешей (§7) |
 | `simgroup.md` | SimGroup (magic `SimG`): объекты уровня, пакеты атрибутов, трансформы |
 | `metamodel.md` | MetaModel (magic `MMdl`): части, состояния, свойства |
-| `logic-types.md` | variabledictionary, partsdb, graph, `covernodetable` (`0xDF14DA75`) и `treemodel` (`0xCDB9D42B`) |
+| `logic-types.md` | variabledictionary, partsdb, `covernodetable` (`0xDF14DA75`) и `treemodel` (`0xCDB9D42B`) |
+| `navigation-graph.md` | Навигационный граф `graph`: заголовок, узлы, рёбра, соседние графы, свойства, R-дерево, таблица путей, видимость, флаги |
 | `lua.md` | Скрипты `lua`: формат чанка Lua 5.0 с числами float, компилятор, декомпилятор, правка |
 | `mission-logic.md` | Где живёт логика миссий: SimGroup и сообщения, Lua-API движка, `tob`, `get`, `score` |
 | `resource-types.md` | TG4/TXD/DFF/LH2/APX/Material/Entity, обзор остальных типов, шрифты `ffn`, скрипты `lua` |
@@ -47,7 +48,7 @@ The Godfather 1/2, Dead Space 1/2/3, Dante's Inferno, The Simpsons Game.
 | MetaModel (`metamodel.md`) | Проверено на GF2 PC (чтение) |
 | variabledictionary (`logic-types.md` §1) | Проверено на GF2 PC; побайтный round-trip |
 | partsdb (`logic-types.md` §2) | Проверено на GF2 PC; побайтный round-trip |
-| graph (`logic-types.md` §3) | Проверено на GF2 PC частично |
+| graph (`navigation-graph.md`) | Проверено на GF2 PC: все 2 178 графов побайтно, правка и пересборка; в игре — этап 45 |
 | Анимации `bnk`, `mobface`, шейдеры (`characters.md`) | Проверено на GF2 PC: клипы схем 1 и 4 декодируются все; схема 3 нет |
 | `covernodetable`, `treemodel` (`logic-types.md` §4, §5) | Только заголовок |
 | Entity (`resource-types.md` §7) | Неверно, см. `metamodel.md` |

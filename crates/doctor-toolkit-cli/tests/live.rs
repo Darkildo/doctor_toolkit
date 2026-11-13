@@ -29,6 +29,7 @@ fn fake(writes: bool) -> FakeGame {
         port: 0,
         token: "tok".into(),
         writes,
+        fix_input: true,
     })
     .unwrap()
 }

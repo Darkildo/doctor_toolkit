@@ -334,6 +334,32 @@ impl BrowserApp {
         }
     }
 
+    /// A start straight into a level with the live link off: the module only
+    /// so that the player can move ([`live::install_for_input`]).
+    pub(super) fn install_for_input(&mut self, root: &Path) -> Option<ModuleInstall> {
+        match live::install_for_input(root) {
+            Ok(live::InputFix::Installed(install)) => {
+                self.notify(Level::Info, tr("live.input_fix_installed").to_owned());
+                Some(install)
+            }
+            Ok(live::InputFix::NoLoader) => {
+                self.notify(Level::Warning, tr("live.input_fix_no_loader").to_owned());
+                None
+            }
+            Ok(live::InputFix::NoModule) => {
+                self.notify(Level::Warning, tr("live.input_fix_no_module").to_owned());
+                None
+            }
+            Err(error) => {
+                self.notify(
+                    Level::Warning,
+                    trf("live.install_failed", &[("error", &error.to_string())]),
+                );
+                None
+            }
+        }
+    }
+
     /// After the game exited: the module goes away, the link stops.
     pub(super) fn live_after_exit(&mut self) {
         self.play.live.disconnect();
@@ -766,6 +792,7 @@ mod tests {
             port: 0,
             token: "t".into(),
             writes: true,
+            fix_input: true,
         })
         .unwrap();
         let ctx = egui::Context::default();

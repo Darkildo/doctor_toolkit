@@ -398,6 +398,7 @@ pub fn run(command: LiveCommand) -> Result<()> {
                 port: port.unwrap_or_else(live::free_port),
                 token: live::new_token(),
                 writes,
+                fix_input: true,
             };
             let install = ModuleInstall::write(&game_dir, &bytes, &config)?;
             out!(
@@ -438,6 +439,7 @@ pub fn run(command: LiveCommand) -> Result<()> {
                     port,
                     token: String::new(),
                     writes,
+                    fix_input: true,
                 },
             )?;
             out!("fake game on 127.0.0.1:{} (Ctrl+C to stop)", game.port);

@@ -133,6 +133,31 @@ impl Serialize for Guid {
     }
 }
 
+impl std::str::FromStr for Guid {
+    type Err = Error;
+
+    /// 32 hexadecimal digits, the form [`Display`](fmt::Display) writes.
+    fn from_str(s: &str) -> Result<Self> {
+        let s = s.trim();
+        let bad = || Error::InvalidArgument(format!("GUID `{s}`: 32 hexadecimal digits expected"));
+        if s.len() != 32 || !s.is_ascii() {
+            return Err(bad());
+        }
+        let mut bytes = [0u8; 16];
+        for (k, b) in bytes.iter_mut().enumerate() {
+            *b = u8::from_str_radix(&s[2 * k..2 * k + 2], 16).map_err(|_| bad())?;
+        }
+        Ok(Self(bytes))
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for Guid {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> std::result::Result<Self, D::Error> {
+        let text = String::deserialize(d)?;
+        text.parse().map_err(serde::de::Error::custom)
+    }
+}
+
 /// A 32-bit hash, written as eight hexadecimal digits in JSON.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub struct Hash32(pub u32);

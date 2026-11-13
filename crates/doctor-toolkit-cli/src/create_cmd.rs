@@ -93,10 +93,12 @@ pub struct AddStream {
     #[arg(long)]
     parent: String,
     /// Make it a parented stream of the parent (table-of-contents flags
-    /// `0,0,5,0`, as the game's mission streams). The game does not load
-    /// such a stream with every load of the parent: neither the game's own
-    /// nor a new one is opened on the Havana terrace (stage 24). Otherwise
-    /// it is loaded when game data asks for its hash (`StreamSet`)
+    /// `0,0,5,0`, as the game's mission streams). Such a stream loads with
+    /// its parent only after an `EnableDisableStreams` object with its hash
+    /// got its enable message (stage 45: copy one with `level add
+    /// --template-stream`, set `EnableDisableStreams.2` to the hash `toc`
+    /// prints and `.0` to a message that is sent). Otherwise it is loaded
+    /// when game data asks for its hash (`StreamSet`)
     #[arg(long)]
     with_parent: bool,
     /// Table of contents to list it in, relative path, optionally with

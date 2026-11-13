@@ -74,6 +74,15 @@ def sound_bank(data: bytes) -> dict[str, Any]:
     `instrument_index`), `instruments` with `tones`, the lookup tables,
     `samples` (format and size) and `problems`."""
 
+def navigation_graph(data: bytes) -> dict[str, Any]:
+    """A navigation graph (`graph`) as a dict, the JSON form of `graph-export`:
+    `nodes` with `links` and `neighbour_links`, `neighbours`, properties,
+    `visibility`, `precomputed_paths`, `rtree`; a summary under `info`."""
+
+def navigation_graph_bytes(graph: dict[str, Any]) -> bytes:
+    """Resource data of a navigation graph from a dict as `navigation_graph`
+    gives it; link lengths, R-tree and paths follow edited positions and links."""
+
 def lua_decompile(data: bytes) -> dict[str, Any]:
     """Decompiles a `lua` chunk: `source`, `round_trip` (`"identical"`, `"same_code"`,
     `"different"`), `detail` and `errors` (functions that could not be decompiled)."""

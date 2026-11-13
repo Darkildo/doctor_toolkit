@@ -1886,12 +1886,59 @@ fn every_point_table_parses() {
 }
 
 #[test]
-fn every_graph_parses() {
-    use doctor_toolkit::resource::graph::Graph;
-    let nodes = std::sync::atomic::AtomicUsize::new(0);
+fn every_graph_writes_back_byte_for_byte() {
+    use doctor_toolkit::resource::graph::{Graph, RTree, Visibility};
+    use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
+    let nodes = AtomicUsize::new(0);
+    let links = AtomicUsize::new(0);
+    let shapes = AtomicUsize::new(0);
+    let pairs = AtomicUsize::new(0);
+    let paths = AtomicUsize::new(0);
+    let reproduced = AtomicUsize::new(0);
     let count = check_every("graph", |data| {
         let graph = Graph::parse(data).map_err(|e| e.to_string())?;
-        nodes.fetch_add(graph.nodes.len(), std::sync::atomic::Ordering::Relaxed);
+        nodes.fetch_add(graph.nodes.len(), Relaxed);
+        links.fetch_add(graph.link_count(), Relaxed);
+        let bytes = graph.to_bytes().map_err(|e| e.to_string())?;
+        if bytes != data {
+            let at = bytes.iter().zip(data).position(|(a, b)| a != b);
+            return Err(format!(
+                "written differently: {} vs {} bytes, first difference at {at:?}",
+                bytes.len(),
+                data.len()
+            ));
+        }
+        // The JSON form gives back the same graph and the same bytes.
+        let json = serde_json::to_string(&graph).map_err(|e| e.to_string())?;
+        let back: Graph = serde_json::from_str(&json).map_err(|e| e.to_string())?;
+        if back.to_bytes().map_err(|e| e.to_string())? != data {
+            return Err("JSON form writes different bytes".into());
+        }
+        // Derived data: R-tree shapes and plain visibility everywhere, and
+        // every stored path table gives shortest paths.
+        if matches!(graph.rtree, RTree::Shape(_)) || graph.nodes.is_empty() {
+            shapes.fetch_add(1, Relaxed);
+        }
+        if matches!(graph.visibility, Visibility::Pairs { .. }) {
+            pairs.fetch_add(1, Relaxed);
+        }
+        if let Some(t) = &graph.precomputed_paths {
+            if !doctor_toolkit::resource::graph::paths_valid(&graph, t) {
+                return Err("stored paths are not shortest paths".into());
+            }
+            paths.fetch_add(1, Relaxed);
+            if doctor_toolkit::resource::graph::compute_paths(&graph).as_ref() == Some(t) {
+                reproduced.fetch_add(1, Relaxed);
+            }
+        }
+        if !graph.stale_lengths().is_empty() {
+            return Err("a link length differs from its node distance".into());
+        }
+        // Repairing an unchanged graph changes nothing.
+        let mut repaired = graph.clone();
+        if !repaired.repair_derived().is_empty() || repaired != graph {
+            return Err("repair changed an unchanged graph".into());
+        }
         Ok(())
     });
     if count == 0 {
@@ -1899,6 +1946,55 @@ fn every_graph_parses() {
     }
     assert_eq!(count, 2178);
     assert_eq!(nodes.into_inner(), 58_623);
+    assert_eq!(links.into_inner(), 152_629);
+    assert_eq!(shapes.into_inner(), 2178);
+    assert_eq!(pairs.into_inner(), 2178);
+    assert_eq!(paths.into_inner(), 2087);
+    eprintln!(
+        "path tables computed again equal to the stored ones: {} of 2087",
+        reproduced.into_inner()
+    );
+}
+
+#[test]
+fn graph_edits_keep_every_graph_writable() {
+    use doctor_toolkit::resource::graph::{Graph, Neighbourhood, compute_paths, paths_valid};
+    let count = check_every("graph", |data| {
+        let mut graph = Graph::parse(data).map_err(|e| e.to_string())?;
+        let n = graph.nodes.len();
+        if n < 2 {
+            return Ok(());
+        }
+        let err = |e: doctor_toolkit::Error| e.to_string();
+        // Move a node: lengths follow, paths stay shortest.
+        let mut p = graph.nodes[0].position;
+        p[0] += 1.5;
+        graph.move_node(0, p).map_err(err)?;
+        // Attach a point next to node 1 and remove the last node.
+        let mut q = graph.nodes[1].position;
+        q[2] += 2.0;
+        graph
+            .attach_point(q, 0.5, Neighbourhood::default())
+            .map_err(err)?;
+        graph.remove_node(n - 1).map_err(err)?;
+        let bytes = graph.to_bytes().map_err(err)?;
+        let back = Graph::parse(&bytes).map_err(|e| format!("reparse: {e}"))?;
+        if back.to_bytes().map_err(err)? != bytes {
+            return Err("edited graph does not write back".into());
+        }
+        if !back.stale_lengths().is_empty() {
+            return Err("stale lengths after edits".into());
+        }
+        if let Some(t) = &back.precomputed_paths
+            && (!paths_valid(&back, t) || compute_paths(&back).is_none())
+        {
+            return Err("paths not valid after edits".into());
+        }
+        Ok(())
+    });
+    if count > 0 {
+        assert_eq!(count, 2178);
+    }
 }
 
 /// A small deterministic generator for the edit tests.

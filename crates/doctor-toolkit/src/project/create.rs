@@ -16,7 +16,7 @@ use crate::navigation::unpack::{AssetMaps, IndexAssets, Selection};
 use crate::resource::anim::{AnimBank, TYPE_BNK};
 use crate::resource::chv::{ChatterSet, TYPE_CHV};
 use crate::resource::dlg::{Dialogue, TYPE_DLG};
-use crate::resource::logic::TYPE_GRAPH;
+use crate::resource::graph::{Graph, TYPE_GRAPH};
 use crate::resource::lua::{self, Chunk, Comparison, TYPE_LUA};
 use crate::resource::mesh::{Model, TYPE_MESH, volatile_for};
 use crate::resource::mobface::TYPE_MOBFACE;
@@ -567,7 +567,7 @@ struct StreamOutput {
 }
 
 /// The units of one stream: textures and models with their second
-/// resource, a view next to the raw data of `graph`, `rcb` and `mobface`.
+/// resource, a view next to the raw data of `rcb` and `mobface`.
 fn plan_stream(
     game: &GameInstance,
     ws: &Workspace,
@@ -609,7 +609,7 @@ fn plan_stream(
             },
             TYPE_LH2 => (Kind::Strings, vec![r]),
             t if logic_import::is_supported(t) => (Kind::Logic, vec![r]),
-            TYPE_DLG | TYPE_CHV | TYPE_TRINITY_SEQ_MASTER => (Kind::Document, vec![r]),
+            TYPE_DLG | TYPE_CHV | TYPE_TRINITY_SEQ_MASTER | TYPE_GRAPH => (Kind::Document, vec![r]),
             TYPE_LUA => (Kind::Script, vec![r]),
             TYPE_BNK => (Kind::Animations, vec![r]),
             _ => (Kind::Raw, vec![r]),
@@ -621,7 +621,7 @@ fn plan_stream(
             .collect::<Result<Vec<_>>>()?;
         let main = source.header(list[0]);
         let name = name_of(list[0]);
-        if matches!(type_id, TYPE_GRAPH | TYPE_RCB | TYPE_MOBFACE) {
+        if matches!(type_id, TYPE_RCB | TYPE_MOBFACE) {
             units.push(Unit {
                 kind: Kind::View,
                 resources: list.clone(),
@@ -866,6 +866,7 @@ impl Writer<'_> {
                 let value = match header.type_id {
                     TYPE_DLG => value_of(serde_json::to_value(Dialogue::parse(&data[0])?))?,
                     TYPE_CHV => value_of(serde_json::to_value(ChatterSet::parse(&data[0])?))?,
+                    TYPE_GRAPH => value_of(serde_json::to_value(Graph::parse(&data[0])?))?,
                     _ => value_of(serde_json::to_value(SeqMaster::parse(&data[0])?))?,
                 };
                 // Only a document that writes back the same bytes is editable.
@@ -969,7 +970,8 @@ pub(super) fn raw_ext(type_id: u32) -> &'static str {
     }
 }
 
-/// The resource data of a document (`dlg`, `chv`, `trinity_seq_master`).
+/// The resource data of a document (`dlg`, `chv`, `trinity_seq_master`,
+/// `graph`).
 pub(super) fn document_bytes(type_id: u32, value: &Value) -> Result<Vec<u8>> {
     let bad = |e: serde_json::Error| Error::InvalidArgument(format!("not a valid document: {e}"));
     match type_id {
@@ -982,6 +984,12 @@ pub(super) fn document_bytes(type_id: u32, value: &Value) -> Result<Vec<u8>> {
         TYPE_TRINITY_SEQ_MASTER => serde_json::from_value::<SeqMaster>(value.clone())
             .map_err(bad)?
             .to_bytes(),
+        // Lengths, R-tree and paths follow edited positions and links.
+        TYPE_GRAPH => {
+            let mut graph = serde_json::from_value::<Graph>(value.clone()).map_err(bad)?;
+            graph.repair_derived();
+            graph.to_bytes()
+        }
         _ => Err(Error::InvalidArgument(format!(
             "type {} is not a document",
             type_tags().display(type_id)

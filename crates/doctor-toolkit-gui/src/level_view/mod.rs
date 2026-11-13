@@ -18,11 +18,13 @@
 //! loads the zones once the game is indexed; options: `select=<group>:<object>`,
 //! `rotate`, `finest`, `points`, `eye=<x>,<y>,<z>`, `look=<x>,<y>,<z>`,
 //! `yaw=<rad>`, `pitch=<rad>`, `act=<edit>` (see [`LevelView::preset_action`]),
+//! `nav[=<graph>:<node>]` (show navigation graphs, select a node),
 //! `spin` (turn and print frame times).
 
 pub mod camera;
 mod gizmo;
 pub mod loader;
+pub mod nav;
 pub mod scene;
 
 use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
@@ -100,6 +102,13 @@ pub enum LevelAction {
         eye: [f32; 3],
         streams: Vec<usize>,
     },
+    /// An edited navigation graph; `renumbered` (after a removed node) makes
+    /// links of other graphs into it follow.
+    Graph {
+        graph: Box<doctor_toolkit::level::navgraph::GraphRef>,
+        renumbered: Option<Vec<Option<u16>>>,
+        label: String,
+    },
 }
 
 /// Everything that changes the image.
@@ -111,10 +120,13 @@ struct RenderKey {
     options: crate::render::SceneOptions,
     gizmo: (gizmo::Mode, Option<usize>),
     collision: Option<(ObjRef, RowMatrix)>,
+    nav: u64,
 }
 
 struct Drag {
     object: ObjRef,
+    /// A node of a navigation graph instead of the object.
+    node: Option<nav::NodeRef>,
     axis: usize,
     start: RowMatrix,
     start_param: f32,
@@ -206,6 +218,10 @@ pub struct LevelView {
     play_here: bool,
     /// Collision wireframes by `hkx` id (`None`: not readable).
     collisions: HashMap<u32, Option<Arc<crate::collision_view::Wire>>>,
+    /// Navigation graphs of the loaded zones.
+    nav: nav::NavLayer,
+    /// An edit from the navigation panel, returned by the next `ui`.
+    nav_action: Option<LevelAction>,
 }
 
 impl LevelView {
@@ -264,6 +280,8 @@ impl LevelView {
             show_collision: false,
             play_here: false,
             collisions: HashMap::new(),
+            nav: nav::NavLayer::default(),
+            nav_action: None,
             center: [0.0; 3],
             index_stale: false,
         };
@@ -314,6 +332,14 @@ impl LevelView {
                 "finest" => self.filter.lod = LodMode::Finest,
                 "points" => self.filter.points = true,
                 "collision" => self.show_collision = true,
+                "nav" => {
+                    self.nav.visible = true;
+                    if let Some((g, n)) = value.split_once(':')
+                        && let (Ok(graph), Ok(node)) = (g.parse(), n.parse())
+                    {
+                        self.nav.select(Some(nav::NodeRef { graph, node }));
+                    }
+                }
                 "spin" => preset.spin = Some(Vec::new()),
                 "act" => preset.actions.push_back(value.to_owned()),
                 "eye" if floats.len() == 3 => preset.eye = Some([floats[0], floats[1], floats[2]]),
@@ -693,6 +719,9 @@ impl LevelView {
     /// updates the scene. `select` selects an object afterwards.
     pub fn refresh(&mut self, ws: Option<&Workspace>, select: Option<(Location, usize)>) {
         let ctx = self.ctx.clone();
+        if let Some(input) = &self.input {
+            self.nav.reload(&input.game, ws);
+        }
         let (Some(level), Some(input)) = (&mut self.level, &self.input) else {
             return;
         };
@@ -855,6 +884,9 @@ impl LevelView {
     // ---------------------------------------------------------- selection
 
     fn select(&mut self, r: Option<ObjRef>) {
+        if r.is_some() {
+            self.nav.select(None);
+        }
         if self.filter.selected != r {
             self.confirm_remove = false;
             if let Some(r) = r
@@ -989,7 +1021,16 @@ impl LevelView {
         }
         self.poll(&ctx);
         self.upload();
+        if let (Some(level), Some(input)) = (&self.level, &self.input) {
+            let mut streams: Vec<usize> = level.groups.iter().map(|g| g.location.stream).collect();
+            streams.sort_unstable();
+            streams.dedup();
+            self.nav.ensure(&input.game, ws, &streams);
+        }
         let mut action = self.preset_action();
+        if let Some(a) = self.nav_action.take() {
+            action = Some(a);
+        }
         if std::mem::take(&mut self.play_here)
             && let Some(level) = &self.level
         {
@@ -1291,6 +1332,27 @@ impl LevelView {
         if self.filter != before {
             self.refill = true;
         }
+        egui::CollapsingHeader::new(tr("navgraph.title"))
+            .id_salt("level-navgraph")
+            .default_open(self.nav.visible)
+            .show(ui, |ui| {
+                let object_at = self
+                    .filter
+                    .selected
+                    .and_then(|r| self.object_transform(r))
+                    .map(|m| [m[3][0], m[3][1], m[3][2]]);
+                let target = math::add(self.camera.eye, math::scale(self.camera.forward(), 10.0));
+                match self.nav.panel(ui, object_at, target) {
+                    Some(Ok(a)) => self.nav_action = Some(a),
+                    Some(Err(e)) => self.status = e,
+                    None => {}
+                }
+                if self.nav.selected.is_some() && self.filter.selected.is_some() {
+                    self.filter.selected = None;
+                    self.logic = None;
+                    self.refill = true;
+                }
+            });
     }
 
     fn run_search(&mut self) {
@@ -1700,9 +1762,19 @@ impl LevelView {
             })
         };
         let selected = self.filter.selected;
+        let node = self
+            .nav
+            .selected
+            .filter(|_| selected.is_none() && self.nav.visible);
+        let gizmo_mode = if node.is_some() {
+            gizmo::Mode::Move
+        } else {
+            self.gizmo
+        };
         let gizmo_at = selected
             .and_then(|r| self.object_transform(r))
-            .map(|m| [m[3][0], m[3][1], m[3][2]]);
+            .map(|m| [m[3][0], m[3][1], m[3][2]])
+            .or_else(|| node.and_then(|r| self.nav.position(r)));
         let pointer = response
             .hover_pos()
             .or(ui.input(|i| i.pointer.interact_pos()));
@@ -1710,7 +1782,7 @@ impl LevelView {
             let size = gizmo::size(&view, origin);
             self.hover_axis = pointer
                 .filter(|_| response.hovered())
-                .and_then(|p| gizmo::hit(self.gizmo, origin, size, [p.x, p.y], &to_screen));
+                .and_then(|p| gizmo::hit(gizmo_mode, origin, size, [p.x, p.y], &to_screen));
         }
         let ray_at = |p: Pos2| {
             let uv = (p - rect.min) / rect.size();
@@ -1726,6 +1798,26 @@ impl LevelView {
         {
             self.drag = Some(Drag {
                 object: r,
+                node: None,
+                axis,
+                start,
+                start_param: param,
+                current: start,
+            });
+        } else if response.drag_started_by(egui::PointerButton::Primary)
+            && !alt
+            && let (Some(axis), Some(n), Some(origin), Some(p)) =
+                (self.hover_axis, node, gizmo_at, pointer)
+            && let Some(param) = gizmo::parameter(gizmo_mode, origin, axis, &ray_at(p))
+        {
+            let mut start = doctor_toolkit::level::IDENTITY;
+            start[3] = [origin[0], origin[1], origin[2], 1.0];
+            self.drag = Some(Drag {
+                object: ObjRef {
+                    group: usize::MAX,
+                    object: usize::MAX,
+                },
+                node: Some(n),
                 axis,
                 start,
                 start_param: param,
@@ -1735,19 +1827,24 @@ impl LevelView {
         let mut moved = false;
         if let Some(drag) = &mut self.drag {
             let origin = [drag.start[3][0], drag.start[3][1], drag.start[3][2]];
+            let mode = if drag.node.is_some() {
+                gizmo::Mode::Move
+            } else {
+                self.gizmo
+            };
             if let Some(p) = pointer
-                && let Some(param) = gizmo::parameter(self.gizmo, origin, drag.axis, &ray_at(p))
+                && let Some(param) = gizmo::parameter(mode, origin, drag.axis, &ray_at(p))
             {
                 let mut delta = param - drag.start_param;
-                if self.gizmo == gizmo::Mode::Rotate {
+                if mode == gizmo::Mode::Rotate {
                     // Shortest turn between the two angles.
                     delta = (delta + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU)
                         - std::f32::consts::PI;
                 }
                 if ui.input(|i| i.modifiers.ctrl) {
-                    delta = gizmo::snap(self.gizmo, delta);
+                    delta = gizmo::snap(mode, delta);
                 }
-                let m = gizmo::apply(self.gizmo, &drag.start, drag.axis, delta);
+                let m = gizmo::apply(mode, &drag.start, drag.axis, delta);
                 if m != drag.current {
                     drag.current = m;
                     moved = true;
@@ -1755,7 +1852,17 @@ impl LevelView {
             }
             if response.drag_stopped() || !ui.input(|i| i.pointer.primary_down()) {
                 let drag = self.drag.take().expect("dragging");
-                if drag.current != drag.start
+                if let Some(n) = drag.node {
+                    if drag.current != drag.start {
+                        let to = [drag.current[3][0], drag.current[3][1], drag.current[3][2]];
+                        match self.nav.moved(n, to) {
+                            Ok(a) => action = Some(a),
+                            Err(e) => self.status = e,
+                        }
+                    } else {
+                        self.nav.preview = None;
+                    }
+                } else if drag.current != drag.start
                     && let Some(level) = &self.level
                 {
                     action = Some(LevelAction::SetTransform {
@@ -1775,6 +1882,13 @@ impl LevelView {
             }
         }
         if moved
+            && let Some(drag) = &self.drag
+            && let Some(n) = drag.node
+        {
+            let m = drag.current;
+            self.nav.preview = Some((n, [m[3][0], m[3][1], m[3][2]]));
+            self.nav.generation += 1;
+        } else if moved
             && let Some(drag) = &self.drag
             && let Some(indices) = self.by_object.get(&drag.object)
         {
@@ -1805,7 +1919,26 @@ impl LevelView {
             self.filter.hovered = hovered;
             self.refill = true;
         }
-        if response.clicked() && self.hover_axis.is_none() {
+        let node_click = if response.clicked() && self.hover_axis.is_none() {
+            response
+                .interact_pointer_pos()
+                .and_then(|p| self.nav.pick(&to_screen, [p.x, p.y], nav::PICK_RADIUS))
+        } else {
+            None
+        };
+        if let Some(n) = node_click {
+            if ui.input(|i| i.modifiers.shift) && self.nav.selected.is_some() {
+                match self.nav.link_to(n) {
+                    Some(Ok(a)) => action = Some(a),
+                    Some(Err(e)) => self.status = e,
+                    None => {}
+                }
+            } else {
+                self.select(None);
+                self.nav.select(Some(n));
+            }
+        } else if response.clicked() && self.hover_axis.is_none() {
+            self.nav.select(None);
             let picked = match response.interact_pointer_pos() {
                 Some(pos) if software => self.pick(&gpu, &view, rect, pos, ppp),
                 Some(_) => self.filter.hovered,
@@ -1843,7 +1976,12 @@ impl LevelView {
             let axis = self.drag.as_ref().map(|d| d.axis).or(self.hover_axis);
             self.scene.overlay_lines =
                 gizmo::lines(self.gizmo, origin, gizmo::size(&view, origin), axis);
+        } else if let Some(origin) = gizmo_at.filter(|_| node.is_some()) {
+            let axis = self.drag.as_ref().map(|d| d.axis).or(self.hover_axis);
+            self.scene.overlay_lines =
+                gizmo::lines(gizmo::Mode::Move, origin, gizmo::size(&view, origin), axis);
         }
+        self.scene.overlay_lines.extend(self.nav.lines());
         let collision = self
             .filter
             .selected
@@ -1860,6 +1998,7 @@ impl LevelView {
             options: self.scene.options,
             gizmo: (self.gizmo, self.hover_axis),
             collision,
+            nav: self.nav.generation,
         };
         if self.last_render.as_ref() != Some(&key) {
             let mut renderer = gpu.lock();

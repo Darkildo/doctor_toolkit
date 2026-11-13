@@ -23,7 +23,26 @@ Blueprint в Unreal: события, ветвления, задержки, зн�
 несуществующему файлу (`statx … ENOENT`). Метка несёт значения (`a_var_after_2`),
 поэтому видно не только «дошло», но и «что вернула функция».
 
-@@INGAME@@
+Этап 28 (`game-bench.md` §14): ресурс `lua` и объект `LuaAudioScript`
+в SimGroup уровня запускаются при загрузке и по сообщению игры; скрипт
+получает сообщения (`audio_init`…), его `SendMessage` доходит до объектов
+SimGroup (`MessageRelay`, `VariableSwitch`, `VariableOperator` отвечают),
+переменные игры читаются и пишутся, таймеры срабатывают; граф
+`examples/scripts/doctor_e2e.json` проходит все пробы.
+
+Этап 45 (`game-bench.md` §20), старт `-stream gf2 cuba`:
+
+- **видимое действие и триггер:** `TriggerBox` (копия объекта задания c67,
+  `level add --template-stream`, `TriggerBase.4 = doctor_trig_enter`) в 6 м
+  перед игроком и граф «On message `doctor_trig_enter` → File probe → Send
+  message `boundary_fade_out`» (`script-deploy … gf2/cuba`): игрок дошёл до
+  коробки — проба `trig_enter` в трассировке, экран погас (средняя яркость
+  кадра 106,5 → 1,6);
+- **звук:** `PlayEmx("doctor_beep.emx", 1)` нового эмиттера `sound-add
+  --new` слышен в записи (`AUDIO_CAPTURE=1`); **имя нужно с `.emx`** —
+  `PlayEmx("doctor_beep")` и даже `PlayEmx("cloth_swipe_quick_01")` игра не
+  находит (возвращает нулевой указатель). Узел Play sound поэтому дописывает
+  `.emx` сам (`dt_emx`).
 
 ## 2. Граф
 
@@ -146,7 +165,7 @@ Could not turn 5 into a GUID». Откуда скрипту брать объе�
 | `action.send_message_data` | Send message with data | `SendMessage(message, type, data)` (не проверено) |
 | `action.query` | Ask the game | `SendMessageEx(message, data)` → до трёх ответов; `iMsgLuaGetPlayerVenue` на террасе отвечает пустой строкой |
 | `timer.start`, `timer.stop` | Start/Stop timer | управление событием On timer по имени |
-| `audio.play_emx`, `audio.stop_emx`, `audio.emx_volume` | звук-эмиттер `.emx` | `PlayEmx(name, volume)`; не проверено (звук стенда выключен) |
+| `audio.play_emx`, `audio.stop_emx`, `audio.emx_volume` | звук-эмиттер `.emx` | `PlayEmx(name .. ".emx", volume)`: игра ищет звук по имени файла с `.emx`, узел дописывает его (этап 45, проверено с записью звука) |
 | `audio.play_stream`, `audio.stop_stream` | поток `.stx` | `PlayEarsAudioStream(name, volume)`; не проверено |
 | `lua.call` | Call game function | любая глобальная функция Lua игры (`function`, `args`, `results`) |
 | `lua.code` | Lua code | свои операторы Lua 5.0; входы — `{имя}`, выходы — `{имя} = …` |
@@ -348,10 +367,10 @@ Open / Save / Save as — файлы `.json`; размещённый граф с
 
 ## 9. Открыто
 
-- Видимое действие в кадре от сообщения скрипта (`SetTimeOfDay`,
-  `UIFanfare`, `FadeScreenFx`) — @@VISIBLE_OPEN@@.
-- Не проверены в игре: звук (`PlayEmx`, `PlayEarsAudioStream` — звук стенда
-  выключен, нужен прогон с `AUDIO_CAPTURE=1`), группы с объектами игры
+- Видимое действие в кадре от сообщения скрипта — проверено на этапе 45
+  (`FadeScreenFx` через `boundary_fade_out`, §1); `SetTimeOfDay` и
+  `UIFanfare` по отдельности в кадре не сверялись.
+- Не проверены в игре: `PlayEarsAudioStream` (потоковый звук), группы с объектами игры
   (откуда скрипту брать объекты: функция `Base`, данные сообщений), полиция
   и машины (вне машины и без погони), `SendMessage` с данными и что
   получатель видит в `data`.
