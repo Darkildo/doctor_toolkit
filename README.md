@@ -1,12 +1,82 @@
+<div align="center">
+
 # doctor_toolkit
 
-Open-source reader and writer for the game files of the EARS engine
-(EA Redwood Shores / Visceral Games), written in Rust.
+**Open-source modding toolkit for the games of the EARS engine
+(EA Redwood Shores / Visceral Games), written in Rust.**
 
-The first supported game is **The Godfather II (PC)**. Everything here is
-verified against the installed game; see `docs/analysis/`.
+First supported game: **The Godfather II (PC)**.
+
+[![CI](https://github.com/Darkildo/doctor_toolkit/actions/workflows/ci.yml/badge.svg)](https://github.com/Darkildo/doctor_toolkit/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/Darkildo/doctor_toolkit?include_prereleases&label=release)](https://github.com/Darkildo/doctor_toolkit/releases)
+[![License: GPL-3.0](https://img.shields.io/badge/license-GPL--3.0-blue.svg)](LICENSE)
+![Platform](https://img.shields.io/badge/platform-Linux-lightgrey)
+
+<img src="docs/images/overview.png" alt="The editor: files of the game, a stream, details of a model" width="900">
+
+</div>
+
+doctor_toolkit reads, edits and writes the files of the game: streams and
+their resources, models and animations, textures, sounds and movies, text,
+dialogues, cut-scenes and the game logic, and puts the changes back into the
+game safely. It comes as a graphical editor, a command line tool, a Python
+module and a Blender add-on. Every format is checked against the installed
+game (`docs/analysis/`), and edits go through a workspace with undo, so the
+original files are never lost.
+
+## Highlights
+
+- **Editor for everything in the game files:** browse 212,000+ resources of
+  2,300 streams, search by name, hash or text, see what uses what.
+- **Models and characters:** view with the game's shaders, export and import
+  glTF, FBX, OBJ and USD (skinned, with materials), assemble characters from
+  their parts, make new outfits.
+- **Levels:** the cities in 3D with every object, move, duplicate and add
+  objects, start the game right there.
+- **Game logic:** the message graph of missions, visual scripts in the style
+  of Blueprints, Lua scripts, dialogue trees, cut-scenes with a timeline.
+- **Media:** VP6 movie player and encoder, sound banks and streamed sounds,
+  textures to and from DDS and PNG, interface text in every language.
+- **Safe changes:** a workspace with undo, redo and compare; mods as packages
+  that players install and remove; integrity checks; atomic writes.
+- **Play and debug:** start the game from the editor straight into a city or
+  at a point, see it in an editor tab (with DXVK under Wine), and talk to the
+  running game through a live link: player, camera, objects, teleport,
+  messages, Lua (the in-game module is built from source for now).
+
+## Screenshots
+
+| | |
+|:---:|:---:|
+| <img src="docs/images/character.png" alt="Character preview" width="440"><br>**Characters** assembled from their parts | <img src="docs/images/level.png" alt="Level view" width="440"><br>**Levels** with every object of the city |
+| <img src="docs/images/logic.png" alt="Logic graph" width="440"><br>**Game logic**: who sends which message to whom | <img src="docs/images/movies.png" alt="Movie player" width="440"><br>**Movies**: VP6 player with sound |
+| <img src="docs/images/cutscene.png" alt="Cut-scene timeline" width="440"><br>**Cut-scenes**: shots, subtitles, characters | <img src="docs/images/dialogue.png" alt="Dialogue editor" width="440"><br>**Dialogues**: trees, conditions, lines |
+| <img src="docs/images/model.png" alt="Model viewer" width="440"><br>**Models** with parts, materials and bones | <img src="docs/images/play.png" alt="Play options" width="440"><br>**Play**: straight into a city, in an editor tab |
+
+Pictures are made by `tools/screenshots.sh` and show data of the game for
+documentation of this tool only.
+
+## Quick start
+
+1. Download the archive of the [latest release](https://github.com/Darkildo/doctor_toolkit/releases)
+   (Linux x86_64) or [build from source](#building-from-source) (Windows and
+   macOS builds are checked by CI but not packaged yet).
+2. Unpack it and start the editor with the folder of your game:
+
+   ```sh
+   tar xzf doctor_toolkit-0.0.1-linux-x86_64.tar.gz && cd doctor_toolkit-0.0.1-linux-x86_64
+   ./doctor-toolkit-gui "/path/to/The Godfather II"
+   ```
+
+3. Read the [user guide](docs/guide/README.md) (Russian) — installation,
+   browsing, editing, mods, Play, dialogues, logic, cut-scenes and more.
+
+This is a **beta**: back up your game folder before writing into it.
 
 ## What works
+
+<details>
+<summary>Everything the toolkit reads and writes, in detail</summary>
 
 - Streams (`.str`, UStream): list, extract, rewrite, replace resources.
 - Tables of contents (`.toc`, version 10): read, write, update stream sizes.
@@ -172,6 +242,8 @@ verified against the installed game; see `docs/analysis/`.
   at the top right of the mod manager), with correct Russian plurals; names
   of formats, paths, hashes, the command line and the log stay English
   (`DOCTOR_TOOLKIT_LANG=en|ru` overrides; `docs/shell.md` §5).
+
+</details>
 
 ## Install (Linux)
 

@@ -215,6 +215,11 @@ DISPLAY=:57 WAYLAND_DISPLAY= DOCTOR_TOOLKIT_GUI_SHOT=out.png DOCTOR_TOOLKIT_GUI_
   DOCTOR_TOOLKIT_GUI_MODEL=window,skeleton doctor-toolkit-gui "$GAME" gf2/globalfolder/characters/allcharacters
 ```
 
+Снимки для README и руководства делает `tools/screenshots.sh ИГРА [ПАПКА]
+[ИМЯ…]` (по умолчанию `docs/images/`): каждый снимок — свой Xvfb, интерфейс
+на английском (`UI_LANG=ru` — на русском), путь игры показан как
+`/tmp/The Godfather II`, нужная область вырезается.
+
 Программный рендер: `VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.json`
 (lavapipe). Адаптер выбирается так: дискретный, встроенный, прочий,
 программный; Vulkan/Metal/DX12 раньше OpenGL; для окна — только способный
