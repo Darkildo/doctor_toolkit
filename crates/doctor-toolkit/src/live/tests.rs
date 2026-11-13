@@ -575,3 +575,131 @@ fn a_module_of_protocol_2_still_answers() {
         Some(ErrorCode::Unsupported)
     );
 }
+
+#[test]
+fn world_and_state_of_protocol_4() {
+    use proto::{MoneyChange, StreamAction, TimeChange};
+    let game = FakeGame::start(config("t", true)).unwrap();
+    let mut c = Client::connect(&game.endpoint("t"), "test", T).unwrap();
+    assert_eq!(c.version(), 4);
+    assert!(c.has_state());
+
+    // The clock: time and rate, then back to the level's rate.
+    let t = c.time_of_day().unwrap().unwrap();
+    assert_eq!((t.hour, t.minute, t.rate), (12, 0, 60.0));
+    c.set_time(TimeChange {
+        time: Some([23, 30, 0]),
+        rate: Some(0.0),
+    })
+    .unwrap();
+    let t = c.time_of_day().unwrap().unwrap();
+    assert_eq!((t.hour, t.minute, t.rate), (23, 30, 0.0));
+    assert_eq!(c.status().unwrap().time_of_day, Some([23, 30, 0]));
+    c.set_time(TimeChange {
+        time: None,
+        rate: Some(-1.0),
+    })
+    .unwrap();
+    assert_eq!(c.time_of_day().unwrap().unwrap().rate, 60.0);
+    assert!(c.weather().unwrap().rain.is_none());
+
+    // Money: add, set, never below zero.
+    c.set_money(MoneyChange::Add(12_345.0)).unwrap();
+    assert_eq!(c.money().unwrap().unwrap().cash, 12_345.0);
+    c.set_money(MoneyChange::Set(500.0)).unwrap();
+    assert_eq!(c.money().unwrap().unwrap().cash, 500.0);
+    assert_eq!(game.world.lock().unwrap().money.cash, 500.0);
+
+    // Family and mission.
+    let f = c.family().unwrap();
+    assert_eq!(f.crew.len(), 7);
+    assert!(f.crew[0].taken());
+    assert_eq!(
+        proto::state::specialty_names(f.crew[0].specialties),
+        ["medic"]
+    );
+    assert_eq!(f.families[0].hash, proto::addr::PLAYER_FAMILY);
+    let m = c.mission().unwrap();
+    assert!(m.current.is_none());
+    assert_eq!(m.checkpoints[0].number, 737);
+
+    // Variables by name: read, set, unknown.
+    let h = proto::name_hash(fake::FAKE_VARIABLE);
+    assert_eq!(c.variables(vec![h]).unwrap()[0].value, 0);
+    c.set_variable(h, 7).unwrap();
+    assert_eq!(c.variables(vec![h]).unwrap()[0].value, 7);
+    assert_eq!(c.variables(Vec::new()).unwrap().len(), 1);
+    assert_eq!(
+        c.set_variable(proto::name_hash("no_such"), 1)
+            .unwrap_err()
+            .code(),
+        Some(ErrorCode::Failed)
+    );
+
+    // Streams one at a time: a second request waits for the first.
+    c.stream_load("gf2/cuba/local/yuri/high/filler_056_01.str")
+        .unwrap();
+    assert_eq!(
+        c.stream_load("gf2/cuba/local/yuri/high/filler_056_02")
+            .unwrap_err()
+            .code(),
+        Some(ErrorCode::NotReady)
+    );
+    let q = c.stream_queue().unwrap();
+    assert_eq!(
+        q.requests[0].name,
+        "gf2\\cuba\\local\\yuri\\high\\filler_056_01"
+    );
+    assert!(!q.requests[0].done);
+    let q = c.stream_queue().unwrap();
+    assert!(q.requests[0].done);
+    assert!(
+        c.streams()
+            .unwrap()
+            .iter()
+            .any(|s| s.name.ends_with("filler_056_01"))
+    );
+    // The link unloads what it loaded; a stream of the game only by force.
+    assert_eq!(
+        c.stream_unload("gf2/cuba", false).unwrap_err().code(),
+        Some(ErrorCode::Denied)
+    );
+    c.stream_unload("gf2/cuba/local/yuri/high/filler_056_01", false)
+        .unwrap();
+    let q = c.stream_queue().unwrap();
+    assert_eq!(q.requests[1].action, StreamAction::Unload);
+    c.stream_queue().unwrap();
+    assert!(
+        !c.streams()
+            .unwrap()
+            .iter()
+            .any(|s| s.name.ends_with("filler_056_01"))
+    );
+}
+
+#[test]
+fn state_writes_need_permission_and_a_new_module() {
+    let game = FakeGame::start(config("t", false)).unwrap();
+    let mut c = Client::connect(&game.endpoint("t"), "test", T).unwrap();
+    assert!(c.time_of_day().unwrap().is_some());
+    assert_eq!(
+        c.set_money(proto::MoneyChange::Add(1.0))
+            .unwrap_err()
+            .code(),
+        Some(ErrorCode::Denied)
+    );
+    assert_eq!(
+        c.stream_load("gf2/cuba/x").unwrap_err().code(),
+        Some(ErrorCode::Denied)
+    );
+    // A module of stage 35 speaks protocol 3: the client goes down to it
+    // and does without the world and the state.
+    game.world.lock().unwrap().protocol = 3;
+    let mut c = Client::connect(&game.endpoint("t"), "test", T).unwrap();
+    assert_eq!(c.version(), 3);
+    assert!(c.has_debug() && !c.has_state());
+    assert!(matches!(
+        c.time_of_day().unwrap_err(),
+        LinkError::Unexpected(_) | LinkError::Refused(_)
+    ));
+}

@@ -14,6 +14,10 @@
 //!    hooks carry breakpoints and the free camera ([`debug`], stage 35);
 //! 5. listens on `127.0.0.1:PORT` in a thread of its own.
 //!
+//! Stage 48 ([`state`]) reads and writes the world and the state of the
+//! game: time of day, weather, streams one at a time, money, family,
+//! missions, variables of the story.
+//!
 //! Nothing here unwinds into the game: every entry point catches panics.
 //! The module writes no game file; its log is `doctor_live.log` next to it.
 
@@ -23,6 +27,7 @@ mod debug;
 mod game;
 mod journal;
 mod server;
+mod state;
 mod win;
 
 use std::ffi::c_void;
@@ -72,7 +77,7 @@ fn jobs() -> &'static Queue {
 }
 
 /// Folder of the module (`scripts/` of the game).
-fn module_dir() -> PathBuf {
+pub(crate) fn module_dir() -> PathBuf {
     let mut buf = [0u16; 1024];
     let module = MODULE.load(Ordering::Relaxed) as usize as *mut c_void;
     // SAFETY: fills `buf` with the path of this DLL.
@@ -220,6 +225,22 @@ fn execute(request: Request) -> Response {
         Request::Peek { address, len } => game::peek(*address, *len),
         Request::World { filter, max } => game::world(filter, *max),
         Request::Texture { name, data } => debug::texture(*name, data),
+        Request::TimeOfDay => state::time_of_day(),
+        Request::SetTime(change) => state::set_time(*change),
+        Request::Weather => state::weather(),
+        Request::StreamLoad { name } => {
+            state::stream(name, doctor_toolkit_live::StreamAction::Load, false)
+        }
+        Request::StreamUnload { name, force } => {
+            state::stream(name, doctor_toolkit_live::StreamAction::Unload, *force)
+        }
+        Request::StreamQueue => state::stream_queue(),
+        Request::Money => state::money(),
+        Request::SetMoney(change) => state::set_money(*change),
+        Request::Family => state::family(),
+        Request::Mission => state::mission(),
+        Request::Variables { hashes } => state::variables(hashes),
+        Request::SetVariable { hash, value } => state::set_variable(*hash, *value),
         _ => Response::error(
             doctor_toolkit_live::ErrorCode::BadRequest,
             "not a main-thread request",

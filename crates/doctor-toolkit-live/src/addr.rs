@@ -299,3 +299,99 @@ pub const TEXTURE_FILL_COMMAND: u32 = 0x0112_78A4;
 pub const TEXTURE_LOADER: u32 = 0x0122_3558;
 pub const TEXTURE_LOADER_PENDING: u32 = 0x20;
 pub const TEXTURE_LOADER_PENDING_COUNT: u32 = 0x24;
+
+// --- Stage 48: the world and the state of the game ---------------------------
+
+/// `TimeOfDayManager::SetTime(this, year, day, hour, minute, second)` —
+/// `thiscall`, callee pops 0x14: clamps the values, writes `+0x5C..+0x6C`
+/// and sends the change through the bus (`0x0112DB74`) so sky, fog and
+/// light follow; what `SetTimeOfDay` calls (`0x00825D43`).
+pub const TIME_OF_DAY_SET: u32 = 0x0082_69F0;
+/// Year and day of the year before the hours (`+0x5C`, `+0x60`).
+pub const TIME_OF_DAY_YEAR: u32 = 0x5C;
+/// Game seconds per real second (`f32`): the tick of the manager
+/// (`0x00826B70`) advances the clock by it; `SetTimeOfDay` writes it
+/// (`0x00825D6A`) or copies the level's rate from `+0x74` (`0x00825D4E`).
+pub const TIME_OF_DAY_RATE: u32 = 0x70;
+pub const TIME_OF_DAY_DEFAULT_RATE: u32 = 0x74;
+/// The rain (`WeatherManager`, pointer; `0x00836CD5`): flags `+0x84`, length
+/// and time of the current rain `+0xB0`, `+0xB4`. No SimGroup of the game
+/// makes one.
+pub const WEATHER_MANAGER: u32 = 0x0112_AFF4;
+pub const WEATHER_FLAGS: u32 = 0x84;
+pub const WEATHER_RAIN_LENGTH: u32 = 0xB0;
+/// `u32 Request(this, const char* name, f32 priority, u32 flags, u32*,
+/// u32)` of the StreamManager — `thiscall`, callee pops 0x14; returns the
+/// id of the stream. `LoadStream` (`0x008139D0`) calls it with its name, its
+/// priority (32768 by default) and zeros.
+pub const STREAM_REQUEST: u32 = 0x0040_3A50;
+/// Priority `LoadStream` gives when its attribute does not (`0x00E44690`).
+pub const STREAM_PRIORITY: f32 = 32_768.0;
+/// `u32 IdOf(this, const char* name, u32 0)` — `thiscall`, callee pops 8.
+pub const STREAM_ID_OF: u32 = 0x0040_5900;
+/// `Record* RecordOf(this, u32 id)` — `thiscall`, callee pops 4.
+pub const STREAM_RECORD_OF: u32 = 0x0040_25A0;
+/// `Unload(this, Record*)` — `thiscall`, callee pops 4; what
+/// `UnloadStream` calls (`0x00813BFB`).
+pub const STREAM_UNLOAD: u32 = 0x0040_4C40;
+/// State of a stream record; 3 — loaded (`0x00813C4A`).
+pub const STREAM_RECORD_STATE: u32 = 0x24;
+/// The stream whose objects the game is making now (`StreamManager+0x84`,
+/// `0x00446E9D`); 0 between loads.
+pub const STREAM_LOADING: u32 = 0x84;
+/// The families (pointer): `+0x24` list, `+0x28` count; a family's name
+/// hash at `+0x54` (`0x008C74D0`).
+pub const FAMILIES: u32 = 0x0112_9904;
+pub const FAMILIES_LIST: u32 = 0x24;
+pub const FAMILIES_COUNT: u32 = 0x28;
+pub const FAMILY_NAME: u32 = 0x54;
+/// Hash of `corleone`, the player's family (`0x0093B10E`, `0x008C09E5`).
+pub const PLAYER_FAMILY: u32 = 0x0637_B907;
+/// A family's money (`f32`, clamped to 0 and up, `0x008C09F2`) and its
+/// books (pointer; income by category `+0xA4`, their count `+0xD0`,
+/// `0x0093B126`).
+pub const FAMILY_CASH: u32 = 0x100;
+pub const FAMILY_BOOKS: u32 = 0x230;
+pub const BOOKS_CATEGORIES: u32 = 0xA4;
+pub const BOOKS_CATEGORY_COUNT: u32 = 0xD0;
+/// `f32 AddMoney(this, f32 amount, u32 category)` of a family —
+/// `thiscall`, callee pops 8, result in `ST0`: the call of the game's
+/// rewards (`0x007DD518`, `0x007E787A`); for the player's family it also
+/// updates the counter on screen (`0x008BCAF0`).
+pub const FAMILY_ADD_MONEY: u32 = 0x008C_09A0;
+/// The category the module books its money under (5, as `0x007E787A`).
+pub const MONEY_CATEGORY: u32 = 5;
+/// The player's crew (pointer): seven places of 0x24 bytes from `+0x18`
+/// (`0x0090B0A0`): `+0` flags (bit 0 open, bit 1 taken), `+4` rank asked,
+/// `+8` handle of the member (the member is the handle − 0x48,
+/// `0x0090A5B0`), `+0x10` specialties (`0x0090A5C5`).
+pub const CREW: u32 = 0x0112_989C;
+pub const CREW_SLOTS: u32 = 0x18;
+pub const CREW_SLOT_SIZE: u32 = 0x24;
+pub const CREW_SLOT_COUNT: u32 = 7;
+/// A member's rank (`0x0079179B`).
+pub const MEMBER_RANK: u32 = 0xD0;
+/// The checkpoint manager (pointer): `+0x1C` current checkpoint (its
+/// number `+0x74`, `0x008FC6E0`); `+0x20` list of the checkpoints of the
+/// loaded streams, `+0x24` count (read on the stand).
+pub const CHECKPOINTS: u32 = 0x0112_99C4;
+pub const CHECKPOINT_CURRENT: u32 = 0x1C;
+pub const CHECKPOINT_LIST: u32 = 0x20;
+pub const CHECKPOINT_COUNT: u32 = 0x24;
+pub const CHECKPOINT_NUMBER: u32 = 0x74;
+pub const CHECKPOINT_CHAPTER: u32 = 0x70;
+/// Vtable of `Checkpoint` objects: the module takes only these from the
+/// list.
+pub const CHECKPOINT_VTABLE: u32 = 0x00D8_1474;
+/// The variables of the story (pointer, `0x0046A641`): `+0x20` room,
+/// `+0x24` entries of 0x14 bytes (`+0` record hash, `+4` sdbm of the name,
+/// `+8` value, `+0xE` kind), `+0x28` count.
+pub const VARIABLES: u32 = 0x0122_3428;
+pub const VARIABLES_ROOM: u32 = 0x20;
+pub const VARIABLES_ENTRIES: u32 = 0x24;
+pub const VARIABLES_COUNT: u32 = 0x28;
+pub const VARIABLE_SIZE: u32 = 0x14;
+/// `Changed(manager, index)` — `stdcall`, callee pops 8: wakes those who
+/// watch the variable (`VariableWatcher`); Lua `VariableSet` and
+/// `VariableOperator` call it after they write the value.
+pub const VARIABLE_CHANGED: u32 = 0x0044_2240;

@@ -84,6 +84,10 @@ pub(super) struct Shared {
     pub(super) trace: Vec<Event>,
     /// Prints and Lua errors not yet given to the script editor.
     pub(super) script_events: Vec<Event>,
+    /// The module has the world and the state of the game (protocol 4).
+    pub(super) state_ok: bool,
+    /// What "World and state" last read (stage 48).
+    pub(super) world_state: super::live_state::WorldState,
 }
 
 /// Events the panel keeps.
@@ -105,6 +109,18 @@ pub(super) enum Cmd {
     Camera(Option<CameraView>),
     /// Edited textures of the workspace into the game (a write).
     Textures(Vec<live::HotTexture>),
+    /// Stage 48: read the world and the state of the game; the variables
+    /// asked for by hash.
+    State(Vec<u32>),
+    /// Time of day and rate (a write).
+    SetTime(proto::TimeChange),
+    /// The player's money (a write).
+    SetMoney(proto::MoneyChange),
+    /// A variable of the story: hash, value, name for people (a write).
+    SetVariable(u32, i32, String),
+    /// Load or unload one stream (a write); `force` unloads one the game
+    /// loaded.
+    Stream(String, proto::StreamAction, bool),
 }
 
 impl Cmd {
@@ -116,6 +132,10 @@ impl Cmd {
                 | Self::Lua(_)
                 | Self::Camera(Some(_))
                 | Self::Textures(_)
+                | Self::SetTime(_)
+                | Self::SetMoney(_)
+                | Self::SetVariable(..)
+                | Self::Stream(..)
         )
     }
 }
@@ -160,6 +180,8 @@ pub(super) struct LiveState {
     pub(super) break_target: String,
     pub(super) break_print: String,
     pub(super) hold_s: u16,
+    /// Fields of "World and state" (stage 48).
+    pub(super) world: super::live_state::WorldFields,
 }
 
 /// The index of names for the live link.
@@ -200,6 +222,7 @@ impl Default for LiveState {
             break_target: String::new(),
             break_print: String::new(),
             hold_s: proto::debug::HOLD_DEFAULT_S,
+            world: Default::default(),
         }
     }
 }
@@ -287,6 +310,35 @@ fn run(client: &mut Client, cmd: Cmd, s: &Mutex<Shared>) -> Result<String, live:
             }
             trf("debug.textures_done", &[("count", &done)])
         }
+        Cmd::State(vars) => {
+            let read = super::live_state::read(client, vars)?;
+            shared(s).world_state = read;
+            tr("world.read_done").to_owned()
+        }
+        Cmd::SetTime(c) => {
+            let note = client.set_time(c)?.note;
+            shared(s).world_state.time = client.time_of_day()?;
+            note
+        }
+        Cmd::SetMoney(c) => {
+            let note = client.set_money(c)?.note;
+            shared(s).world_state.money = client.money()?;
+            note
+        }
+        Cmd::SetVariable(hash, value, name) => {
+            let note = client.set_variable(hash, value)?.note;
+            let now = client.variables(vec![hash])?;
+            shared(s).world_state.merge_variables(now);
+            format!("{name}: {note}")
+        }
+        Cmd::Stream(name, action, force) => {
+            let note = match action {
+                proto::StreamAction::Load => client.stream_load(&name)?.note,
+                proto::StreamAction::Unload => client.stream_unload(&name, force)?.note,
+            };
+            shared(s).world_state.streams = Some(client.stream_queue()?);
+            note
+        }
     })
 }
 
@@ -352,6 +404,7 @@ fn worker(
                     sh.hello = Some(c.hello().clone());
                     sh.journal_ok = c.has_journal();
                     sh.debug_ok = c.has_debug();
+                    sh.state_ok = c.has_state();
                     sh.error = None;
                     client = Some(c);
                     next = 0;
@@ -931,6 +984,7 @@ impl BrowserApp {
             ui.separator();
         }
         self.live_debug_panel(ui);
+        self.live_state_panel(ui, writes, busy);
 
         // Writes.
         ui.label(RichText::new(tr("live.writes_title")).strong());
@@ -1064,7 +1118,28 @@ impl BrowserApp {
                 &[("position", &vec3_text(c.pose.position))],
             ),
             Cmd::Textures(list) => trf("debug.confirm_textures", &[("count", &list.len())]),
-            Cmd::Objects(_)
+            Cmd::SetTime(c) => super::live_state::confirm_time(c),
+            Cmd::SetMoney(c) => match c {
+                proto::MoneyChange::Add(v) => trf("world.confirm_add_money", &[("amount", v)]),
+                proto::MoneyChange::Set(v) => trf("world.confirm_set_money", &[("amount", v)]),
+            },
+            Cmd::SetVariable(_, value, name) => trf(
+                "world.confirm_variable",
+                &[("name", name), ("value", value)],
+            ),
+            Cmd::Stream(name, proto::StreamAction::Load, _) => {
+                trf("world.confirm_load", &[("name", name)])
+            }
+            Cmd::Stream(name, proto::StreamAction::Unload, force) => trf(
+                if *force {
+                    "world.confirm_unload_force"
+                } else {
+                    "world.confirm_unload"
+                },
+                &[("name", name)],
+            ),
+            Cmd::State(_)
+            | Cmd::Objects(_)
             | Cmd::Streams
             | Cmd::World(_)
             | Cmd::Break(..)
@@ -1464,5 +1539,63 @@ mod tests {
         assert!(state.marks().is_some_and(|m| m.free_camera));
         state.disconnect();
         assert!(state.marks().is_none());
+    }
+
+    #[test]
+    fn world_and_state_of_the_fake_game() {
+        let game = FakeGame::start(live::Config {
+            port: 0,
+            token: "t".into(),
+            writes: true,
+            fix_input: true,
+            journal: true,
+        })
+        .unwrap();
+        let ctx = egui::Context::default();
+        let mut state = LiveState::default();
+        state.connect(game.endpoint("t"), &ctx);
+        assert!(wait_for(&state, |s| s.connected && s.state_ok));
+        let flag = proto::name_hash(doctor_toolkit::live::fake::FAKE_VARIABLE);
+        state.send(Cmd::State(vec![flag]));
+        assert!(wait_for(&state, |s| s.world_state.time.is_some()
+            && s.world_state.variables.len() == 1
+            && s.world_state.family.is_some()));
+        // Writes are commands that ask first; each reads its result back.
+        assert!(Cmd::SetTime(proto::TimeChange::default()).writes());
+        assert!(!Cmd::State(Vec::new()).writes());
+        state.send(Cmd::SetTime(proto::TimeChange {
+            time: Some([22, 0, 0]),
+            rate: None,
+        }));
+        assert!(wait_for(&state, |s| s
+            .world_state
+            .time
+            .is_some_and(|t| t.hour == 22)));
+        state.send(Cmd::SetMoney(proto::MoneyChange::Set(777.0)));
+        assert!(wait_for(&state, |s| s
+            .world_state
+            .money
+            .as_ref()
+            .is_some_and(|m| m.cash == 777.0)));
+        state.send(Cmd::SetVariable(flag, 9, "doctor_fake_flag".into()));
+        assert!(wait_for(&state, |s| s.world_state.variables[0].value == 9));
+        state.send(Cmd::Stream(
+            "gf2/cuba/local/yuri/high/filler_056_01".into(),
+            proto::StreamAction::Load,
+            false,
+        ));
+        assert!(wait_for(&state, |s| s
+            .world_state
+            .streams
+            .as_ref()
+            .is_some_and(|q| q.requests.len() == 1)));
+        // An old module: the section says so instead of failing.
+        state.disconnect();
+        game.world.lock().unwrap().protocol = 3;
+        state.connect(game.endpoint("t"), &ctx);
+        assert!(wait_for(&state, |s| s.connected
+            && !s.state_ok
+            && s.debug_ok));
+        state.disconnect();
     }
 }

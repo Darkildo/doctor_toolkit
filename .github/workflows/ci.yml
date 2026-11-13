@@ -42,7 +42,7 @@ jobs:
     name: fmt, clippy, tests (Linux)
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@1.97.1
         with:
           components: rustfmt, clippy
@@ -66,12 +66,12 @@ jobs:
     name: Python bindings
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@1.97.1
       - uses: Swatinem/rust-cache@v2
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.9"
       # Builds the abi3 module (debug: compiles much faster than --release)

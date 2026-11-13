@@ -65,7 +65,7 @@ fn mcp_serves_over_stdio_and_prints_only_protocol_messages() {
     let tools = read(2);
     assert_eq!(
         tools["result"]["tools"].as_array().unwrap().len(),
-        18,
+        20,
         "{tools}"
     );
     send(

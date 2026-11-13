@@ -679,7 +679,10 @@ impl SimGroup {
                 mask[a.index as usize / 8] &= !(1 << (a.index % 8));
             }
             out.extend_from_slice(&mask);
-            out.resize(start + io::align_up(out.len() - start, 4), 0);
+            // The values start at a file offset aligned to 4, as the reader
+            // takes them (the same as aligned to the packet in the game's
+            // files, whose packets all start aligned).
+            out.resize(io::align_up(out.len(), 4), 0);
             for a in &p.attrs {
                 let field = out.len();
                 let value = match a.target {
@@ -1239,6 +1242,24 @@ pub(crate) mod tests {
             "# test\n11111111 0 string 1 CMD_SetName\n11111111 2 int 1\n\
              38523fc3 0 guid 1\n38523fc3 1 matrix 1 CMD_LoadMatrix\n",
         )
+    }
+
+    /// Found by fuzzing: an aux region of one byte puts the first packet at
+    /// an odd offset; the writer pads its values as the reader takes them.
+    #[test]
+    fn a_packet_at_an_unaligned_offset_round_trips() {
+        let data = [
+            0xF7, 0x53, 0xFF, 0xFF, 0x0A, 0xFF, 0xFF, 0xFF, 0x47, 0x6D, 0x69, 0x53, 0x01, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x25, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x30, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x7E, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x0E,
+        ];
+        let group = SimGroup::parse(&data).unwrap();
+        let bytes = group.encode();
+        let again = SimGroup::parse(&bytes).unwrap();
+        assert_eq!(again.encode(), bytes);
     }
 
     #[test]

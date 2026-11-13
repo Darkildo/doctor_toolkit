@@ -42,9 +42,9 @@ const EDIT_TOOLS: [&str; 16] = [
 ];
 
 /// Tools of a server without flags (reading, the live link, the editor).
-const READ_TOOLS: usize = 18;
+const READ_TOOLS: usize = 20;
 
-const GAME_TOOLS: [&str; 8] = [
+const GAME_TOOLS: [&str; 13] = [
     "apply",
     "unapply",
     "play",
@@ -53,6 +53,11 @@ const GAME_TOOLS: [&str; 8] = [
     "teleport",
     "send_message",
     "lua",
+    "set_time",
+    "set_money",
+    "set_variable",
+    "stream_load",
+    "stream_unload",
 ];
 
 struct Fixture {
@@ -676,7 +681,13 @@ async fn a_screenshot_is_a_png_of_the_games_own_screen() {
             json!({ "wait_loaded": false, "apply": false, "size": [640, 360] }),
         )
         .await;
-    assert_ne!(started["game"]["display"], ":0", "{started}");
+    // Its own X server, never the desktop's: Xvfb takes the first free
+    // number, which is `:0` only where no desktop runs (a CI runner).
+    let display = started["game"]["display"].as_str().unwrap();
+    assert!(display.starts_with(':'), "{started}");
+    if let Ok(desktop) = std::env::var("DISPLAY") {
+        assert_ne!(display, desktop, "{started}");
+    }
     let response = c
         .request(
             "tools/call",
@@ -692,4 +703,86 @@ async fn a_screenshot_is_a_png_of_the_games_own_screen() {
     let data = content[1]["data"].as_str().unwrap();
     assert!(data.starts_with("iVBORw0KGgo"), "a PNG in base64");
     c.json("stop", json!({})).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_world_and_state_of_the_live_game() {
+    let f = fixture();
+    let token = "t";
+    let module = FakeGame::start(doctor_toolkit::live::Config {
+        port: 0,
+        token: token.into(),
+        writes: true,
+        fix_input: true,
+        journal: true,
+    })
+    .unwrap();
+    // Reading needs no flag.
+    let mut config = configured(&f, false, false);
+    config.live = Some(module.endpoint(token));
+    let mut c = start(&config);
+    c.initialize().await;
+    let state = c.json("game_state", json!({})).await;
+    assert_eq!(state["time_of_day"]["time"], "12:00:00", "{state}");
+    assert_eq!(state["money"], 0.0, "{state}");
+    assert_eq!(state["crew"][0]["specialties"], json!(["medic"]), "{state}");
+    assert!(state["rain"].is_null(), "{state}");
+    let vars = c
+        .json(
+            "variables",
+            json!({ "names": ["doctor_fake_flag", "no_such"] }),
+        )
+        .await;
+    assert_eq!(vars["count"], 1, "{vars}");
+    assert_eq!(vars["missing"], json!(["no_such"]), "{vars}");
+    let r = c
+        .request(
+            "tools/call",
+            json!({ "name": "set_money", "arguments": { "set": 5.0 } }),
+        )
+        .await;
+    assert!(
+        r["error"].is_object() || r["result"]["isError"] == json!(true),
+        "{r}"
+    );
+
+    // With --allow-game: the writes.
+    config.allow_game = true;
+    let mut c = start(&config);
+    c.initialize().await;
+    let t = c
+        .json("set_time", json!({ "time": "23:30", "rate": 0.0 }))
+        .await;
+    assert_eq!(t["time_of_day"]["time"], "23:30:00", "{t}");
+    assert_eq!(t["time_of_day"]["rate"], 0.0, "{t}");
+    let (text, error) = c.call("set_time", json!({ "time": "25:00" })).await;
+    assert!(error && text.contains("time of day"), "{text}");
+    let m = c.json("set_money", json!({ "add": 1500.0 })).await;
+    assert_eq!(m["money"], 1500.0, "{m}");
+    let (text, error) = c.call("set_money", json!({})).await;
+    assert!(error && text.contains("set"), "{text}");
+    let v = c
+        .json(
+            "set_variable",
+            json!({ "name": "doctor_fake_flag", "value": 4 }),
+        )
+        .await;
+    assert_eq!(v["value"], 4, "{v}");
+    let s = c
+        .json(
+            "stream_load",
+            json!({ "name": "gf2/cuba/local/yuri/high/filler_056_01" }),
+        )
+        .await;
+    assert_eq!(s["request"]["done"], true, "{s}");
+    let (text, error) = c.call("stream_unload", json!({ "name": "gf2/cuba" })).await;
+    assert!(error && text.contains("not loaded by the link"), "{text}");
+    let s = c
+        .json(
+            "stream_unload",
+            json!({ "name": "gf2/cuba/local/yuri/high/filler_056_01" }),
+        )
+        .await;
+    assert_eq!(s["request"]["done"], true, "{s}");
+    assert_eq!(module.world.lock().unwrap().money.cash, 1500.0);
 }

@@ -17,7 +17,10 @@
 //!   Lua errors, messages of the bus — and the ring the module keeps them in;
 //! - [`world`]: every SimGroup object, logic included (stage 49);
 //! - [`debug`]: breakpoints, pause and step, the free camera and the
-//!   replacement of a texture (stage 35).
+//!   replacement of a texture (stage 35);
+//! - [`state`]: the world and the state of the game — time of day,
+//!   weather, streams one at a time, money, family, missions, variables
+//!   (stage 48).
 //!
 //! The crate has no dependencies: the module builds it for
 //! `i686-pc-windows-gnu`, the editor for the host.
@@ -28,6 +31,7 @@ pub mod debug;
 pub mod edition;
 pub mod journal;
 pub mod proto;
+pub mod state;
 mod wire;
 pub mod world;
 

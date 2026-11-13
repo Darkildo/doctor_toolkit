@@ -24,8 +24,10 @@ pub use doctor_toolkit_live as proto;
 pub use doctor_toolkit_live::config::Config;
 use doctor_toolkit_live::{
     BreakRule, CONFIG_FILE, CameraView, Control, DebugState, Done, ErrorCode, EventBatch, Failure,
-    Hello, LOG_FILE, LuaReply, MODULE_FILE, MessageId, OLDEST_PROTOCOL_VERSION, ObjectInfo,
-    PROTOCOL_VERSION, Pose, Request, Response, Status, StreamInfo, World, WorldFilter, read_frame,
+    Family, Hello, LOG_FILE, LuaReply, MODULE_FILE, MessageId, Mission, Money, MoneyChange,
+    OLDEST_PROTOCOL_VERSION, ObjectInfo, PROTOCOL_VERSION, Pose, Request, Response, Status,
+    StreamInfo, StreamQueue, TimeChange, TimeOfDay, Variable, Weather, World, WorldFilter,
+    read_frame,
 };
 
 use crate::{Error, Result};
@@ -405,6 +407,108 @@ impl Client {
     /// texture named `name` (a write).
     pub fn texture(&mut self, name: u32, data: Vec<u8>) -> LinkResult<Done> {
         match self.request(&Request::Texture { name, data })? {
+            Response::Done(d) => Ok(d),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    /// Whether the module answers the requests of the world and the state
+    /// of the game (protocol 4, stage 48): time, weather, streams, money,
+    /// family, missions, variables.
+    pub fn has_state(&self) -> bool {
+        self.version >= 4
+    }
+
+    /// The game's clock (`None`: no level).
+    pub fn time_of_day(&mut self) -> LinkResult<Option<TimeOfDay>> {
+        match self.request(&Request::TimeOfDay)? {
+            Response::TimeOfDay(t) => Ok(t),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    /// Sets the time of day and its rate (a write).
+    pub fn set_time(&mut self, change: TimeChange) -> LinkResult<Done> {
+        self.done(&Request::SetTime(change))
+    }
+
+    /// Rain and the clock that decides the sky.
+    pub fn weather(&mut self) -> LinkResult<Weather> {
+        match self.request(&Request::Weather)? {
+            Response::Weather(w) => Ok(w),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    /// Asks the game for a stream (a write); one request at a time.
+    pub fn stream_load(&mut self, name: &str) -> LinkResult<Done> {
+        self.done(&Request::StreamLoad {
+            name: name.to_owned(),
+        })
+    }
+
+    /// Unloads a stream the link loaded (any with `force`; a write).
+    pub fn stream_unload(&mut self, name: &str, force: bool) -> LinkResult<Done> {
+        self.done(&Request::StreamUnload {
+            name: name.to_owned(),
+            force,
+        })
+    }
+
+    /// The stream requests of the link and whether they are done.
+    pub fn stream_queue(&mut self) -> LinkResult<StreamQueue> {
+        match self.request(&Request::StreamQueue)? {
+            Response::StreamQueue(q) => Ok(q),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    /// The player's money (`None`: no family of the player now).
+    pub fn money(&mut self) -> LinkResult<Option<Money>> {
+        match self.request(&Request::Money)? {
+            Response::Money(m) => Ok(m),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    /// Adds to the player's money or sets it (a write).
+    pub fn set_money(&mut self, change: MoneyChange) -> LinkResult<Done> {
+        self.done(&Request::SetMoney(change))
+    }
+
+    /// The families and the player's crew.
+    pub fn family(&mut self) -> LinkResult<Family> {
+        match self.request(&Request::Family)? {
+            Response::Family(f) => Ok(f),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    /// The current checkpoint and those of the loaded streams.
+    pub fn mission(&mut self) -> LinkResult<Mission> {
+        match self.request(&Request::Mission)? {
+            Response::Mission(m) => Ok(m),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    /// Variables of the story named by `hashes` (of the name,
+    /// [`doctor_toolkit_live::name_hash`], or of the record); all when
+    /// empty.
+    pub fn variables(&mut self, hashes: Vec<u32>) -> LinkResult<Vec<Variable>> {
+        match self.request(&Request::Variables { hashes })? {
+            Response::Variables(v) => Ok(v),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    /// Sets a variable of the story (a write).
+    pub fn set_variable(&mut self, hash: u32, value: i32) -> LinkResult<Done> {
+        self.done(&Request::SetVariable { hash, value })
+    }
+
+    fn done(&mut self, request: &Request) -> LinkResult<Done> {
+        match self.request(request)? {
             Response::Done(d) => Ok(d),
             other => Err(unexpected(other)),
         }

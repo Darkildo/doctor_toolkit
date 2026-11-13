@@ -11,7 +11,10 @@
 //! [`FakeWorld::protocol`]). Protocol 3 (stage 35): breakpoints stop the
 //! fake game (its frame and time stand still), pause and step, the free
 //! camera, textures by name; [`FakeWorld::activity`] makes the game's own
-//! traffic for trying the editor (`live fake --activity`).
+//! traffic for trying the editor (`live fake --activity`). Protocol 4
+//! (stage 48): a clock, a stream streamer that loads one request at a time
+//! (it is done at the next look at the queue), money, a crew, checkpoints
+//! and variables of the story.
 
 use std::net::{Ipv4Addr, TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -21,9 +24,12 @@ use doctor_toolkit_live::debug::{
     BreakOn, BreakRule, Control, DebugState, HOLD_DEFAULT_S, Stop, StopPlace, StopReason,
 };
 use doctor_toolkit_live::journal::{EventBody, MessageOrigin, OutputSource, Ring, mask};
+use doctor_toolkit_live::state::{STREAM_LOADED, stream_name};
 use doctor_toolkit_live::{
-    CameraView, Done, ErrorCode, Guid, Hello, LoopState, LuaReply, ObjectInfo, PROTOCOL_VERSION,
-    Pose, Request, Response, Status, StreamInfo, World, WorldObject, read_frame,
+    CameraView, Checkpoint, CrewSlot, Done, ErrorCode, Family, FamilyInfo, Guid, Hello, LoopState,
+    LuaReply, Mission, Money, MoneyChange, ObjectInfo, PROTOCOL_VERSION, Pose, Request, Response,
+    Status, StreamAction, StreamInfo, StreamQueue, StreamRequest, TimeOfDay, Variable, Weather,
+    World, WorldObject, read_frame,
 };
 
 use super::Config;
@@ -57,7 +63,22 @@ pub struct FakeWorld {
     pub textures: Vec<(u32, u64)>,
     /// Textures replaced: name hash and bytes.
     pub replaced: Vec<(u32, usize)>,
+    /// The clock (protocol 4).
+    pub time: TimeOfDay,
+    /// The player's money.
+    pub money: Money,
+    /// The player's crew.
+    pub crew: Vec<CrewSlot>,
+    /// Current checkpoint and those known.
+    pub mission: Mission,
+    /// Variables of the story.
+    pub variables: Vec<Variable>,
+    /// Stream requests of the link.
+    pub stream_requests: Vec<StreamRequest>,
 }
+
+/// A variable of the fake game: `doctor_fake_flag`, 0 at the start.
+pub const FAKE_VARIABLE: &str = "doctor_fake_flag";
 
 /// The texture of the fake game: 4 × 4 A8R8G8B8, three levels (84 bytes).
 pub const FAKE_TEXTURE: &str = "doctor_fake_texture";
@@ -125,7 +146,131 @@ impl Default for FakeWorld {
             },
             textures: vec![(doctor_toolkit_live::name_hash(FAKE_TEXTURE), 84)],
             replaced: Vec::new(),
+            time: TimeOfDay {
+                year: 1950,
+                day: 0,
+                hour: 12,
+                minute: 0,
+                second: 0,
+                rate: 60.0,
+                default_rate: 60.0,
+            },
+            money: Money {
+                cash: 0.0,
+                books: vec![0.0; 11],
+            },
+            crew: (0..7u8)
+                .map(|i| CrewSlot {
+                    slot: i,
+                    flags: if i == 0 { 3 } else { 0 },
+                    rank: [3, 3, 3, 3, 4, 4, 5][i as usize],
+                    member: (i == 0).then_some([4; 16]),
+                    member_rank: if i == 0 { 3 } else { 0 },
+                    specialties: if i == 0 { 0x40 } else { 0 },
+                })
+                .collect(),
+            mission: Mission {
+                current: None,
+                checkpoints: vec![Checkpoint {
+                    number: 737,
+                    chapter: 60,
+                    guid: [5; 16],
+                }],
+            },
+            variables: vec![Variable {
+                hash: 0x0CA4_32A1,
+                name_hash: doctor_toolkit_live::name_hash(FAKE_VARIABLE),
+                value: 0,
+                kind: 1,
+            }],
+            stream_requests: Vec::new(),
         }
+    }
+}
+
+impl FakeWorld {
+    /// Requests of the streamer are done at the next look at the queue.
+    fn stream_tick(&mut self) {
+        for r in self.stream_requests.iter_mut().filter(|r| !r.done) {
+            r.done = true;
+            r.frames += 1;
+            match r.action {
+                StreamAction::Load => {
+                    r.state = STREAM_LOADED;
+                    if !self.streams.contains(&r.name) {
+                        self.streams.push(r.name.clone());
+                    }
+                }
+                StreamAction::Unload => {
+                    r.state = 0;
+                    self.streams.retain(|s| s != &r.name);
+                }
+            }
+        }
+    }
+
+    fn stream_request(&mut self, name: &str, action: StreamAction, force: bool) -> Response {
+        let name = stream_name(name);
+        if let Some(open) = self.stream_requests.iter().find(|r| !r.done) {
+            return Response::error(
+                ErrorCode::NotReady,
+                format!(
+                    "the stream {} of the link is not done yet; one request at a time",
+                    open.name
+                ),
+            );
+        }
+        let loaded = self.streams.contains(&name);
+        match action {
+            StreamAction::Load if loaded => {
+                return Response::Done(Done {
+                    count: 0,
+                    note: format!("{name} is loaded already"),
+                });
+            }
+            StreamAction::Load if !name.starts_with("gf2\\") => {
+                return Response::error(
+                    ErrorCode::Failed,
+                    format!("the game knows no stream {name}"),
+                );
+            }
+            StreamAction::Unload if !loaded => {
+                return Response::error(ErrorCode::Failed, format!("{name} is not loaded"));
+            }
+            StreamAction::Unload
+                if !force
+                    && !self
+                        .stream_requests
+                        .iter()
+                        .any(|r| r.name == name && r.action == StreamAction::Load) =>
+            {
+                return Response::error(
+                    ErrorCode::Denied,
+                    format!("{name} was not loaded by the link"),
+                );
+            }
+            _ => {}
+        }
+        self.stream_requests.push(StreamRequest {
+            name: name.clone(),
+            action,
+            id: 0x40 + self.stream_requests.len() as u32,
+            state: if loaded { STREAM_LOADED } else { 0 },
+            done: false,
+            frames: 0,
+            expired: false,
+        });
+        Response::Done(Done {
+            count: 1,
+            note: format!(
+                "{} {name}",
+                if action == StreamAction::Load {
+                    "asked for"
+                } else {
+                    "unloading"
+                }
+            ),
+        })
     }
 }
 
@@ -401,7 +546,7 @@ fn answer(request: Request, config: &Config, version: u16, w: &mut FakeWorld) ->
             state: w.state,
             player: w.player.is_some(),
             sim_time_ms: Some(w.sim_time_ms),
-            time_of_day: Some([12, 0, 0]),
+            time_of_day: Some([w.time.hour, w.time.minute, w.time.second]),
         }),
         Request::Player => Response::Player(w.player),
         Request::Camera => Response::Camera(w.debug.camera.or(w.camera)),
@@ -647,6 +792,85 @@ fn answer(request: Request, config: &Config, version: u16, w: &mut FakeWorld) ->
             out.walked = (w.objects.len() + w.logic.len()) as u32;
             Response::World(out)
         }
+        Request::TimeOfDay => Response::TimeOfDay(Some(w.time)),
+        Request::SetTime(change) => {
+            if let Some([h, m, s]) = change.time {
+                (w.time.hour, w.time.minute, w.time.second) = (h, m, s);
+            }
+            if let Some(rate) = change.rate {
+                w.time.rate = if rate < 0.0 {
+                    w.time.default_rate
+                } else {
+                    rate
+                };
+            }
+            Response::Done(Done {
+                count: 1,
+                note: format!(
+                    "time of day {:02}:{:02}:{:02}, rate {}",
+                    w.time.hour, w.time.minute, w.time.second, w.time.rate
+                ),
+            })
+        }
+        Request::Weather => Response::Weather(Weather {
+            rain: None,
+            time: Some(w.time),
+        }),
+        Request::StreamLoad { name } => w.stream_request(&name, StreamAction::Load, false),
+        Request::StreamUnload { name, force } => {
+            w.stream_request(&name, StreamAction::Unload, force)
+        }
+        Request::StreamQueue => {
+            let reply = Response::StreamQueue(StreamQueue {
+                busy: false,
+                requests: w.stream_requests.clone(),
+            });
+            w.stream_tick();
+            reply
+        }
+        Request::Money => Response::Money(Some(w.money.clone())),
+        Request::SetMoney(change) => {
+            let before = w.money.cash;
+            let amount = match change {
+                MoneyChange::Add(v) => v,
+                MoneyChange::Set(v) => v - before,
+            };
+            w.money.cash = (before + amount).max(0.0);
+            w.money.books[5] += amount;
+            Response::Done(Done {
+                count: 1,
+                note: format!("money {} (was {before}, {amount:+})", w.money.cash),
+            })
+        }
+        Request::Family => Response::Family(Family {
+            families: vec![FamilyInfo {
+                hash: doctor_toolkit_live::addr::PLAYER_FAMILY,
+                cash: w.money.cash,
+            }],
+            crew: w.crew.clone(),
+        }),
+        Request::Mission => Response::Mission(w.mission.clone()),
+        Request::Variables { hashes } => Response::Variables(
+            w.variables
+                .iter()
+                .filter(|v| hashes.is_empty() || hashes.iter().any(|&h| v.is(h)))
+                .copied()
+                .collect(),
+        ),
+        Request::SetVariable { hash, value } => match w.variables.iter_mut().find(|v| v.is(hash)) {
+            Some(v) => {
+                let before = v.value;
+                v.value = value;
+                Response::Done(Done {
+                    count: 1,
+                    note: format!("variable {hash:#010x} = {value} (was {before})"),
+                })
+            }
+            None => Response::error(
+                ErrorCode::Failed,
+                format!("no variable {hash:#010x} in the loaded streams"),
+            ),
+        },
         Request::Peek { address, len } => {
             if address < 0x0040_0000 {
                 Response::error(

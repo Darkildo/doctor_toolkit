@@ -103,6 +103,34 @@ fn requests() -> Vec<Request> {
             name: 0x1234_5678,
             data: vec![1, 2, 3, 4, 5],
         },
+        Request::TimeOfDay,
+        Request::SetTime(TimeChange {
+            time: Some([22, 30, 0]),
+            rate: Some(0.0),
+        }),
+        Request::SetTime(TimeChange::default()),
+        Request::Weather,
+        Request::StreamLoad {
+            name: "gf2\\cuba\\local".into(),
+        },
+        Request::StreamUnload {
+            name: "gf2\\cuba\\local".into(),
+            force: true,
+        },
+        Request::StreamQueue,
+        Request::Money,
+        Request::SetMoney(MoneyChange::Add(250.0)),
+        Request::SetMoney(MoneyChange::Set(10_000.0)),
+        Request::Family,
+        Request::Mission,
+        Request::Variables {
+            hashes: vec![0x9381_3AB9, 0x001A_01D2],
+        },
+        Request::Variables { hashes: Vec::new() },
+        Request::SetVariable {
+            hash: 0x9381_3AB9,
+            value: -3,
+        },
     ]
 }
 
@@ -190,6 +218,113 @@ fn responses() -> Vec<(u16, Response)> {
             }),
         ),
         (kind::PEEK, Response::Peek(vec![1, 2, 3, 4])),
+        (
+            kind::TIME_OF_DAY,
+            Response::TimeOfDay(Some(TimeOfDay {
+                year: 1950,
+                day: 0,
+                hour: 17,
+                minute: 50,
+                second: 12,
+                rate: 60.0,
+                default_rate: 60.0,
+            })),
+        ),
+        (kind::TIME_OF_DAY, Response::TimeOfDay(None)),
+        (kind::WEATHER, Response::Weather(Weather::default())),
+        (
+            kind::WEATHER,
+            Response::Weather(Weather {
+                rain: Some(Rain {
+                    flags: 5,
+                    length: 120.0,
+                    elapsed: 3.5,
+                }),
+                time: None,
+            }),
+        ),
+        (
+            kind::STREAM_QUEUE,
+            Response::StreamQueue(StreamQueue {
+                busy: true,
+                requests: vec![StreamRequest {
+                    name: "gf2\\cuba\\local".into(),
+                    action: StreamAction::Unload,
+                    id: 77,
+                    state: 3,
+                    done: false,
+                    frames: 12,
+                    expired: false,
+                }],
+            }),
+        ),
+        (
+            kind::MONEY,
+            Response::Money(Some(Money {
+                cash: 1500.0,
+                books: vec![0.0, 250.5],
+            })),
+        ),
+        (kind::MONEY, Response::Money(None)),
+        (
+            kind::FAMILY,
+            Response::Family(Family {
+                families: vec![FamilyInfo {
+                    hash: 0x0637_B907,
+                    cash: 100.0,
+                }],
+                crew: vec![
+                    CrewSlot {
+                        slot: 0,
+                        flags: 3,
+                        rank: 3,
+                        member: Some([9; 16]),
+                        member_rank: 4,
+                        specialties: 0x44,
+                    },
+                    CrewSlot {
+                        slot: 6,
+                        flags: 0,
+                        rank: 5,
+                        member: None,
+                        member_rank: 0,
+                        specialties: 0,
+                    },
+                ],
+            }),
+        ),
+        (
+            kind::MISSION,
+            Response::Mission(Mission {
+                current: Some(Checkpoint {
+                    number: 737,
+                    chapter: 60,
+                    guid: [1; 16],
+                }),
+                checkpoints: vec![Checkpoint {
+                    number: 739,
+                    chapter: 60,
+                    guid: [2; 16],
+                }],
+            }),
+        ),
+        (kind::MISSION, Response::Mission(Mission::default())),
+        (
+            kind::VARIABLES,
+            Response::Variables(vec![Variable {
+                hash: 0x001A_01D2,
+                name_hash: 0x9381_3AB9,
+                value: -1,
+                kind: 1,
+            }]),
+        ),
+        (
+            kind::SET_MONEY,
+            Response::Done(Done {
+                count: 1,
+                note: "money 1500".into(),
+            }),
+        ),
         (
             kind::EVENTS,
             Response::Events(EventBatch {
@@ -362,7 +497,8 @@ fn writes_are_marked() {
         writes,
         [
             false, false, false, false, false, false, false, true, true, true, true, true, false,
-            false, false, false, false, false, false, false, false, true, true, true
+            false, false, false, false, false, false, false, false, true, true, true, false, true,
+            true, false, true, true, false, false, true, true, false, false, false, false, true
         ]
     );
 }
@@ -372,7 +508,7 @@ fn header_layout_is_fixed() {
     let bytes = Request::Status.to_frame(0x0102_0304);
     assert_eq!(
         bytes,
-        [b'D', b'T', b'L', b'V', 3, 0, 2, 0, 4, 3, 2, 1, 0, 0, 0, 0]
+        [b'D', b'T', b'L', b'V', 4, 0, 2, 0, 4, 3, 2, 1, 0, 0, 0, 0]
     );
     // A client of stage 34 sends version 1, and gets its answer in it.
     let old = Request::Status.to_frame_of(1, 0x0102_0304);
@@ -395,8 +531,8 @@ fn header_layout_is_fixed() {
 
 #[test]
 fn versions_and_their_requests() {
-    assert!(supported(1) && supported(2) && supported(3));
-    assert!(!supported(0) && !supported(4));
+    assert!(supported(1) && supported(2) && supported(3) && supported(4));
+    assert!(!supported(0) && !supported(5));
     assert_eq!(OLDEST_PROTOCOL_VERSION, 1);
     for r in requests() {
         let since = match r {
@@ -406,6 +542,18 @@ fn versions_and_their_requests() {
             | Request::Debug
             | Request::SetCamera { .. }
             | Request::Texture { .. } => 3,
+            Request::TimeOfDay
+            | Request::SetTime(_)
+            | Request::Weather
+            | Request::StreamLoad { .. }
+            | Request::StreamUnload { .. }
+            | Request::StreamQueue
+            | Request::Money
+            | Request::SetMoney(_)
+            | Request::Family
+            | Request::Mission
+            | Request::Variables { .. }
+            | Request::SetVariable { .. } => 4,
             _ => 1,
         };
         assert_eq!(r.since(), since, "{r:?}");

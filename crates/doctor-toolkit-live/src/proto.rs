@@ -33,6 +33,15 @@
 //! ([`Request::Texture`]) and counts of the messages the journal does not
 //! record one by one ([`crate::journal::mask::MESSAGE_COUNTS`]).
 //!
+//! Version 4 (stage 48) adds the world and the state of the game
+//! ([`crate::state`]): the time of day and its rate ([`Request::TimeOfDay`],
+//! [`Request::SetTime`]), the weather ([`Request::Weather`]), streams loaded
+//! and unloaded one at a time ([`Request::StreamLoad`],
+//! [`Request::StreamUnload`], [`Request::StreamQueue`]), money
+//! ([`Request::Money`], [`Request::SetMoney`]), the family
+//! ([`Request::Family`]), missions ([`Request::Mission`]) and the variables
+//! of the story ([`Request::Variables`], [`Request::SetVariable`]).
+//!
 //! Writes into the game ([`Request::Teleport`], [`Request::Send`],
 //! [`Request::Lua`]) are separate requests: the editor asks before it sends
 //! them, and the module refuses them when its configuration says
@@ -43,13 +52,17 @@ use std::io::{Read, Write};
 
 pub use crate::debug::{BreakOn, BreakRule, Control, DebugState, Stop, StopPlace, StopReason};
 pub use crate::journal::{Event, EventBatch, EventBody, MessageOrigin, OutputSource};
+pub use crate::state::{
+    Checkpoint, CrewSlot, Family, FamilyInfo, Mission, Money, MoneyChange, Rain, StreamAction,
+    StreamQueue, StreamRequest, TimeChange, TimeOfDay, Variable, Weather,
+};
 use crate::wire::{Reader, Writer};
 pub use crate::world::{World, WorldFilter, WorldObject};
 
 /// Magic of every frame.
 pub const MAGIC: [u8; 4] = *b"DTLV";
 /// Version of this protocol: what a client sends first.
-pub const PROTOCOL_VERSION: u16 = 3;
+pub const PROTOCOL_VERSION: u16 = 4;
 /// Oldest version a module still answers.
 pub const OLDEST_PROTOCOL_VERSION: u16 = 1;
 
@@ -281,6 +294,39 @@ pub enum Request {
     /// (the last id of its `tg4h`/`tg4d` resources) is `name`: the whole
     /// `tg4d` payload, every level, of the same size and format.
     Texture { name: u32, data: Vec<u8> },
+    /// Version 4: the game's clock.
+    TimeOfDay,
+    /// Version 4, writes: sets the time of day and its rate.
+    SetTime(TimeChange),
+    /// Version 4: rain and what decides the sky.
+    Weather,
+    /// Version 4, writes: asks the streamer for a stream (`gf2\\cuba\\…`,
+    /// [`crate::state::stream_name`]) the way `LoadStream` does
+    /// (`0x00403A50`). The module refuses while an earlier request of the
+    /// link is not done or the game is loading a stream: two requests at
+    /// once crash the game.
+    StreamLoad { name: String },
+    /// Version 4, writes: unloads a stream the way `UnloadStream` does
+    /// (`0x00404C40`); only one the link loaded unless `force`.
+    StreamUnload { name: String, force: bool },
+    /// Version 4: the stream requests of the link and whether they are done.
+    StreamQueue,
+    /// Version 4: the player's money.
+    Money,
+    /// Version 4, writes: adds to the player's money or sets it, through
+    /// the call the game's rewards use (`0x008C09A0`).
+    SetMoney(MoneyChange),
+    /// Version 4: the families and the player's crew.
+    Family,
+    /// Version 4: the current checkpoint and those of the loaded streams.
+    Mission,
+    /// Version 4: the variables of the story whose name or record hash is
+    /// in `hashes` (all of them when empty).
+    Variables { hashes: Vec<u32> },
+    /// Version 4, writes: sets a variable (by the hash of its name or of
+    /// its record) and wakes those who watch it (`0x00442240`), as
+    /// `VariableOperator` does.
+    SetVariable { hash: u32, value: i32 },
 }
 
 /// Kinds of requests.
@@ -302,6 +348,18 @@ pub mod kind {
     pub const DEBUG: u16 = 15;
     pub const SET_CAMERA: u16 = 16;
     pub const TEXTURE: u16 = 17;
+    pub const TIME_OF_DAY: u16 = 18;
+    pub const SET_TIME: u16 = 19;
+    pub const WEATHER: u16 = 20;
+    pub const STREAM_LOAD: u16 = 21;
+    pub const STREAM_UNLOAD: u16 = 22;
+    pub const STREAM_QUEUE: u16 = 23;
+    pub const MONEY: u16 = 24;
+    pub const SET_MONEY: u16 = 25;
+    pub const FAMILY: u16 = 26;
+    pub const MISSION: u16 = 27;
+    pub const VARIABLES: u16 = 28;
+    pub const SET_VARIABLE: u16 = 29;
 }
 
 impl Request {
@@ -324,6 +382,18 @@ impl Request {
             Self::Debug => kind::DEBUG,
             Self::SetCamera { .. } => kind::SET_CAMERA,
             Self::Texture { .. } => kind::TEXTURE,
+            Self::TimeOfDay => kind::TIME_OF_DAY,
+            Self::SetTime(_) => kind::SET_TIME,
+            Self::Weather => kind::WEATHER,
+            Self::StreamLoad { .. } => kind::STREAM_LOAD,
+            Self::StreamUnload { .. } => kind::STREAM_UNLOAD,
+            Self::StreamQueue => kind::STREAM_QUEUE,
+            Self::Money => kind::MONEY,
+            Self::SetMoney(_) => kind::SET_MONEY,
+            Self::Family => kind::FAMILY,
+            Self::Mission => kind::MISSION,
+            Self::Variables { .. } => kind::VARIABLES,
+            Self::SetVariable { .. } => kind::SET_VARIABLE,
         }
     }
 
@@ -336,6 +406,18 @@ impl Request {
             | Self::Debug
             | Self::SetCamera { .. }
             | Self::Texture { .. } => 3,
+            Self::TimeOfDay
+            | Self::SetTime(_)
+            | Self::Weather
+            | Self::StreamLoad { .. }
+            | Self::StreamUnload { .. }
+            | Self::StreamQueue
+            | Self::Money
+            | Self::SetMoney(_)
+            | Self::Family
+            | Self::Mission
+            | Self::Variables { .. }
+            | Self::SetVariable { .. } => 4,
             _ => 1,
         }
     }
@@ -349,6 +431,11 @@ impl Request {
                 | Self::Lua { .. }
                 | Self::SetCamera { .. }
                 | Self::Texture { .. }
+                | Self::SetTime(_)
+                | Self::StreamLoad { .. }
+                | Self::StreamUnload { .. }
+                | Self::SetMoney(_)
+                | Self::SetVariable { .. }
         )
     }
 
@@ -442,6 +529,29 @@ impl Request {
                 w.u32(data.len() as u32);
                 w.bytes(data);
             }
+            Self::TimeOfDay
+            | Self::Weather
+            | Self::StreamQueue
+            | Self::Money
+            | Self::Family
+            | Self::Mission => {}
+            Self::SetTime(c) => crate::state::put_time_change(&mut w, c),
+            Self::StreamLoad { name } => w.str(name),
+            Self::StreamUnload { name, force } => {
+                w.str(name);
+                w.bool(*force);
+            }
+            Self::SetMoney(c) => crate::state::put_money_change(&mut w, c),
+            Self::Variables { hashes } => {
+                w.u32(hashes.len() as u32);
+                for h in hashes {
+                    w.u32(*h);
+                }
+            }
+            Self::SetVariable { hash, value } => {
+                w.u32(*hash);
+                w.u32(*value as u32);
+            }
         }
         w.buf
     }
@@ -523,6 +633,33 @@ impl Request {
                     let n = r.count(1)?;
                     r.take(n)?.to_vec()
                 },
+            },
+            kind::TIME_OF_DAY => Self::TimeOfDay,
+            kind::SET_TIME => Self::SetTime(crate::state::get_time_change(&mut r)?),
+            kind::WEATHER => Self::Weather,
+            kind::STREAM_LOAD => Self::StreamLoad { name: r.str()? },
+            kind::STREAM_UNLOAD => Self::StreamUnload {
+                name: r.str()?,
+                force: r.bool()?,
+            },
+            kind::STREAM_QUEUE => Self::StreamQueue,
+            kind::MONEY => Self::Money,
+            kind::SET_MONEY => Self::SetMoney(crate::state::get_money_change(&mut r)?),
+            kind::FAMILY => Self::Family,
+            kind::MISSION => Self::Mission,
+            kind::VARIABLES => Self::Variables {
+                hashes: {
+                    let n = r.count(4)?;
+                    let mut list = Vec::with_capacity(n);
+                    for _ in 0..n {
+                        list.push(r.u32()?);
+                    }
+                    list
+                },
+            },
+            kind::SET_VARIABLE => Self::SetVariable {
+                hash: r.u32()?,
+                value: r.u32()? as i32,
             },
             other => return Err(DecodeError::UnknownKind(other)),
         };
@@ -731,6 +868,21 @@ pub enum Response {
     World(World),
     /// Version 3: answer to [`Request::Debug`].
     Debug(DebugState),
+    /// Version 4: answer to [`Request::TimeOfDay`] (`None`: no clock now).
+    TimeOfDay(Option<TimeOfDay>),
+    /// Version 4: answer to [`Request::Weather`].
+    Weather(Weather),
+    /// Version 4: answer to [`Request::StreamQueue`].
+    StreamQueue(StreamQueue),
+    /// Version 4: answer to [`Request::Money`] (`None`: no family of the
+    /// player now).
+    Money(Option<Money>),
+    /// Version 4: answer to [`Request::Family`].
+    Family(Family),
+    /// Version 4: answer to [`Request::Mission`].
+    Mission(Mission),
+    /// Version 4: answer to [`Request::Variables`].
+    Variables(Vec<Variable>),
     Error(Failure),
 }
 
@@ -844,6 +996,13 @@ impl Response {
             Self::Events(b) => put_events(&mut w, b),
             Self::World(world) => put_world(&mut w, world),
             Self::Debug(d) => crate::debug::put_state(&mut w, d),
+            Self::TimeOfDay(t) => crate::state::put_time(&mut w, t),
+            Self::Weather(x) => crate::state::put_weather(&mut w, x),
+            Self::StreamQueue(q) => crate::state::put_stream_queue(&mut w, q),
+            Self::Money(m) => crate::state::put_money(&mut w, m),
+            Self::Family(f) => crate::state::put_family(&mut w, f),
+            Self::Mission(m) => crate::state::put_mission(&mut w, m),
+            Self::Variables(v) => crate::state::put_variables(&mut w, v),
             Self::Error(e) => {
                 w.u16(e.code as u16);
                 w.str(&e.message);
@@ -923,7 +1082,12 @@ impl Response {
                 | kind::BREAK
                 | kind::CONTROL
                 | kind::SET_CAMERA
-                | kind::TEXTURE => Self::Done(Done {
+                | kind::TEXTURE
+                | kind::SET_TIME
+                | kind::STREAM_LOAD
+                | kind::STREAM_UNLOAD
+                | kind::SET_MONEY
+                | kind::SET_VARIABLE => Self::Done(Done {
                     count: r.u32()?,
                     note: r.str()?,
                 }),
@@ -943,6 +1107,13 @@ impl Response {
                 kind::EVENTS => Self::Events(get_events(&mut r)?),
                 kind::WORLD => Self::World(get_world(&mut r)?),
                 kind::DEBUG => Self::Debug(crate::debug::get_state(&mut r)?),
+                kind::TIME_OF_DAY => Self::TimeOfDay(crate::state::get_time(&mut r)?),
+                kind::WEATHER => Self::Weather(crate::state::get_weather(&mut r)?),
+                kind::STREAM_QUEUE => Self::StreamQueue(crate::state::get_stream_queue(&mut r)?),
+                kind::MONEY => Self::Money(crate::state::get_money(&mut r)?),
+                kind::FAMILY => Self::Family(crate::state::get_family(&mut r)?),
+                kind::MISSION => Self::Mission(crate::state::get_mission(&mut r)?),
+                kind::VARIABLES => Self::Variables(crate::state::get_variables(&mut r)?),
                 other => return Err(DecodeError::UnknownKind(other | REPLY)),
             }
         };

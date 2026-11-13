@@ -481,3 +481,113 @@ fn a_module_without_debugging() {
     assert!(o.status.success(), "{}", stderr(&o));
     assert!(stdout(&o).contains("(protocol 2)"), "{}", stdout(&o));
 }
+
+#[test]
+fn world_and_state() {
+    let game = fake(true);
+    let logs = tempfile::tempdir().unwrap();
+    let port = game.port.to_string();
+    let link = ["--port", port.as_str(), "--token", "tok"];
+    let cmd = |sub: &[&str]| {
+        let mut args = vec!["live"];
+        args.extend_from_slice(sub);
+        args.extend_from_slice(&link);
+        run(&args, logs.path())
+    };
+
+    let o = cmd(&["time"]);
+    assert!(o.status.success(), "{}", stderr(&o));
+    assert!(
+        stdout(&o).starts_with("12:00:00, day 0 of 1950"),
+        "{}",
+        stdout(&o)
+    );
+    // A write without --yes is refused before it reaches the game.
+    let o = cmd(&["time", "23:30"]);
+    assert!(!o.status.success());
+    assert!(stderr(&o).contains("--yes"), "{}", stderr(&o));
+    let o = cmd(&["time", "23:30", "--rate", "0", "--yes"]);
+    assert!(o.status.success(), "{}", stderr(&o));
+    assert!(
+        stdout(&o).contains("23:30:00, day 0 of 1950, 0 game seconds"),
+        "{}",
+        stdout(&o)
+    );
+    let o = cmd(&["time", "--default-rate", "--yes", "--json"]);
+    let v: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+    assert_eq!(v["rate"], 60.0);
+    let o = cmd(&["time", "25:00", "--yes"]);
+    assert!(!o.status.success());
+
+    let o = cmd(&["weather"]);
+    assert!(stdout(&o).contains("no WeatherManager"), "{}", stdout(&o));
+
+    let o = cmd(&["money", "--add", "12345", "--yes"]);
+    assert!(stdout(&o).contains("money: 12345"), "{}", stdout(&o));
+    let o = cmd(&["money", "--set", "500", "--yes", "--json"]);
+    let v: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+    assert_eq!(v["cash"], 500.0);
+
+    let o = cmd(&["family"]);
+    let text = stdout(&o);
+    assert!(text.contains("1 (soldier  ) 04040404"), "{text}");
+    assert!(text.contains("soldier, medic"), "{text}");
+    assert!(text.contains("7 (underboss) locked"), "{text}");
+    assert!(text.contains("corleone"), "{text}");
+
+    let o = cmd(&["mission", "--json"]);
+    let v: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+    assert!(v["current"].is_null());
+    assert_eq!(v["checkpoints"][0]["number"], 737);
+
+    let o = cmd(&["var", "get", "doctor_fake_flag"]);
+    assert!(stdout(&o).contains("0  saved"), "{}", stdout(&o));
+    let o = cmd(&["var", "set", "doctor_fake_flag", "-3", "--yes"]);
+    assert!(o.status.success(), "{}", stderr(&o));
+    assert!(stdout(&o).contains("= -3 (was 0)"), "{}", stdout(&o));
+    let o = cmd(&["var", "get", "doctor_fake_flag", "no_such_var"]);
+    assert!(!o.status.success());
+    assert!(
+        stderr(&o).contains("not in the loaded streams"),
+        "{}",
+        stderr(&o)
+    );
+
+    let o = cmd(&[
+        "stream",
+        "load",
+        "gf2/cuba/local/yuri/high/filler_056_01",
+        "--wait",
+        "--yes",
+    ]);
+    assert!(o.status.success(), "{}", stderr(&o));
+    assert!(stdout(&o).contains("— done"), "{}", stdout(&o));
+    let o = cmd(&["stream", "list"]);
+    assert!(
+        stdout(&o).contains("gf2\\cuba\\local\\yuri\\high\\filler_056_01"),
+        "{}",
+        stdout(&o)
+    );
+    assert!(stdout(&o).contains("link: load"), "{}", stdout(&o));
+    let o = cmd(&["stream", "unload", "gf2/cuba", "--yes"]);
+    assert!(!o.status.success());
+    assert!(
+        stderr(&o).contains("not loaded by the link"),
+        "{}",
+        stderr(&o)
+    );
+}
+
+#[test]
+fn world_and_state_need_a_module_of_protocol_4() {
+    let game = fake(true);
+    game.world.lock().unwrap().protocol = 3;
+    let logs = tempfile::tempdir().unwrap();
+    let port = game.port.to_string();
+    let o = run(
+        &["live", "money", "--port", &port, "--token", "tok"],
+        logs.path(),
+    );
+    assert!(!o.status.success());
+    assert!(stderr(&o).contains("protocol 3"), "{}", stderr(&o));
+}

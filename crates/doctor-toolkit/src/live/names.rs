@@ -36,11 +36,26 @@ pub struct ObjectName {
     pub copies: u32,
 }
 
-/// Names of objects by GUID and of messages by hash.
+/// A variable of the story as the `variabledictionary` resources name it
+/// (stage 48).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VariableName {
+    pub name: String,
+    /// The stream of the first dictionary that has it.
+    pub stream: String,
+    /// Its value at the start of the level.
+    pub initial: i32,
+    /// Hash of its record in the dictionary (the game's `+0`).
+    pub record: u32,
+}
+
+/// Names of objects by GUID, of messages and variables by hash.
 #[derive(Debug, Default)]
 pub struct LiveNames {
     objects: HashMap<Guid, ObjectName>,
     messages: HashMap<u32, String>,
+    /// Variables by `sdbm(lower(name))` — what the game keeps at `+4`.
+    variables: HashMap<u32, VariableName>,
     /// SimGroups that could not be read.
     pub errors: usize,
 }
@@ -53,7 +68,78 @@ impl LiveNames {
         let (loaded, errors) = scope::load(game, ws, &locations);
         let mut out = Self::from_groups(&loaded);
         out.errors = errors.len();
+        out.read_variables(game, index, ws);
         out
+    }
+
+    /// Names of the variables of every `variabledictionary` of the game
+    /// (the workspace's version where it has one).
+    fn read_variables(
+        &mut self,
+        game: &GameInstance,
+        index: &ResourceIndex,
+        ws: Option<&Workspace>,
+    ) {
+        let dict_type = crate::resource::logic::TYPE_VARIABLE_DICTIONARY;
+        for e in index
+            .entries
+            .iter()
+            .filter(|e| e.header.type_id == dict_type)
+        {
+            let file = &game.streams()[e.stream as usize];
+            let key = crate::workspace::ResourceKey::new(&file.stream_name(), &e.header);
+            let data = ws.and_then(|w| w.data(&key).ok().flatten()).or_else(|| {
+                game.open_stream(e.stream as usize)
+                    .ok()?
+                    .resource_data(e.resource as usize)
+                    .ok()
+            });
+            let Some(dict) = data.and_then(|d| {
+                crate::resource::variabledictionary::VariableDictionary::parse(&d).ok()
+            }) else {
+                continue;
+            };
+            for v in dict.variables {
+                self.insert_variable(VariableName {
+                    record: v.hash.0,
+                    initial: v.value as i32,
+                    stream: file.stream_name(),
+                    name: v.name,
+                });
+            }
+        }
+    }
+
+    /// Adds a variable (the first one of a name wins).
+    pub fn insert_variable(&mut self, v: VariableName) {
+        self.variables
+            .entry(super::proto::name_hash(&v.name))
+            .or_insert(v);
+    }
+
+    /// A variable by the hash of its name or of its record.
+    pub fn variable(&self, hash: u32) -> Option<&VariableName> {
+        self.variables
+            .get(&hash)
+            .or_else(|| self.variables.values().find(|v| v.record == hash))
+    }
+
+    /// Variables whose name contains `text` (case-insensitive), by name;
+    /// with the hash of the name.
+    pub fn search_variables(&self, text: &str) -> Vec<(u32, &VariableName)> {
+        let want = text.trim().to_ascii_lowercase();
+        let mut out: Vec<(u32, &VariableName)> = self
+            .variables
+            .iter()
+            .filter(|(_, v)| v.name.to_ascii_lowercase().contains(&want))
+            .map(|(h, v)| (*h, v))
+            .collect();
+        out.sort_by(|a, b| a.1.name.cmp(&b.1.name));
+        out
+    }
+
+    pub fn variables(&self) -> usize {
+        self.variables.len()
     }
 
     /// Opens the game at `root` and its workspace (unless `original`) and
@@ -156,7 +242,7 @@ impl LiveNames {
     }
 
     pub fn is_empty(&self) -> bool {
-        self.objects.is_empty() && self.messages.is_empty()
+        self.objects.is_empty() && self.messages.is_empty() && self.variables.is_empty()
     }
 }
 
@@ -262,6 +348,20 @@ mod tests {
         assert_eq!(n.search("abab").len(), 1);
         assert!(n.search("  ").is_empty());
         assert!(n.message(0x0BAD_F00D).is_none());
+        n.insert_variable(VariableName {
+            name: "global_tutorial_payday".into(),
+            stream: "gf2/globals_global".into(),
+            initial: 1,
+            record: 0x001A_01D2,
+        });
+        // The pair read on the stand: sdbm of the name, the record's hash.
+        assert_eq!(n.variable(0x9381_3AB9).unwrap().initial, 1);
+        assert_eq!(
+            n.variable(0x001A_01D2).unwrap().name,
+            "global_tutorial_payday"
+        );
+        assert_eq!(n.search_variables("PAYDAY").len(), 1);
+        assert_eq!(n.variables(), 1);
     }
 
     #[test]

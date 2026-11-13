@@ -28,6 +28,7 @@ mod gametab;
 mod level;
 mod live;
 mod live_debug;
+mod live_state;
 pub use live::LiveMarks;
 mod logic;
 mod menu;

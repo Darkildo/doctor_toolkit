@@ -1,6 +1,8 @@
 //! `live`: the live link with the running game (stage 34); the game's
 //! journal and every object (stage 49); breakpoints, pause and step, the
-//! free camera and textures without a restart (stage 35).
+//! free camera and textures without a restart (stage 35); the world and
+//! the state of the game — time, weather, streams, money, family,
+//! missions, variables (stage 48, [`crate::live_state_cmd`]).
 
 use std::io::Write as _;
 use std::path::PathBuf;
@@ -37,10 +39,10 @@ pub struct LinkArgs {
     token: Option<String>,
     /// Seconds to wait for an answer (the game may draw 1–2 frames a second)
     #[arg(long, default_value_t = 30)]
-    timeout: u64,
+    pub timeout: u64,
     /// Print JSON
     #[arg(long)]
-    json: bool,
+    pub json: bool,
     /// Names of objects and messages from the SimGroups of the --game folder
     /// and its workspace (reads every SimGroup first: a few seconds)
     #[arg(long, requires = "game")]
@@ -64,7 +66,7 @@ impl LinkArgs {
     }
 
     /// The index of names, when asked for (or `needed`).
-    fn names(&self, needed: bool) -> Result<Option<LiveNames>> {
+    pub fn names(&self, needed: bool) -> Result<Option<LiveNames>> {
         if !(self.names || needed) {
             return Ok(None);
         }
@@ -80,7 +82,7 @@ impl LinkArgs {
         Ok(Some(names))
     }
 
-    fn connect(&self) -> Result<Client> {
+    pub fn connect(&self) -> Result<Client> {
         let e = self.endpoint();
         let client = Client::connect(
             &e,
@@ -108,6 +110,46 @@ pub enum LiveCommand {
     Camera(LinkArgs),
     /// Streams the game has loaded
     Streams(LinkArgs),
+    /// Load and unload streams one at a time, list them with the requests
+    /// of the link
+    #[command(subcommand)]
+    Stream(crate::live_state_cmd::StreamCommand),
+    /// The time of day: print it, or set it (HH:MM[:SS]) and how fast it
+    /// goes (a write: needs --yes); sky, fog and light follow
+    Time {
+        /// HH:MM or HH:MM:SS
+        at: Option<String>,
+        /// Game seconds per real second (0 stops the clock)
+        #[arg(long, conflicts_with = "default_rate")]
+        rate: Option<f32>,
+        /// Back to the rate of the level
+        #[arg(long)]
+        default_rate: bool,
+        #[arg(long)]
+        yes: bool,
+        #[command(flatten)]
+        link: LinkArgs,
+    },
+    /// The weather: rain, and what decides the sky
+    Weather(LinkArgs),
+    /// The player's money: print it, or --set / --add (a write: needs --yes)
+    Money {
+        #[arg(long, allow_hyphen_values = true, conflicts_with = "add")]
+        set: Option<f32>,
+        #[arg(long, allow_hyphen_values = true)]
+        add: Option<f32>,
+        #[arg(long)]
+        yes: bool,
+        #[command(flatten)]
+        link: LinkArgs,
+    },
+    /// The player's crew (members, ranks, specialties) and the families
+    Family(LinkArgs),
+    /// The current checkpoint and those of the loaded streams
+    Mission(LinkArgs),
+    /// Variables of the story (variabledictionary): get and set by name
+    #[command(subcommand)]
+    Var(crate::live_state_cmd::VarCommand),
     /// SimGroup objects near the player (or a point): GUID, class, position;
     /// with --all every object of the game, logic included
     Objects {
@@ -364,7 +406,7 @@ fn message_name(names: Option<&LiveNames>, hash: u32) -> String {
 }
 
 /// `{GUID} name` of an object: the name from the index when known.
-fn object_label(names: Option<&LiveNames>, guid: &proto::Guid) -> String {
+pub fn object_label(names: Option<&LiveNames>, guid: &proto::Guid) -> String {
     match names.and_then(|n| n.object(guid)) {
         Some(o) if !o.name.is_empty() => format!("{} {}", o.name, proto::guid_hex(guid)),
         _ => proto::guid_hex(guid),
@@ -707,7 +749,7 @@ fn debug_json(d: &proto::DebugState, names: Option<&LiveNames>) -> serde_json::V
     })
 }
 
-fn confirm(yes: bool, what: &str) -> Result<()> {
+pub fn confirm(yes: bool, what: &str) -> Result<()> {
     if !yes {
         bail!("{what} changes the running game: add --yes to do it");
     }
@@ -715,7 +757,26 @@ fn confirm(yes: bool, what: &str) -> Result<()> {
 }
 
 pub fn run(command: LiveCommand) -> Result<()> {
+    use crate::live_state_cmd as st;
     match command {
+        LiveCommand::Stream(c) => st::stream(c)?,
+        LiveCommand::Time {
+            at,
+            rate,
+            default_rate,
+            yes,
+            link,
+        } => st::time(&link, at.as_deref(), rate, default_rate, yes)?,
+        LiveCommand::Weather(link) => st::weather(&link)?,
+        LiveCommand::Money {
+            set,
+            add,
+            yes,
+            link,
+        } => st::money(&link, set, add, yes)?,
+        LiveCommand::Family(link) => st::family(&link)?,
+        LiveCommand::Mission(link) => st::mission(&link)?,
+        LiveCommand::Var(c) => st::var(c)?,
         LiveCommand::Status(link) => {
             let mut c = link.connect()?;
             let s = c.status()?;
