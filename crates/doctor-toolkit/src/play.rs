@@ -221,6 +221,38 @@ impl LaunchPlan {
     }
 }
 
+/// Name of the Wine desktop of a game run on an X server of its own.
+pub const VIRTUAL_DESKTOP: &str = "doctor_toolkit";
+
+/// Runs the game of a Wine or Proton `plan` in a Wine virtual desktop of
+/// `size` (`explorer /desktop=doctor_toolkit,WxH godfather2.exe`).
+/// On a bare X server of that size the game stops at "Your Graphics Card
+/// does not meet the minimum requirements" (checked on the bench); in a
+/// virtual desktop it starts, and its mode changes stay inside it. Other
+/// plans (a script of one's own, launchers) are left as they are.
+pub fn in_virtual_desktop(plan: &mut LaunchPlan, size: [u32; 2]) {
+    let program = std::path::Path::new(&plan.program)
+        .file_name()
+        .map(|n| n.to_string_lossy().to_ascii_lowercase())
+        .unwrap_or_default();
+    if !(program.starts_with("wine") || program == "proton") {
+        return;
+    }
+    let Some(at) = plan
+        .args
+        .iter()
+        .position(|a| a.to_string_lossy().to_ascii_lowercase().ends_with(".exe"))
+    else {
+        return;
+    };
+    if at > 0 && plan.args[at - 1].to_string_lossy().starts_with("/desktop=") {
+        return;
+    }
+    let desktop = format!("/desktop={VIRTUAL_DESKTOP},{}x{}", size[0], size[1]);
+    plan.args
+        .splice(at..at, ["explorer".into(), desktop.into()]);
+}
+
 /// The game executable in `root`.
 pub fn find_executable(root: &Path) -> Option<PathBuf> {
     let profile = GameProfile::detect(root)?;

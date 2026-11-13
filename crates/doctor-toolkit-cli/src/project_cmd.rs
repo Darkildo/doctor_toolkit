@@ -274,6 +274,11 @@ pub fn run(command: ProjectCommand) -> Result<()> {
             apply,
         } => {
             let (project, game, mut ws) = target.open()?;
+            if !dry_run {
+                crate::workspace_cmd::lock(ws.dir())?;
+                // Read again under the lock: another program may have written it meanwhile.
+                ws.reload()?;
+            }
             build(&project, &game, &mut ws, only, force, dry_run)?;
             if apply && !dry_run {
                 let report = ws.apply(&game, ApplyOptions::default())?;

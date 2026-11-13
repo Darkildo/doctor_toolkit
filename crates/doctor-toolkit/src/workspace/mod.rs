@@ -32,6 +32,7 @@ pub mod deploy;
 pub mod diff;
 pub mod files;
 pub mod key;
+pub mod lock;
 pub mod store;
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
@@ -53,6 +54,7 @@ pub use diff::{
 };
 pub use files::{FileChange, FileEdit, FileKey};
 pub use key::ResourceKey;
+pub use lock::{LockHolder, WorkspaceLock};
 pub use store::{Blob, FileStamp, PayloadStore};
 
 /// Value of the `format` field of `manifest.json`.

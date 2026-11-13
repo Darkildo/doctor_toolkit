@@ -45,7 +45,9 @@ original files are never lost.
   messages, Lua (the in-game module is built from source for now).
 - **AI assistants:** `doctor-toolkit mcp` lets Claude Code, Claude Desktop or
   any MCP client search the game, read resources as JSON and follow the
-  logic of missions (read-only).
+  logic of missions; with flags it also edits through the workspace (each
+  edit undoable, with its diff), builds mods, runs the game off-screen with
+  screenshots and acts in it over the live link.
 
 ## Screenshots
 
@@ -216,9 +218,11 @@ This is a **beta**: back up your game folder before writing into it.
   strings; "uses" and "used by" for any resource; a name dictionary for hashes.
 - `unpack` / `pack`: resources as PNG, glTF, JSON and raw files with a
   manifest; edited files go back into the workspace.
-- An MCP server for AI assistants (`doctor-toolkit mcp`, read-only): Claude
-  Code, Claude Desktop or any MCP client searches the game, reads resources
-  as JSON, follows the logic graph and lists level objects
+- An MCP server for AI assistants (`doctor-toolkit mcp`): Claude Code,
+  Claude Desktop or any MCP client searches the game, reads resources as
+  JSON, follows the logic graph and lists level objects; `--allow-edits`
+  adds edits through the workspace, `--allow-game` running the game on an X
+  server of its own; a bridge with the open editor
   ([below](#ai-assistants-mcp)).
 - A level editor: zones of every level in 3D (models with LODs, terrain,
   markers for objects without a mesh), fly camera, picking, move and rotate
@@ -565,15 +569,28 @@ without a Python interpreter (`.cargo/config.toml`).
 
 `doctor-toolkit mcp GAME` is a [Model Context Protocol](https://modelcontextprotocol.io)
 server on stdin/stdout (no network): an AI client such as Claude Code or
-Claude Desktop reads the game through the toolkit. It only reads — nothing in
-the game, the workspace or the project is written (stage 51 will add edits
-through the workspace).
+Claude Desktop reads the game through the toolkit. By default it only reads —
+nothing in the game, the workspace or the project is written. Two flags turn
+writing on:
+
+| Flag | Tools |
+|---|---|
+| — | reading (below), the running game over the live link (`live_status`, `player`, `objects_near`), the open editor (`editor_selection`, `editor_open`, `editor_show_object`) |
+| `--allow-edits` | edits recorded in the workspace, never in the game files: `set_attribute`, `move_object`, `duplicate_object`, `add_object`, `remove_object`, `edit_string`, `add_string`, `edit_script` (a visual script graph as JSON), `graph_edit` (navigation graphs), `undo`, `redo`; `project_build`, `mod_build` (format 2, into the workspace's `mods/`), `validate`, `scripts` |
+| `--allow-game` | `apply`/`unapply` (the workspace into the game files and back), `play` (the game on an X server of its own — nothing shows on the desktop — optionally right in a level at a spawn point, DXVK, waits for the level), `stop`, `screenshot` (a PNG frame as image content), `teleport`, `send_message`, `lua` |
+
+Every edit is one undoable operation of the workspace and its answer carries
+the diff. The workspace is written by one program at a time: while the
+editor has it open, a write is asked for in the editor (a window there,
+through a local socket) or refused with a clear error.
 
 ```sh
 # Claude Code
 claude mcp add doctor-toolkit -- doctor-toolkit mcp "/path/to/The Godfather II"
 # with a workspace or a mod project
 claude mcp add doctor-toolkit -- doctor-toolkit mcp "$GAME" --project ~/mods/my-mod
+# edits in the workspace and the game
+claude mcp add doctor-toolkit -- doctor-toolkit mcp "$GAME" --allow-edits --allow-game
 ```
 
 Claude Desktop, `claude_desktop_config.json`:
@@ -600,7 +617,7 @@ listeners over N hops, a message across the game, a mission overview),
 (`docs/formats/*.md`, built into the binary), the schema of logic pins, the
 engine's message names, the messages and missions of the game. Game data in
 results is fenced off as untrusted data, results are limited in size
-(`--max-response-chars`). Details: `docs/mcp.md`, guide chapter 21 (Russian).
+(`--max-response-chars`). Details: `docs/mcp.md`, guide chapter 22 (Russian).
 
 ## External editors and Blender
 

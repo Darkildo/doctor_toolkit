@@ -1,13 +1,18 @@
 //! The read-only tools. Each takes the toolkit and its parameters and
 //! returns JSON (or text) that the server fences off as game data.
 //!
-//! Stage 51 adds writing tools in modules of their own, behind a router of
-//! their own; nothing here changes a file.
+//! The writing tools of stage 51 are in modules of their own ([`edit`],
+//! [`build`], [`play`], the writes of [`live`]) behind routers of their own
+//! that the flags of the server turn on.
 
+pub mod build;
+pub mod edit;
 pub mod game;
 pub mod json;
 pub mod level;
+pub mod live;
 pub mod logic;
+pub mod play;
 pub mod search;
 pub mod workspace;
 
@@ -23,6 +28,11 @@ use crate::state::{ToolError, ToolResult, Toolkit, fail};
 pub enum Output {
     Json(serde_json::Value),
     Text(String),
+    /// A picture (PNG) and what it shows.
+    Image {
+        png: Vec<u8>,
+        info: serde_json::Value,
+    },
 }
 
 // ------------------------------------------------------------ parameters

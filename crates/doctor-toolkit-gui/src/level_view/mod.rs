@@ -853,6 +853,13 @@ impl LevelView {
         self.pending_autoload = true;
     }
 
+    /// The selected object: its SimGroup and its number there.
+    pub fn selected_location(&self) -> Option<(Location, usize)> {
+        let r = self.filter.selected?;
+        let level = self.level.as_ref()?;
+        Some((level.groups.get(r.group)?.location, r.object))
+    }
+
     /// GUIDs of every object of the loaded level.
     pub fn guids(&self) -> HashSet<doctor_toolkit::resource::simgroup::Guid> {
         self.level.as_ref().map(|l| l.guids()).unwrap_or_default()

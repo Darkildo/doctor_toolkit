@@ -83,36 +83,10 @@ pub(super) fn tab_size(options: &StartOptions) -> [u32; 2] {
         .unwrap_or(game_view::DEFAULT_SIZE)
 }
 
-/// Name of the Wine desktop of the game tab.
-const DESKTOP: &str = "doctor_toolkit";
-
 /// Runs the game of a Wine or Proton `plan` in a Wine virtual desktop of
-/// the tab's size (`explorer /desktop=doctor_toolkit,WxH godfather2.exe`).
-/// On a bare X server of that size the game stops at "Your Graphics Card
-/// does not meet the minimum requirements" (checked on the bench); in a
-/// virtual desktop it starts, and its mode changes stay inside it. Other
-/// plans (a script of one's own, launchers) are left as they are.
+/// the tab's size ([`doctor_toolkit::play::in_virtual_desktop`]).
 pub(super) fn in_virtual_desktop(plan: &mut doctor_toolkit::play::LaunchPlan, size: &[u32; 2]) {
-    let program = std::path::Path::new(&plan.program)
-        .file_name()
-        .map(|n| n.to_string_lossy().to_ascii_lowercase())
-        .unwrap_or_default();
-    if !(program.starts_with("wine") || program == "proton") {
-        return;
-    }
-    let Some(at) = plan
-        .args
-        .iter()
-        .position(|a| a.to_string_lossy().to_ascii_lowercase().ends_with(".exe"))
-    else {
-        return;
-    };
-    if at > 0 && plan.args[at - 1].to_string_lossy().starts_with("/desktop=") {
-        return;
-    }
-    let desktop = format!("/desktop={DESKTOP},{}x{}", size[0], size[1]);
-    plan.args
-        .splice(at..at, ["explorer".into(), desktop.into()]);
+    doctor_toolkit::play::in_virtual_desktop(plan, *size);
 }
 
 /// Why the start would fail, before the game is started: the rules of

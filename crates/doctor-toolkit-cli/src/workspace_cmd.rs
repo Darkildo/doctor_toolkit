@@ -9,7 +9,7 @@ use clap::{Args, Subcommand};
 use doctor_toolkit::game::GameInstance;
 use doctor_toolkit::workspace::{
     ApplyOptions, ApplyReport, ChangeState, FileKey, ResourceKey, SemanticDiff, StreamAction,
-    StreamState, Workspace,
+    StreamState, Workspace, WorkspaceLock,
 };
 
 /// Writes a line to stdout and exits quietly when the pipe is closed.
@@ -127,7 +127,7 @@ pub fn run(command: WorkspaceCommand) -> Result<()> {
             force,
             streams,
         } => {
-            let (game, mut ws) = open(&target)?;
+            let (game, mut ws) = open_for_write(&target)?;
             let options = ApplyOptions {
                 force,
                 streams: (!streams.is_empty()).then_some(streams),
@@ -143,7 +143,7 @@ pub fn run(command: WorkspaceCommand) -> Result<()> {
             game: from_game,
             force,
         } => {
-            let (game, mut ws) = open(&target)?;
+            let (game, mut ws) = open_for_write(&target)?;
             if from_game {
                 let report = ws.unapply(&game, force)?;
                 print_report(&report);
@@ -189,7 +189,7 @@ pub fn run(command: WorkspaceCommand) -> Result<()> {
             Ok(())
         }
         WorkspaceCommand::Undo(target) => {
-            let (_, mut ws) = open(&target)?;
+            let (_, mut ws) = open_for_write(&target)?;
             match ws.undo()? {
                 Some(label) => out!("undone: {label}"),
                 None => out!("nothing to undo"),
@@ -197,7 +197,7 @@ pub fn run(command: WorkspaceCommand) -> Result<()> {
             Ok(())
         }
         WorkspaceCommand::Redo(target) => {
-            let (_, mut ws) = open(&target)?;
+            let (_, mut ws) = open_for_write(&target)?;
             match ws.redo()? {
                 Some(label) => out!("redone: {label}"),
                 None => out!("nothing to redo"),
@@ -229,6 +229,42 @@ pub fn run(command: WorkspaceCommand) -> Result<()> {
     }
 }
 
+/// Locks of the workspaces this command writes, held until it ends.
+static HELD: std::sync::Mutex<Vec<WorkspaceLock>> = std::sync::Mutex::new(Vec::new());
+
+/// Takes the lock of the workspace in `dir` for the rest of the command:
+/// the editor or the MCP server writing it now makes the command fail with
+/// their name instead of a stale workspace later.
+pub fn lock(dir: &Path) -> Result<()> {
+    let mut held = HELD.lock().unwrap_or_else(|e| e.into_inner());
+    if held.iter().any(|l| l.dir() == dir) {
+        return Ok(());
+    }
+    held.push(WorkspaceLock::acquire(dir, "the command line")?);
+    Ok(())
+}
+
+/// Lets the locks go at the end of the command: statics are not dropped,
+/// and a lock that made the folder of a workspace never written takes it
+/// away again.
+pub fn release_locks() {
+    let held = std::mem::take(&mut *HELD.lock().unwrap_or_else(|e| e.into_inner()));
+    drop(held);
+}
+
+/// [`open`] for a command that writes the workspace (or the game from it).
+fn open_for_write(target: &Target) -> Result<(GameInstance, Workspace)> {
+    let game = GameInstance::open(&target.game_dir)?;
+    let dir = target
+        .dir
+        .clone()
+        .unwrap_or_else(|| Workspace::default_dir(game.root()));
+    if Workspace::exists(&dir) {
+        lock(&dir)?;
+    }
+    open(target)
+}
+
 fn open(target: &Target) -> Result<(GameInstance, Workspace)> {
     let game = GameInstance::open(&target.game_dir)?;
     let dir = target
@@ -247,7 +283,12 @@ fn open(target: &Target) -> Result<(GameInstance, Workspace)> {
 
 /// Opens or creates the workspace for an editing command.
 pub fn open_for_edit(game: &GameInstance, mode: &EditMode) -> Result<Workspace> {
-    Ok(Workspace::for_game(game, mode.workspace_dir.as_deref())?)
+    let dir = mode
+        .workspace_dir
+        .clone()
+        .unwrap_or_else(|| Workspace::default_dir(game.root()));
+    lock(&dir)?;
+    Ok(Workspace::for_game(game, Some(&dir))?)
 }
 
 /// After an editing command: apply the touched streams in direct mode, or

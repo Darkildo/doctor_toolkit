@@ -14,6 +14,14 @@ schemars = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-std", "sync"] }
+png = "0.18"
+toml = "1"
+
+# The game of `play` on an X server of its own: frames read over the X
+# protocol, the process group signalled.
+[target.'cfg(unix)'.dependencies]
+x11rb = "0.13"
+rustix = { version = "1", default-features = false, features = ["std", "process"] }
 
 [dev-dependencies]
 doctor-toolkit = { workspace = true, features = ["testing"] }

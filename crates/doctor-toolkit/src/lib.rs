@@ -13,6 +13,7 @@
 //! Every parser returns [`Error`] on malformed input and never panics.
 
 pub mod atomic;
+pub mod bridge;
 pub mod character;
 pub mod compress;
 pub mod container;

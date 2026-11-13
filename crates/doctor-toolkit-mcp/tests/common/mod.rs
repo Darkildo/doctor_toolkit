@@ -11,6 +11,11 @@ use tokio::io::{
     AsyncBufReadExt, AsyncWriteExt, BufReader, DuplexStream, Lines, ReadHalf, WriteHalf,
 };
 
+use doctor_toolkit::hash::string_id;
+use doctor_toolkit::logic_graph::LogicSchema;
+use doctor_toolkit::resource::simgroup::{
+    ATTR_LOAD_MATRIX, CLASS_SYSTEM_COMMANDS, Guid, SimGroup, Value as SimValue,
+};
 use doctor_toolkit_mcp::{Config, Toolkit};
 
 /// A client speaking newline-delimited JSON-RPC, as MCP over stdio does.
@@ -160,5 +165,85 @@ pub fn snapshot(dir: &Path) -> BTreeMap<String, (u64, std::time::SystemTime, u64
 pub fn config(game: &Path) -> Config {
     let mut config = Config::new(game);
     config.index_cache = None;
+    // Never the bridge of an editor the user runs.
+    config.bridge = None;
     config
+}
+
+/// Class of the packet with `CMD_SetName` (attribute 0).
+pub const CLASS_SET_NAME: u32 = 0xc8f2_456f;
+
+/// Adds an object of class `name` called `title` with string attributes;
+/// it has the packets of a placed object (matrix, name) first.
+pub fn add(
+    group: &mut SimGroup,
+    name: &str,
+    title: &str,
+    n: u8,
+    values: &[(&str, u16, &str)],
+) -> usize {
+    let class = string_id(name);
+    let mut layout = vec![(CLASS_SYSTEM_COMMANDS, 2), (CLASS_SET_NAME, 1)];
+    layout.extend_from_slice(LogicSchema::gf2().layout(class).expect("layout"));
+    let mut guid = [n; 16];
+    guid[8..].copy_from_slice(b"TESTTEST");
+    let o = group.push_object(class, Guid(guid), &layout).unwrap();
+    group
+        .set_class_attr(o, CLASS_SET_NAME, 0, Some(SimValue::String(title.into())))
+        .unwrap();
+    for &(packet, index, value) in values {
+        group
+            .set_class_attr(
+                o,
+                string_id(packet),
+                index,
+                Some(SimValue::String(value.into())),
+            )
+            .unwrap();
+    }
+    o
+}
+
+/// A trigger starts a MultiManager that spawns guards and sends a message
+/// nobody hears; the trigger stands at (10, 2, -5).
+pub fn logic_group() -> SimGroup {
+    let mut g = SimGroup::empty();
+    let trigger = add(
+        &mut g,
+        "TriggerAuto",
+        "Trigger",
+        1,
+        &[("TriggerAuto", 0, "start")],
+    );
+    add(
+        &mut g,
+        "MultiManager",
+        "Manager",
+        2,
+        &[
+            ("MultiManager", 0, "start"),
+            ("MultiManager", 3, "Spawn_Guards"),
+            ("MultiManager", 5, "nobody_hears"),
+        ],
+    );
+    add(
+        &mut g,
+        "FuncSpawn",
+        "Spawner",
+        3,
+        &[("FuncSpawn", 0, "spawn_guards")],
+    );
+    let mut m = [[0.0f32; 4]; 4];
+    for (i, row) in m.iter_mut().enumerate() {
+        row[i] = 1.0;
+    }
+    m[3] = [10.0, 2.0, -5.0, 1.0];
+    g.set_class_attr(
+        trigger,
+        CLASS_SYSTEM_COMMANDS,
+        ATTR_LOAD_MATRIX,
+        Some(SimValue::Matrix(m)),
+    )
+    .unwrap();
+    SimGroup::parse(&g.encode()).unwrap()
 }

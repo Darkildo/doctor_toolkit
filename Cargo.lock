@@ -887,12 +887,16 @@ name = "doctor-toolkit-mcp"
 version = "0.0.1"
 dependencies = [
  "doctor-toolkit",
+ "png",
  "rmcp",
+ "rustix 1.1.6",
  "schemars",
  "serde",
  "serde_json",
  "tempfile",
  "tokio",
+ "toml",
+ "x11rb",
 ]
 
 [[package]]

@@ -17,6 +17,7 @@
 //!   game, Play and the lock on writing while the game runs;
 //! - `wizard`: guided wizards for typical modding tasks.
 
+mod bridge;
 mod browse;
 mod commands;
 mod dock;
@@ -172,6 +173,11 @@ pub struct BrowserApp {
     assets: Option<doctor_toolkit::game::GameAssets>,
     /// Edits kept on disk; opened with the game, created by the first edit.
     workspace: Option<Workspace>,
+    /// The lock of the workspace while the editor has it open: the command
+    /// line and the MCP server do not write it meanwhile.
+    ws_lock: Option<doctor_toolkit::workspace::WorkspaceLock>,
+    /// The bridge with the MCP server (`docs/mcp.md` §6).
+    bridge: bridge::BridgeState,
     /// The workspace compared with the game files.
     ws_status: Option<Status>,
     changes: ChangesWindow,
@@ -269,6 +275,8 @@ impl BrowserApp {
             level_preset_used: false,
             assets: None,
             workspace: None,
+            ws_lock: None,
+            bridge: bridge::BridgeState::default(),
             ws_status: None,
             changes: ChangesWindow::default(),
             direct: false,
@@ -861,6 +869,7 @@ impl eframe::App for BrowserApp {
         let _ = frame;
         self.handle_results(&ctx);
         self.poll_external(&ctx);
+        self.poll_bridge(&ctx);
         self.wizard_preset();
         for action in self.nav.poll() {
             self.nav_action(action);

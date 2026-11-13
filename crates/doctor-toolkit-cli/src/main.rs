@@ -613,11 +613,15 @@ enum Command {
     },
 
     /// Serve the game to an AI client (Claude Code, Claude Desktop) over the
-    /// Model Context Protocol on stdin/stdout, read-only
+    /// Model Context Protocol on stdin/stdout
     ///
-    /// Tools: search, resource info and JSON, hash names, strings, the logic
-    /// graph, level objects, workspace and project status. Nothing in the
-    /// game, the workspace or the project is written. See docs/mcp.md.
+    /// Read-only by default: search, resource info and JSON, hash names,
+    /// strings, the logic graph, level objects, workspace and project
+    /// status, the running game over the live link. `--allow-edits` adds
+    /// edits recorded in the workspace (undoable), project and mod builds
+    /// and checks; `--allow-game` writing the workspace into the game,
+    /// running the game on an X server of its own, screenshots and writes
+    /// into the running game. See docs/mcp.md.
     Mcp(mcp_cmd::McpArgs),
 }
 
@@ -629,7 +633,9 @@ fn main() -> std::process::ExitCode {
     {
         eprintln!("warning: {warning}");
     }
-    match run(cli.command) {
+    let result = run(cli.command);
+    workspace_cmd::release_locks();
+    match result {
         Ok(()) => std::process::ExitCode::SUCCESS,
         Err(error) => std::process::ExitCode::from(report_error(&error)),
     }
@@ -651,6 +657,7 @@ impl Command {
             Self::Mods(command) => matches!(command, M::Apply { .. } | M::Unapply { .. }),
             Self::Partsdb(command) => command.may_write_game(),
             Self::Project(command) => command.may_write_game(),
+            Self::Mcp(args) => args.allow_game,
             _ => false,
         }
     }

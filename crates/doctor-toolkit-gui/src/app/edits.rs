@@ -5,7 +5,7 @@ use std::path::Path;
 
 use doctor_toolkit::resource::lh2::StringTable;
 use doctor_toolkit::resource::texture::TexturePair;
-use doctor_toolkit::workspace::{ApplyOptions, ChangeState, ResourceKey, Workspace};
+use doctor_toolkit::workspace::{ApplyOptions, ChangeState, ResourceKey, Workspace, WorkspaceLock};
 use doctor_toolkit_mods::i18n::{tr, trf, trn};
 use egui::RichText;
 
@@ -15,14 +15,23 @@ use crate::changes_view::{APPLIED, CONFLICT, ChangesAction, PENDING};
 use crate::nav::Location;
 use crate::views::ViewAction;
 
+/// How the editor names itself to programs that find the workspace locked.
+const LOCK_HOLDER: &str = doctor_toolkit::bridge::EDITOR;
+
 impl BrowserApp {
     /// Opens the game's workspace if it has one; it is created on the first edit.
     pub(super) fn open_workspace(&mut self) {
         self.workspace = None;
+        self.ws_lock = None;
         self.ws_status = None;
         let Some(game) = &self.game else { return };
         let dir = Workspace::default_dir(game.root());
         if Workspace::exists(&dir) {
+            match WorkspaceLock::acquire(&dir, LOCK_HOLDER) {
+                Ok(lock) => self.ws_lock = Some(lock),
+                // Edits take the lock later (`workspace_mut`).
+                Err(error) => self.status = trf("edits.workspace_busy", &[("error", &error)]),
+            }
             match Workspace::open(&dir) {
                 Ok(ws) => self.workspace = Some(ws),
                 Err(error) => {
@@ -108,7 +117,14 @@ impl BrowserApp {
             let ws = Workspace::for_game(game, None).map_err(|e| e.to_string())?;
             self.workspace = Some(ws);
         }
-        Ok(self.workspace.as_mut().expect("just created"))
+        let ws = self.workspace.as_mut().expect("just created");
+        if self.ws_lock.is_none() {
+            let lock = WorkspaceLock::acquire(ws.dir(), LOCK_HOLDER).map_err(|e| e.to_string())?;
+            // Another program may have written it while the editor had no lock.
+            ws.reload().map_err(|e| e.to_string())?;
+            self.ws_lock = Some(lock);
+        }
+        Ok(ws)
     }
 
     /// Records what a view of resource `loc` asked for.

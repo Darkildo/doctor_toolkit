@@ -355,6 +355,7 @@ pub fn play(args: &PlayArgs) -> Result<()> {
     let mut workspace = None;
     if args.apply || args.revert_after {
         if Workspace::exists(&ws_dir) {
+            crate::workspace_cmd::lock(&ws_dir)?;
             workspace = Some(Workspace::open(&ws_dir)?);
         } else {
             out!("no workspace in {}: nothing to apply", ws_dir.display());

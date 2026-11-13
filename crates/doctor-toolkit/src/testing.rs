@@ -341,6 +341,75 @@ pub fn write_game(root: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Stream with a navigation graph, added by [`write_extra_streams`].
+pub const NAV: &str = "gf2/nav";
+
+/// The stream that holds the game's `LuaAudioScript` objects (the template
+/// of scripts made from graphs), added by [`write_extra_streams`].
+pub const GLOBALS: &str = "gf2/globals_global";
+
+/// GUID of the navigation graph of [`NAV`].
+pub const GRAPH_GUID: [u32; 4] = [0x6e61_7601, 0x6772_6170, 0x6831_3233, 0x3435_3637];
+
+/// Adds two streams to the miniature game of [`write_game`]: [`NAV`] with
+/// one navigation graph of three nodes in a row along X (0, 10 and 20 m),
+/// linked both ways, and [`GLOBALS`] with a SimGroup of one
+/// `LuaAudioScript` object; all four streams go into the table of contents.
+pub fn write_extra_streams(root: &Path) -> Result<()> {
+    use crate::resource::graph::{Graph, graph_flags};
+    use crate::resource::simgroup::Guid;
+    let mut bytes = [0u8; 16];
+    for (i, part) in GRAPH_GUID.iter().enumerate() {
+        bytes[i * 4..i * 4 + 4].copy_from_slice(&part.to_le_bytes());
+    }
+    let mut graph = Graph::new(Guid(bytes), graph_flags::GROUND_PATHING);
+    for x in [0.0, 10.0, 20.0] {
+        graph.add_node([x, 0.0, 0.0], 0.5)?;
+    }
+    for (a, b) in [(0, 1), (1, 0), (1, 2), (2, 1)] {
+        graph.add_link(a, b, 0)?;
+    }
+    graph.rebuild_rtree();
+    let mut nav = StreamWriter::new(&FileHeader::GF2_PC, Endian::Little);
+    nav.push_resource(
+        &header(b"graph", GRAPH_GUID),
+        &graph.to_bytes()?,
+        Storage::Raw,
+    )?;
+    let nav = nav.finish();
+    let path = root.join(format!("{NAV}.str"));
+    fs::write(&path, &nav).map_err(|e| Error::io(&path, e))?;
+    let mut scripts = crate::resource::simgroup::SimGroup::empty();
+    scripts.push_object(
+        crate::script::deploy::CLASS_LUA_AUDIO_SCRIPT,
+        Guid(*b"LUASCRIPTTEMPL01"),
+        &[(crate::script::deploy::CLASS_LUA_AUDIO_SCRIPT, 4)],
+    )?;
+    let mut globals = StreamWriter::new(&FileHeader::GF2_PC, Endian::Little);
+    globals.push_resource(
+        &header(b"simgroup", [0x61; 4]),
+        &scripts.encode(),
+        Storage::RefPack,
+    )?;
+    let globals = globals.finish();
+    let path = root.join(format!("{GLOBALS}.str"));
+    fs::write(&path, &globals).map_err(|e| Error::io(&path, e))?;
+    let size = |rel: &str| -> Result<u64> {
+        let path = root.join(format!("{rel}.str"));
+        let data = fs::read(&path).map_err(|e| Error::io(&path, e))?;
+        Ok(StreamLayout::parse(&data)?.total_data_size())
+    };
+    let table = Toc::parse(&toc_bytes(&[
+        (LEVEL, size(LEVEL)?),
+        (TEXT, size(TEXT)?),
+        (NAV, size(NAV)?),
+        (GLOBALS, size(GLOBALS)?),
+    ]))?;
+    let path = root.join("gf2/level.toc");
+    fs::write(&path, table.to_bytes()?).map_err(|e| Error::io(&path, e))?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

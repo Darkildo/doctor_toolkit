@@ -1,8 +1,11 @@
 //! The game the server reads and what it builds from it once: the game
 //! index, the resource table, the name dictionary, the message index, the
-//! dialogue catalog. Everything here only reads; the workspace and the
-//! project are opened read-only on every call, so edits made meanwhile in
-//! the editor are seen.
+//! dialogue catalog. The workspace and the project are opened again on
+//! every call (read-only for the reading tools), so edits made meanwhile in
+//! the editor are seen. With `--allow-edits` the writing tools record edits
+//! in the workspace under its lock ([`Toolkit::writer`]); with
+//! `--allow-game` the server may write the workspace into the game and run
+//! it ([`Toolkit::session`]).
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -12,12 +15,16 @@ use std::time::SystemTime;
 use doctor_toolkit::dialogue::Catalog;
 use doctor_toolkit::game::{GameInstance, ResourceIndex};
 use doctor_toolkit::level::Location;
+use doctor_toolkit::live::Endpoint;
 use doctor_toolkit::logic_graph::{MessageIndex, PinKind};
 use doctor_toolkit::navigation::index::default_cache_file;
 use doctor_toolkit::navigation::{Dictionary, GameIndex, OpenReport};
+use doctor_toolkit::play::LaunchPlan;
 use doctor_toolkit::project::Project;
-use doctor_toolkit::workspace::Workspace;
+use doctor_toolkit::resource::simgroup::Guid;
+use doctor_toolkit::workspace::{Workspace, WorkspaceLock};
 
+use crate::game::{GameSession, XServer};
 use crate::output::DEFAULT_MAX_CHARS;
 
 /// What to serve.
@@ -33,6 +40,21 @@ pub struct Config {
     pub index_cache: Option<PathBuf>,
     /// Limit of one tool result in characters.
     pub max_chars: usize,
+    /// Tools that record edits in the workspace (`--allow-edits`).
+    pub allow_edits: bool,
+    /// Tools that write into the game files, start and stop the game and
+    /// write into the running game over the live link (`--allow-game`).
+    pub allow_game: bool,
+    /// The live link to talk to instead of the one the game folder names
+    /// (tests: the fake module).
+    pub live: Option<Endpoint>,
+    /// How `play` starts the game instead of the launch method found for it
+    /// (tests: a program standing in for the game).
+    pub launch: Option<LaunchPlan>,
+    /// The X server `play` runs the game on [default: Xvfb].
+    pub x_server: Option<XServer>,
+    /// The editor's bridge socket [default: `doctor_toolkit::bridge::socket_path`].
+    pub bridge: Option<PathBuf>,
 }
 
 impl Config {
@@ -45,6 +67,12 @@ impl Config {
             workspace: None,
             project: None,
             max_chars: DEFAULT_MAX_CHARS,
+            allow_edits: false,
+            allow_game: false,
+            live: None,
+            launch: None,
+            x_server: None,
+            bridge: doctor_toolkit::bridge::socket_path(),
         }
     }
 }
@@ -112,6 +140,18 @@ pub struct Toolkit {
     pub workspace_dir: PathBuf,
     pub project_dir: Option<PathBuf>,
     pub max_chars: usize,
+    pub allow_edits: bool,
+    pub allow_game: bool,
+    pub live: Option<Endpoint>,
+    pub launch: Option<LaunchPlan>,
+    pub x_server: Option<XServer>,
+    pub bridge: Option<PathBuf>,
+    /// Held by a writing tool for its whole call: one write at a time.
+    writer: Mutex<()>,
+    /// The game started by `play`.
+    pub session: Mutex<Option<GameSession>>,
+    /// GUIDs of every SimGroup object of the game files.
+    guids: OnceLock<std::collections::HashSet<Guid>>,
     cache: Option<PathBuf>,
     index: OnceLock<(GameIndex, OpenReport)>,
     resources: OnceLock<ResourceIndex>,
@@ -138,6 +178,15 @@ impl Toolkit {
             workspace_dir,
             project_dir,
             max_chars: config.max_chars.max(crate::output::MIN_MAX_CHARS),
+            allow_edits: config.allow_edits,
+            allow_game: config.allow_game,
+            live: config.live.clone(),
+            launch: config.launch.clone(),
+            x_server: config.x_server.clone(),
+            bridge: config.bridge.clone(),
+            writer: Mutex::new(()),
+            session: Mutex::new(None),
+            guids: OnceLock::new(),
             cache: config.index_cache.clone(),
             index: OnceLock::new(),
             resources: OnceLock::new(),
@@ -183,6 +232,102 @@ impl Toolkit {
         Workspace::open_read_only(&self.workspace_dir)
             .map(Some)
             .map_err(|e| ToolError(format!("cannot read the workspace: {e}")))
+    }
+
+    /// The workspace opened for writing: the server's own write lock, the
+    /// workspace's lock (refused, naming the holder, when the editor or a
+    /// command writes it) and the workspace read under it (made in memory
+    /// when there is none; the first recorded edit writes it).
+    ///
+    /// When the editor holds the workspace and listens on the bridge
+    /// (`doctor_toolkit::bridge`), the user is asked there to allow the
+    /// write (`what` says what it is); allowed, the editor lends its
+    /// workspace for this one call and reads it again afterwards.
+    pub fn write_workspace(&self, what: &str) -> ToolResult<WriteAccess<'_>> {
+        let guard = self.writer.lock().unwrap_or_else(|e| e.into_inner());
+        let (lock, bridge) = match WorkspaceLock::acquire(&self.workspace_dir, LOCK_HOLDER) {
+            Ok(lock) => (lock, None),
+            Err(e) => {
+                let held_by_editor = WorkspaceLock::holder(&self.workspace_dir)
+                    .is_some_and(|h| h.program == crate::bridge::EDITOR);
+                match held_by_editor.then(|| crate::bridge::lend(self, what)) {
+                    Some(Ok(client)) => {
+                        let lock = WorkspaceLock::acquire(&self.workspace_dir, LOCK_HOLDER)
+                            .map_err(|e| ToolError(format!("{e} (after the editor allowed it)")))?;
+                        (lock, Some(client))
+                    }
+                    Some(Err(why)) => {
+                        return fail(format!(
+                            "{e}; {}. The workspace can be written by one program at a time",
+                            why.0
+                        ));
+                    }
+                    None => {
+                        return fail(format!(
+                            "{e}. The workspace can be written by one program at a time: while \
+                             the editor has it open, edit there (or close the game in the \
+                             editor); a command line command ends by itself"
+                        ));
+                    }
+                }
+            }
+        };
+        let ws = Workspace::for_game(&self.game, Some(&self.workspace_dir))
+            .map_err(|e| ToolError(format!("cannot open the workspace: {e}")))?;
+        Ok(WriteAccess {
+            ws,
+            lock: Some(lock),
+            bridge,
+            _guard: guard,
+        })
+    }
+
+    /// GUIDs of every SimGroup object of the game files, so that new
+    /// objects get GUIDs of their own (read once).
+    pub fn object_guids(&self) -> &std::collections::HashSet<Guid> {
+        self.guids.get_or_init(|| {
+            let simgroup = doctor_toolkit::level::TYPE_SIMGROUP;
+            let mut by_stream: HashMap<usize, Vec<usize>> = HashMap::new();
+            for e in self
+                .resources()
+                .entries
+                .iter()
+                .filter(|e| e.header.type_id == simgroup)
+            {
+                by_stream
+                    .entry(e.stream as usize)
+                    .or_default()
+                    .push(e.resource as usize);
+            }
+            let mut out = std::collections::HashSet::new();
+            for (s, resources) in by_stream {
+                let Ok(stream) = self.game.open_stream(s) else {
+                    continue;
+                };
+                for r in resources {
+                    if let Some(g) = stream
+                        .resource_data(r)
+                        .ok()
+                        .and_then(|d| doctor_toolkit::resource::simgroup::SimGroup::parse(&d).ok())
+                    {
+                        out.extend(g.objects.into_iter().map(|o| o.guid));
+                    }
+                }
+            }
+            out
+        })
+    }
+
+    /// Stops the game started by `play` (when the client goes away).
+    pub fn shutdown(&self) {
+        let session = self
+            .session
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take();
+        if let Some(session) = session {
+            let _ = crate::tools::play::finish(self, session);
+        }
     }
 
     /// The workspace unless `original`.
@@ -243,5 +388,27 @@ impl Toolkit {
             Some(ws) => ws.current_data(&self.game, stream, resource)?,
             None => self.game.open_stream(stream)?.resource_data(resource)?,
         })
+    }
+}
+
+/// How the server names itself to programs that find the workspace locked.
+pub const LOCK_HOLDER: &str = "the MCP server (doctor-toolkit mcp)";
+
+/// The workspace open for writing; see [`Toolkit::write_workspace`].
+pub struct WriteAccess<'a> {
+    pub ws: Workspace,
+    lock: Option<WorkspaceLock>,
+    /// The editor that lent its workspace: it gets it back when the write is done.
+    bridge: Option<crate::bridge::Lent>,
+    _guard: std::sync::MutexGuard<'a, ()>,
+}
+
+impl Drop for WriteAccess<'_> {
+    fn drop(&mut self) {
+        // The lock first: the editor takes it when it gets the workspace back.
+        self.lock.take();
+        if let Some(lent) = self.bridge.take() {
+            lent.give_back();
+        }
     }
 }

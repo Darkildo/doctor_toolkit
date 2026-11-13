@@ -59,7 +59,9 @@ async fn search_simgroup_json_and_logic_graph_on_the_game() {
     };
     let before = stat_all(&dir);
     let started = Instant::now();
-    let kit = doctor_toolkit_mcp::open(&doctor_toolkit_mcp::Config::new(&dir)).unwrap();
+    let mut config = doctor_toolkit_mcp::Config::new(&dir);
+    config.bridge = None;
+    let kit = doctor_toolkit_mcp::open(&config).unwrap();
     let mut c = Client::start(kit);
     c.initialize().await;
 
@@ -230,4 +232,230 @@ async fn info_missions(c: &mut Client) -> String {
     let missions: Vec<Value> = serde_json::from_str(&data).unwrap();
     assert!(missions.len() > 10);
     missions[0]["name"].as_str().unwrap().to_owned()
+}
+
+/// Copies the workspace in `from` (the owner's, only read) to `to`.
+fn copy_workspace(from: &Path, to: &Path) {
+    let mut stack = vec![PathBuf::new()];
+    while let Some(rel) = stack.pop() {
+        std::fs::create_dir_all(to.join(&rel)).unwrap();
+        for e in std::fs::read_dir(from.join(&rel)).unwrap().flatten() {
+            let name = e.file_name();
+            if name == "lock" || name == "lock.holder" {
+                continue;
+            }
+            let rel = rel.join(&name);
+            if e.metadata().unwrap().is_dir() {
+                stack.push(rel);
+            } else {
+                std::fs::copy(from.join(&rel), to.join(&rel)).unwrap();
+            }
+        }
+    }
+}
+
+/// Stage 51 on the real game: every writing tool on a copy of the
+/// workspace in a temporary folder (never the one in the game folder),
+/// one operation each, undone at the end; the game folder is not touched.
+#[tokio::test(flavor = "multi_thread")]
+async fn edits_on_the_game_go_into_a_temporary_workspace() {
+    let Some(dir) = game_dir() else {
+        return;
+    };
+    let before = stat_all(&dir);
+    let started = Instant::now();
+    let temp = tempfile::tempdir().unwrap();
+    let ws_dir = temp.path().join("workspace");
+    let owners = doctor_toolkit::workspace::Workspace::default_dir(&dir);
+    if doctor_toolkit::workspace::Workspace::exists(&owners) {
+        copy_workspace(&owners, &ws_dir);
+    }
+    let head = |d: &Path| {
+        if doctor_toolkit::workspace::Workspace::exists(d) {
+            doctor_toolkit::workspace::Workspace::open_read_only(d)
+                .unwrap()
+                .head()
+        } else {
+            0
+        }
+    };
+    let start_head = head(&ws_dir);
+    let mut config = doctor_toolkit_mcp::Config::new(&dir);
+    config.bridge = None;
+    config.workspace = Some(ws_dir.clone());
+    config.allow_edits = true;
+    let kit = doctor_toolkit_mcp::open(&config).unwrap();
+    let mut c = Client::start(kit);
+    c.initialize().await;
+    let mut expected = start_head;
+    let step = async |c: &mut Client, tool: &str, args: Value| -> Value {
+        let answer = c.json(tool, args.clone()).await;
+        assert_eq!(answer["changed"], true, "{tool} {args}: {answer}");
+        assert!(!answer["diff"].as_array().unwrap().is_empty(), "{answer}");
+        answer
+    };
+
+    // Objects of a district: move, copy, remove the copy.
+    let objects = c
+        .json(
+            "level_objects",
+            json!({ "stream": "gf2/miami/local/bonita/high/terrain010", "limit": 50 }),
+        )
+        .await;
+    let placed = objects["objects"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|o| o["position"].is_array())
+        .expect("a placed object")
+        .clone();
+    let id = placed["object"].as_str().unwrap().to_owned();
+    step(
+        &mut c,
+        "move_object",
+        json!({ "object": id, "offset": [0.0, 1.0, 0.0] }),
+    )
+    .await;
+    let copy = step(
+        &mut c,
+        "duplicate_object",
+        json!({ "object": id, "offset": [2.0, 0.0, 0.0] }),
+    )
+    .await;
+    let copy = copy["done"]["copy"].as_str().unwrap().to_owned();
+    step(&mut c, "remove_object", json!({ "object": copy })).await;
+    expected += 3;
+
+    // An attribute of a MultiManager of the always-loaded stream.
+    let managers = c
+        .json(
+            "level_objects",
+            json!({ "stream": "gf2/globals_global", "filter": "MultiManager", "limit": 1 }),
+        )
+        .await;
+    let manager = managers["objects"][0]["object"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let set = step(
+        &mut c,
+        "set_attribute",
+        json!({ "object": manager, "values": { "MultiManager.3": "doctor_mcp_corpus" } }),
+    )
+    .await;
+    assert!(set.to_string().contains("doctor_mcp_corpus"), "{set}");
+    expected += 1;
+
+    // Strings: change one in one table and language, add one everywhere.
+    let fredo = c
+        .json(
+            "strings",
+            json!({ "text": "Fredo", "language": "text", "limit": 1 }),
+        )
+        .await;
+    let s = &fredo["strings"][0];
+    let edited = step(
+        &mut c,
+        "edit_string",
+        json!({
+            "entry": format!("0x{}", s["hash"].as_str().unwrap()),
+            "table": s["table"],
+            "language": s["language"],
+            "text": "Fredo (edited by the MCP corpus test)",
+        }),
+    )
+    .await;
+    assert_eq!(edited["done"]["changes"].as_array().unwrap().len(), 1);
+    let added = step(
+        &mut c,
+        "add_string",
+        json!({ "name": "doctor_mcp_corpus", "text": "Hello from MCP" }),
+    )
+    .await;
+    assert!(
+        added["done"]["tables"].as_array().unwrap().len() >= 2,
+        "{added}"
+    );
+    expected += 2;
+
+    // A navigation graph of the district: a node attached near its first.
+    let graphs = c
+        .json(
+            "search",
+            json!({ "query": "type:graph stream:miami/local/bonita", "limit": 1 }),
+        )
+        .await;
+    let graph = graphs["results"][0]["key"].as_str().unwrap().to_owned();
+    let node = c
+        .data(
+            "resource_json",
+            json!({ "resource": graph, "pointer": "/nodes/0/position" }),
+        )
+        .await;
+    let (_, body) = split(&node);
+    let p: Vec<f32> = serde_json::from_str(body.trim()).unwrap();
+    let edited = step(
+        &mut c,
+        "graph_edit",
+        json!({ "graph": graph, "attach": [[p[0] + 1.0, p[1], p[2] + 1.0]] }),
+    )
+    .await;
+    assert!(
+        edited["done"]["problems"].as_array().unwrap().is_empty(),
+        "{edited}"
+    );
+    expected += 1;
+
+    // A script made from a graph, in the always-loaded stream.
+    let script = step(
+        &mut c,
+        "edit_script",
+        json!({
+            "stream": "gf2/globals_global",
+            "graph": {
+                "format": "doctor-toolkit-script", "version": 1, "name": "doctor_mcp_corpus",
+                "start": { "on_load": false, "message": "doctor_mcp_ping" },
+                "nodes": [
+                    { "id": 1, "kind": "event.message", "pos": [0, 0], "params": { "message": "doctor_mcp_ping" } },
+                    { "id": 2, "kind": "action.send_message", "pos": [260, 0], "inputs": { "message": "doctor_mcp_pong" } }
+                ],
+                "links": [{ "from": [1, "then"], "to": [2, "exec"] }]
+            }
+        }),
+    )
+    .await;
+    assert!(
+        script["done"]["lua"]
+            .as_str()
+            .unwrap()
+            .contains("doctor_mcp_pong")
+    );
+    expected += 1;
+    assert_eq!(head(&ws_dir), expected, "one operation per call");
+
+    // Checks and a mod of the edits.
+    let checked = c.json("validate", json!({})).await;
+    assert!(
+        checked["checked_changes"].as_u64().unwrap() >= 6,
+        "{checked}"
+    );
+    eprintln!("validate: {}", checked["errors"]);
+    let built = c
+        .json("mod_build", json!({ "name": "MCP corpus test" }))
+        .await;
+    assert!(
+        Path::new(built["file"].as_str().unwrap()).starts_with(&ws_dir),
+        "{built}"
+    );
+
+    // Everything undone: the workspace is the copy again.
+    while head(&ws_dir) > start_head {
+        let undone = c.json("undo", json!({})).await;
+        assert_eq!(undone["changed"], true, "{undone}");
+    }
+    eprintln!(
+        "edits, checks, mod and undo on the game in {:.1} s",
+        started.elapsed().as_secs_f64()
+    );
+    assert_eq!(before, stat_all(&dir), "the game folder changed");
 }

@@ -187,7 +187,7 @@ impl BrowserApp {
     }
 
     /// Opens the level tab on the zone of an object and selects it.
-    fn open_level_for(&mut self, group: Location, object: usize, ctx: &egui::Context) {
+    pub(super) fn open_level_for(&mut self, group: Location, object: usize, ctx: &egui::Context) {
         let existing = self.levels.keys().copied().find(|&id| self.live(id));
         let id = match existing {
             Some(id) => {

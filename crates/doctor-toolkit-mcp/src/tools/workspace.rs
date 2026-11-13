@@ -117,7 +117,7 @@ pub fn workspace_status(kit: &Toolkit, p: WorkspaceStatusParams) -> ToolResult<O
 }
 
 /// What the change of `key` does, in lines.
-fn detail_lines(
+pub(crate) fn detail_lines(
     ws: &Workspace,
     key: &doctor_toolkit::workspace::ResourceKey,
 ) -> ToolResult<Vec<String>> {

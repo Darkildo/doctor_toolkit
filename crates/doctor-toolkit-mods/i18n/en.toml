@@ -1265,6 +1265,7 @@ index_hint = "Double-click a resource to open it in its stream; Ctrl+click and S
 
 [edits]
 cannot_open_workspace = "Cannot open the workspace: {error}"
+workspace_busy = "The workspace is written by another program; edits wait until it is done: {error}"
 cannot_compare = "Cannot compare the workspace with the game: {error}"
 no_game = "no game is open"
 recorded = "Recorded: {label}"
@@ -2235,3 +2236,11 @@ hud_noclip = "through walls"
 hud_grounded = "on the ground"
 hud_air = "in the air"
 hud_keys = "WASD: walk · drag: look · Shift: run · Space: jump · N: through walls · Esc: stop"
+
+[bridge]
+ask_title = "An AI client asks to change the workspace"
+ask_text = "{client} wants to record this edit in the workspace (one operation; Undo takes it back, the game files are not changed):"
+ask_note = "Allow lends the workspace for this one edit; the editor reads it again afterwards."
+allow = "Allow"
+refused = "refused in the editor"
+recorded = "Recorded by the AI client: {label}"

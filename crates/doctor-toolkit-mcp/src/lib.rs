@@ -1,11 +1,15 @@
 //! A Model Context Protocol server for doctor-toolkit: an AI client (Claude
 //! Code, Claude Desktop, any MCP client) reads the game through the
 //! toolkit — search, resources as JSON, the logic graph, level objects,
-//! strings, the workspace — over stdio, without network. Stage 50 only
-//! reads; see `docs/mcp.md`.
+//! strings, the workspace — over stdio, without network. By default it only
+//! reads (stage 50); `--allow-edits` adds edits recorded in the workspace,
+//! `--allow-game` writing into the game and running it (stage 51). See
+//! `docs/mcp.md`.
 //!
 //! The command line starts it as `doctor-toolkit mcp GAME`.
 
+pub mod bridge;
+pub mod game;
 pub mod output;
 pub mod resources;
 pub mod server;
@@ -31,6 +35,10 @@ pub fn open(config: &Config) -> Result<Arc<Toolkit>, Error> {
         .name("index".into())
         .spawn(move || {
             warm.index();
+            // New objects need every GUID of the game (seconds on GF2).
+            if warm.allow_edits {
+                warm.object_guids();
+            }
         })?;
     Ok(kit)
 }
@@ -42,8 +50,12 @@ where
     T: rmcp::transport::IntoTransport<rmcp::RoleServer, E, A>,
     E: std::error::Error + Send + Sync + 'static,
 {
-    let running = Server::new(kit).serve(transport).await?;
-    running.waiting().await?;
+    let running = Server::new(kit.clone()).serve(transport).await?;
+    let result = running.waiting().await;
+    // The client went away: the game `play` started goes too, and what it
+    // wrote into the game folder is taken back.
+    tokio::task::spawn_blocking(move || kit.shutdown()).await?;
+    result?;
     Ok(())
 }
 
