@@ -42,6 +42,8 @@ pub struct AnimView {
     preview: Option<Preview>,
     camera: Option<OrbitCamera>,
     import: Option<ImportDialog>,
+    /// The graph window (stage 43).
+    graph: Option<crate::anim_graph_view::GraphEditor>,
     /// Shown in a separate window.
     window: bool,
 }
@@ -113,6 +115,7 @@ fn load(source: &mut ViewSource<'_>) -> Option<Box<dyn ResourceViewer>> {
         preview: None,
         camera: None,
         import: None,
+        graph: None,
         window: false,
     };
     view.apply_preset();
@@ -120,9 +123,10 @@ fn load(source: &mut ViewSource<'_>) -> Option<Box<dyn ResourceViewer>> {
 }
 
 impl AnimView {
-    /// `DOCTOR_TOOLKIT_GUI_ANIM=clip=<n>,frame=<f>,import=<file.glb>[,add=<name>]`:
-    /// select and show a clip, stop at a frame, open the import window and
-    /// preview the file (for screenshots without a user).
+    /// `DOCTOR_TOOLKIT_GUI_ANIM=clip=<n>,frame=<f>,import=<file.glb>[,add=<name>]`
+    /// `[,graph[=<entry>][,node=<n>]]`: select and show a clip, stop at a
+    /// frame, open the import window and preview the file, open the graph
+    /// window on an entry and select a node (for screenshots without a user).
     fn apply_preset(&mut self) {
         let Ok(preset) = std::env::var("DOCTOR_TOOLKIT_GUI_ANIM") else {
             return;
@@ -130,6 +134,8 @@ impl AnimView {
         let mut frame = None;
         let mut import = None;
         let mut add = None;
+        let mut graph = None;
+        let mut node = None;
         for item in preset.split(',') {
             match item.split_once('=') {
                 Some(("clip", v)) => {
@@ -143,6 +149,9 @@ impl AnimView {
                 Some(("frame", v)) => frame = v.parse::<f32>().ok(),
                 Some(("import", v)) => import = Some(PathBuf::from(v)),
                 Some(("add", v)) => add = Some(v.to_owned()),
+                Some(("graph", v)) => graph = Some(Some(v.to_owned())),
+                Some(("node", v)) => node = v.parse::<usize>().ok(),
+                None if item == "graph" => graph = Some(None),
                 None if item == "window" => self.window = true,
                 _ => {}
             }
@@ -155,6 +164,13 @@ impl AnimView {
                 dialog.name = name;
             }
             self.try_import();
+        }
+        if let Some(entry) = graph {
+            let names = self.bank.clips.iter().map(|c| c.display_name()).collect();
+            if let Ok(mut editor) = crate::anim_graph_view::GraphEditor::new(&self.data, names) {
+                editor.preset(entry.as_deref(), node);
+                self.graph = Some(editor);
+            }
         }
         if let (Some(p), Some(f)) = (&mut self.preview, frame) {
             p.frame = f.min(p.frames.saturating_sub(1) as f32);
@@ -600,6 +616,17 @@ impl AnimView {
             self.selected = i;
             self.preview_clip(i);
         }
+        if ui
+            .button(tr("anim.graph"))
+            .on_hover_text(tr("anim.graph_hint"))
+            .clicked()
+        {
+            let names = self.bank.clips.iter().map(|c| c.display_name()).collect();
+            match crate::anim_graph_view::GraphEditor::new(&self.data, names) {
+                Ok(editor) => self.graph = Some(editor),
+                Err(e) => *cx.status = trf("anim.graph_error", &[("error", &e)]),
+            }
+        }
         if !self.entries.is_empty() {
             egui::CollapsingHeader::new(trf("anim.entries", &[("count", &self.entries.len())]))
                 .id_salt("anim_entries")
@@ -690,6 +717,14 @@ impl AnimView {
         let mut action = None;
         if let Some((data, label)) = self.import_window(ui.ctx()) {
             action = Some(ViewAction::SaveData { data, label });
+        }
+        if let Some(editor) = &mut self.graph {
+            if let Some((data, label)) = editor.window(ui.ctx(), &self.key) {
+                action = Some(ViewAction::SaveData { data, label });
+            }
+            if !editor.open {
+                self.graph = None;
+            }
         }
         match export {
             Some(false) => {

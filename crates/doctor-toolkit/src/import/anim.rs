@@ -26,7 +26,7 @@ use crate::resource::anim::{
 use crate::resource::anim_encode::{EncodeOptions, encode_clip};
 use crate::resource::anim_image::BankImage;
 use crate::resource::rcb::{Mat4, Rig, Skeleton};
-use crate::scene::{ModelFormat, Scene, math};
+use crate::scene::{ModelFormat, Scene};
 use crate::{Error, Result};
 
 fn invalid(message: impl Into<String>) -> Error {
@@ -41,27 +41,9 @@ type Vec3 = [f32; 3];
 
 const IDENTITY: Quat = [0.0, 0.0, 0.0, 1.0];
 
-fn qmul(a: Quat, b: Quat) -> Quat {
-    [
-        a[3] * b[0] + a[0] * b[3] + a[1] * b[2] - a[2] * b[1],
-        a[3] * b[1] - a[0] * b[2] + a[1] * b[3] + a[2] * b[0],
-        a[3] * b[2] + a[0] * b[1] - a[1] * b[0] + a[2] * b[3],
-        a[3] * b[3] - a[0] * b[0] - a[1] * b[1] - a[2] * b[2],
-    ]
-}
-
-fn qconj(q: Quat) -> Quat {
-    [-q[0], -q[1], -q[2], q[3]]
-}
-
 fn qnorm(q: Quat) -> Quat {
     let n = q.iter().map(|v| v * v).sum::<f32>().sqrt();
     if n > 1e-8 { q.map(|v| v / n) } else { IDENTITY }
-}
-
-fn qrot(q: Quat, v: Vec3) -> Vec3 {
-    let p = qmul(qmul(q, [v[0], v[1], v[2], 0.0]), qconj(q));
-    [p[0], p[1], p[2]]
 }
 
 fn slerp(a: Quat, b: Quat, t: f32) -> Quat {
@@ -151,76 +133,7 @@ pub fn read_animations(path: &Path) -> Result<Vec<SourceAnimation>> {
 /// their bind pose as the rest pose, samples resampled to [`FRAME_RATE`].
 /// A joint keeps its own rest transform for what its track does not animate.
 pub fn read_scene(scene: &Scene) -> Result<Vec<SourceAnimation>> {
-    let bind: Vec<(Quat, Vec3)> = scene.bind_locals().iter().map(decompose).collect();
-    let rest: Vec<(Quat, Vec3)> = scene.joints.iter().map(|j| decompose(&j.local)).collect();
-    let joints: Vec<SourceJoint> = scene
-        .joints
-        .iter()
-        .zip(&bind)
-        .map(|(joint, &(r, t))| SourceJoint {
-            name: joint.name.clone(),
-            parent: joint.parent,
-            rest_rotation: r,
-            rest_translation: t,
-            rotations: None,
-            translations: None,
-        })
-        .collect();
-    let mut out = Vec::new();
-    for clip in &scene.clips {
-        let frames_in = clip.frames();
-        if frames_in == 0 || clip.tracks.is_empty() {
-            continue;
-        }
-        let rate_in = if clip.frame_rate > 0.0 {
-            clip.frame_rate
-        } else {
-            FRAME_RATE
-        };
-        let frames =
-            (((frames_in - 1) as f32 * FRAME_RATE / rate_in).round() as usize + 1).min(100_000);
-        let at = |f: usize| f as f32 * rate_in / FRAME_RATE;
-        let mut anim = SourceAnimation {
-            name: clip.name.clone(),
-            frames,
-            joints: joints.clone(),
-        };
-        for track in &clip.tracks {
-            let Some(joint) = anim.joints.get_mut(track.joint) else {
-                continue;
-            };
-            let (rest_r, rest_t) = rest[track.joint];
-            joint.rotations = Some(
-                (0..frames)
-                    .map(|f| qnorm(math::sample_quat(&track.rotations, at(f)).unwrap_or(rest_r)))
-                    .collect(),
-            );
-            joint.translations = Some(
-                (0..frames)
-                    .map(|f| math::sample_vec3(&track.translations, at(f)).unwrap_or(rest_t))
-                    .collect(),
-            );
-        }
-        // Joints without a track hold their rest transform; when it is not
-        // the bind pose, it is a constant sample.
-        for (i, joint) in anim.joints.iter_mut().enumerate() {
-            if joint.rotations.is_some() {
-                continue;
-            }
-            let ((r, t), (br, bt)) = (rest[i], bind[i]);
-            let dot: f32 = (0..4).map(|k| r[k] * br[k]).sum::<f32>().abs();
-            let dist = (0..3).map(|k| (t[k] - bt[k]).powi(2)).sum::<f32>().sqrt();
-            if dot < 0.99999 || dist > 1e-4 {
-                joint.rotations = Some(vec![r; frames]);
-                joint.translations = Some(vec![t; frames]);
-            }
-        }
-        out.push(anim);
-    }
-    if out.is_empty() {
-        return Err(invalid("the file has no animation"));
-    }
-    Ok(out)
+    crate::scene::retarget::scene_animations(scene, FRAME_RATE)
 }
 
 /// One animated property of a node.
@@ -387,266 +300,29 @@ pub fn read_gltf(bytes: &[u8], base: Option<&Path>) -> Result<Vec<SourceAnimatio
 }
 
 // ---------------------------------------------------------------------------
-// Retargeting.
+// Retargeting: shared with `scene::anim::clips_to_game`.
 
-/// How the joints of a source animation map to a game skeleton.
-#[derive(Debug, Clone, Default, PartialEq, Serialize)]
-pub struct Retargeted {
-    /// One track per requested bone, in the requested order.
-    pub tracks: Vec<BoneTrack>,
-    pub frames: usize,
-    /// Game bones (of the requested set) with a source joint, by name.
-    pub mapped: Vec<String>,
-    /// Requested bones without a source joint: held in the bind pose.
-    pub unmapped: Vec<String>,
-    /// Source joints that drive no bone.
-    pub unused: Vec<String>,
-    /// Translation scale (target height / source height).
-    pub scale: f32,
-}
-
-/// Normalised name for matching: lower case, without a namespace prefix
-/// (`mixamorig:Hips` → `hips`).
-fn match_name(name: &str) -> String {
-    name.rsplit([':', '|'])
-        .next()
-        .unwrap_or(name)
-        .to_ascii_lowercase()
-}
-
-/// Global rest rotations and translations from local ones.
-fn globals(parents: &[Option<usize>], locals: &[(Quat, Vec3)]) -> Vec<(Quat, Vec3)> {
-    let mut out: Vec<Option<(Quat, Vec3)>> = vec![None; locals.len()];
-    fn get(
-        i: usize,
-        parents: &[Option<usize>],
-        locals: &[(Quat, Vec3)],
-        out: &mut Vec<Option<(Quat, Vec3)>>,
-        depth: usize,
-    ) -> (Quat, Vec3) {
-        if let Some(g) = out[i] {
-            return g;
-        }
-        let (r, t) = locals[i];
-        let g = match parents[i].filter(|&p| p != i && depth < 1000) {
-            Some(p) => {
-                let (pr, pt) = get(p, parents, locals, out, depth + 1);
-                let tt = qrot(pr, t);
-                (
-                    qnorm(qmul(pr, r)),
-                    [pt[0] + tt[0], pt[1] + tt[1], pt[2] + tt[2]],
-                )
-            }
-            None => (r, t),
-        };
-        out[i] = Some(g);
-        g
-    }
-    for i in 0..locals.len() {
-        get(i, parents, locals, &mut out, 0);
-    }
-    out.into_iter()
-        .map(|g| g.unwrap_or((IDENTITY, [0.0; 3])))
-        .collect()
-}
-
-/// Height of a rest pose: the extent of the joints along Y.
-fn height(globals: &[(Quat, Vec3)]) -> f32 {
-    let (lo, hi) = globals
-        .iter()
-        .fold((f32::INFINITY, f32::NEG_INFINITY), |(lo, hi), g| {
-            (lo.min(g.1[1]), hi.max(g.1[1]))
-        });
-    if hi > lo { hi - lo } else { 0.0 }
-}
+pub use crate::scene::retarget::{RestPose, Retargeted, match_name};
 
 /// Fits a source animation to `bones` (indices of `skeleton`): a track per
 /// bone. `map` names source joints for game bones (game name → joint name)
-/// before matching by name.
+/// before matching by name; the rest pose is reconciled automatically
+/// ([`crate::scene::retarget::retarget`]).
 pub fn retarget(
     source: &SourceAnimation,
     skeleton: &Skeleton,
     bones: &[usize],
     map: &HashMap<String, String>,
 ) -> Result<Retargeted> {
-    let frames = source.frames.max(1);
-    let n = skeleton.bones.len();
-    // Target rest pose.
-    let target_locals: Vec<(Quat, Vec3)> = skeleton.bind_locals().iter().map(decompose).collect();
-    let target_parents: Vec<Option<usize>> = skeleton.bones.iter().map(|b| b.parent).collect();
-    let target_rest = globals(&target_parents, &target_locals);
-    // Source rest pose.
-    let source_parents: Vec<Option<usize>> = source.joints.iter().map(|j| j.parent).collect();
-    let source_locals: Vec<(Quat, Vec3)> = source
-        .joints
-        .iter()
-        .map(|j| (qnorm(j.rest_rotation), j.rest_translation))
-        .collect();
-    let source_rest = globals(&source_parents, &source_locals);
-    // Bone → joint.
-    let by_name: HashMap<String, usize> = source
-        .joints
-        .iter()
-        .enumerate()
-        .map(|(i, j)| (match_name(&j.name), i))
-        .collect();
-    let joint_of: Vec<Option<usize>> = skeleton
-        .bones
-        .iter()
-        .map(|b| {
-            let name = b.display_name();
-            if let Some(j) = map
-                .get(&name)
-                .or_else(|| map.get(&name.to_ascii_lowercase()))
-            {
-                return by_name.get(&match_name(j)).copied();
-            }
-            by_name.get(&match_name(&name)).copied().or_else(|| {
-                source
-                    .joints
-                    .iter()
-                    .position(|j| sdbm(match_name(&j.name).as_bytes()) == b.hash)
-            })
-        })
-        .collect();
-    let mapped_joints: Vec<usize> = joint_of.iter().flatten().copied().collect();
-    if mapped_joints.is_empty() {
-        return Err(invalid(format!(
-            "no joint of the animation matches a bone of skeleton `{}` by name",
-            skeleton.name
-        )));
-    }
-    let source_height = height(
-        &mapped_joints
-            .iter()
-            .map(|&j| source_rest[j])
-            .collect::<Vec<_>>(),
-    );
-    let target_height = height(
-        &(0..n)
-            .filter(|&b| joint_of[b].is_some())
-            .map(|b| target_rest[b])
-            .collect::<Vec<_>>(),
-    );
-    let scale = if source_height > 1e-6 && target_height > 1e-6 {
-        target_height / source_height
-    } else {
-        1.0
-    };
-    // Source global rotations per frame.
-    let source_frames: Vec<Vec<(Quat, Vec3)>> = (0..frames)
-        .map(|f| {
-            let locals: Vec<(Quat, Vec3)> = source
-                .joints
-                .iter()
-                .map(|j| {
-                    let r = j
-                        .rotations
-                        .as_ref()
-                        .and_then(|v| v.get(f).or(v.last()))
-                        .copied()
-                        .unwrap_or(j.rest_rotation);
-                    let t = j
-                        .translations
-                        .as_ref()
-                        .and_then(|v| v.get(f).or(v.last()))
-                        .copied()
-                        .unwrap_or(j.rest_translation);
-                    (qnorm(r), t)
-                })
-                .collect();
-            globals(&source_parents, &locals)
-        })
-        .collect();
-    // Target global rotations per frame: the source's change from its rest
-    // pose, applied to the bone's rest pose; unmapped bones follow their parent.
-    let mut tracks: Vec<BoneTrack> = bones
-        .iter()
-        .map(|&b| BoneTrack {
-            bone: b,
-            rotations: Vec::with_capacity(frames),
-            translations: Vec::with_capacity(frames),
-        })
-        .collect();
-    for (f, src) in source_frames.iter().enumerate() {
-        let mut global = vec![IDENTITY; n];
-        let mut local = vec![(IDENTITY, [0.0f32; 3]); n];
-        // Bones are stored parents first.
-        for b in 0..n {
-            let (rest_local_r, rest_local_t) = target_locals[b];
-            let parent_global = target_parents[b]
-                .filter(|&p| p < b)
-                .map_or(IDENTITY, |p| global[p]);
-            let (r, t) = match joint_of[b] {
-                Some(j) => {
-                    let delta = qmul(src[j].0, qconj(source_rest[j].0));
-                    let g = qnorm(qmul(delta, target_rest[b].0));
-                    let r = qnorm(qmul(qconj(parent_global), g));
-                    // Translation: rest plus the source's offset from its rest,
-                    // moved into the bone's parent space and scaled.
-                    let joint = &source.joints[j];
-                    let t = match &joint.translations {
-                        Some(v) => {
-                            let now = v
-                                .get(f)
-                                .or(v.last())
-                                .copied()
-                                .unwrap_or(joint.rest_translation);
-                            let rest = joint.rest_translation;
-                            let offset = [now[0] - rest[0], now[1] - rest[1], now[2] - rest[2]];
-                            // Source parent space → model space (rest) →
-                            // target parent space.
-                            let source_parent = joint.parent.map_or(IDENTITY, |p| source_rest[p].0);
-                            let target_parent =
-                                target_parents[b].map_or(IDENTITY, |p| target_rest[p].0);
-                            let d = qrot(qmul(qconj(target_parent), source_parent), offset);
-                            [
-                                rest_local_t[0] + d[0] * scale,
-                                rest_local_t[1] + d[1] * scale,
-                                rest_local_t[2] + d[2] * scale,
-                            ]
-                        }
-                        None => rest_local_t,
-                    };
-                    (r, t)
-                }
-                None => (rest_local_r, rest_local_t),
-            };
-            global[b] = qnorm(qmul(parent_global, r));
-            local[b] = (r, t);
-        }
-        for track in &mut tracks {
-            let (r, t) = local[track.bone];
-            track.rotations.push(r);
-            track.translations.push(t);
-        }
-    }
-    let name = |b: usize| skeleton.bones[b].display_name();
-    let used: std::collections::HashSet<usize> = mapped_joints.iter().copied().collect();
-    Ok(Retargeted {
-        tracks,
-        frames,
-        mapped: bones
-            .iter()
-            .filter(|&&b| joint_of[b].is_some())
-            .map(|&b| name(b))
-            .collect(),
-        unmapped: bones
-            .iter()
-            .filter(|&&b| joint_of[b].is_none())
-            .map(|&b| name(b))
-            .collect(),
-        unused: source
-            .joints
-            .iter()
-            .enumerate()
-            .filter(|(i, j)| {
-                !used.contains(i) && (j.rotations.is_some() || j.translations.is_some())
-            })
-            .map(|(_, j)| j.name.clone())
-            .collect(),
-        scale,
-    })
+    crate::scene::retarget::retarget(
+        source,
+        skeleton,
+        bones,
+        &crate::scene::retarget::RetargetOptions {
+            rest: RestPose::Auto,
+            map: map.clone(),
+        },
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -682,6 +358,8 @@ pub struct ImportOptions {
     pub bone_set: Option<u32>,
     /// Game bone name → source joint name, before matching by name.
     pub map: HashMap<String, String>,
+    /// How the file's rest pose is reconciled with the skeleton.
+    pub rest: RestPose,
 }
 
 /// What an import did.
@@ -699,6 +377,8 @@ pub struct ImportSummary {
     pub unmapped: Vec<String>,
     pub unused: Vec<String>,
     pub scale: f32,
+    /// How the rest pose was reconciled (`AsIs`, `Axes`, `Retarget`).
+    pub rest: String,
     pub looping: bool,
     pub scheme: u32,
     /// Error of the encoded clip against the retargeted tracks.
@@ -754,7 +434,15 @@ pub fn import_clip(
     };
     let bones = bone_set(rigs, bone_set_hash)
         .ok_or_else(|| invalid(format!("bone set {bone_set_hash:08x} is in no rig")))?;
-    let fitted = retarget(source, skeleton, bones, &options.map)?;
+    let fitted = crate::scene::retarget::retarget(
+        source,
+        skeleton,
+        bones,
+        &crate::scene::retarget::RetargetOptions {
+            rest: options.rest,
+            map: options.map.clone(),
+        },
+    )?;
     let encoded = encode_clip(&fitted.tracks, fitted.frames, &options.encode)?;
     let index = match (index, target) {
         (Some(i), _) => {
@@ -831,6 +519,7 @@ pub fn import_clip(
     summary.unmapped = fitted.unmapped;
     summary.unused = fitted.unused;
     summary.scale = fitted.scale;
+    summary.rest = format!("{:?}", fitted.rest);
     summary.looping = image.clips[index].looping();
     summary.max_angle = encoded.max_angle;
     summary.max_translation = encoded.max_translation;
@@ -877,6 +566,19 @@ pub fn source_from_tracks(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn qmul(a: Quat, b: Quat) -> Quat {
+        crate::scene::math::quat_mul(a, b)
+    }
+
+    fn qconj(q: Quat) -> Quat {
+        crate::scene::math::quat_conjugate(q)
+    }
+
+    fn qrot(q: Quat, v: Vec3) -> Vec3 {
+        let p = qmul(qmul(q, [v[0], v[1], v[2], 0.0]), qconj(q));
+        [p[0], p[1], p[2]]
+    }
 
     #[test]
     fn quaternion_helpers() {

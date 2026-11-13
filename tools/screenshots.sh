@@ -50,6 +50,7 @@ shots=(
   "movies|-|DOCTOR_TOOLKIT_GUI_MOVIES=FMV02:900"
   "wizards|-|DOCTOR_TOOLKIT_GUI_SHELL=welcome"
   "play|-|DOCTOR_TOOLKIT_GUI_SHELL=play|10,12,560,428"
+  "anim-graph|gf2/globals_global|DOCTOR_TOOLKIT_GUI_SELECT=2657 DOCTOR_TOOLKIT_GUI_ANIM=graph=idle,node=2 DOCTOR_TOOLKIT_GUI_SHOT_FRAMES=60"
 )
 
 shoot() {

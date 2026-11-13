@@ -252,6 +252,25 @@ def test_import_animation_on_copies(tmp_path, monkeypatch):
     assert len(ws.history) == 2
     ws.undo()
     assert dt.animation_bank(ws.read(bank.key))["clips"][-1]["events"] == []
+    # The node graph: the entry `idle` plays ten clips through random nodes.
+    graph = dt.animation_graph(ws.read(bank.key))
+    assert graph["slots"] == 118 and not [i for i in graph["issues"] if i["severity"] == "error"]
+    idle = next(e for e in graph["entries"] if e["name"] == "idle")
+    assert idle["root"]["kind"] == 2
+    # Raise the weight of the first child of the first random node.
+    def walk(node):
+        yield node
+        for child in node.get("children", []):
+            yield from walk(child)
+    random = next(n for n in walk(idle["root"]) if n["kind"] == 3)
+    random["children"][0]["extra"] = [9.0]
+    assert ws.set_animation_graph(bank.key, {"entries": graph["entries"]})
+    again = dt.animation_graph(ws.read(bank.key))
+    idle = next(e for e in again["entries"] if e["name"] == "idle")
+    assert next(n for n in walk(idle["root"]) if n["kind"] == 3)["children"][0]["extra"] == [9.0]
+    broken = {"entries": [{"name": "x", "root": {"kind": 0x16, "params": [0, 1.0, 2.0], "clip": 9999}}]}
+    with pytest.raises(Exception, match="not in the bank"):
+        ws.set_animation_graph(bank.key, broken)
 
 
 ALLCHARACTERS = "gf2/globalfolder/characters/allcharacters"

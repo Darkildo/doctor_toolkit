@@ -30,6 +30,9 @@ pub mod fbx;
 pub mod game;
 pub mod math;
 pub mod obj;
+pub mod retarget;
+#[cfg(test)]
+mod retarget_tests;
 pub mod usd;
 mod zipfile;
 
@@ -217,6 +220,9 @@ pub struct Scene {
     pub joints: Vec<SceneJoint>,
     pub clips: Vec<SceneClip>,
     pub warnings: Vec<String>,
+    /// Joints the file gives no bind pose for (FBX without a `BindPose`
+    /// or skin cluster for them); their bind pose is their rest transform.
+    pub joints_without_bind: Vec<usize>,
 }
 
 impl Scene {

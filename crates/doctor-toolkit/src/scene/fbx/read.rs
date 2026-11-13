@@ -639,10 +639,13 @@ pub fn read(doc: &Document, files: &SideFiles) -> Result<Scene> {
             Some(pid) => math::multiply(&math::invert(&converted_rest[&pid]), &world),
             None => world,
         };
-        let bind = bind_world
-            .get(&id)
-            .map(|b| conversion.matrix(b))
-            .unwrap_or(world);
+        let bind = match bind_world.get(&id) {
+            Some(b) => conversion.matrix(b),
+            None => {
+                scene.joints_without_bind.push(scene.joints.len());
+                world
+            }
+        };
         scene.joints.push(SceneJoint {
             name: graph.objects[&id].name.clone(),
             parent: parent_joint,

@@ -117,6 +117,7 @@ pub(crate) fn sample() -> Scene {
         joints,
         clips: vec![clip],
         warnings: Vec::new(),
+        joints_without_bind: Vec::new(),
     }
 }
 

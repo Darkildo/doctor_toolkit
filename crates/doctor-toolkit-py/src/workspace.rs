@@ -603,6 +603,53 @@ impl Workspace {
         )
     }
 
+    /// Replaces the node graph of the animation bank `key` with `graph`: a
+    /// dict with `entries` as `animation_graph` returns them. Refuses a graph
+    /// the checks find errors in. Records one undoable operation.
+    fn set_animation_graph(
+        &mut self,
+        py: Python<'_>,
+        key: &Bound<'_, PyAny>,
+        graph: &Bound<'_, PyAny>,
+    ) -> PyResult<bool> {
+        use doctor_toolkit::resource::anim_graph::{AnimGraph, GraphJson, Severity};
+        use doctor_toolkit::resource::anim_image::BankImage;
+        let key = key_of(key)?;
+        let json = py
+            .import("json")?
+            .call_method1("dumps", (graph,))?
+            .extract::<String>()?;
+        let json: GraphJson = serde_json::from_str(&json)
+            .map_err(|e| crate::error::invalid(format!("graph: {e}")))?;
+        let graph = AnimGraph::from_json(&json).py()?;
+        let data = self.current(py, &key)?;
+        let mut image = BankImage::parse(&data).py()?;
+        let errors: Vec<String> = graph
+            .check(&image)
+            .into_iter()
+            .filter(|i| i.severity == Severity::Error)
+            .map(|i| match i.node {
+                Some(n) => format!("node {n}: {}", i.text),
+                None => i.text,
+            })
+            .collect();
+        if !errors.is_empty() {
+            return Err(crate::error::invalid(format!(
+                "the graph has errors: {}",
+                errors.join("; ")
+            )));
+        }
+        graph.store(&mut image).py()?;
+        let out = image.encode().py()?;
+        let label = format!("Edit the animation graph of {key}");
+        self.record(
+            py,
+            &label,
+            &key.stream.clone(),
+            vec![(key, out, StorageChoice::Keep)],
+        )
+    }
+
     /// The string table of an `lh2` resource as the workspace has it (edited
     /// or original).
     fn string_table(&self, py: Python<'_>, key: &Bound<'_, PyAny>) -> PyResult<StringTable> {

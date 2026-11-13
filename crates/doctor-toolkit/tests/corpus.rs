@@ -4901,6 +4901,125 @@ fn every_animation_bank_reencodes_identically() {
     assert_eq!(c[0], 2751);
 }
 
+/// The node graph of every bank (`resource/anim_graph.rs`): parsed into
+/// trees, laid out again byte for byte, slots numbered again as the game's
+/// exporter did, through JSON and back unchanged, and no errors from the
+/// checks (`docs/formats/anim-graph.md`).
+#[test]
+fn every_animation_graph_rewrites_identically() {
+    use doctor_toolkit::resource::anim::TYPE_BNK;
+    use doctor_toolkit::resource::anim_graph::{AnimGraph, GraphJson, Severity};
+    use doctor_toolkit::resource::anim_image::BankImage;
+    use std::collections::BTreeMap;
+    let Some(dir) = game_dir() else { return };
+    let game = GameInstance::open(&dir).unwrap();
+    let failures = Failures::default();
+    let kinds = Mutex::new(BTreeMap::<u8, usize>::new());
+    let counts = Mutex::new([0usize; 4]);
+    game.streams().par_iter().for_each(|file| {
+        let stream = StreamFile::open(&file.path).unwrap();
+        for (index, r) in stream.layout().resources.iter().enumerate() {
+            if r.header.type_id != TYPE_BNK {
+                continue;
+            }
+            let at = format!("{} #{index}", file.rel_path);
+            let data = stream.resource_data(index).unwrap();
+            let image = BankImage::parse(&data).unwrap();
+            let graph = match AnimGraph::parse(&image) {
+                Ok(g) => g,
+                Err(e) => {
+                    failures.push(format!("{at}: {e}"));
+                    continue;
+                }
+            };
+            match graph.to_block() {
+                Ok(block) if block == image.graph => {}
+                Ok(block) => {
+                    let first = block
+                        .data
+                        .iter()
+                        .zip(&image.graph.data)
+                        .position(|(a, b)| a != b);
+                    failures.push(format!(
+                        "{at}: graph differs at {first:x?} ({} vs {} bytes, {} vs {} pointers)",
+                        block.data.len(),
+                        image.graph.data.len(),
+                        block.pointers.len(),
+                        image.graph.pointers.len()
+                    ));
+                    continue;
+                }
+                Err(e) => {
+                    failures.push(format!("{at}: layout: {e}"));
+                    continue;
+                }
+            }
+            if graph.slot_count() != image.node_count {
+                failures.push(format!(
+                    "{at}: {} slots, header {}",
+                    graph.slot_count(),
+                    image.node_count
+                ));
+            }
+            let mut renumbered = graph.clone();
+            let slots = renumbered.renumber();
+            if renumbered != graph || slots != image.node_count {
+                let n = renumbered
+                    .nodes
+                    .iter()
+                    .zip(&graph.nodes)
+                    .position(|(a, b)| a != b);
+                failures.push(format!("{at}: numbering differs at node {n:?}"));
+            }
+            let names: Vec<String> = image.entry_list().into_iter().map(|e| e.name).collect();
+            let ours: Vec<String> = graph.entries.iter().map(|e| e.name.clone()).collect();
+            if names != ours {
+                failures.push(format!("{at}: entry names differ"));
+            }
+            let text = serde_json::to_string(&graph.to_json(&image)).unwrap();
+            let back: GraphJson = serde_json::from_str(&text).unwrap();
+            match AnimGraph::from_json(&back) {
+                Ok(g) if g == graph => {}
+                Ok(_) => failures.push(format!("{at}: JSON gives another graph")),
+                Err(e) => failures.push(format!("{at}: JSON: {e}")),
+            }
+            let issues = graph.check(&image);
+            for i in issues
+                .iter()
+                .filter(|i| i.severity == Severity::Error)
+                .take(3)
+            {
+                failures.push(format!("{at}: node {:?}: {}", i.node, i.text));
+            }
+            let mut stored = image.clone();
+            graph.store(&mut stored).unwrap();
+            if stored != image {
+                failures.push(format!("{at}: storing the graph changes the bank"));
+            }
+            let mut k = kinds.lock().unwrap();
+            for n in &graph.nodes {
+                *k.entry(n.kind).or_insert(0) += 1;
+            }
+            let mut c = counts.lock().unwrap();
+            c[0] += 1;
+            c[1] += graph.entries.len();
+            c[2] += graph.nodes.len();
+            c[3] += issues.len();
+        }
+    });
+    let c = counts.into_inner().unwrap();
+    eprintln!(
+        "{} banks, {} entries, {} nodes rewritten; {} warnings; nodes by type: {:x?}",
+        c[0],
+        c[1],
+        c[2],
+        c[3],
+        kinds.into_inner().unwrap()
+    );
+    failures.assert_empty();
+    assert_eq!(c[0], 2751);
+}
+
 /// Every game clip decoded, encoded again and decoded: the error against the
 /// game's values stays within the budget; sizes are reported.
 #[test]

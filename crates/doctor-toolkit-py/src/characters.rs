@@ -200,6 +200,25 @@ fn animation_bank<'py>(py: Python<'py>, data: &[u8]) -> PyResult<Bound<'py, PyAn
     util::to_python(py, &bank)
 }
 
+/// The node graph of an animation bank (`bnk` data): `entries` with their
+/// node trees as `anim graph --json` prints them, `issues` of the checks
+/// and the slot count.
+#[pyfunction]
+fn animation_graph<'py>(py: Python<'py>, data: &[u8]) -> PyResult<Bound<'py, PyAny>> {
+    use doctor_toolkit::resource::anim_graph::AnimGraph;
+    use doctor_toolkit::resource::anim_image::BankImage;
+    let image = BankImage::parse(data).py()?;
+    let graph = AnimGraph::parse(&image).py()?;
+    let json = graph.to_json(&image);
+    let out = serde_json::json!({
+        "entries": serde_json::to_value(&json.entries)
+            .map_err(|e| crate::error::invalid(e.to_string()))?,
+        "issues": graph.check(&image),
+        "slots": image.node_count,
+    });
+    util::to_python(py, &out)
+}
+
 /// What a model file (glTF, FBX, OBJ, USD) holds as the importer reads it:
 /// parts, materials, joints, clips and warnings, in the game's space
 /// (Y up, metres).
@@ -243,5 +262,6 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(character_glb, m)?)?;
     m.add_function(wrap_pyfunction!(animation_glb, m)?)?;
     m.add_function(wrap_pyfunction!(animation_bank, m)?)?;
+    m.add_function(wrap_pyfunction!(animation_graph, m)?)?;
     Ok(())
 }

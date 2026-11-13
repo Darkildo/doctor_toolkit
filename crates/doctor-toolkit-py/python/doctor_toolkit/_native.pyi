@@ -155,6 +155,9 @@ def read_model(path: Union[str, os.PathLike[str]]) -> dict[str, Any]:
 def animation_bank(data: bytes) -> dict[str, Any]:
     """Clips of an animation bank (`bnk` data): names, frames, bone sets."""
 
+def animation_graph(data: bytes) -> dict[str, Any]:
+    """Node graph of an animation bank: `entries` (node trees), `issues`, `slots`."""
+
 def mod_info(path: StrPath) -> dict[str, Any]:
     """Contents of a mod package (verified) or an old toolkit patch (`.vpat`)."""
 
@@ -528,6 +531,8 @@ class Workspace:
         """Imports an animation (glTF, FBX, USD) over a clip of a `bnk` bank, or as a new clip with a named entry; returns the summary."""
     def set_clip_events(self, key: Key, clip: str, events: Sequence[Mapping[str, Any]]) -> bool:
         """Replaces the events of a clip (time in ticks, 2 per frame); one operation."""
+    def set_animation_graph(self, key: Key, graph: Mapping[str, Any]) -> bool:
+        """Replaces the node graph of a bank (`entries` as `animation_graph` gives); one operation."""
     def string_table(self, key: Key) -> StringTable: ...
     def set_string_table(self, table: StringTable, key: Optional[Key] = None) -> bool: ...
     def edit_strings(

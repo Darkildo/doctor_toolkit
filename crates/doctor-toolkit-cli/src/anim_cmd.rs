@@ -14,11 +14,14 @@ use rayon::prelude::*;
 use doctor_toolkit::character::{Character, MeshLocator, parse_selection};
 use doctor_toolkit::export::gltf::{SceneAnimation, SceneModel};
 use doctor_toolkit::game::{GameAssets, GameInstance};
-use doctor_toolkit::import::anim::{ClipTarget, ImportOptions, import_clip, read_animations};
+use doctor_toolkit::import::anim::{
+    ClipTarget, ImportOptions, RestPose, import_clip, read_animations,
+};
 use doctor_toolkit::resource::anim::{
     AnimBank, ClipEvent, FRAME_RATE, TYPE_BNK, bone_set, find_skeleton,
 };
 use doctor_toolkit::resource::anim_encode::{EncodeOptions, reencode};
+use doctor_toolkit::resource::anim_graph::{self, AnimGraph, GraphJson, Severity};
 use doctor_toolkit::resource::anim_image::BankImage;
 use doctor_toolkit::resource::partsdb::PartsDb;
 use doctor_toolkit::scene::{self, ModelFormat};
@@ -123,6 +126,29 @@ pub enum AnimCommand {
         #[arg(long)]
         json: bool,
     },
+    /// Print the node graph of a bank (entries and their node trees), check it, or replace it from JSON
+    Graph {
+        game_dir: PathBuf,
+        /// The bank: a resource key such as `gf2/globals_global:bnk:c0e2841d` (see `anim list`)
+        bank: String,
+        /// Only this entry (name)
+        #[arg(long)]
+        entry: Option<String>,
+        /// Print the graph as JSON (the form `--set` reads)
+        #[arg(long, conflicts_with = "set")]
+        json: bool,
+        /// Replace the graph with the one in this JSON file (as printed by `--json`)
+        #[arg(long, value_name = "FILE")]
+        set: Option<PathBuf>,
+        #[command(flatten)]
+        mode: EditMode,
+    },
+    /// Print the node types of animation graphs and the game's animation controls
+    NodeTypes {
+        /// As JSON
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(clap::Args)]
@@ -165,6 +191,11 @@ pub struct ImportArgs {
     /// JSON object mapping game bone names to joint names of the file
     #[arg(long, value_name = "FILE")]
     map: Option<PathBuf>,
+    /// How the file's rest pose meets the skeleton: auto, as-is (made from the
+    /// game skeleton), axes (the same bones with other axes, as Blender's FBX)
+    /// or retarget (another rig)
+    #[arg(long, default_value = "auto", value_parser = ["auto", "as-is", "axes", "retarget"])]
+    rest: String,
     #[command(flatten)]
     encode: EncodeArgs,
     /// Print what would be done without recording anything
@@ -218,6 +249,22 @@ pub fn run(command: AnimCommand) -> Result<()> {
             encode,
             json,
         } => encode_test(&game_dir, stream.as_deref(), &encode.options(), json),
+        AnimCommand::Graph {
+            game_dir,
+            bank,
+            entry,
+            json,
+            set,
+            mode,
+        } => graph(
+            &game_dir,
+            &bank,
+            entry.as_deref(),
+            json,
+            set.as_deref(),
+            &mode,
+        ),
+        AnimCommand::NodeTypes { json } => node_types(json),
     }
 }
 
@@ -312,6 +359,12 @@ fn import(args: ImportArgs) -> Result<()> {
             .transpose()
             .context("--bone-set is a hexadecimal hash")?,
         map,
+        rest: match args.rest.as_str() {
+            "as-is" => RestPose::AsIs,
+            "axes" => RestPose::Axes,
+            "retarget" => RestPose::Retarget,
+            _ => RestPose::Auto,
+        },
     };
     let (resources, _) = game.build_index(|_| {});
     let mut assets = GameAssets::new(game.clone(), &resources);
@@ -336,6 +389,7 @@ fn import(args: ImportArgs) -> Result<()> {
             summary.bones,
             summary.mapped.len()
         );
+        out!("  rest pose: {}", summary.rest);
         if (summary.scale - 1.0).abs() > 1e-3 {
             out!("  translations scaled by {:.3}", summary.scale);
         }
@@ -768,5 +822,203 @@ fn export(
         animations.len(),
         written.len()
     );
+    Ok(())
+}
+
+/// Text of parameter words typed by `fields`, with control names.
+fn words_text(words: &[u32], fields: Option<&'static [anim_graph::Field]>, kind: u8) -> String {
+    use anim_graph::FieldType;
+    words
+        .iter()
+        .enumerate()
+        .map(|(i, &w)| {
+            let field = anim_graph::field(fields, i);
+            let value = match field.ty {
+                FieldType::U32 if w > 0xFFFF => format!("{w:#010x}"),
+                FieldType::U32 => w.to_string(),
+                FieldType::F32 => format!("{}", f32::from_bits(w)),
+                FieldType::Pair => format!("{}/{}", w & 0xFFFF, w >> 16),
+            };
+            let control = match (kind & 0x3F, i) {
+                (0x05, 0) | (0x21, _) => anim_graph::control_name(w),
+                (0x06, 1) => anim_graph::control_name(w & 0xFFFF),
+                _ => None,
+            };
+            match control {
+                Some(c) => format!("{}={value} ({c})", field.name),
+                None => format!("{}={value}", field.name),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn print_node(g: &AnimGraph, bank: &AnimBank, node: usize, parent: Option<u8>, depth: usize) {
+    let n = &g.nodes[node];
+    let info = anim_graph::kind_info(n.kind);
+    let mut line = format!(
+        "{:indent$}#{} [{:02x} {}]",
+        "",
+        n.number,
+        n.kind,
+        info.map_or("?", |k| k.label),
+        indent = 2 * depth
+    );
+    if let Some(c) = n.clip {
+        let name = bank
+            .clips
+            .get(c as usize)
+            .map_or_else(|| "?".into(), |c| c.display_name());
+        line += &format!(" clip {c} {name}");
+    }
+    if let Some(p) = &n.params {
+        line += &format!(" {}", words_text(p, info.and_then(|k| k.params), n.kind));
+    }
+    if let Some(x) = &n.extra {
+        let fields = parent
+            .and_then(anim_graph::kind_info)
+            .and_then(|k| k.child_extra);
+        line += &format!(" | {}", words_text(x, fields, 0));
+    }
+    out!("{line}");
+    for &c in &n.children {
+        print_node(g, bank, c, Some(n.kind), depth + 1);
+    }
+}
+
+fn graph(
+    game_dir: &std::path::Path,
+    bank_key: &str,
+    entry: Option<&str>,
+    json: bool,
+    set: Option<&std::path::Path>,
+    mode: &EditMode,
+) -> Result<()> {
+    let game = GameInstance::open(game_dir)?;
+    let (stream, index, key) = find_bank(&game, bank_key)?;
+    let Some(path) = set else {
+        let data = match doctor_toolkit::workspace::Workspace::for_game(
+            &game,
+            mode.workspace_dir.as_deref(),
+        ) {
+            Ok(ws) => ws.current_data(&game, stream, index)?,
+            Err(_) => game.open_stream(stream)?.resource_data(index)?,
+        };
+        let image = BankImage::parse(&data)?;
+        let bank = AnimBank::parse(&data)?;
+        let mut g = AnimGraph::parse(&image)?;
+        let stats = g.stats();
+        let issues = g.check(&image);
+        if let Some(name) = entry {
+            let e = g
+                .entries
+                .iter()
+                .position(|e| e.name.eq_ignore_ascii_case(name))
+                .with_context(|| format!("the bank has no entry `{name}`"))?;
+            g.entries = vec![g.entries[e].clone()];
+        }
+        if json {
+            out!("{}", serde_json::to_string_pretty(&g.to_json(&image))?);
+            return Ok(());
+        }
+        out!(
+            "{key}: {} entries, {} nodes, {} slots",
+            stats.entries,
+            stats.nodes,
+            image.node_count
+        );
+        for e in &g.entries {
+            out!("{}", e.name);
+            print_node(&g, &bank, e.root, None, 1);
+        }
+        for issue in issues {
+            out!(
+                "{:?}: node {}: {}",
+                issue.severity,
+                issue
+                    .node
+                    .map_or_else(|| "-".into(), |n| g.nodes[n].number.to_string()),
+                issue.text
+            );
+        }
+        return Ok(());
+    };
+    if entry.is_some() {
+        bail!("--set replaces the whole graph; --entry only filters printing");
+    }
+    let mut ws = workspace_cmd::open_for_edit(&game, mode)?;
+    let data = ws.current_data(&game, stream, index)?;
+    let json: GraphJson = serde_json::from_slice(
+        &std::fs::read(path).with_context(|| format!("cannot read {}", path.display()))?,
+    )
+    .with_context(|| {
+        format!(
+            "{}: expected a graph as printed by `anim graph --json`",
+            path.display()
+        )
+    })?;
+    let g = AnimGraph::from_json(&json)?;
+    let mut image = BankImage::parse(&data)?;
+    let issues = g.check(&image);
+    for issue in &issues {
+        out!(
+            "{:?}: node {:?}: {}",
+            issue.severity,
+            issue.node,
+            issue.text
+        );
+    }
+    if issues.iter().any(|i| i.severity == Severity::Error) {
+        bail!("the graph has errors; nothing recorded");
+    }
+    g.store(&mut image)?;
+    let out = image.encode()?;
+    let label = format!("Edit the animation graph of {key}");
+    let stats = g.stats();
+    out!("{} entries, {} nodes", stats.entries, stats.nodes);
+    if !ws.set_resource(&game, stream, index, out, &label)? {
+        out!("nothing changed");
+        return Ok(());
+    }
+    let name = game.streams()[stream].stream_name();
+    workspace_cmd::finish_edit(&game, &mut ws, mode, vec![name])
+}
+
+fn node_types(json: bool) -> Result<()> {
+    if json {
+        out!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "kinds": anim_graph::kinds(),
+                "controls": anim_graph::CONTROLS.to_vec(),
+            }))?
+        );
+        return Ok(());
+    }
+    for k in anim_graph::kinds() {
+        let arity = match k.arity {
+            anim_graph::Arity::Clip => "clip".to_owned(),
+            anim_graph::Arity::Exactly(n) => n.to_string(),
+            anim_graph::Arity::Range(a, b) => format!("{a}-{b}"),
+        };
+        out!(
+            "{:#04x}  {:<20} children {:<5} {}  (exe {:#010x})",
+            k.kind,
+            k.label,
+            arity,
+            k.help,
+            k.sample_fn
+        );
+        for f in k.params.into_iter().flatten() {
+            out!("        {:<16} {:?}  {}", f.name, f.ty, f.help);
+        }
+        for f in k.child_extra.into_iter().flatten() {
+            out!("        child extra {:<6} {:?}  {}", f.name, f.ty, f.help);
+        }
+    }
+    out!("controls:");
+    for (i, c) in anim_graph::CONTROLS.iter().enumerate() {
+        out!("  {i:>2}  {c}");
+    }
     Ok(())
 }

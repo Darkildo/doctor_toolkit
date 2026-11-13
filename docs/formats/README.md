@@ -17,6 +17,7 @@ The Godfather 1/2, Dead Space 1/2/3, Dante's Inferno, The Simpsons Game.
 | `resource-types.md` | TG4/TXD/DFF/LH2/APX/Material/Entity, обзор остальных типов, шрифты `ffn`, скрипты `lua` |
 | `rig.md` | Риги `rcb` (скелеты), связь меша со скелетом, Havok `hkx` |
 | `characters.md` | Сборка персонажей из `partsdb`, шейдеры и материалы одежды, `mobface`, анимации (`bnk`) |
+| `anim-graph.md` | Граф анимации банков `bnk`: входы, типы узлов и их параметры, слоты, управляющие переменные игры, события клипов |
 | `audio.md` | Звук: SNR/SNS, EA-XAS v1, банки `sbk`, архивы `.viv` (BIGF), импорт звука |
 | `dialogues.md` | Диалоги F2F: деревья `dlg`, события речи `chv`, банки `smb`, субтитры в файлах речи `.snu`, редактор |
 | `video.md` | Ролики `movies/*.vp6`: контейнер EA, VP6, звук EA-XA, проигрыватель игры, замена |
@@ -50,6 +51,7 @@ The Godfather 1/2, Dead Space 1/2/3, Dante's Inferno, The Simpsons Game.
 | partsdb (`logic-types.md` §2) | Проверено на GF2 PC; побайтный round-trip |
 | graph (`navigation-graph.md`) | Проверено на GF2 PC: все 2 178 графов побайтно, правка и пересборка; в игре — этап 45 |
 | Анимации `bnk`, `mobface`, шейдеры (`characters.md`) | Проверено на GF2 PC: клипы схем 1 и 4 декодируются все; схема 3 нет |
+| Граф анимации (`anim-graph.md`) | Проверено на GF2 PC: 2 751 банк, 16 336 узлов — разбор и запись байт в байт |
 | `covernodetable`, `treemodel` (`logic-types.md` §4, §5) | Только заголовок |
 | Entity (`resource-types.md` §7) | Неверно, см. `metamodel.md` |
 

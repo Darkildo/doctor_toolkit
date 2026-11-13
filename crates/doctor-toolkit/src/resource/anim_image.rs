@@ -69,7 +69,7 @@ pub struct Block {
 
 impl Block {
     /// Appends `bytes` at the next multiple of `align`, returning their offset.
-    fn push(&mut self, bytes: &[u8], align: usize) -> u32 {
+    pub(crate) fn push(&mut self, bytes: &[u8], align: usize) -> u32 {
         while !self.data.len().is_multiple_of(align) {
             self.data.push(PAD);
         }

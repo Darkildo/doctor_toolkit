@@ -2,6 +2,7 @@
 
 pub mod anim;
 pub mod anim_encode;
+pub mod anim_graph;
 pub mod anim_image;
 pub mod apx;
 pub mod audio;

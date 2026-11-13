@@ -196,6 +196,7 @@ RGBA-текстуры.
 | `DOCTOR_TOOLKIT_GUI_TEXTURE=zoom=4,channels=rgb,alpha,mip=1,layer=0,pan=100:50,compare=0` | Начальные настройки просмотра текстуры |
 | `DOCTOR_TOOLKIT_GUI_CHARACTER=window,set=_all,lod=0,choose=a_hat=a_hat_fedora,yaw=0.5,zoom=1.2,select=3` | Для выбранного ресурса `partsdb`: собрать персонажа сразу (`docs/formats/characters.md` §4) |
 | `DOCTOR_TOOLKIT_GUI_CUTSCENE=time=26,zoom=30,scroll=15,load,free,play,select=3:29` | Для выбранного `trinity_seq_master`: курсор, масштаб и прокрутка шкалы, собрать персонажей (`load`), свободная камера, проигрывание, выбор команды `кадр:номер` или субтитра `sub:строка` |
+| `DOCTOR_TOOLKIT_GUI_ANIM=clip=3,frame=10,import=<file.glb>,add=<имя>,graph=idle,node=2` | Для выбранного банка `bnk`: показать клип на скелете, открыть импорт анимации, открыть окно графа анимации на входе и выделить его узел (номер в обходе входа; `docs/guide/24-anim-graph.md`) |
 | `DOCTOR_TOOLKIT_GUI_IMPORT=<file.glb>` | Открыть окно импорта модели (`docs/model-import.md`) для выбранного меша или metamodel |
 | `DOCTOR_TOOLKIT_GUI_EXTERNAL=<формат>` | Открыть выбранный ресурс во внешней программе (`png`, `csv`, `lua`, `glb`…) — программа берётся из настроек, для снимков задайте `DOCTOR_TOOLKIT_CONFIG_DIR` с `[external_editors]` вроде `image = "true"` (`docs/external-editors.md` §5) |
 | `DOCTOR_TOOLKIT_GUI_SHOT_FRAMES=<n>` | Кадров до снимка (20 по умолчанию), например для `spin` |

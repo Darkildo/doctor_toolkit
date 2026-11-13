@@ -32,6 +32,7 @@
 //! `DOCTOR_TOOLKIT_GUI_BENCH=instances:<n>` or `model:<stream>:<index>` runs
 //! the renderer benchmark without a window (see `bench.rs`).
 
+mod anim_graph_view;
 mod anim_view;
 mod app;
 mod apx_view;
