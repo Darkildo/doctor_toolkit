@@ -12,7 +12,10 @@
 //! - [`edition`]: the bytes the module checks before it touches anything —
 //!   on another build it only answers that the edition is wrong;
 //! - [`config`]: the file the installer writes next to the module (port,
-//!   token, whether writes are allowed).
+//!   token, whether writes are allowed);
+//! - [`journal`]: events of the game's journal (stage 49) — what it prints,
+//!   Lua errors, messages of the bus — and the ring the module keeps them in;
+//! - [`world`]: every SimGroup object, logic included (stage 49).
 //!
 //! The crate has no dependencies: the module builds it for
 //! `i686-pc-windows-gnu`, the editor for the host.
@@ -20,8 +23,10 @@
 pub mod addr;
 pub mod config;
 pub mod edition;
+pub mod journal;
 pub mod proto;
 mod wire;
+pub mod world;
 
 pub use proto::*;
 
@@ -133,6 +138,17 @@ pub fn is_world_matrix(f: &[f32; 16], scaled: bool) -> bool {
         && f[12..15].iter().all(|v| v.is_finite() && v.abs() < 1.0e5)
 }
 
+/// Whether a GUID is that of a SimGroup object (a NeoGuid): bytes 8 to 15
+/// are the author's machine name, capital letters and digits
+/// (`docs/formats/simgroup.md` §5; all 111 518 objects of the game). Other
+/// listeners of the bus (Lua receivers, systems of the engine) have
+/// something else there.
+pub fn is_object_guid(g: &Guid) -> bool {
+    g[8..16]
+        .iter()
+        .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit())
+}
+
 /// 32 hex digits of a GUID in memory order.
 pub fn guid_hex(g: &Guid) -> String {
     g.iter().map(|b| format!("{b:02x}")).collect()
@@ -189,6 +205,21 @@ mod tests {
         let mut flat = scaled;
         flat[5] = 0.0;
         assert!(!is_world_matrix(&flat, true));
+    }
+
+    #[test]
+    fn object_guids_carry_a_machine_name() {
+        // `XBOYD1734` of the bus on the stand, and the toolkit's own.
+        let g = parse_guid("a9dbc739217b64fe424f594431373334").unwrap();
+        assert!(is_object_guid(&g));
+        let ours = parse_guid("db057c5800000000444f43544f52544b").unwrap();
+        assert!(is_object_guid(&ours));
+        assert!(!is_object_guid(
+            &parse_guid("0000000000000000e803000001000000").unwrap()
+        ));
+        assert!(!is_object_guid(
+            &parse_guid("000c1a1a8c81d500ac10e30008221e19").unwrap()
+        ));
     }
 
     #[test]

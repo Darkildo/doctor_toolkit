@@ -546,6 +546,7 @@ fn install_live(
         token: live::new_token(),
         writes: args.live_writes,
         fix_input: true,
+        journal: true,
     };
     let install = live::ModuleInstall::write(root, &bytes, &config)?;
     out!(

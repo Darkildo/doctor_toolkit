@@ -7,6 +7,7 @@
 //! token=4f1c…
 //! writes=1
 //! fix_input=1
+//! journal=1
 //! ```
 
 use crate::DEFAULT_PORT;
@@ -24,6 +25,11 @@ pub struct Config {
     /// the controller, and he does not move (`docs/analysis/live-link.md`
     /// §5.1). On unless the file says `fix_input=0`.
     pub fix_input: bool,
+    /// Whether the module records the game's journal (stage 49): it hooks
+    /// what the game prints, the errors of Lua and the message bus
+    /// (`docs/analysis/live-link.md` §11). On unless the file says
+    /// `journal=0`.
+    pub journal: bool,
 }
 
 impl Default for Config {
@@ -33,6 +39,7 @@ impl Default for Config {
             token: String::new(),
             writes: false,
             fix_input: true,
+            journal: true,
         }
     }
 }
@@ -58,6 +65,7 @@ impl Config {
                 "token" => out.token = value.to_owned(),
                 "writes" => out.writes = matches!(value, "1" | "true" | "yes"),
                 "fix_input" => out.fix_input = !matches!(value, "0" | "false" | "no"),
+                "journal" => out.journal = !matches!(value, "0" | "false" | "no"),
                 _ => {}
             }
         }
@@ -66,11 +74,12 @@ impl Config {
 
     pub fn to_text(&self) -> String {
         format!(
-            "# doctor_toolkit live link (stage 34); written by the toolkit, removed after the game exits\r\nport={}\r\ntoken={}\r\nwrites={}\r\nfix_input={}\r\n",
+            "# doctor_toolkit live link (stage 34); written by the toolkit, removed after the game exits\r\nport={}\r\ntoken={}\r\nwrites={}\r\nfix_input={}\r\njournal={}\r\n",
             self.port,
             self.token,
             u8::from(self.writes),
-            u8::from(self.fix_input)
+            u8::from(self.fix_input),
+            u8::from(self.journal)
         )
     }
 }
@@ -86,10 +95,12 @@ mod tests {
             token: "00ff".into(),
             writes: true,
             fix_input: false,
+            journal: false,
         };
         assert_eq!(Config::parse(&c.to_text()), c);
         // A file of an older installer has no fix_input: the fix is on.
         assert!(Config::parse("port=47801\nwrites=0").fix_input);
+        assert!(Config::parse("port=47801\nwrites=0").journal);
         assert_eq!(Config::parse(""), Config::default());
         let odd = Config::parse("port=0\nport = 99999\ntoken = x # comment\nwrites=no\nmore=1");
         assert_eq!(
@@ -99,6 +110,7 @@ mod tests {
                 token: "x".into(),
                 writes: false,
                 fix_input: true,
+                journal: true,
             }
         );
     }

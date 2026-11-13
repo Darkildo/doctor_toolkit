@@ -30,6 +30,7 @@ fn fake(writes: bool) -> FakeGame {
         token: "tok".into(),
         writes,
         fix_input: true,
+        journal: true,
     })
     .unwrap()
 }
@@ -141,7 +142,7 @@ fn writes_need_yes_and_permission() {
         ],
         logs.path(),
     );
-    assert!(stdout(&o).contains("(2)"), "{}", stdout(&o));
+    assert!(stdout(&o).contains("(3)"), "{}", stdout(&o));
     let o = run(
         &[
             "live",
@@ -272,4 +273,107 @@ fn install_and_uninstall() {
         2,
         "dinput8.dll and _doctor_toolkit"
     );
+}
+
+#[test]
+fn journal_every_object_and_find() {
+    let game = fake(true);
+    let logs = tempfile::tempdir().unwrap();
+    let port = game.port.to_string();
+    let link = ["--port", port.as_str(), "--token", "tok"];
+    let cmd = |sub: &[&str]| {
+        let mut args = vec!["live"];
+        args.extend_from_slice(sub);
+        args.extend_from_slice(&link);
+        run(&args, logs.path())
+    };
+
+    // Something in the journal: a print, an error, a message.
+    assert!(
+        cmd(&["lua", "print(\"hello journal\")", "--yes"])
+            .status
+            .success()
+    );
+    assert!(!cmd(&["lua", "this is bad", "--yes"]).status.success());
+    assert!(cmd(&["send", "doctor_ping", "--yes"]).status.success());
+
+    let o = cmd(&["log"]);
+    assert!(o.status.success(), "{}", stderr(&o));
+    let text = stdout(&o);
+    assert!(
+        text.contains("print doctor_live:1: hello journal"),
+        "{text}"
+    );
+    assert!(text.contains("lua error: doctor_live:1:"), "{text}");
+    assert!(text.contains("    [C]: ?"), "{text}");
+    // Messages only when asked for.
+    assert!(!text.contains("message"), "{text}");
+    let o = cmd(&["log", "--messages"]);
+    let text = stdout(&o);
+    assert!(
+        text.contains("message 0x")
+            && text.contains("3 listener(s)")
+            && text.contains("(live link)"),
+        "{text}"
+    );
+    let o = cmd(&["log", "--errors"]);
+    assert_eq!(stdout(&o).lines().count(), 2, "{}", stdout(&o));
+    let o = cmd(&["log", "--filter", "HELLO"]);
+    assert_eq!(stdout(&o).lines().count(), 1, "{}", stdout(&o));
+    let o = cmd(&["log", "--json", "--messages"]);
+    let kinds: Vec<String> = stdout(&o)
+        .lines()
+        .map(|l| {
+            serde_json::from_str::<serde_json::Value>(l).unwrap()["kind"]
+                .as_str()
+                .unwrap()
+                .to_owned()
+        })
+        .collect();
+    assert_eq!(kinds, ["output", "lua_error", "message"]);
+
+    let o = cmd(&["objects", "--all"]);
+    assert!(o.status.success(), "{}", stderr(&o));
+    assert_eq!(stdout(&o).lines().count(), 5, "{}", stdout(&o));
+    let o = cmd(&["objects", "--all", "--logic", "--json"]);
+    let v: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+    let list = v["objects"].as_array().unwrap();
+    assert_eq!(list.len(), 2);
+    assert!(list.iter().all(|o| o["position"].is_null()));
+    assert_eq!(list[0]["stream"], "gf2\\cuba.str");
+    assert_eq!(list[0]["class"], "VariableSwitch");
+    let o = cmd(&["objects", "--all", "--stream", "nowhere"]);
+    assert_eq!(stdout(&o).lines().count(), 0);
+
+    let guid = "05".repeat(16);
+    let o = cmd(&["find", &guid]);
+    assert!(o.status.success(), "{}", stderr(&o));
+    assert!(stdout(&o).contains("MessageRelay"), "{}", stdout(&o));
+    let o = cmd(&["find", &"0e".repeat(16)]);
+    assert!(!o.status.success());
+    // A name needs the SimGroups of a game folder.
+    let o = cmd(&["find", "relay_gate"]);
+    assert!(!o.status.success());
+    assert!(stderr(&o).contains("--game"), "{}", stderr(&o));
+}
+
+#[test]
+fn a_module_without_the_journal() {
+    let game = fake(false);
+    game.world.lock().unwrap().protocol = 1;
+    let logs = tempfile::tempdir().unwrap();
+    let port = game.port.to_string();
+    let o = run(
+        &["live", "log", "--port", &port, "--token", "tok"],
+        logs.path(),
+    );
+    assert!(!o.status.success());
+    assert!(stderr(&o).contains("protocol 1"), "{}", stderr(&o));
+    // The reads of stage 34 still work.
+    let o = run(
+        &["live", "status", "--port", &port, "--token", "tok"],
+        logs.path(),
+    );
+    assert!(o.status.success(), "{}", stderr(&o));
+    assert!(stdout(&o).contains("(protocol 1)"), "{}", stdout(&o));
 }

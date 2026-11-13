@@ -1296,3 +1296,48 @@ doctor_jacket_lod1/_lod2`), часть `jacket_classic_op01` баз персон
 Вероятно, выдаче мешает состояние новой игры (оружие открывается сюжетом)
 или нужны атрибуты пакета `5f43e2b5` реле. Нужен старт из сохранения с
 оружием (после пролога, этап 24) или разбор `GiveItemRelay` в коде.
+
+## 21. Этап 49: журнал игры и все объекты (2026-11-13)
+
+Быстрый стенд: `-stream gf2 cuba`, `DXVK=1`, `SERVER=xvfb`, 1024×768,
+новая тень (`shadow`, GF2ASI в ней выключен), модуль `live install
+--writes` (в `doctor_live.cfg` по умолчанию `journal=1`),
+`WINEDLLOVERRIDES=dinput8=n,b`; запуск — сеанс `start`, проверки — CLI
+`live …`. Адреса и устройство — `live-link.md` §11. Журналы, списки
+объектов и записи сообщений — в рабочей папке проверки (в репозиторий не
+входят).
+
+```sh
+DXVK=1 SERVER=xvfb WINEDLLOVERRIDES=dinput8=n,b GAME_OPTIONS="-stream gf2 cuba" \
+    tools/game-bench.sh start $S/shadow $S/out
+doctor-toolkit live log --game $S/shadow [--messages] [--errors] [--names]
+doctor-toolkit live objects --all [--logic] --names --game $S/shadow
+doctor-toolkit live find venue_132_vault --game $S/shadow
+```
+
+| Проверка | Результат |
+|---|---|
+| Перехваты ставятся | журнал модуля: `journal: OutputDebugStringA (0x00D550C4), Lua print (0x0110A6C0, was 0x0046bfc0), Lua errors (0x006365A0, 0x00636722, 0x00636488, stacks 0x006338A0), message bus (0x00408A00)`; через 15–20 с после старта — уровень, игрок ходит (исправление ввода §20.1 работает и с журналом) |
+| Вывод игры | самопроверка модуля через слот игры — событие `debug doctor_live: OutputDebugStringA goes to the journal`; скрипты при загрузке уровня — `print Global Lua Utility Functions:19: functionTable[startup] is nil` (дважды); `live lua 'print("hello from doctor", 42)'` → `print doctor_live:1: hello from doctor	42`. Сама игра в уровне `OutputDebugStringA` за 11 минут не звала |
+| Ошибки Lua из `live lua` | синтаксис: `` doctor_live:1: `=' expected near `is' ``; `error("boom")`: стек `[C]: ?` / `doctor_live:1: in main chunk`; `nil.y` в функции, вызванной функцией из главного куска: `doctor_live:1: in function <doctor_live:1>`, `doctor_live:2: in function <doctor_live:2>`, `doctor_live:3: in main chunk` (строки — из перехвата `luaG_errormsg`; без него у уровней в кадре интерпретатора строк нет) |
+| Сообщения | с `--messages --names`: каждый кадр — 15 сообщений движка (`iMsgSystemTick`, `iMsgRunningTick data 0x672 -> 343 listener(s)`, `iMsgRunningPostTick -> 1133`, `iMsgPreRender`, `iMsgDoRender`…), не чаще 4 раз за 5 с каждое; игровые — `setExpression_Happy data 0x31f70c -> 1 listener(s)`, звук времени суток (`aud_test_tod -> 5 listener(s)` с четырьмя получателями, `aud_night`, `aud_not_day`…), динамическое задание (`XWOO7290XX_C9203B5_CD7E068_v3_dj_kill_started`, `…_dj_kill_enable_giver_hud_indicator`); `live send iMsgPlayerControlEnable` → `-> 1 listener(s): 04bdc758… (live link)`. За 10 минут — 224 разных сообщения |
+| Все объекты | 8 664 объекта за 7 мс (обход таблицы групп), 7 030 без матрицы; классы: `SimNpc` 3 418, `ZoneRenderLOD` 475, `SpawnPoint` 172, `MessageRelay` 36, `VariableSwitch` 35, `TriggerRandom` 25, `PlayerTeleportRelay` 25, `EnterExitTrigger` 8…; модулю неизвестен класс у 1 958 (свой `As` не задан), с `--names` — ни у одного; потоки: `gf2\globals_global.str` 6 080, зоны `gf2\cuba\local\…` по 100–330; слушатель выключен у 86 |
+| Поиск | по GUID (`3d928f35…`, `MessageRelay` `gf2\globals_global.str`) — 0,45 с; по имени `venue_132_vault` — два `Entity` в `gf2\cuba\local.str` с позициями |
+| 10 минут | 610 с: статус каждые 10 с — 55 из 55 ответов, кадр 16 435; `live log --follow --messages` всё время (8 984 строки); 18 раз — все объекты (8 415–8 913, игра подгружает и выгружает зоны), ошибка Lua, `live send`, 2 с ходьбы и поворот камеры; падений и исключений нет (`wine.log`), игра после прогона работает. После остановки — `live uninstall`, `verify`: оригиналы не менялись (27 файлов) |
+
+Найдено:
+
+- **Вызов `As` у всех объектов вешает игру.** Первый вариант списка всех
+  объектов определял класс, как «объекты рядом», — вызовом `As` со всеми
+  хэшами реестра; на четвёртой таблице методов главный поток встал
+  (процесс — 0 % ЦП, все потоки в ожидании), связь перестала отвечать. У
+  части объектов таблицы групп в слоте `+0x10` не `As` (`0xFFFFFFFF`, адрес
+  вне кода). Класс теперь читается из кода `As` без вызова (§11.5
+  `live-link.md`).
+- Указатель печати Lua `0x0110A6C0` не пуст: в нём пустая функция
+  `0x0046BFC0`; модуль зовёт её после своей.
+- Каждый кадр игра шлёт около 15 сообщений движка сотням слушателей; без
+  предела на одно сообщение они вытесняли бы всё остальное (за 5 с в
+  кольцо попадало 2 500+ событий тактов).
+- `winedbg` к процессу игры стенда не подключается (`error 5`), поэтому
+  место зависания найдено по журналу модуля, а не по стеку.

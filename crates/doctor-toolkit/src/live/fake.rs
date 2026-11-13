@@ -2,17 +2,22 @@
 //! library, the command line and the editor, and to try the live panel
 //! without the game (`doctor-toolkit live fake`).
 //!
-//! It keeps a small world — a player, a camera, a few objects — and does
-//! what the module does with it: teleport moves the player, a message
-//! counts the listeners that would get it, Lua answers a few expressions.
+//! It keeps a small world — a player, a camera, a few objects, logic
+//! objects without a position — and does what the module does with it:
+//! teleport moves the player, a message counts the listeners that would get
+//! it, Lua answers a few expressions. Its journal records `print(…)` and
+//! failing Lua code, and the messages it delivers; it speaks protocol 1 and
+//! 2 like the module (or only 1, as a module of stage 34:
+//! [`FakeWorld::protocol`]).
 
 use std::net::{Ipv4Addr, TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
+use doctor_toolkit_live::journal::{EventBody, MessageOrigin, OutputSource, Ring, mask};
 use doctor_toolkit_live::{
     CameraView, Done, ErrorCode, Guid, Hello, LoopState, LuaReply, ObjectInfo, PROTOCOL_VERSION,
-    Pose, Request, Response, Status, StreamInfo, read_frame,
+    Pose, Request, Response, Status, StreamInfo, World, WorldObject, read_frame,
 };
 
 use super::Config;
@@ -28,6 +33,14 @@ pub struct FakeWorld {
     pub streams: Vec<String>,
     /// Objects with the messages they listen to.
     pub objects: Vec<(ObjectInfo, Vec<u32>)>,
+    /// Objects without a world matrix (logic), with their class name and
+    /// the messages they listen to; all objects are of group 1
+    /// (`gf2\cuba.str`).
+    pub logic: Vec<(Guid, String, Vec<u32>)>,
+    /// The journal.
+    pub journal: Ring,
+    /// Newest protocol it speaks: 2, or 1 like a module of stage 34.
+    pub protocol: u16,
     /// Messages delivered: hash and how many listeners got it.
     pub sent: Vec<(u32, u32)>,
     /// The build is not the known one.
@@ -79,6 +92,16 @@ impl Default for FakeWorld {
                 object(2, "PlayerSpawn", [283.9, -0.07, 371.8], &[]),
                 object(3, "MessageRelay", [300.0, 0.0, 400.0], &["doctor_ping"]),
             ],
+            logic: vec![
+                (
+                    [4; 16],
+                    "VariableSwitch".into(),
+                    vec![doctor_toolkit_live::name_hash("doctor_ping")],
+                ),
+                ([5; 16], "MessageRelay".into(), Vec::new()),
+            ],
+            journal: Ring::default(),
+            protocol: PROTOCOL_VERSION,
             sent: Vec::new(),
             wrong_edition: false,
         }
@@ -150,13 +173,20 @@ impl Drop for FakeGame {
 fn serve(mut stream: TcpStream, config: &Config, world: &Mutex<FakeWorld>) {
     let mut greeted = false;
     while let Ok((header, payload)) = read_frame(&mut stream) {
-        let reply = if header.version != PROTOCOL_VERSION {
+        let newest = world.lock().unwrap_or_else(|e| e.into_inner()).protocol;
+        let reply = if !(1..=newest).contains(&header.version) {
             let r = Response::error(ErrorCode::Version, "other protocol version");
-            let _ = std::io::Write::write_all(&mut stream, &r.to_frame(header.kind, header.id));
+            let _ = std::io::Write::write_all(
+                &mut stream,
+                &r.to_frame_of(newest, header.kind, header.id),
+            );
             return;
         } else {
             match Request::decode(header.kind, &payload) {
                 Err(e) => Response::error(ErrorCode::BadRequest, e.to_string()),
+                Ok(r) if r.since() > header.version => {
+                    Response::error(ErrorCode::Unsupported, "newer request than the frame")
+                }
                 Ok(Request::Hello { token, .. }) => {
                     if !config.token.is_empty() && token != config.token {
                         Response::error(ErrorCode::Denied, "wrong token")
@@ -164,7 +194,7 @@ fn serve(mut stream: TcpStream, config: &Config, world: &Mutex<FakeWorld>) {
                         greeted = true;
                         let w = world.lock().unwrap_or_else(|e| e.into_inner());
                         Response::Hello(Hello {
-                            protocol: PROTOCOL_VERSION,
+                            protocol: w.protocol,
                             module: "doctor_live fake".into(),
                             edition_ok: !w.wrong_edition,
                             edition: if w.wrong_edition {
@@ -184,10 +214,23 @@ fn serve(mut stream: TcpStream, config: &Config, world: &Mutex<FakeWorld>) {
                 ),
             }
         };
-        if std::io::Write::write_all(&mut stream, &reply.to_frame(header.kind, header.id)).is_err()
+        if std::io::Write::write_all(
+            &mut stream,
+            &reply.to_frame_of(header.version, header.kind, header.id),
+        )
+        .is_err()
         {
             return;
         }
+    }
+}
+
+impl FakeWorld {
+    /// Records an event in the journal, as the module's hooks do.
+    pub fn record(&mut self, body: EventBody) {
+        let second = u64::from(self.frame / 30);
+        self.journal
+            .push(second, self.frame, self.sim_time_ms, body);
     }
 }
 
@@ -266,14 +309,26 @@ fn answer(request: Request, config: &Config, w: &mut FakeWorld) -> Response {
         }
         Request::Send { message, target } => {
             let hash = message.hash();
-            let count = w
+            let receivers: Vec<Guid> = w
                 .objects
                 .iter()
-                .filter(|(o, listens)| {
-                    listens.contains(&hash) && target.is_none_or(|g: Guid| g == o.guid)
-                })
-                .count() as u32;
+                .map(|(o, listens)| (o.guid, listens))
+                .chain(w.logic.iter().map(|(g, _, listens)| (*g, listens)))
+                .filter(|(g, listens)| listens.contains(&hash) && target.is_none_or(|t| t == *g))
+                .map(|(g, _)| g)
+                .collect();
+            let count = receivers.len() as u32;
             w.sent.push((hash, count));
+            if count > 0 {
+                w.record(EventBody::Message {
+                    hash,
+                    data: 0,
+                    forced: false,
+                    listeners: count,
+                    receivers,
+                    origin: MessageOrigin::Link,
+                });
+            }
             Response::Done(Done {
                 count,
                 note: format!("{count} listener(s)"),
@@ -281,6 +336,21 @@ fn answer(request: Request, config: &Config, w: &mut FakeWorld) -> Response {
         }
         Request::Lua { code } => {
             let code = code.trim();
+            if let Some(text) = code
+                .strip_prefix("print(\"")
+                .and_then(|r| r.strip_suffix("\")"))
+            {
+                w.record(EventBody::Output {
+                    source: OutputSource::Print,
+                    text: text.to_owned(),
+                    script: "doctor_live".into(),
+                    line: 1,
+                });
+                return Response::Lua(LuaReply {
+                    ok: true,
+                    values: Vec::new(),
+                });
+            }
             if code == "return GetSimTime()" {
                 Response::Lua(LuaReply {
                     ok: true,
@@ -297,13 +367,61 @@ fn answer(request: Request, config: &Config, w: &mut FakeWorld) -> Response {
                     values: Vec::new(),
                 })
             } else {
+                let message = format!("doctor_live:1: `=' expected near `{code}'");
+                w.record(EventBody::LuaError {
+                    status: 3,
+                    message: message.clone(),
+                    chunk: "doctor_live".into(),
+                    line: 1,
+                    traceback: vec!["[C]: ?".into()],
+                });
                 Response::Lua(LuaReply {
                     ok: false,
-                    values: vec![format!(
-                        "[string \"doctor_live\"]:1: `=' expected near `{code}'"
-                    )],
+                    values: vec![message],
                 })
             }
+        }
+        Request::Events { after, kinds, max } => {
+            let mut b = w.journal.after(after, kinds, usize::from(max.max(1)));
+            b.recording = mask::ALL;
+            Response::Events(b)
+        }
+        Request::World { filter, max } => {
+            let mut out = World {
+                streams: vec![(1, "gf2\\cuba.str".into())],
+                ..World::default()
+            };
+            let all = w
+                .objects
+                .iter()
+                .map(|(o, l)| (o.guid, o.class_name.clone(), Some(o.position), l))
+                .chain(w.logic.iter().map(|(g, c, l)| (*g, c.clone(), None, l)));
+            for (guid, class_name, position, listens) in all {
+                let class = doctor_toolkit_live::name_hash(&class_name);
+                if filter.class.is_some_and(|c| c != class)
+                    || (!filter.guids.is_empty() && !filter.guids.contains(&guid))
+                    || filter.group.is_some_and(|g| g != 1)
+                    || filter.positioned.is_some_and(|p| p != position.is_some())
+                {
+                    continue;
+                }
+                out.total += 1;
+                if (out.objects.len() as u32) < max {
+                    if !out.classes.iter().any(|(h, _)| *h == class) {
+                        out.classes.push((class, class_name));
+                    }
+                    out.objects.push(WorldObject {
+                        guid,
+                        class,
+                        group: 1,
+                        position,
+                        flags: 0x2800_0000,
+                        listening: !listens.is_empty(),
+                    });
+                }
+            }
+            out.walked = (w.objects.len() + w.logic.len()) as u32;
+            Response::World(out)
         }
         Request::Peek { address, len } => {
             if address < 0x0040_0000 {

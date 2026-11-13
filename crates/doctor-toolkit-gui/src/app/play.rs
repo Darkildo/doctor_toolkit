@@ -217,6 +217,7 @@ impl BrowserApp {
         self.poll_detection();
         self.poll_tasks();
         self.poll_session(ctx);
+        self.live_journal_to_log();
         self.finish_exit();
         if self.play.import_old_queued
             && self.mods_open

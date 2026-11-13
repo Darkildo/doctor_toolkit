@@ -8,7 +8,10 @@
 //!   configuration into a game folder for one launch and takes them away
 //!   afterwards, like `cmd.txt` ([`crate::play::start::CmdFile`]);
 //! - [`fake`]: a server that answers like the module, for tests and for
-//!   trying the editor without the game.
+//!   trying the editor without the game;
+//! - [`names`]: names, classes and streams of SimGroup objects by GUID and
+//!   names of messages by hash, from the SimGroups of the game and its
+//!   workspace (stage 49: the journal and every object).
 //!
 //! See `docs/analysis/live-link.md`.
 
@@ -20,15 +23,16 @@ use std::time::Duration;
 pub use doctor_toolkit_live as proto;
 pub use doctor_toolkit_live::config::Config;
 use doctor_toolkit_live::{
-    CONFIG_FILE, CameraView, Done, ErrorCode, Failure, Hello, LOG_FILE, LuaReply, MODULE_FILE,
-    MessageId, ObjectInfo, PROTOCOL_VERSION, Pose, Request, Response, Status, StreamInfo,
-    read_frame,
+    CONFIG_FILE, CameraView, Done, ErrorCode, EventBatch, Failure, Hello, LOG_FILE, LuaReply,
+    MODULE_FILE, MessageId, OLDEST_PROTOCOL_VERSION, ObjectInfo, PROTOCOL_VERSION, Pose, Request,
+    Response, Status, StreamInfo, World, WorldFilter, read_frame,
 };
 
 use crate::{Error, Result};
 
 pub mod fake;
 pub mod loader;
+pub mod names;
 
 /// The live link in the options of Play (`settings.toml`, `play.live`).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -52,6 +56,7 @@ impl LiveOptions {
             token: new_token(),
             writes: self.writes,
             fix_input: true,
+            journal: true,
         }
     }
 }
@@ -139,13 +144,38 @@ pub struct Client {
     stream: TcpStream,
     next_id: u32,
     hello: Hello,
+    /// Protocol version of the frames: [`PROTOCOL_VERSION`], or 1 with a
+    /// module of stage 34.
+    version: u16,
 }
 
 impl Client {
     /// Connects and says Hello. `timeout` bounds the connect and every
     /// answer (requests that wait for the game's main loop can take a
-    /// while at 1–2 frames a second).
+    /// while at 1–2 frames a second). A module that speaks only protocol 1
+    /// (stage 34) refuses the first Hello and closes: then the client
+    /// connects again with version 1 and does without the journal and the
+    /// list of every object.
     pub fn connect(endpoint: &Endpoint, client: &str, timeout: Duration) -> LinkResult<Self> {
+        match Self::connect_with(endpoint, client, timeout, PROTOCOL_VERSION) {
+            Err(first) if first.code() == Some(ErrorCode::Version) => {
+                match Self::connect_with(endpoint, client, timeout, OLDEST_PROTOCOL_VERSION) {
+                    // The module refused for a reason of its own.
+                    Err(e) if e.code().is_some_and(|c| c != ErrorCode::Version) => Err(e),
+                    Err(_) => Err(first),
+                    ok => ok,
+                }
+            }
+            other => other,
+        }
+    }
+
+    fn connect_with(
+        endpoint: &Endpoint,
+        client: &str,
+        timeout: Duration,
+        version: u16,
+    ) -> LinkResult<Self> {
         let stream = TcpStream::connect_timeout(&endpoint.address(), timeout)
             .map_err(LinkError::Unreachable)?;
         stream
@@ -159,12 +189,13 @@ impl Client {
             stream,
             next_id: 1,
             hello: Hello {
-                protocol: PROTOCOL_VERSION,
+                protocol: version,
                 module: String::new(),
                 edition_ok: false,
                 edition: String::new(),
                 writes: false,
             },
+            version,
         };
         match this.request(&Request::Hello {
             token: endpoint.token.clone(),
@@ -181,6 +212,17 @@ impl Client {
         &self.hello
     }
 
+    /// Protocol version of this connection.
+    pub fn version(&self) -> u16 {
+        self.version
+    }
+
+    /// Whether the module has the journal and the list of every object
+    /// (protocol 2, stage 49).
+    pub fn has_journal(&self) -> bool {
+        self.version >= 2
+    }
+
     /// Changes how long answers may take.
     pub fn set_timeout(&self, timeout: Duration) {
         let _ = self.stream.set_read_timeout(Some(timeout));
@@ -191,15 +233,24 @@ impl Client {
     pub fn request(&mut self, request: &Request) -> LinkResult<Response> {
         let id = self.next_id;
         self.next_id = self.next_id.wrapping_add(1);
+        if request.since() > self.version {
+            return Err(LinkError::Refused(Failure {
+                code: ErrorCode::Unsupported,
+                message: format!(
+                    "the module in the game is older (protocol {}): install the module of this toolkit for this",
+                    self.version
+                ),
+            }));
+        }
         self.stream
-            .write_all(&request.to_frame(id))
+            .write_all(&request.to_frame_of(self.version, id))
             .map_err(LinkError::Io)?;
         let (header, payload) = read_frame(&mut self.stream).map_err(LinkError::Io)?;
-        if header.version != PROTOCOL_VERSION {
+        if !proto::supported(header.version) {
             return Err(LinkError::Refused(Failure {
                 code: ErrorCode::Version,
                 message: format!(
-                    "the module speaks protocol {}, the toolkit {PROTOCOL_VERSION}",
+                    "the module speaks protocol {}, the toolkit {OLDEST_PROTOCOL_VERSION} to {PROTOCOL_VERSION}",
                     header.version
                 ),
             }));
@@ -290,6 +341,24 @@ impl Client {
     pub fn peek(&mut self, address: u32, len: u16) -> LinkResult<Vec<u8>> {
         match self.request(&Request::Peek { address, len })? {
             Response::Peek(b) => Ok(b),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    /// Events of the game's journal after number `after` whose kind is in
+    /// `kinds` ([`proto::journal::mask`]). Asking for messages keeps their
+    /// recording on in the module for a while.
+    pub fn events(&mut self, after: u64, kinds: u8, max: u16) -> LinkResult<EventBatch> {
+        match self.request(&Request::Events { after, kinds, max })? {
+            Response::Events(b) => Ok(b),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    /// Every SimGroup object that passes `filter`, logic included.
+    pub fn world(&mut self, filter: WorldFilter, max: u32) -> LinkResult<World> {
+        match self.request(&Request::World { filter, max })? {
+            Response::World(w) => Ok(w),
             other => Err(unexpected(other)),
         }
     }
@@ -437,6 +506,9 @@ pub fn install_for_input(root: &Path) -> Result<InputFix> {
         token: new_token(),
         writes: false,
         fix_input: true,
+        // Only the input: no hooks of the journal for a launch without the
+        // live link.
+        journal: false,
     };
     Ok(InputFix::Installed(ModuleInstall::write(
         root, &bytes, &config,

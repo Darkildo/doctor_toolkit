@@ -45,6 +45,24 @@ fn requests() -> Vec<Request> {
             address: 0x0122_33A0,
             len: 4,
         },
+        Request::Events {
+            after: 41,
+            kinds: crate::journal::mask::ALL,
+            max: 500,
+        },
+        Request::World {
+            filter: WorldFilter {
+                class: Some(0x5555_E170),
+                guids: vec![[1; 16], [2; 16]],
+                group: Some(7),
+                positioned: Some(false),
+            },
+            max: 100,
+        },
+        Request::World {
+            filter: WorldFilter::default(),
+            max: 0,
+        },
     ]
 }
 
@@ -133,6 +151,80 @@ fn responses() -> Vec<(u16, Response)> {
         ),
         (kind::PEEK, Response::Peek(vec![1, 2, 3, 4])),
         (
+            kind::EVENTS,
+            Response::Events(EventBatch {
+                next: 45,
+                lost: 2,
+                recording: crate::journal::mask::ALL,
+                events: vec![
+                    Event {
+                        seq: 42,
+                        frame: 900,
+                        sim_time_ms: 12_000,
+                        body: EventBody::Output {
+                            source: OutputSource::Print,
+                            text: "hello from a script".into(),
+                            script: "@scripts/mission.lua".into(),
+                            line: 17,
+                        },
+                    },
+                    Event {
+                        seq: 43,
+                        frame: 901,
+                        sim_time_ms: 12_050,
+                        body: EventBody::LuaError {
+                            status: 1,
+                            message: "doctor_live:1: boom".into(),
+                            chunk: "=doctor_live".into(),
+                            line: 1,
+                            traceback: vec!["doctor_live:1: in main chunk".into(), "[C]".into()],
+                        },
+                    },
+                    Event {
+                        seq: 44,
+                        frame: 902,
+                        sim_time_ms: 12_100,
+                        body: EventBody::Message {
+                            hash: 0x1234_5678,
+                            data: 9,
+                            forced: true,
+                            listeners: 3,
+                            receivers: vec![[5; 16]],
+                            origin: MessageOrigin::Link,
+                        },
+                    },
+                ],
+            }),
+        ),
+        (
+            kind::WORLD,
+            Response::World(World {
+                total: 3,
+                walked: 8_600,
+                partial: false,
+                classes: vec![(0x3852_3FC3, "Entity".into())],
+                streams: vec![(4, "gf2\\cuba.str".into())],
+                objects: vec![
+                    WorldObject {
+                        guid: [3; 16],
+                        class: 0x3852_3FC3,
+                        group: 4,
+                        position: Some([1.0, 2.0, 3.0]),
+                        flags: 0x2800_0000,
+                        listening: true,
+                    },
+                    WorldObject {
+                        guid: [4; 16],
+                        class: 0,
+                        group: 4,
+                        position: None,
+                        flags: 0,
+                        listening: false,
+                    },
+                ],
+            }),
+        ),
+        (
             kind::PLAYER,
             Response::error(ErrorCode::NotReady, "no player: the game is loading"),
         ),
@@ -168,7 +260,8 @@ fn writes_are_marked() {
     assert_eq!(
         writes,
         [
-            false, false, false, false, false, false, false, true, true, true, true, true, false
+            false, false, false, false, false, false, false, true, true, true, true, true, false,
+            false, false, false
         ]
     );
 }
@@ -178,7 +271,66 @@ fn header_layout_is_fixed() {
     let bytes = Request::Status.to_frame(0x0102_0304);
     assert_eq!(
         bytes,
-        [b'D', b'T', b'L', b'V', 1, 0, 2, 0, 4, 3, 2, 1, 0, 0, 0, 0]
+        [b'D', b'T', b'L', b'V', 2, 0, 2, 0, 4, 3, 2, 1, 0, 0, 0, 0]
+    );
+    // A client of stage 34 sends version 1, and gets its answer in it.
+    let old = Request::Status.to_frame_of(1, 0x0102_0304);
+    assert_eq!(old[4..6], [1, 0]);
+    let reply = Response::Status(Status {
+        frame: 1,
+        state: LoopState::Game,
+        player: true,
+        sim_time_ms: None,
+        time_of_day: None,
+    })
+    .to_frame_of(1, kind::STATUS, 7);
+    let (header, payload) = read_frame(&mut reply.as_slice()).unwrap();
+    assert_eq!(header.version, 1);
+    assert!(matches!(
+        Response::decode(header.kind, &payload),
+        Ok(Response::Status(_))
+    ));
+}
+
+#[test]
+fn versions_and_their_requests() {
+    assert!(supported(1) && supported(2));
+    assert!(!supported(0) && !supported(3));
+    assert_eq!(OLDEST_PROTOCOL_VERSION, 1);
+    for r in requests() {
+        let new = matches!(r, Request::Events { .. } | Request::World { .. });
+        assert_eq!(r.since(), if new { 2 } else { 1 }, "{r:?}");
+        assert!(r.since() <= PROTOCOL_VERSION);
+    }
+}
+
+#[test]
+fn broken_journal_and_world_payloads_are_errors() {
+    // An event of an unknown kind.
+    let mut w = crate::wire::Writer::default();
+    w.u64(2);
+    w.u64(0);
+    w.u8(7);
+    w.u32(1);
+    w.u64(1);
+    w.u32(0);
+    w.u32(0);
+    w.u8(9);
+    w.buf.extend_from_slice(&[0; 16]);
+    assert_eq!(
+        Response::decode(kind::EVENTS | REPLY, &w.buf),
+        Err(DecodeError::BadValue("event"))
+    );
+    // A huge list of GUIDs in a filter.
+    let mut bad = Request::World {
+        filter: WorldFilter::default(),
+        max: 1,
+    }
+    .encode();
+    bad[1..5].copy_from_slice(&u32::MAX.to_le_bytes());
+    assert_eq!(
+        Request::decode(kind::WORLD, &bad),
+        Err(DecodeError::Truncated)
     );
 }
 

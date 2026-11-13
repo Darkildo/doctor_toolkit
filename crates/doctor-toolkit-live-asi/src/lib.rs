@@ -9,7 +9,9 @@
 //! 3. points the call at `0x0068B04B` of the main loop to its frame hook,
 //!    which runs the game's own function afterwards — every read and write
 //!    of game data happens there, on the main thread between frames;
-//! 4. listens on `127.0.0.1:PORT` in a thread of its own.
+//! 4. with `journal=1` (the default), hooks what the game prints, the
+//!    errors of Lua and the message bus ([`journal`], stage 49);
+//! 5. listens on `127.0.0.1:PORT` in a thread of its own.
 //!
 //! Nothing here unwinds into the game: every entry point catches panics.
 //! The module writes no game file; its log is `doctor_live.log` next to it.
@@ -17,13 +19,14 @@
 #![allow(clippy::missing_safety_doc)]
 
 mod game;
+mod journal;
 mod server;
 mod win;
 
 use std::ffi::c_void;
 use std::io::Write;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, Ordering};
 use std::sync::mpsc::{Receiver, Sender, SyncSender, channel};
 use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
@@ -35,6 +38,10 @@ pub const MODULE_VERSION: &str = concat!("doctor_live ", env!("CARGO_PKG_VERSION
 
 static MODULE: AtomicU32 = AtomicU32::new(0);
 static FRAME: AtomicU32 = AtomicU32::new(0);
+/// Main loop state of the last pass ([`doctor_toolkit_live::LoopState`]).
+static STATE: AtomicU8 = AtomicU8::new(0);
+/// What the journal could not hook (empty: all of it, `None`: off).
+static JOURNAL: OnceLock<Option<Vec<&'static str>>> = OnceLock::new();
 static HOOKED: AtomicBool = AtomicBool::new(false);
 static UPDATE_HOOKED: AtomicBool = AtomicBool::new(false);
 /// `fix_input` of the configuration ([`game::fix_input`]).
@@ -80,6 +87,12 @@ pub(crate) fn log(line: &str) {
         let _ = writeln!(f, "[frame {}] {line}", FRAME.load(Ordering::Relaxed));
         let _ = f.flush();
     }
+    journal::note(line);
+}
+
+/// Main loop state of the last pass.
+pub(crate) fn loop_state() -> doctor_toolkit_live::LoopState {
+    doctor_toolkit_live::LoopState::from_u8(STATE.load(Ordering::Relaxed))
 }
 
 pub(crate) fn edition_state() -> Result<(), String> {
@@ -177,6 +190,7 @@ fn execute(request: Request) -> Response {
         Request::Send { message, target } => game::send(message.hash(), *target),
         Request::Lua { code } => game::lua(code),
         Request::Peek { address, len } => game::peek(*address, *len),
+        Request::World { filter, max } => game::world(filter, *max),
         _ => Response::error(
             doctor_toolkit_live::ErrorCode::BadRequest,
             "not a main-thread request",
@@ -227,6 +241,7 @@ extern "C" fn frame_hook() -> u32 {
     let _ = std::panic::catch_unwind(|| {
         let snap = game::snapshot(frame);
         let state = doctor_toolkit_live::LoopState::from_u8(snap.state);
+        STATE.store(snap.state, Ordering::Relaxed);
         if let Ok(mut s) = SNAPSHOT.try_lock() {
             *s = Some(snap);
         }
@@ -302,6 +317,17 @@ unsafe extern "system" fn start(_: *mut c_void) -> u32 {
             )),
             Err(e) => log(&format!("{e}; nothing installed, the module only answers")),
         }
+        match JOURNAL.get() {
+            Some(Some(failed)) if failed.is_empty() => {
+                log(&format!(
+                    "journal: OutputDebugStringA (0x00D550C4), Lua print (0x0110A6C0, was {:#010x}), Lua errors (0x006365A0, 0x00636722, 0x00636488, stacks 0x006338A0), message bus (0x00408A00)",
+                    journal::print_callback_before()
+                ));
+                journal::self_test();
+            }
+            Some(Some(failed)) => log(&format!("journal: could not hook {}", failed.join(", "))),
+            _ => log("journal: off"),
+        }
         server::run(config);
     });
     0
@@ -317,7 +343,16 @@ pub unsafe extern "system" fn DllMain(module: *mut c_void, reason: u32, _: *mut 
             unsafe { win::DisableThreadLibraryCalls(module) };
             // The check and the patch need no other DLL: done here, before
             // the game's main loop can run.
-            let _ = EDITION.set(install());
+            let installed = install();
+            let ok = installed.is_ok();
+            let _ = EDITION.set(installed);
+            // The journal's hooks too: before the game's threads run the
+            // code they patch (the bus, Lua).
+            let config =
+                std::fs::read_to_string(module_dir().join(doctor_toolkit_live::CONFIG_FILE))
+                    .map(|t| Config::parse(&t))
+                    .unwrap_or_default();
+            let _ = JOURNAL.set((ok && config.journal).then(journal::install));
             // SAFETY: a thread of the module; it starts once the loader
             // releases its lock.
             unsafe {

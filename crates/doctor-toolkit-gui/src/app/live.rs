@@ -1,7 +1,10 @@
 //! The live link in the game tab (stage 34): the "Link" panel — state,
 //! player and camera of the running game, objects nearby, teleport,
 //! messages and Lua — and the marks of the player and the camera in level
-//! tabs.
+//! tabs. Stage 49: the game's journal (prints, Lua errors with their call
+//! stack, messages of the bus) in the panel and in the editor's Log, every
+//! object of the game (logic too) and a search by GUID or name — names come
+//! from the SimGroups of the game and its workspace.
 //!
 //! A background thread talks to the module in the game
 //! (`doctor_toolkit::live::Client`): it reconnects every 2 s while the
@@ -9,16 +12,19 @@
 //! runs the actions the panel asks for. Writes go out only after the
 //! confirmation window.
 
+use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use egui::RichText;
 
+use doctor_toolkit::live::names::{self, LiveNames};
+use doctor_toolkit::live::proto::journal::{EventBody, mask};
 use doctor_toolkit::live::proto::{
-    self, CameraView, Guid, Hello, MessageId, ObjectInfo, Pose, Status,
+    self, CameraView, Event, Guid, Hello, MessageId, ObjectInfo, Pose, Status, World, WorldFilter,
 };
 use doctor_toolkit::live::{self, Client, Endpoint, LiveOptions, ModuleInstall, loader::Loader};
 use doctor_toolkit_mods::i18n::{tr, trf};
@@ -48,7 +54,22 @@ struct Shared {
     streams: Vec<String>,
     lua: Vec<String>,
     busy: bool,
+    /// The module has the journal and every object (protocol 2).
+    journal_ok: bool,
+    /// Kinds the module records.
+    recording: u8,
+    /// The latest events of the journal, oldest first.
+    journal: VecDeque<Event>,
+    /// Events not yet copied into the editor's Log.
+    fresh: Vec<Event>,
+    /// Events lost since the link came up.
+    lost: u64,
+    /// The last answer of "All objects" or a search.
+    world: Option<World>,
 }
+
+/// Events the panel keeps.
+const JOURNAL_KEEP: usize = 2000;
 
 /// An action for the thread.
 #[derive(Debug, Clone, PartialEq)]
@@ -58,6 +79,7 @@ enum Cmd {
     Lua(String),
     Objects(f32),
     Streams,
+    World(WorldFilter),
 }
 
 impl Cmd {
@@ -83,6 +105,31 @@ pub(super) struct LiveState {
     confirm: Option<Cmd>,
     /// The ASI loader of the open game, looked up once.
     loader: Option<(PathBuf, Option<Loader>)>,
+    /// Kinds of events the panel asks for ([`mask`]).
+    kinds: Arc<AtomicU8>,
+    /// Filter of the journal and of the list of objects.
+    journal_filter: String,
+    /// "All objects": the list of every object instead of those nearby.
+    all_objects: bool,
+    /// Only objects without a position (logic).
+    logic_only: bool,
+    /// Search by GUID or name.
+    find: String,
+    /// Names of objects and messages for the open game (loaded in the
+    /// background once the link is up).
+    names: Arc<Mutex<NamesState>>,
+    /// A Lua error was shown as a warning (once per link).
+    warned_lua: bool,
+}
+
+/// The index of names for the live link.
+#[derive(Default)]
+enum NamesState {
+    #[default]
+    None,
+    Loading(PathBuf),
+    Ready(PathBuf, Arc<LiveNames>),
+    Failed(PathBuf, String),
 }
 
 impl Default for LiveState {
@@ -101,6 +148,13 @@ impl Default for LiveState {
             radius: 30.0,
             confirm: None,
             loader: None,
+            kinds: Arc::new(AtomicU8::new(mask::OUTPUT | mask::LUA_ERROR)),
+            journal_filter: String::new(),
+            all_objects: false,
+            logic_only: false,
+            find: String::new(),
+            names: Arc::default(),
+            warned_lua: false,
         }
     }
 }
@@ -144,7 +198,40 @@ fn run(client: &mut Client, cmd: Cmd, s: &Mutex<Shared>) -> Result<String, live:
             shared(s).streams = list.into_iter().map(|s| s.name).collect();
             trf("live.streams_found", &[("count", &n)])
         }
+        Cmd::World(filter) => {
+            let world = client.world(filter, proto::world::MAX_WORLD_OBJECTS)?;
+            let text = trf(
+                "live.world_found",
+                &[("count", &world.total), ("walked", &world.walked)],
+            );
+            shared(s).world = Some(world);
+            text
+        }
     })
+}
+
+/// Reads new events of the journal into `s`.
+fn poll_journal(
+    client: &mut Client,
+    next: &mut u64,
+    kinds: u8,
+    s: &Mutex<Shared>,
+) -> Result<bool, live::LinkError> {
+    let b = client.events(*next, kinds, 500)?;
+    *next = b.next.saturating_sub(1);
+    let mut sh = shared(s);
+    sh.recording = b.recording;
+    sh.lost += b.lost;
+    let any = !b.events.is_empty();
+    for e in b.events {
+        sh.fresh.push(e.clone());
+        sh.journal.push_back(e);
+    }
+    let excess = sh.journal.len().saturating_sub(JOURNAL_KEEP);
+    sh.journal.drain(..excess);
+    let fresh_excess = sh.fresh.len().saturating_sub(JOURNAL_KEEP);
+    sh.fresh.drain(..fresh_excess);
+    Ok(any)
 }
 
 fn worker(
@@ -152,9 +239,13 @@ fn worker(
     s: Arc<Mutex<Shared>>,
     rx: Receiver<Cmd>,
     stop: Arc<AtomicBool>,
+    kinds: Arc<AtomicU8>,
     ctx: egui::Context,
 ) {
     let mut client: Option<Client> = None;
+    // Number of the last event read; a new connection reads all the module
+    // kept.
+    let mut next = 0u64;
     let mut last_try: Option<Instant> = None;
     while !stop.load(Ordering::Relaxed) {
         if client.is_none() && last_try.is_none_or(|t| t.elapsed() > Duration::from_secs(2)) {
@@ -168,8 +259,10 @@ fn worker(
                     let mut sh = shared(&s);
                     sh.connected = true;
                     sh.hello = Some(c.hello().clone());
+                    sh.journal_ok = c.has_journal();
                     sh.error = None;
                     client = Some(c);
+                    next = 0;
                 }
                 Err(e) => {
                     let mut sh = shared(&s);
@@ -205,16 +298,24 @@ fn worker(
             let polled =
                 (|| -> Result<_, live::LinkError> { Ok((c.status()?, c.player()?, c.camera()?)) })(
                 );
-            let mut sh = shared(&s);
-            match polled {
-                Ok((status, player, camera)) => {
-                    sh.status = Some(status);
-                    sh.player = player;
-                    sh.camera = camera;
+            {
+                let mut sh = shared(&s);
+                match polled {
+                    Ok((status, player, camera)) => {
+                        sh.status = Some(status);
+                        sh.player = player;
+                        sh.camera = camera;
+                    }
+                    Err(e) => {
+                        broken = !matches!(e, live::LinkError::Refused(_));
+                        sh.error = Some(e.to_string());
+                    }
                 }
-                Err(e) => {
-                    broken = !matches!(e, live::LinkError::Refused(_));
-                    sh.error = Some(e.to_string());
+            }
+            if !broken && c.has_journal() {
+                match poll_journal(c, &mut next, kinds.load(Ordering::Relaxed), &s) {
+                    Ok(_) => {}
+                    Err(e) => broken = !matches!(e, live::LinkError::Refused(_)),
                 }
             }
             ctx.request_repaint();
@@ -236,17 +337,56 @@ impl LiveState {
         let stop = Arc::new(AtomicBool::new(false));
         self.shared = Arc::default();
         {
-            let (s, stop, ctx, endpoint) = (
+            let (s, stop, ctx, endpoint, kinds) = (
                 self.shared.clone(),
                 stop.clone(),
                 ctx.clone(),
                 endpoint.clone(),
+                self.kinds.clone(),
             );
-            std::thread::spawn(move || worker(endpoint, s, rx, stop, ctx));
+            std::thread::spawn(move || worker(endpoint, s, rx, stop, kinds, ctx));
         }
         self.tx = Some(tx);
         self.stop = stop;
         self.endpoint = Some(endpoint);
+        self.warned_lua = false;
+    }
+
+    /// Starts reading the names of `root` in the background, once per game.
+    fn load_names(&self, root: &Path) {
+        let mut state = self.names.lock().unwrap_or_else(|e| e.into_inner());
+        let same = match &*state {
+            NamesState::Loading(r) | NamesState::Ready(r, _) | NamesState::Failed(r, _) => {
+                r == root
+            }
+            NamesState::None => false,
+        };
+        if same {
+            return;
+        }
+        *state = NamesState::Loading(root.to_path_buf());
+        let (names, root) = (self.names.clone(), root.to_path_buf());
+        std::thread::spawn(move || {
+            let result = LiveNames::open(&root, false);
+            let mut state = names.lock().unwrap_or_else(|e| e.into_inner());
+            *state = match result {
+                Ok(n) => NamesState::Ready(root, Arc::new(n)),
+                Err(e) => NamesState::Failed(root, e.to_string()),
+            };
+        });
+    }
+
+    /// The names, when loaded.
+    fn names(&self) -> Option<Arc<LiveNames>> {
+        match &*self.names.lock().unwrap_or_else(|e| e.into_inner()) {
+            NamesState::Ready(_, n) => Some(n.clone()),
+            _ => None,
+        }
+    }
+
+    /// Events not yet copied into the editor's Log.
+    fn take_fresh(&self) -> Vec<Event> {
+        std::mem::take(&mut shared(&self.shared).fresh)
     }
 
     pub(super) fn disconnect(&mut self) {
@@ -356,6 +496,34 @@ impl BrowserApp {
                     trf("live.install_failed", &[("error", &error.to_string())]),
                 );
                 None
+            }
+        }
+    }
+
+    /// Copies new events of the game's journal into the Log panel: prints
+    /// and Lua errors (messages stay in the Link panel). The first Lua error
+    /// of a link also pops up.
+    pub(super) fn live_journal_to_log(&mut self) {
+        let fresh = self.play.live.take_fresh();
+        if fresh.is_empty() {
+            return;
+        }
+        let names = self.play.live.names();
+        for e in &fresh {
+            if matches!(e.body, EventBody::Message { .. }) {
+                continue;
+            }
+            let text = trf(
+                "live.journal_line",
+                &[("text", &names::describe(e, names.as_deref()))],
+            );
+            self.notes.push(Level::Info, &text);
+            if matches!(e.body, EventBody::LuaError { .. }) && !self.play.live.warned_lua {
+                self.play.live.warned_lua = true;
+                self.notify(
+                    Level::Warning,
+                    trf("live.lua_error_seen", &[("text", &text)]),
+                );
             }
         }
     }
@@ -546,18 +714,43 @@ impl BrowserApp {
         ui.separator();
 
         // Reads.
-        ui.horizontal(|ui| {
-            ui.add(
-                egui::DragValue::new(&mut self.play.live.radius)
-                    .range(1.0..=500.0)
-                    .suffix(" m"),
-            );
-            if ui
-                .add_enabled(!busy, egui::Button::new(tr("live.objects")))
-                .on_hover_text(tr("live.objects_hint"))
-                .clicked()
-            {
-                self.play.live.send(Cmd::Objects(self.play.live.radius));
+        let journal_ok = shared(&self.play.live.shared).journal_ok;
+        if journal_ok {
+            self.play.live.load_names(game.root());
+        }
+        ui.horizontal_wrapped(|ui| {
+            ui.add_enabled(
+                journal_ok,
+                egui::Checkbox::new(&mut self.play.live.all_objects, tr("live.all_objects")),
+            )
+            .on_hover_text(tr("live.all_objects_hint"))
+            .on_disabled_hover_text(tr("live.old_module"));
+            if self.play.live.all_objects {
+                ui.checkbox(&mut self.play.live.logic_only, tr("live.logic_only"))
+                    .on_hover_text(tr("live.logic_only_hint"));
+                if ui
+                    .add_enabled(!busy, egui::Button::new(tr("live.list_all")))
+                    .clicked()
+                {
+                    let filter = WorldFilter {
+                        positioned: self.play.live.logic_only.then_some(false),
+                        ..WorldFilter::default()
+                    };
+                    self.play.live.send(Cmd::World(filter));
+                }
+            } else {
+                ui.add(
+                    egui::DragValue::new(&mut self.play.live.radius)
+                        .range(1.0..=500.0)
+                        .suffix(" m"),
+                );
+                if ui
+                    .add_enabled(!busy, egui::Button::new(tr("live.objects")))
+                    .on_hover_text(tr("live.objects_hint"))
+                    .clicked()
+                {
+                    self.play.live.send(Cmd::Objects(self.play.live.radius));
+                }
             }
             if ui
                 .add_enabled(!busy, egui::Button::new(tr("live.streams")))
@@ -566,6 +759,9 @@ impl BrowserApp {
                 self.play.live.send(Cmd::Streams);
             }
         });
+        if journal_ok {
+            self.live_find(ui, busy);
+        }
         let (objects, streams, lua_out) = {
             let s = shared(&self.play.live.shared);
             (s.objects.clone(), s.streams.clone(), s.lua.clone())
@@ -603,6 +799,7 @@ impl BrowserApp {
                         });
                 });
         }
+        self.live_world_list(ui);
         if !streams.is_empty() {
             egui::CollapsingHeader::new(trf("live.streams_list", &[("count", &streams.len())]))
                 .show(ui, |ui| {
@@ -617,6 +814,10 @@ impl BrowserApp {
                 });
         }
         ui.separator();
+        if journal_ok {
+            self.live_journal(ui);
+            ui.separator();
+        }
 
         // Writes.
         ui.label(RichText::new(tr("live.writes_title")).strong());
@@ -745,7 +946,7 @@ impl BrowserApp {
                 ],
             ),
             Cmd::Lua(code) => trf("live.confirm_lua", &[("lines", &code.lines().count())]),
-            Cmd::Objects(_) | Cmd::Streams => String::new(),
+            Cmd::Objects(_) | Cmd::Streams | Cmd::World(_) => String::new(),
         };
         let mut answer = None;
         egui::Modal::new(egui::Id::unique("live-confirm")).show(ctx, |ui| {
@@ -771,6 +972,250 @@ impl BrowserApp {
     }
 }
 
+impl BrowserApp {
+    /// Search of the running game by GUID or by name (names from the
+    /// SimGroups of the game and its workspace).
+    fn live_find(&mut self, ui: &mut egui::Ui, busy: bool) {
+        let names = self.play.live.names();
+        ui.horizontal(|ui| {
+            let edit = ui.add(
+                egui::TextEdit::singleline(&mut self.play.live.find)
+                    .hint_text(tr("live.find_hint"))
+                    .desired_width(220.0),
+            );
+            let enter = edit.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+            let text = self.play.live.find.trim().to_owned();
+            if (ui
+                .add_enabled(
+                    !busy && !text.is_empty(),
+                    egui::Button::new(tr("live.find")),
+                )
+                .clicked()
+                || enter)
+                && !text.is_empty()
+            {
+                let guids = match proto::parse_guid(&text) {
+                    Some(g) => vec![g],
+                    None => names
+                        .as_ref()
+                        .map(|n| {
+                            n.search(&text)
+                                .into_iter()
+                                .map(|(g, _)| g)
+                                .take(4096)
+                                .collect()
+                        })
+                        .unwrap_or_default(),
+                };
+                if guids.is_empty() {
+                    shared(&self.play.live.shared).result =
+                        Some((false, trf("live.find_none", &[("text", &text)])));
+                } else {
+                    self.play.live.send(Cmd::World(WorldFilter {
+                        guids,
+                        ..WorldFilter::default()
+                    }));
+                }
+            }
+            match &*self
+                .play
+                .live
+                .names
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+            {
+                NamesState::Loading(_) => {
+                    ui.spinner();
+                    ui.label(RichText::new(tr("live.names_loading")).weak().small());
+                }
+                NamesState::Ready(_, n) => {
+                    ui.label(
+                        RichText::new(trf("live.names_ready", &[("count", &n.objects())]))
+                            .weak()
+                            .small(),
+                    );
+                }
+                NamesState::Failed(_, e) => {
+                    ui.label(RichText::new(e).weak().small());
+                }
+                NamesState::None => {}
+            }
+        });
+    }
+
+    /// The answer of "All objects" or of a search.
+    fn live_world_list(&mut self, ui: &mut egui::Ui) {
+        let Some(world) = shared(&self.play.live.shared).world.clone() else {
+            return;
+        };
+        let names = self.play.live.names();
+        let filter = self.play.live.journal_filter.to_lowercase();
+        let rows: Vec<(String, &proto::WorldObject)> = world
+            .objects
+            .iter()
+            .map(|o| {
+                let known = names.as_ref().and_then(|n| n.object(&o.guid));
+                let class = world
+                    .class_name(o.class)
+                    .or(known.map(|k| k.class.as_str()))
+                    .unwrap_or("?");
+                let line = format!(
+                    "{:<22} {:<3} {:<34} {} {}",
+                    class,
+                    if o.listening { "on" } else { "off" },
+                    world.stream_name(o.group).unwrap_or("?"),
+                    proto::guid_hex(&o.guid),
+                    known.map(|k| k.name.as_str()).unwrap_or_default(),
+                );
+                (line, o)
+            })
+            .filter(|(line, _)| filter.is_empty() || line.to_lowercase().contains(&filter))
+            .collect();
+        let title = trf(
+            "live.world_list",
+            &[("count", &rows.len()), ("total", &world.total)],
+        );
+        egui::CollapsingHeader::new(title)
+            .id_salt("live-world")
+            .default_open(true)
+            .show(ui, |ui| {
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.play.live.journal_filter)
+                        .hint_text(tr("live.filter"))
+                        .desired_width(200.0),
+                );
+                egui::ScrollArea::vertical()
+                    .id_salt("live-world-rows")
+                    .max_height(200.0)
+                    .show_rows(ui, 16.0, rows.len(), |ui, range| {
+                        for (line, o) in &rows[range] {
+                            let r = ui
+                                .add(
+                                    egui::Label::new(RichText::new(line).monospace().small())
+                                        .sense(egui::Sense::click()),
+                                )
+                                .on_hover_text(tr("live.object_hint"));
+                            if r.clicked() {
+                                self.play.live.target = proto::braced_guid(&o.guid);
+                                if let Some(p) = o.position {
+                                    self.play.live.teleport = p.map(|v| format!("{v:.2}"));
+                                }
+                            }
+                        }
+                    });
+            });
+    }
+
+    /// The game's journal: prints, Lua errors with their call stack,
+    /// messages (when asked for), with a filter.
+    fn live_journal(&mut self, ui: &mut egui::Ui) {
+        let (events, recording, lost) = {
+            let s = shared(&self.play.live.shared);
+            (s.journal.clone(), s.recording, s.lost)
+        };
+        let names = self.play.live.names();
+        egui::CollapsingHeader::new(trf("live.journal", &[("count", &events.len())]))
+            .id_salt("live-journal")
+            .default_open(true)
+            .show(ui, |ui| {
+                let mut kinds = self.play.live.kinds.load(Ordering::Relaxed);
+                ui.horizontal_wrapped(|ui| {
+                    for (bit, label, hint) in [
+                        (
+                            mask::OUTPUT,
+                            "live.journal_output",
+                            "live.journal_output_hint",
+                        ),
+                        (
+                            mask::LUA_ERROR,
+                            "live.journal_errors",
+                            "live.journal_errors_hint",
+                        ),
+                        (
+                            mask::MESSAGE,
+                            "live.journal_messages",
+                            "live.journal_messages_hint",
+                        ),
+                    ] {
+                        let mut on = kinds & bit != 0;
+                        if ui
+                            .checkbox(&mut on, tr(label))
+                            .on_hover_text(tr(hint))
+                            .changed()
+                        {
+                            kinds ^= bit;
+                        }
+                    }
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.play.live.journal_filter)
+                            .hint_text(tr("live.filter"))
+                            .desired_width(160.0),
+                    );
+                    if ui.button(tr("log.clear")).clicked() {
+                        shared(&self.play.live.shared).journal.clear();
+                    }
+                });
+                self.play.live.kinds.store(kinds, Ordering::Relaxed);
+                if recording & kinds != kinds && recording != 0 {
+                    ui.colored_label(doctor_toolkit_mods::WARN, tr("live.journal_partial"));
+                }
+                if lost > 0 {
+                    ui.label(
+                        RichText::new(trf("live.journal_lost", &[("count", &lost)]))
+                            .weak()
+                            .small(),
+                    );
+                }
+                let filter = self.play.live.journal_filter.to_lowercase();
+                let rows: Vec<(String, Vec<String>, bool)> = events
+                    .iter()
+                    .rev()
+                    .filter(|e| e.body.mask() & kinds != 0)
+                    .map(|e| {
+                        let text = names::describe(e, names.as_deref());
+                        let (stack, error) = match &e.body {
+                            EventBody::LuaError { traceback, .. } => (traceback.clone(), true),
+                            _ => (Vec::new(), false),
+                        };
+                        (
+                            format!("{:>7.1}s {text}", f64::from(e.sim_time_ms) / 1000.0),
+                            stack,
+                            error,
+                        )
+                    })
+                    .filter(|(t, stack, _)| {
+                        filter.is_empty()
+                            || t.to_lowercase().contains(&filter)
+                            || stack.iter().any(|l| l.to_lowercase().contains(&filter))
+                    })
+                    .collect();
+                if rows.is_empty() {
+                    ui.label(RichText::new(tr("live.journal_empty")).weak());
+                    return;
+                }
+                egui::ScrollArea::vertical()
+                    .id_salt("live-journal-rows")
+                    .max_height(240.0)
+                    .show_rows(ui, 16.0, rows.len(), |ui, range| {
+                        for (text, stack, error) in &rows[range] {
+                            let rich = RichText::new(text).monospace().small();
+                            let rich = if *error {
+                                rich.color(doctor_toolkit_mods::BAD)
+                            } else {
+                                rich
+                            };
+                            let label = ui.add(egui::Label::new(rich).truncate());
+                            if !stack.is_empty() {
+                                label.on_hover_text(stack.join("\n"));
+                            } else {
+                                label.on_hover_text(text.as_str());
+                            }
+                        }
+                    });
+            });
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -793,6 +1238,7 @@ mod tests {
             token: "t".into(),
             writes: true,
             fix_input: true,
+            journal: true,
         })
         .unwrap();
         let ctx = egui::Context::default();
@@ -810,6 +1256,48 @@ mod tests {
         assert!(wait_for(&state, |s| s.objects.len() == 3));
         state.send(Cmd::Lua("return GetSimTime()".into()));
         assert!(wait_for(&state, |s| !s.lua.is_empty()));
+        // The journal: a print and an error of Lua reach the panel and are
+        // handed to the editor's Log once.
+        assert!(wait_for(&state, |s| s.journal_ok));
+        state.send(Cmd::Lua("print(\"from the game\")".into()));
+        state.send(Cmd::Lua("this is bad".into()));
+        assert!(wait_for(&state, |s| s.journal.len() == 2));
+        let fresh = state.take_fresh();
+        assert_eq!(fresh.len(), 2);
+        assert!(state.take_fresh().is_empty());
+        assert!(matches!(fresh[1].body, EventBody::LuaError { .. }));
+        // Messages only when the panel asks for them.
+        state.send(Cmd::Send(MessageId::Name("doctor_ping".into()), None));
+        std::thread::sleep(Duration::from_millis(600));
+        assert!(
+            !shared(&state.shared)
+                .journal
+                .iter()
+                .any(|e| matches!(e.body, EventBody::Message { .. }))
+        );
+        state.kinds.store(mask::ALL, Ordering::Relaxed);
+        state.send(Cmd::Send(MessageId::Name("doctor_ping".into()), None));
+        assert!(wait_for(&state, |s| s
+            .journal
+            .iter()
+            .any(|e| matches!(e.body, EventBody::Message { .. }))));
+        // Every object, logic only, and a search by GUID.
+        state.send(Cmd::World(WorldFilter {
+            positioned: Some(false),
+            ..WorldFilter::default()
+        }));
+        assert!(wait_for(&state, |s| s
+            .world
+            .as_ref()
+            .is_some_and(|w| w.objects.len() == 2)));
+        state.send(Cmd::World(WorldFilter {
+            guids: vec![[5; 16]],
+            ..WorldFilter::default()
+        }));
+        assert!(wait_for(&state, |s| s
+            .world
+            .as_ref()
+            .is_some_and(|w| w.objects.len() == 1)));
         state.disconnect();
         assert!(state.marks().is_none());
     }

@@ -178,3 +178,79 @@ pub const STREAM_LIST: u32 = 0x6C;
 /// Code of the executable: calls and vtables must point here.
 pub const TEXT_START: u32 = 0x0040_1000;
 pub const TEXT_END: u32 = 0x00D5_435A;
+
+// --- Journal (stage 49) ------------------------------------------------------
+
+/// Import slot of `OutputDebugStringA` (`KERNEL32`). Every debug print of
+/// the game goes through it: the printf of `0x0065BC40` (memory and timer
+/// statistics, its own listeners at `0x01205A54`), FESL, asserts
+/// (`0x006458F0`). The module puts its function into the slot and calls
+/// what was there.
+pub const IAT_OUTPUT_DEBUG_STRING: u32 = 0x00D5_50C4;
+/// Lua `print` of the game (`0x0046BCE0`, not the stock one at
+/// `0x0062D560`): it joins the arguments, finds the script and line of its
+/// caller (`lua_getinfo "Sl"`) and calls the function in this pointer with
+/// `(script, line, what, text)`, `cdecl`. In the release build it holds an
+/// empty function (`0x0046BFC0`, `ret`; no code writes the pointer), so
+/// prints went nowhere; the module puts its own there and calls that one
+/// after it.
+pub const LUA_PRINT_CALLBACK: u32 = 0x0110_A6C0;
+/// `luaD_rawrunprotected(L, f, ud)` — `cdecl`, returns Lua's status. It runs
+/// every protected call: `lua_pcall` and the game's calls (`0x00636570`),
+/// the parser (`0x006366F0`) and `lua_resume` (`0x00636440`). When it
+/// returns an error, the message is on top of the stack and the call stack
+/// (`L->ci`) is not unwound yet: the module reads both there.
+pub const LUA_RAW_RUN_PROTECTED: u32 = 0x0063_5AB0;
+/// `luaG_errormsg` (`L` in `ESI`): every run time error passes here
+/// (`lua_error` `0x00627BD0`, `luaG_runerror`) while the interpreter that
+/// raised it still runs; then it calls the error handler and throws
+/// (`0x00635A80`). The module jumps from its first five bytes
+/// (`mov eax,[esi+0x54]; test eax,eax`) to read the call stack with the
+/// current lines, and goes on at [`LUA_ERRORMSG_RESUME`].
+pub const LUA_ERRORMSG: u32 = 0x0063_38A0;
+pub const LUA_ERRORMSG_RESUME: u32 = 0x0063_38A5;
+/// The calls of [`LUA_RAW_RUN_PROTECTED`] the module hooks.
+pub const LUA_PROTECTED_CALLS: [u32; 3] = [0x0063_65A0, 0x0063_6722, 0x0063_6488];
+/// `lua_State` of Lua 5.0 (`0x00636570`, `0x00632AA0`): stack top, first
+/// slot, current `CallInfo`, the first `CallInfo`.
+pub const LUA_TOP: u32 = 0x08;
+pub const LUA_STACK: u32 = 0x1C;
+pub const LUA_CI: u32 = 0x14;
+pub const LUA_BASE_CI: u32 = 0x28;
+/// `CallInfo` (0x18 bytes): `base` `+0`, `state` `+8` (bit 0: a C
+/// function, bit 1: its `pc` is a local of the running interpreter),
+/// `savedpc` `+0xC`, `pc` `+0x10`, `tailcalls` `+0x14` (`0x00632AA0`).
+pub const LUA_CI_SIZE: u32 = 0x18;
+pub const LUA_CI_STATE: u32 = 0x08;
+pub const LUA_CI_SAVEDPC: u32 = 0x0C;
+pub const LUA_CI_PC: u32 = 0x10;
+pub const LUA_CI_TAILCALLS: u32 = 0x14;
+/// Closure: `isC` byte `+6`, `Proto*` (Lua) or the C function at `+0xC`
+/// (`0x00632D40`).
+pub const LUA_CLOSURE_IS_C: u32 = 0x06;
+pub const LUA_CLOSURE_PROTO: u32 = 0x0C;
+/// `Proto`: code `+0xC`, line of each instruction `+0x14`, source name
+/// (`TString*`) `+0x20`, sizes of code and lines `+0x2C`, `+0x30`, line
+/// where the function starts `+0x3C` (`0x00632AA0`, `0x00632D40`).
+pub const LUA_PROTO_CODE: u32 = 0x0C;
+pub const LUA_PROTO_LINEINFO: u32 = 0x14;
+pub const LUA_PROTO_SOURCE: u32 = 0x20;
+pub const LUA_PROTO_SIZECODE: u32 = 0x2C;
+pub const LUA_PROTO_SIZELINEINFO: u32 = 0x30;
+pub const LUA_PROTO_LINEDEFINED: u32 = 0x3C;
+/// `TString`: length `+0xC`, text `+0x10`.
+pub const LUA_STRING_LEN: u32 = 0x0C;
+pub const LUA_STRING_TEXT: u32 = 0x10;
+/// Where the bus continues after the five bytes the module's jump takes
+/// (`push ecx; mov edx,[esp+8]` at [`MESSAGE_SEND`]).
+pub const MESSAGE_SEND_RESUME: u32 = 0x0040_8A05;
+/// Flags word of an object (`+0x14`); the SimManager sets `0x20000000` when
+/// it registers it (`0x004467C0`).
+pub const OBJECT_FLAGS: u32 = 0x14;
+/// Flags of the object's message listener (`+0x3C` + 4): bit 0 — switched
+/// on (`0x0046C590` sets `1 | 0x12`; the bus checks it at `0x00408A7B`).
+pub const OBJECT_LISTENER_FLAGS: u32 = 0x40;
+/// A loaded stream (record of the list at `StreamManager+0x6C`): its id at
+/// `+0x1C` is the group of every object it made (`0x00446E9D`,
+/// `0x00405F40`).
+pub const STREAM_ID: u32 = 0x1C;

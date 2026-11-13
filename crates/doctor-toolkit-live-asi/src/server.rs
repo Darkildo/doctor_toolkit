@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 
 use doctor_toolkit_live::config::Config;
 use doctor_toolkit_live::{
-    ErrorCode, Hello, PROTOCOL_VERSION, Request, Response, kind, read_frame,
+    ErrorCode, Hello, PROTOCOL_VERSION, Request, Response, kind, read_frame, supported,
 };
 
 use crate::{Job, MODULE_VERSION, edition_state, frames, log, snapshot, submit};
@@ -58,11 +58,11 @@ fn serve(mut stream: TcpStream, config: &Config) {
         let Ok((header, payload)) = read_frame(&mut stream) else {
             return;
         };
-        if header.version != PROTOCOL_VERSION {
+        if !supported(header.version) {
             let reply = Response::error(
                 ErrorCode::Version,
                 format!(
-                    "the module speaks protocol {PROTOCOL_VERSION}, the request is version {}",
+                    "the module speaks protocol 1 to {PROTOCOL_VERSION}, the request is version {}",
                     header.version
                 ),
             );
@@ -71,6 +71,14 @@ fn serve(mut stream: TcpStream, config: &Config) {
         }
         let reply = match Request::decode(header.kind, &payload) {
             Err(e) => Response::error(ErrorCode::BadRequest, e.to_string()),
+            Ok(r) if r.since() > header.version => Response::error(
+                ErrorCode::Unsupported,
+                format!(
+                    "this request needs protocol {}, the frame is version {}",
+                    r.since(),
+                    header.version
+                ),
+            ),
             Ok(Request::Hello { token, client }) => {
                 if !config.token.is_empty() && token != config.token {
                     log(&format!("refused {client}: wrong token"));
@@ -98,7 +106,12 @@ fn serve(mut stream: TcpStream, config: &Config) {
         } else {
             header.kind
         };
-        if std::io::Write::write_all(&mut stream, &reply.to_frame(kind, header.id)).is_err() {
+        if std::io::Write::write_all(
+            &mut stream,
+            &reply.to_frame_of(header.version, kind, header.id),
+        )
+        .is_err()
+        {
             return;
         }
     }
@@ -127,6 +140,10 @@ fn answer(request: Request, config: &Config) -> Response {
         }
         Request::Player => return Response::Player(snapshot().and_then(|s| s.player)),
         Request::Camera => return Response::Camera(snapshot().and_then(|s| s.camera)),
+        // The journal is answered from its ring at once.
+        Request::Events { after, kinds, max } => {
+            return Response::Events(crate::journal::events(after, kinds, max));
+        }
         _ => {}
     }
     let (tx, rx) = sync_channel(1);

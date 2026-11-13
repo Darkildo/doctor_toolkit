@@ -17,8 +17,20 @@ impl Writer {
     pub(crate) fn u32(&mut self, v: u32) {
         self.buf.extend_from_slice(&v.to_le_bytes());
     }
+    pub(crate) fn u64(&mut self, v: u64) {
+        self.buf.extend_from_slice(&v.to_le_bytes());
+    }
     pub(crate) fn f32(&mut self, v: f32) {
         self.buf.extend_from_slice(&v.to_le_bytes());
+    }
+    pub(crate) fn opt_u32(&mut self, v: Option<u32>) {
+        match v {
+            Some(x) => {
+                self.u8(1);
+                self.u32(x);
+            }
+            None => self.u8(0),
+        }
     }
     pub(crate) fn bool(&mut self, v: bool) {
         self.u8(u8::from(v));
@@ -80,8 +92,20 @@ impl<'a> Reader<'a> {
             self.take(4)?.try_into().unwrap_or_default(),
         ))
     }
+    pub(crate) fn u64(&mut self) -> Result<u64, DecodeError> {
+        Ok(u64::from_le_bytes(
+            self.take(8)?.try_into().unwrap_or_default(),
+        ))
+    }
     pub(crate) fn f32(&mut self) -> Result<f32, DecodeError> {
         Ok(f32::from_bits(self.u32()?))
+    }
+    pub(crate) fn opt_u32(&mut self) -> Result<Option<u32>, DecodeError> {
+        Ok(if self.bool()? {
+            Some(self.u32()?)
+        } else {
+            None
+        })
     }
     pub(crate) fn bool(&mut self) -> Result<bool, DecodeError> {
         match self.u8()? {

@@ -14,8 +14,17 @@
 //!
 //! Numbers are little-endian, strings are a u16 length and UTF-8 bytes,
 //! lists a u32 count. The first request of a connection is [`Request::Hello`]
-//! with the token of the module's configuration; a frame of another version
-//! gets [`ErrorCode::Version`] and the connection is closed.
+//! with the token of the module's configuration.
+//!
+//! **Versions.** Version 2 (stage 49) adds [`Request::Events`] (the game's
+//! journal) and [`Request::World`] (every object). A module answers frames
+//! of every version from [`OLDEST_PROTOCOL_VERSION`] to
+//! [`PROTOCOL_VERSION`] in the version of the request, so clients of
+//! version 1 keep working; a request newer than its frame's version gets
+//! [`ErrorCode::Unsupported`]. A frame of another version gets
+//! [`ErrorCode::Version`] and the connection is closed — a client of
+//! version 2 then connects again with version 1 and does without the new
+//! requests (a module of stage 34).
 //!
 //! Writes into the game ([`Request::Teleport`], [`Request::Send`],
 //! [`Request::Lua`]) are separate requests: the editor asks before it sends
@@ -25,12 +34,21 @@
 use std::fmt;
 use std::io::{Read, Write};
 
+pub use crate::journal::{Event, EventBatch, EventBody, MessageOrigin, OutputSource};
 use crate::wire::{Reader, Writer};
+pub use crate::world::{World, WorldFilter, WorldObject};
 
 /// Magic of every frame.
 pub const MAGIC: [u8; 4] = *b"DTLV";
-/// Version of this protocol. Both sides refuse frames of another one.
-pub const PROTOCOL_VERSION: u16 = 1;
+/// Version of this protocol: what a client sends first.
+pub const PROTOCOL_VERSION: u16 = 2;
+/// Oldest version a module still answers.
+pub const OLDEST_PROTOCOL_VERSION: u16 = 1;
+
+/// Whether this side speaks a frame of `version`.
+pub fn supported(version: u16) -> bool {
+    (OLDEST_PROTOCOL_VERSION..=PROTOCOL_VERSION).contains(&version)
+}
 /// Size of a frame header.
 pub const HEADER_LEN: usize = 16;
 /// Largest payload either side sends or accepts.
@@ -114,10 +132,15 @@ impl Header {
     }
 }
 
-/// One frame: header and payload.
+/// One frame of [`PROTOCOL_VERSION`]: header and payload.
 pub fn frame(kind: u16, id: u32, payload: &[u8]) -> Vec<u8> {
+    frame_of(PROTOCOL_VERSION, kind, id, payload)
+}
+
+/// One frame of `version`.
+pub fn frame_of(version: u16, kind: u16, id: u32, payload: &[u8]) -> Vec<u8> {
     let header = Header {
-        version: PROTOCOL_VERSION,
+        version,
         kind,
         id,
         len: payload.len() as u32,
@@ -225,6 +248,14 @@ pub enum Request {
     /// Reads `len` bytes of the game's memory at `address` (diagnostics;
     /// unreadable memory is an error, never a crash).
     Peek { address: u32, len: u16 },
+    /// Version 2: events of the game's journal numbered after `after` whose
+    /// kind is in `kinds` ([`crate::journal::mask`]), at most `max`. Asking
+    /// for messages switches their recording on for a while (the module
+    /// does not watch the bus for nobody).
+    Events { after: u64, kinds: u8, max: u16 },
+    /// Version 2: every SimGroup object of the game that passes `filter`,
+    /// at most `max` ([`crate::world::MAX_WORLD_OBJECTS`]).
+    World { filter: WorldFilter, max: u32 },
 }
 
 /// Kinds of requests.
@@ -239,6 +270,8 @@ pub mod kind {
     pub const SEND: u16 = 8;
     pub const LUA: u16 = 9;
     pub const PEEK: u16 = 10;
+    pub const EVENTS: u16 = 11;
+    pub const WORLD: u16 = 12;
 }
 
 impl Request {
@@ -254,6 +287,16 @@ impl Request {
             Self::Send { .. } => kind::SEND,
             Self::Lua { .. } => kind::LUA,
             Self::Peek { .. } => kind::PEEK,
+            Self::Events { .. } => kind::EVENTS,
+            Self::World { .. } => kind::WORLD,
+        }
+    }
+
+    /// The first protocol version that has this request.
+    pub fn since(&self) -> u16 {
+        match self {
+            Self::Events { .. } | Self::World { .. } => 2,
+            _ => 1,
         }
     }
 
@@ -324,6 +367,25 @@ impl Request {
                 w.u32(*address);
                 w.u16(*len);
             }
+            Self::Events { after, kinds, max } => {
+                w.u64(*after);
+                w.u8(*kinds);
+                w.u16(*max);
+            }
+            Self::World { filter, max } => {
+                w.opt_u32(filter.class);
+                w.u32(filter.guids.len() as u32);
+                for g in &filter.guids {
+                    w.bytes(g);
+                }
+                w.opt_u32(filter.group);
+                w.u8(match filter.positioned {
+                    None => 0,
+                    Some(false) => 1,
+                    Some(true) => 2,
+                });
+                w.u32(*max);
+            }
         }
         w.buf
     }
@@ -362,6 +424,32 @@ impl Request {
                 address: r.u32()?,
                 len: r.u16()?,
             },
+            kind::EVENTS => Self::Events {
+                after: r.u64()?,
+                kinds: r.u8()?,
+                max: r.u16()?,
+            },
+            kind::WORLD => Self::World {
+                filter: WorldFilter {
+                    class: r.opt_u32()?,
+                    guids: {
+                        let n = r.count(16)?;
+                        let mut list = Vec::with_capacity(n);
+                        for _ in 0..n {
+                            list.push(r.guid()?);
+                        }
+                        list
+                    },
+                    group: r.opt_u32()?,
+                    positioned: match r.u8()? {
+                        0 => None,
+                        1 => Some(false),
+                        2 => Some(true),
+                        _ => return Err(DecodeError::BadValue("positioned")),
+                    },
+                },
+                max: r.u32()?,
+            },
             other => return Err(DecodeError::UnknownKind(other)),
         };
         r.finish()?;
@@ -371,6 +459,11 @@ impl Request {
     /// The whole frame.
     pub fn to_frame(&self, id: u32) -> Vec<u8> {
         frame(self.kind(), id, &self.encode())
+    }
+
+    /// The whole frame in protocol `version`.
+    pub fn to_frame_of(&self, version: u16, id: u32) -> Vec<u8> {
+        frame_of(version, self.kind(), id, &self.encode())
     }
 }
 
@@ -558,6 +651,10 @@ pub enum Response {
     Done(Done),
     Lua(LuaReply),
     Peek(Vec<u8>),
+    /// Version 2: answer to [`Request::Events`].
+    Events(EventBatch),
+    /// Version 2: answer to [`Request::World`].
+    World(World),
     Error(Failure),
 }
 
@@ -668,6 +765,8 @@ impl Response {
                 w.u32(bytes.len() as u32);
                 w.bytes(bytes);
             }
+            Self::Events(b) => put_events(&mut w, b),
+            Self::World(world) => put_world(&mut w, world),
             Self::Error(e) => {
                 w.u16(e.code as u16);
                 w.str(&e.message);
@@ -759,6 +858,8 @@ impl Response {
                     let n = r.count(1)?;
                     Self::Peek(r.take(n)?.to_vec())
                 }
+                kind::EVENTS => Self::Events(get_events(&mut r)?),
+                kind::WORLD => Self::World(get_world(&mut r)?),
                 other => return Err(DecodeError::UnknownKind(other | REPLY)),
             }
         };
@@ -770,6 +871,207 @@ impl Response {
     pub fn to_frame(&self, request: u16, id: u32) -> Vec<u8> {
         frame(self.kind(request), id, &self.encode())
     }
+
+    /// The same in protocol `version` (that of the request).
+    pub fn to_frame_of(&self, version: u16, request: u16, id: u32) -> Vec<u8> {
+        frame_of(version, self.kind(request), id, &self.encode())
+    }
+}
+
+fn put_events(w: &mut Writer, b: &EventBatch) {
+    w.u64(b.next);
+    w.u64(b.lost);
+    w.u8(b.recording);
+    w.u32(b.events.len() as u32);
+    for e in &b.events {
+        w.u64(e.seq);
+        w.u32(e.frame);
+        w.u32(e.sim_time_ms);
+        match &e.body {
+            EventBody::Output {
+                source,
+                text,
+                script,
+                line,
+            } => {
+                w.u8(1);
+                w.u8(*source as u8);
+                w.str(text);
+                w.str(script);
+                w.u32(*line as u32);
+            }
+            EventBody::LuaError {
+                status,
+                message,
+                chunk,
+                line,
+                traceback,
+            } => {
+                w.u8(2);
+                w.u8(*status);
+                w.str(message);
+                w.str(chunk);
+                w.u32(*line as u32);
+                w.u32(traceback.len() as u32);
+                for t in traceback {
+                    w.str(t);
+                }
+            }
+            EventBody::Message {
+                hash,
+                data,
+                forced,
+                listeners,
+                receivers,
+                origin,
+            } => {
+                w.u8(3);
+                w.u32(*hash);
+                w.u32(*data);
+                w.bool(*forced);
+                w.u32(*listeners);
+                w.u32(receivers.len() as u32);
+                for g in receivers {
+                    w.bytes(g);
+                }
+                w.u8(*origin as u8);
+            }
+        }
+    }
+}
+
+fn get_events(r: &mut Reader<'_>) -> Result<EventBatch, DecodeError> {
+    let next = r.u64()?;
+    let lost = r.u64()?;
+    let recording = r.u8()?;
+    let n = r.count(17)?;
+    let mut events = Vec::with_capacity(n);
+    for _ in 0..n {
+        let seq = r.u64()?;
+        let frame = r.u32()?;
+        let sim_time_ms = r.u32()?;
+        let body = match r.u8()? {
+            1 => EventBody::Output {
+                source: OutputSource::from_u8(r.u8()?),
+                text: r.str()?,
+                script: r.str()?,
+                line: r.u32()? as i32,
+            },
+            2 => EventBody::LuaError {
+                status: r.u8()?,
+                message: r.str()?,
+                chunk: r.str()?,
+                line: r.u32()? as i32,
+                traceback: {
+                    let n = r.count(2)?;
+                    let mut lines = Vec::with_capacity(n);
+                    for _ in 0..n {
+                        lines.push(r.str()?);
+                    }
+                    lines
+                },
+            },
+            3 => EventBody::Message {
+                hash: r.u32()?,
+                data: r.u32()?,
+                forced: r.bool()?,
+                listeners: r.u32()?,
+                receivers: {
+                    let n = r.count(16)?;
+                    let mut list = Vec::with_capacity(n);
+                    for _ in 0..n {
+                        list.push(r.guid()?);
+                    }
+                    list
+                },
+                origin: match r.u8()? {
+                    0 => MessageOrigin::Game,
+                    1 => MessageOrigin::Link,
+                    _ => return Err(DecodeError::BadValue("message origin")),
+                },
+            },
+            _ => return Err(DecodeError::BadValue("event")),
+        };
+        events.push(Event {
+            seq,
+            frame,
+            sim_time_ms,
+            body,
+        });
+    }
+    Ok(EventBatch {
+        next,
+        lost,
+        recording,
+        events,
+    })
+}
+
+fn put_world(w: &mut Writer, world: &World) {
+    w.u32(world.total);
+    w.u32(world.walked);
+    w.bool(world.partial);
+    w.u32(world.classes.len() as u32);
+    for (h, n) in &world.classes {
+        w.u32(*h);
+        w.str(n);
+    }
+    w.u32(world.streams.len() as u32);
+    for (g, n) in &world.streams {
+        w.u32(*g);
+        w.str(n);
+    }
+    w.u32(world.objects.len() as u32);
+    for o in &world.objects {
+        w.bytes(&o.guid);
+        w.u32(o.class);
+        w.u32(o.group);
+        match &o.position {
+            Some(p) => {
+                w.u8(1);
+                w.vec3(p);
+            }
+            None => w.u8(0),
+        }
+        w.u32(o.flags);
+        w.bool(o.listening);
+    }
+}
+
+fn get_world(r: &mut Reader<'_>) -> Result<World, DecodeError> {
+    let total = r.u32()?;
+    let walked = r.u32()?;
+    let partial = r.bool()?;
+    let n = r.count(6)?;
+    let mut classes = Vec::with_capacity(n);
+    for _ in 0..n {
+        classes.push((r.u32()?, r.str()?));
+    }
+    let n = r.count(6)?;
+    let mut streams = Vec::with_capacity(n);
+    for _ in 0..n {
+        streams.push((r.u32()?, r.str()?));
+    }
+    let n = r.count(30)?;
+    let mut objects = Vec::with_capacity(n);
+    for _ in 0..n {
+        objects.push(WorldObject {
+            guid: r.guid()?,
+            class: r.u32()?,
+            group: r.u32()?,
+            position: if r.bool()? { Some(r.vec3()?) } else { None },
+            flags: r.u32()?,
+            listening: r.bool()?,
+        });
+    }
+    Ok(World {
+        total,
+        walked,
+        partial,
+        classes,
+        streams,
+        objects,
+    })
 }
 
 #[cfg(test)]

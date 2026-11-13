@@ -11,6 +11,7 @@ fn config(token: &str, writes: bool) -> Config {
         token: token.into(),
         writes,
         fix_input: true,
+        journal: true,
     }
 }
 
@@ -49,7 +50,7 @@ fn writes_through_the_client() {
         c.send(MessageId::Name("doctor_ping".into()), None)
             .unwrap()
             .count,
-        2
+        3
     );
     assert_eq!(
         c.send(MessageId::Name("doctor_ping".into()), Some([1; 16]))
@@ -246,4 +247,132 @@ fn a_start_in_a_level_installs_the_module_for_the_input() {
         InputFix::NoModule => assert!(module_binary().is_none()),
         InputFix::NoLoader => panic!("the loader is there"),
     }
+}
+
+#[test]
+fn the_journal_through_the_client() {
+    use proto::journal::{EventBody, OutputSource, mask};
+    let game = FakeGame::start(config("", true)).unwrap();
+    let mut c = Client::connect(&game.endpoint(""), "test", T).unwrap();
+    assert_eq!(c.version(), proto::PROTOCOL_VERSION);
+    assert!(c.has_journal());
+    let first = c.events(0, mask::ALL, 100).unwrap();
+    assert!(first.events.is_empty());
+    assert_eq!(first.recording, mask::ALL);
+    c.lua("print(\"hello\")").unwrap();
+    assert!(!c.lua("this is bad").unwrap().ok);
+    c.send(MessageId::Name("doctor_ping".into()), None).unwrap();
+    let b = c.events(first.next - 1, mask::ALL, 100).unwrap();
+    assert_eq!(b.events.len(), 3, "{b:?}");
+    assert!(matches!(
+        &b.events[0].body,
+        EventBody::Output { source: OutputSource::Print, text, .. } if text == "hello"
+    ));
+    assert!(matches!(
+        &b.events[1].body,
+        EventBody::LuaError { status: 3, .. }
+    ));
+    let EventBody::Message {
+        receivers,
+        listeners,
+        ..
+    } = &b.events[2].body
+    else {
+        panic!("not a message: {:?}", b.events[2]);
+    };
+    // Two with a position and the logic object.
+    assert_eq!(*listeners, 3);
+    assert!(receivers.contains(&[4; 16]));
+    // Only errors; nothing new after the last one.
+    let errors = c.events(0, mask::LUA_ERROR, 100).unwrap();
+    assert_eq!(errors.events.len(), 1);
+    assert!(
+        c.events(b.next - 1, mask::ALL, 100)
+            .unwrap()
+            .events
+            .is_empty()
+    );
+}
+
+#[test]
+fn every_object_through_the_client() {
+    let game = FakeGame::start(config("", false)).unwrap();
+    let mut c = Client::connect(&game.endpoint(""), "test", T).unwrap();
+    let all = c.world(proto::WorldFilter::default(), 100).unwrap();
+    assert_eq!(all.total, 5);
+    assert_eq!(all.objects.len(), 5);
+    assert_eq!(all.stream_name(1), Some("gf2\\cuba.str"));
+    let logic = c
+        .world(
+            proto::WorldFilter {
+                positioned: Some(false),
+                ..Default::default()
+            },
+            100,
+        )
+        .unwrap();
+    assert_eq!(logic.objects.len(), 2);
+    assert!(logic.objects.iter().all(|o| o.position.is_none()));
+    assert_eq!(
+        logic.class_name(logic.objects[0].class),
+        Some("VariableSwitch")
+    );
+    let one = c
+        .world(
+            proto::WorldFilter {
+                guids: vec![[5; 16]],
+                ..Default::default()
+            },
+            100,
+        )
+        .unwrap();
+    assert_eq!(one.objects.len(), 1);
+    assert!(!one.objects[0].listening);
+    // `max` cuts the list, `total` still counts.
+    let cut = c.world(proto::WorldFilter::default(), 2).unwrap();
+    assert_eq!((cut.total, cut.objects.len()), (5, 2));
+}
+
+#[test]
+fn a_module_of_protocol_1_still_answers() {
+    let game = FakeGame::start(config("t", false)).unwrap();
+    game.world.lock().unwrap().protocol = 1;
+    let mut c = Client::connect(&game.endpoint("t"), "test", T).unwrap();
+    assert_eq!(c.version(), 1);
+    assert!(!c.has_journal());
+    assert!(c.status().unwrap().player);
+    let err = c.events(0, proto::journal::mask::ALL, 10).unwrap_err();
+    assert_eq!(err.code(), Some(ErrorCode::Unsupported));
+}
+
+#[test]
+fn a_frame_of_version_1_cannot_carry_a_request_of_version_2() {
+    let game = FakeGame::start(config("t", false)).unwrap();
+    let mut s = std::net::TcpStream::connect(("127.0.0.1", game.port)).unwrap();
+    s.write_all(
+        &Request::Hello {
+            token: "t".into(),
+            client: "old".into(),
+        }
+        .to_frame_of(1, 1),
+    )
+    .unwrap();
+    let (h, _) = read_frame(&mut s).unwrap();
+    // A client of stage 34 gets its answers in version 1.
+    assert_eq!(h.version, 1);
+    s.write_all(
+        &Request::Events {
+            after: 0,
+            kinds: 1,
+            max: 1,
+        }
+        .to_frame_of(1, 2),
+    )
+    .unwrap();
+    let (h, payload) = read_frame(&mut s).unwrap();
+    assert_eq!(h.version, 1);
+    let Response::Error(f) = Response::decode(h.kind, &payload).unwrap() else {
+        panic!("not an error");
+    };
+    assert_eq!(f.code, ErrorCode::Unsupported);
 }

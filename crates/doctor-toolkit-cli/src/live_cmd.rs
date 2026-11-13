@@ -1,4 +1,5 @@
-//! `live`: the live link with the running game (stage 34).
+//! `live`: the live link with the running game (stage 34); the game's
+//! journal and every object (stage 49).
 
 use std::io::Write as _;
 use std::path::PathBuf;
@@ -8,7 +9,9 @@ use anyhow::{Context, Result, bail};
 use clap::{Args, Subcommand};
 use serde_json::json;
 
-use doctor_toolkit::live::proto::{self, MessageId};
+use doctor_toolkit::live::names::LiveNames;
+use doctor_toolkit::live::proto::journal::{EventBody, MessageOrigin, mask};
+use doctor_toolkit::live::proto::{self, Event, MessageId, World, WorldFilter, WorldObject};
 use doctor_toolkit::live::{self, Client, Config, Endpoint, ModuleInstall};
 
 macro_rules! out {
@@ -37,6 +40,10 @@ pub struct LinkArgs {
     /// Print JSON
     #[arg(long)]
     json: bool,
+    /// Names of objects and messages from the SimGroups of the --game folder
+    /// and its workspace (reads every SimGroup first: a few seconds)
+    #[arg(long, requires = "game")]
+    names: bool,
 }
 
 impl LinkArgs {
@@ -53,6 +60,23 @@ impl LinkArgs {
             e.token = t.clone();
         }
         e
+    }
+
+    /// The index of names, when asked for (or `needed`).
+    fn names(&self, needed: bool) -> Result<Option<LiveNames>> {
+        if !(self.names || needed) {
+            return Ok(None);
+        }
+        let dir = self
+            .game
+            .as_deref()
+            .context("names come from the SimGroups of a game folder: add --game DIR")?;
+        let names = LiveNames::open(dir, false)
+            .with_context(|| format!("reading the SimGroups of {}", dir.display()))?;
+        if names.errors > 0 {
+            eprintln!("warning: {} SimGroup(s) could not be read", names.errors);
+        }
+        Ok(Some(names))
     }
 
     fn connect(&self) -> Result<Client> {
@@ -83,7 +107,8 @@ pub enum LiveCommand {
     Camera(LinkArgs),
     /// Streams the game has loaded
     Streams(LinkArgs),
-    /// SimGroup objects near the player (or a point): GUID, class, position
+    /// SimGroup objects near the player (or a point): GUID, class, position;
+    /// with --all every object of the game, logic included
     Objects {
         #[command(flatten)]
         link: LinkArgs,
@@ -96,8 +121,49 @@ pub enum LiveCommand {
         /// Centre X,Y,Z instead of the player
         #[arg(long, value_name = "X,Y,Z", allow_hyphen_values = true)]
         at: Option<String>,
-        #[arg(long, default_value_t = 50)]
-        max: u16,
+        /// At most this many [default: 50, with --all 16000]
+        #[arg(long)]
+        max: Option<u32>,
+        /// Every object of the SimManager: logic, triggers and relays too,
+        /// with group (stream) and whether it listens to messages
+        #[arg(long)]
+        all: bool,
+        /// With --all: only objects without a world matrix
+        #[arg(long, requires = "all")]
+        logic: bool,
+        /// With --all: only objects of streams whose name contains this
+        #[arg(long, requires = "all")]
+        stream: Option<String>,
+    },
+    /// Find objects of the running game by GUID ({…} or 32 hex digits) or by
+    /// name (needs --game: names come from its SimGroups)
+    Find {
+        /// GUID, or a part of an object name
+        query: String,
+        #[command(flatten)]
+        link: LinkArgs,
+    },
+    /// The game's journal: what it prints, Lua errors with their call stack,
+    /// messages of the bus (--messages)
+    Log {
+        /// Keep printing new events until Ctrl+C
+        #[arg(long, short)]
+        follow: bool,
+        /// Only lines that contain this (case does not matter)
+        #[arg(long)]
+        filter: Option<String>,
+        /// Also messages of the bus with their receivers (the module records
+        /// them while someone asks)
+        #[arg(long)]
+        messages: bool,
+        /// Only Lua errors
+        #[arg(long, conflicts_with = "messages")]
+        errors: bool,
+        /// Start after this event number [default: all the module kept]
+        #[arg(long, default_value_t = 0)]
+        after: u64,
+        #[command(flatten)]
+        link: LinkArgs,
     },
     /// Move the player (a write: needs --yes)
     Teleport {
@@ -201,6 +267,215 @@ fn pose_json(p: &proto::Pose) -> serde_json::Value {
     })
 }
 
+/// The name of a message: from the index, else the hash.
+fn message_name(names: Option<&LiveNames>, hash: u32) -> String {
+    names
+        .and_then(|n| n.message(hash))
+        .map_or_else(|| format!("{hash:#010x}"), str::to_owned)
+}
+
+/// `{GUID} name` of an object: the name from the index when known.
+fn object_label(names: Option<&LiveNames>, guid: &proto::Guid) -> String {
+    match names.and_then(|n| n.object(guid)) {
+        Some(o) if !o.name.is_empty() => format!("{} {}", o.name, proto::guid_hex(guid)),
+        _ => proto::guid_hex(guid),
+    }
+}
+
+/// The lines of one event.
+fn event_lines(e: &Event, names: Option<&LiveNames>) -> Vec<String> {
+    let head = format!(
+        "#{} frame {} {:>8.1}s",
+        e.seq,
+        e.frame,
+        f64::from(e.sim_time_ms) / 1000.0
+    );
+    match &e.body {
+        EventBody::Output {
+            source,
+            text,
+            script,
+            line,
+        } => {
+            let at = if script.is_empty() {
+                String::new()
+            } else {
+                format!(" {script}:{line}:")
+            };
+            vec![format!("{head} {}{at} {text}", source.name())]
+        }
+        EventBody::LuaError {
+            message, traceback, ..
+        } => {
+            let mut out = vec![format!("{head} lua error: {message}")];
+            out.extend(traceback.iter().map(|t| format!("    {t}")));
+            out
+        }
+        EventBody::Message {
+            hash,
+            data,
+            forced,
+            listeners,
+            receivers,
+            origin,
+        } => {
+            let mut line = format!(
+                "{head} message {}{}{} -> {listeners} listener(s)",
+                message_name(names, *hash),
+                if *data != 0 {
+                    format!(" data {data:#x}")
+                } else {
+                    String::new()
+                },
+                if *forced { " forced" } else { "" },
+            );
+            if !receivers.is_empty() {
+                let list: Vec<String> = receivers.iter().map(|g| object_label(names, g)).collect();
+                line += &format!(": {}", list.join(", "));
+            }
+            if *origin == MessageOrigin::Link {
+                line += " (live link)";
+            }
+            vec![line]
+        }
+    }
+}
+
+fn event_json(e: &Event, names: Option<&LiveNames>) -> serde_json::Value {
+    let mut v = json!({"seq": e.seq, "frame": e.frame, "sim_time_ms": e.sim_time_ms});
+    match &e.body {
+        EventBody::Output {
+            source,
+            text,
+            script,
+            line,
+        } => {
+            v["kind"] = json!("output");
+            v["source"] = json!(source.name());
+            v["text"] = json!(text);
+            if !script.is_empty() {
+                v["script"] = json!(script);
+                v["line"] = json!(line);
+            }
+        }
+        EventBody::LuaError {
+            status,
+            message,
+            chunk,
+            line,
+            traceback,
+        } => {
+            v["kind"] = json!("lua_error");
+            v["status"] = json!(status);
+            v["message"] = json!(message);
+            v["chunk"] = json!(chunk);
+            v["line"] = json!(line);
+            v["traceback"] = json!(traceback);
+        }
+        EventBody::Message {
+            hash,
+            data,
+            forced,
+            listeners,
+            receivers,
+            origin,
+        } => {
+            v["kind"] = json!("message");
+            v["hash"] = json!(format!("{hash:#010x}"));
+            v["name"] = json!(names.and_then(|n| n.message(*hash)));
+            v["data"] = json!(data);
+            v["forced"] = json!(forced);
+            v["listeners"] = json!(listeners);
+            v["receivers"] = json!(
+                receivers
+                    .iter()
+                    .map(|g| json!({
+                        "guid": proto::guid_hex(g),
+                        "name": names.and_then(|n| n.object(g)).map(|o| o.name.clone()),
+                    }))
+                    .collect::<Vec<_>>()
+            );
+            v["by_link"] = json!(*origin == MessageOrigin::Link);
+        }
+    }
+    v
+}
+
+/// Prints the objects of a World answer.
+fn print_world(world: &World, names: Option<&LiveNames>, json_out: bool, stream: Option<&str>) {
+    let keep = |o: &WorldObject| {
+        stream.is_none_or(|want| {
+            world
+                .stream_name(o.group)
+                .is_some_and(|n| n.to_ascii_lowercase().contains(&want.to_ascii_lowercase()))
+        })
+    };
+    if json_out {
+        let v: Vec<_> = world
+            .objects
+            .iter()
+            .filter(|o| keep(o))
+            .map(|o| {
+                let known = names.and_then(|n| n.object(&o.guid));
+                json!({
+                    "guid": proto::guid_hex(&o.guid), "braced": proto::braced_guid(&o.guid),
+                    "class": world.class_name(o.class).or_else(|| known.map(|k| k.class.as_str())),
+                    "class_hash": format!("{:#010x}", o.class),
+                    "group": o.group, "stream": world.stream_name(o.group),
+                    "position": o.position, "flags": format!("{:#010x}", o.flags),
+                    "listening": o.listening,
+                    "name": known.map(|k| k.name.clone()),
+                    "simgroup": known.map(|k| json!({"stream": k.stream, "resource": k.resource, "object": k.object})),
+                })
+            })
+            .collect();
+        out!(
+            "{}",
+            json!({"total": world.total, "walked": world.walked, "partial": world.partial, "objects": v})
+        );
+        return;
+    }
+    let mut shown = 0;
+    for o in world.objects.iter().filter(|o| keep(o)) {
+        shown += 1;
+        let pos = o.position.map_or_else(
+            || format!("{:>26}", "-"),
+            |p| format!("{:8.2} {:8.2} {:8.2}", p[0], p[1], p[2]),
+        );
+        let name = names
+            .and_then(|n| n.object(&o.guid))
+            .map(|k| k.name.as_str())
+            .unwrap_or_default();
+        // The module reads the class from the game's code; for classes
+        // without a cast of their own the SimGroup knows it.
+        let class = world
+            .class_name(o.class)
+            .or_else(|| {
+                names
+                    .and_then(|n| n.object(&o.guid))
+                    .map(|k| k.class.as_str())
+            })
+            .unwrap_or("?");
+        out!(
+            "{} {:<24} {:<34} {pos} {} {name}",
+            proto::guid_hex(&o.guid),
+            class,
+            world.stream_name(o.group).unwrap_or("?"),
+            if o.listening { "on " } else { "off" },
+        );
+    }
+    eprintln!(
+        "{shown} shown, {} matched of {} objects walked{}",
+        world.total,
+        world.walked,
+        if world.partial {
+            " (the module ran out of time: partial)"
+        } else {
+            ""
+        }
+    );
+}
+
 fn confirm(yes: bool, what: &str) -> Result<()> {
     if !yes {
         bail!("{what} changes the running game: add --yes to do it");
@@ -295,12 +570,34 @@ pub fn run(command: LiveCommand) -> Result<()> {
         }
         LiveCommand::Objects {
             link,
+            all: true,
+            class,
+            max,
+            logic,
+            stream,
+            ..
+        } => {
+            let names = link.names(false)?;
+            let filter = WorldFilter {
+                class: class.as_deref().map(class_hash),
+                positioned: logic.then_some(false),
+                ..WorldFilter::default()
+            };
+            let world = link
+                .connect()?
+                .world(filter, max.unwrap_or(proto::world::MAX_WORLD_OBJECTS))?;
+            print_world(&world, names.as_ref(), link.json, stream.as_deref());
+        }
+        LiveCommand::Objects {
+            link,
             radius,
             class,
             at,
             max,
+            ..
         } => {
             let center = at.as_deref().map(vec3).transpose()?;
+            let max = max.unwrap_or(50).min(u32::from(u16::MAX)) as u16;
             let list =
                 link.connect()?
                     .objects(center, radius, class.as_deref().map(class_hash), max)?;
@@ -330,6 +627,118 @@ pub fn run(command: LiveCommand) -> Result<()> {
                         o.distance
                     );
                 }
+            }
+        }
+        LiveCommand::Find { query, link } => {
+            let guid = proto::parse_guid(&query);
+            let names = link.names(guid.is_none())?;
+            let guids: Vec<proto::Guid> = match (guid, &names) {
+                (Some(g), _) => vec![g],
+                (None, Some(n)) => n
+                    .search(&query)
+                    .into_iter()
+                    .map(|(g, _)| g)
+                    .take(4096)
+                    .collect(),
+                (None, None) => Vec::new(),
+            };
+            if guids.is_empty() {
+                bail!("no object of the game's SimGroups is called like `{query}`");
+            }
+            let world = link.connect()?.world(
+                WorldFilter {
+                    guids: guids.clone(),
+                    ..WorldFilter::default()
+                },
+                proto::world::MAX_WORLD_OBJECTS,
+            )?;
+            print_world(&world, names.as_ref(), link.json, None);
+            let loaded = world.objects.len();
+            if loaded < guids.len() && !link.json {
+                eprintln!(
+                    "{} of {} object(s) with that name are not in the game now (their stream is not loaded)",
+                    guids.len() - loaded,
+                    guids.len()
+                );
+            }
+            if loaded == 0 {
+                bail!("not in the running game");
+            }
+        }
+        LiveCommand::Log {
+            follow,
+            filter,
+            messages,
+            errors,
+            after,
+            link,
+        } => {
+            let names = link.names(false)?;
+            let kinds = if errors {
+                mask::LUA_ERROR
+            } else if messages {
+                mask::ALL
+            } else {
+                mask::OUTPUT | mask::LUA_ERROR
+            };
+            let mut c = link.connect()?;
+            if !c.has_journal() {
+                bail!(
+                    "the module in the game speaks protocol {} and has no journal: install the module of this toolkit",
+                    c.version()
+                );
+            }
+            let want = filter.map(|f| f.to_ascii_lowercase());
+            let mut next = after;
+            let mut warned = 0u8;
+            // Lost events are told at most every 10 s (a follow of the
+            // messages loses some every poll: the per-message limit).
+            let mut lost = 0u64;
+            let mut told = std::time::Instant::now();
+            loop {
+                let b = c.events(next, kinds, 500)?;
+                if b.recording & kinds != kinds && warned == 0 {
+                    warned = 1;
+                    eprintln!(
+                        "warning: the module records only part of this (journal {:#x} of {kinds:#x}; journal=0 in doctor_live.cfg, or a hook could not be installed)",
+                        b.recording
+                    );
+                }
+                lost += b.lost;
+                if lost > 0 && (!follow || told.elapsed() >= Duration::from_secs(10)) {
+                    eprintln!("({lost} event(s) lost: the ring went round or a rate limit)");
+                    lost = 0;
+                    told = std::time::Instant::now();
+                }
+                for e in &b.events {
+                    if link.json {
+                        let v = event_json(e, names.as_ref());
+                        if want
+                            .as_ref()
+                            .is_none_or(|w| v.to_string().to_ascii_lowercase().contains(w))
+                        {
+                            out!("{v}");
+                        }
+                        continue;
+                    }
+                    let lines = event_lines(e, names.as_ref());
+                    if want
+                        .as_ref()
+                        .is_none_or(|w| lines.iter().any(|l| l.to_ascii_lowercase().contains(w)))
+                    {
+                        for l in lines {
+                            out!("{l}");
+                        }
+                    }
+                }
+                next = b.next.saturating_sub(1);
+                if !follow {
+                    if b.events.is_empty() {
+                        break;
+                    }
+                    continue;
+                }
+                std::thread::sleep(Duration::from_millis(250));
             }
         }
         LiveCommand::Teleport {
@@ -399,6 +808,7 @@ pub fn run(command: LiveCommand) -> Result<()> {
                 token: live::new_token(),
                 writes,
                 fix_input: true,
+                journal: true,
             };
             let install = ModuleInstall::write(&game_dir, &bytes, &config)?;
             out!(
@@ -440,6 +850,7 @@ pub fn run(command: LiveCommand) -> Result<()> {
                     token: String::new(),
                     writes,
                     fix_input: true,
+                    journal: true,
                 },
             )?;
             out!("fake game on 127.0.0.1:{} (Ctrl+C to stop)", game.port);
