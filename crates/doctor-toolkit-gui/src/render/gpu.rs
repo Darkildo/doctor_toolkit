@@ -817,6 +817,11 @@ impl SceneRenderer {
     }
 
     /// Meshes kept on the GPU (see [`Self::set_mesh_budget`]).
+    /// Meshes on the GPU now.
+    pub fn mesh_count(&self) -> usize {
+        self.meshes.len()
+    }
+
     pub fn mesh_budget(&self) -> usize {
         self.mesh_budget
     }

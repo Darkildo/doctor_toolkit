@@ -16,14 +16,62 @@
 //! `scroll=<s>`, `play`, `noworld` (actors only), `hour=<h>` (time of day),
 //! `preview=<height share>` (0.3–0.9 of the view for the picture).
 
-mod preview;
+pub(crate) mod preview;
+pub mod render;
 pub(crate) mod sound;
-mod timeline;
+pub(crate) mod timeline;
 pub(crate) mod world;
 
 /// Whether a cut-scene preview is still loading its world (screenshots wait).
 pub fn busy() -> bool {
     world::busy()
+}
+
+/// The play head of the cut-scene the app edits in the level view (stage
+/// 62): the level view, the Timeline panel and the cut-scene tabs of the
+/// same cut-scene share it.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Cursor {
+    /// The folder stream of the cut-scene.
+    pub stream: usize,
+    /// Seconds from the start of the cut-scene.
+    pub time: f32,
+    pub playing: bool,
+    /// A tab asked to play or pause.
+    pub toggle: bool,
+    /// A tab moved the play head.
+    pub moved: bool,
+}
+
+/// The play head of a cut-scene view's saved state (tests).
+#[cfg(test)]
+pub fn playhead_of(state: Box<dyn Any>) -> Option<f32> {
+    state.downcast::<State>().ok().map(|s| s.timeline.playhead)
+}
+
+/// The shared play head, `None` without a cut-scene in the level view.
+pub type SharedCursor = Arc<std::sync::Mutex<Option<Cursor>>>;
+
+/// The sound tracks of a cut-scene as the workspace has them: their data
+/// (for subtitle edits) and what the player plays.
+pub(crate) type Sounds = Vec<Option<(FileKey, Arc<Vec<u8>>)>>;
+
+pub(crate) fn read_sounds(source: &Source<'_>, cutscene: &Cutscene) -> (Sounds, Vec<TrackSource>) {
+    let mut sounds = Vec::new();
+    let mut sources = Vec::new();
+    for a in &cutscene.audio {
+        let key = FileKey::archive_entry(&a.entry);
+        let data = source.file(&key).ok().map(Arc::new);
+        if let (Some(data), Some(start)) = (&data, a.placement.start) {
+            sources.push(TrackSource {
+                data: data.clone(),
+                start,
+                volume: a.placement.volume,
+            });
+        }
+        sounds.push(data.map(|d| (key, d)));
+    }
+    (sounds, sources)
 }
 
 use std::any::Any;
@@ -56,23 +104,10 @@ fn load(source: &mut ViewSource<'_>) -> Option<Box<dyn ResourceViewer>> {
         Some(source.index),
     );
     // The sound tracks, as the workspace has them.
-    let mut sounds = Vec::new();
-    let mut sources = Vec::new();
-    if let Ok(c) = &cutscene {
-        let s = Source::new(source.game, source.workspace);
-        for a in &c.audio {
-            let key = FileKey::archive_entry(&a.entry);
-            let data = s.file(&key).ok().map(Arc::new);
-            if let (Some(data), Some(start)) = (&data, a.placement.start) {
-                sources.push(TrackSource {
-                    data: data.clone(),
-                    start,
-                    volume: a.placement.volume,
-                });
-            }
-            sounds.push(data.map(|d| (key, d)));
-        }
-    }
+    let (sounds, sources) = match &cutscene {
+        Ok(c) => read_sounds(&Source::new(source.game, source.workspace), c),
+        Err(_) => Default::default(),
+    };
     let mut view = CutsceneView {
         resource: source.index,
         tracks: cutscene.as_ref().map(timeline::tracks).unwrap_or_default(),
@@ -87,6 +122,9 @@ fn load(source: &mut ViewSource<'_>) -> Option<Box<dyn ResourceViewer>> {
         preview_share: 0.5,
         zone_filter: String::new(),
         fps: 0.0,
+        linked: None,
+        toggle: false,
+        open_in_level: false,
     };
     view.preview.world = Arc::new(std::sync::Mutex::new(world::World::new(world::Edits::of(
         source.workspace,
@@ -128,6 +166,13 @@ struct CutsceneView {
     zone_filter: String,
     /// Frames per second while playing (smoothed).
     fps: f32,
+    /// The play head is the level view's (stage 62): the app plays; the
+    /// shared play head and whether it plays.
+    linked: Option<bool>,
+    /// Play or Pause pressed while linked.
+    toggle: bool,
+    /// "Open in the level view" pressed.
+    open_in_level: bool,
 }
 
 /// What survives a reload after an edit.
@@ -344,7 +389,14 @@ impl CutsceneView {
         cutscene.audio.iter().position(|a| a.tob.is_some())
     }
 
-    /// The edited shot as an action: the opened resource or another shot.
+    fn edits<'a>(&'a self, cutscene: &'a Cutscene) -> TimelineEdits<'a> {
+        TimelineEdits {
+            cutscene,
+            opened: self.resource,
+            sounds: &self.sounds,
+        }
+    }
+
     fn save_shot(
         &self,
         cutscene: &Cutscene,
@@ -352,24 +404,9 @@ impl CutsceneView {
         seq: &doctor_toolkit::resource::trinity::SeqMaster,
         label: String,
     ) -> Result<ViewAction, String> {
-        let data = seq.to_bytes().map_err(|e| e.to_string())?;
-        let resource = cutscene.shots[s].resource;
-        if resource == self.resource {
-            return Ok(ViewAction::SaveData { data, label });
-        }
-        // Another shot of the sequence: a resource of the same stream.
-        let stream = cutscene.stream;
-        let text = label.clone();
-        Ok(ViewAction::Apply {
-            label,
-            run: Box::new(move |game, ws| {
-                ws.set_resource(game, stream, resource, data, &text)
-                    .map(|_| ())
-            }),
-        })
+        self.edits(cutscene).save_shot(s, seq, label)
     }
 
-    /// A subtitle table edit as an action.
     fn save_subtitle(
         &self,
         cutscene: &Cutscene,
@@ -378,68 +415,8 @@ impl CutsceneView {
         start_ms: u32,
         duration_ms: u32,
     ) -> Result<ViewAction, String> {
-        let audio = &cutscene.audio[track];
-        let sub = &audio.subtitles[line];
-        let mut tob = audio.tob.clone().ok_or("no subtitle table")?;
-        let group = &mut tob.groups[sub.group_index];
-        group.entries[sub.entry].start_ms = start_ms;
-        group.entries[sub.entry].duration_ms = duration_ms;
-        group.entries.sort_by_key(|e| e.start_ms);
-        let (key, snu) = self.sounds[track]
-            .as_ref()
-            .ok_or("the sound was not read")?;
-        let data = tob.replace_in_snu(snu).map_err(|e| e.to_string())?;
-        let label = trf(
-            "cutscene.label_subtitle",
-            &[
-                ("line", &line),
-                ("start", &format!("{:.3}", start_ms as f32 / 1000.0)),
-            ],
-        );
-        let (key, text) = (key.clone(), label.clone());
-        Ok(ViewAction::Apply {
-            label,
-            run: Box::new(move |game, ws| ws.set_file(game, &key, data, &text).map(|_| ())),
-        })
-    }
-
-    /// Moves an item of the time line to `start` (seconds from the start of the cut-scene).
-    fn move_item(&self, cutscene: &Cutscene, id: ItemId, start: f32) -> Option<ViewAction> {
-        match id {
-            ItemId::Command { shot, index } => {
-                let s = &cutscene.shots[shot];
-                let mut seq = s.seq.clone();
-                let label = format!(
-                    "{}: {}",
-                    s.seq.source_name(),
-                    seq.blocks[0].commands[index].label()
-                );
-                let local = (start - s.start).clamp(0.0, s.duration());
-                seq.blocks[0].move_command(index, local).ok()?;
-                self.save_shot(
-                    cutscene,
-                    shot,
-                    &seq,
-                    trf(
-                        "cutscene.label_move",
-                        &[("what", &label), ("time", &format!("{local:.3}"))],
-                    ),
-                )
-                .ok()
-            }
-            ItemId::Subtitle { track, line } => {
-                let sub = &cutscene.audio[track].subtitles[line];
-                self.save_subtitle(
-                    cutscene,
-                    track,
-                    line,
-                    (start * 1000.0).round().max(0.0) as u32,
-                    sub.duration_ms,
-                )
-                .ok()
-            }
-            _ => None,
-        }
+        self.edits(cutscene)
+            .save_subtitle(track, line, start_ms, duration_ms)
     }
 
     fn toolbar(&mut self, ui: &mut egui::Ui, cutscene: &Cutscene) {
@@ -477,10 +454,19 @@ impl CutsceneView {
             } else {
                 tr("cutscene.play")
             };
+            let play = match self.linked {
+                Some(true) => tr("cutscene.pause"),
+                Some(false) => tr("cutscene.play"),
+                None => play,
+            };
             if ui.button(play).clicked() {
-                self.playing = !self.playing;
-                if self.playing && self.timeline.playhead >= cutscene.duration() {
-                    self.timeline.playhead = 0.0;
+                if self.linked.is_some() {
+                    self.toggle = true;
+                } else {
+                    self.playing = !self.playing;
+                    if self.playing && self.timeline.playhead >= cutscene.duration() {
+                        self.timeline.playhead = 0.0;
+                    }
                 }
             }
             if ui
@@ -517,8 +503,14 @@ impl CutsceneView {
                     &[("shot", &cutscene.shots[s].seq.source_name())],
                 ));
             }
-            self.sound.controls(ui);
+            if self.linked.is_none() {
+                self.sound.controls(ui);
+            }
             ui.separator();
+            self.open_in_level |= ui
+                .button(tr("cine.open_in_level"))
+                .on_hover_text(tr("cine.open_in_level_hint"))
+                .clicked();
             ui.checkbox(&mut self.preview.shot_camera, tr("cutscene.shot_camera"));
             if !self.preview.is_loaded()
                 && self.preview.has_gpu()
@@ -980,6 +972,20 @@ impl CutsceneView {
         cx: &mut ViewContext<'_>,
         cutscene: &Cutscene,
     ) -> Option<ViewAction> {
+        // The play head of the level view, for the same cut-scene.
+        let cursor = cx.cursor.clone();
+        self.linked = cursor.as_ref().and_then(|c| {
+            let guard = c.lock().unwrap_or_else(|e| e.into_inner());
+            let c = guard.as_ref().filter(|c| c.stream == cutscene.stream)?;
+            self.timeline.playhead = c.time;
+            Some(c.playing)
+        });
+        if self.linked.is_some() {
+            self.playing = false;
+            if self.linked == Some(true) {
+                ui.ctx().request_repaint();
+            }
+        }
         if self.playing {
             let dt = ui.input(|i| i.unstable_dt);
             if dt > 0.0 {
@@ -1077,25 +1083,32 @@ impl CutsceneView {
             cutscene.duration(),
             height,
         );
-        if let Some((id, start)) = output.moved {
-            action = self.move_item(cutscene, id, start);
-        }
-        if let Some((ItemId::Subtitle { track, line }, length)) = output.resized {
-            let sub = &cutscene.audio[track].subtitles[line];
-            match self.save_subtitle(
-                cutscene,
-                track,
-                line,
-                sub.start_ms,
-                (length * 1000.0).round() as u32,
-            ) {
-                Ok(a) => action = Some(a),
-                Err(e) => self.message = e,
-            }
+        match self.edits(cutscene).output(&output) {
+            Ok(Some(a)) => action = Some(a),
+            Ok(None) => {}
+            Err(e) => self.message = e,
         }
         if let Some(ViewAction::SaveData { label, .. } | ViewAction::Apply { label, .. }) = &action
         {
             *cx.status = label.clone();
+        }
+        // Linked: the app plays; changes of the play head go to it.
+        if self.linked.is_some()
+            && let Some(cursor) = &cursor
+        {
+            let mut guard = cursor.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(c) = guard.as_mut() {
+                if std::mem::take(&mut self.toggle) {
+                    c.toggle = true;
+                }
+                if (self.timeline.playhead - synced).abs() > 1e-4 {
+                    c.time = self.timeline.playhead;
+                    c.moved = true;
+                }
+            }
+        }
+        if std::mem::take(&mut self.open_in_level) {
+            action = Some(ViewAction::OpenInLevel);
         }
         // Start, pause or resynchronise the sound.
         if self.playing != self.sound.in_session() {
@@ -1110,5 +1123,127 @@ impl CutsceneView {
             self.sound.seek(self.timeline.playhead);
         }
         action
+    }
+}
+
+/// Edits of the time line of a cut-scene as view actions: shots the
+/// workspace records (`opened`: the resource of the tab, saved as its own
+/// data) and subtitles of its sound tracks.
+pub(crate) struct TimelineEdits<'a> {
+    pub cutscene: &'a Cutscene,
+    pub opened: usize,
+    pub sounds: &'a Sounds,
+}
+
+impl TimelineEdits<'_> {
+    /// The edited shot as an action: the opened resource or another shot.
+    pub fn save_shot(
+        &self,
+        s: usize,
+        seq: &doctor_toolkit::resource::trinity::SeqMaster,
+        label: String,
+    ) -> Result<ViewAction, String> {
+        let cutscene = self.cutscene;
+        let data = seq.to_bytes().map_err(|e| e.to_string())?;
+        let resource = cutscene.shots[s].resource;
+        if resource == self.opened {
+            return Ok(ViewAction::SaveData { data, label });
+        }
+        // Another shot of the sequence: a resource of the same stream.
+        let stream = cutscene.stream;
+        let text = label.clone();
+        Ok(ViewAction::Apply {
+            label,
+            run: Box::new(move |game, ws| {
+                ws.set_resource(game, stream, resource, data, &text)
+                    .map(|_| ())
+            }),
+        })
+    }
+
+    /// A subtitle table edit as an action.
+    pub fn save_subtitle(
+        &self,
+        track: usize,
+        line: usize,
+        start_ms: u32,
+        duration_ms: u32,
+    ) -> Result<ViewAction, String> {
+        let audio = &self.cutscene.audio[track];
+        let sub = &audio.subtitles[line];
+        let mut tob = audio.tob.clone().ok_or("no subtitle table")?;
+        let group = &mut tob.groups[sub.group_index];
+        group.entries[sub.entry].start_ms = start_ms;
+        group.entries[sub.entry].duration_ms = duration_ms;
+        group.entries.sort_by_key(|e| e.start_ms);
+        let (key, snu) = self.sounds[track]
+            .as_ref()
+            .ok_or("the sound was not read")?;
+        let data = tob.replace_in_snu(snu).map_err(|e| e.to_string())?;
+        let label = trf(
+            "cutscene.label_subtitle",
+            &[
+                ("line", &line),
+                ("start", &format!("{:.3}", start_ms as f32 / 1000.0)),
+            ],
+        );
+        let (key, text) = (key.clone(), label.clone());
+        Ok(ViewAction::Apply {
+            label,
+            run: Box::new(move |game, ws| ws.set_file(game, &key, data, &text).map(|_| ())),
+        })
+    }
+
+    /// Moves an item of the time line to `start` (seconds from the start of the cut-scene).
+    pub fn move_item(&self, id: ItemId, start: f32) -> Option<ViewAction> {
+        let cutscene = self.cutscene;
+        match id {
+            ItemId::Command { shot, index } => {
+                let s = &cutscene.shots[shot];
+                let mut seq = s.seq.clone();
+                let label = format!(
+                    "{}: {}",
+                    s.seq.source_name(),
+                    seq.blocks[0].commands[index].label()
+                );
+                let local = (start - s.start).clamp(0.0, s.duration());
+                seq.blocks[0].move_command(index, local).ok()?;
+                self.save_shot(
+                    shot,
+                    &seq,
+                    trf(
+                        "cutscene.label_move",
+                        &[("what", &label), ("time", &format!("{local:.3}"))],
+                    ),
+                )
+                .ok()
+            }
+            ItemId::Subtitle { track, line } => {
+                let sub = &cutscene.audio[track].subtitles[line];
+                self.save_subtitle(
+                    track,
+                    line,
+                    (start * 1000.0).round().max(0.0) as u32,
+                    sub.duration_ms,
+                )
+                .ok()
+            }
+            _ => None,
+        }
+    }
+
+    /// What a frame of the time line asks for: an item moved or a
+    /// subtitle's new length.
+    pub fn output(&self, output: &timeline::Output) -> Result<Option<ViewAction>, String> {
+        if let Some((id, start)) = output.moved {
+            return Ok(self.move_item(id, start));
+        }
+        if let Some((ItemId::Subtitle { track, line }, length)) = output.resized {
+            let sub = &self.cutscene.audio[track].subtitles[line];
+            return self
+                .save_subtitle(track, line, sub.start_ms, (length * 1000.0).round() as u32)
+                .map(Some);
+        }
+        Ok(None)
     }
 }

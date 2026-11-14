@@ -155,3 +155,34 @@ fn cutscene_finds_the_shot_at_a_time() {
     assert_eq!(cutscene.shot_at(9.0), Some(1));
     assert_eq!(cutscene.camera_at(3.0).unwrap().shot, 1);
 }
+
+#[test]
+fn the_mini_game_cutscene_loads_and_takes_a_camera_key() {
+    use crate::testing;
+    let dir = tempfile::tempdir().unwrap();
+    testing::write_game(dir.path()).unwrap();
+    testing::write_cutscene(dir.path()).unwrap();
+    let game = GameInstance::open(dir.path()).unwrap();
+    let stream = game.find_stream(testing::CUTSCENE).unwrap();
+    let c = Cutscene::load(&Source::new(&game, None), stream, None).unwrap();
+    assert_eq!(c.shots.len(), 1);
+    assert_eq!(c.name, "igc99");
+    let camera = c.camera_at(1.0).unwrap();
+    assert!((camera.values[0] - 5.0).abs() < 1e-4);
+    // A key at 1 s, written and read back.
+    let mut seq = c.shots[0].seq.clone();
+    let edit = edit::set_camera(&mut seq, 1.0, [5.0, 3.0, 8.0, 0.0, 0.0, 0.0]).unwrap();
+    assert_eq!(edit, edit::KeyEdit::Inserted);
+    let back = SeqMaster::parse(&seq.to_bytes().unwrap()).unwrap();
+    assert_eq!(back, seq);
+    let mut shot = c.shots[0].clone();
+    shot.seq = back;
+    let at = camera_state(&shot, 1.0).unwrap();
+    assert!((at.values[1] - 3.0).abs() < 1e-4);
+    // The sound: the mini game has none.
+    assert!(
+        sound::mix(&Source::new(&game, None), &c, 0.0, 1.0)
+            .unwrap()
+            .is_none()
+    );
+}

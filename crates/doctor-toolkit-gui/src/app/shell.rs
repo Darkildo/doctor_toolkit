@@ -258,6 +258,9 @@ pub fn apply_capture_preset(app: &mut BrowserApp) {
             "layout" => {
                 let id = match value {
                     "level" => super::layouts::LayoutId::Builtin(super::layouts::Builtin::Level),
+                    "cinematics" => {
+                        super::layouts::LayoutId::Builtin(super::layouts::Builtin::Cinematics)
+                    }
                     "resources" => {
                         super::layouts::LayoutId::Builtin(super::layouts::Builtin::Resources)
                     }
@@ -270,6 +273,7 @@ pub fn apply_capture_preset(app: &mut BrowserApp) {
                     "log" => Pane::Log,
                     "changes" => Pane::Changes,
                     "history" => Pane::History,
+                    "timeline" => Pane::Timeline,
                     _ => Pane::ContentBrowser,
                 };
                 app.drawers.add(pane.clone());

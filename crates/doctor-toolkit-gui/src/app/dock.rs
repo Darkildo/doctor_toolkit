@@ -101,6 +101,10 @@ pub enum Pane {
     Script,
     /// The movies of the game (stage 56; a window before).
     Movies,
+    /// The time line of the cut-scene in the level view (stage 62).
+    Timeline,
+    /// The picture of the shot camera of that cut-scene (stage 62).
+    CutscenePreview,
     /// Where the documents go in a layout; never shown.
     Documents,
 }
@@ -133,6 +137,8 @@ impl Pane {
                 | Self::Outliner
                 | Self::Zones
                 | Self::History
+                | Self::Timeline
+                | Self::CutscenePreview
                 | Self::DetailsCopy { .. }
                 | Self::ContentExtra { .. }
         )
@@ -456,7 +462,7 @@ impl Behavior<Pane> for DockBehavior<'_> {
         }
         // A resource tab: the commands of its asset.
         let asset = match &pane {
-            Some(Pane::Resource { id, .. }) => self.app.docs.get(id).map(|d| d.loc),
+            Some(Pane::Resource { id, .. }) => self.app.docs.get(id).map(|d| (d.loc, d.type_id)),
             _ => None,
         };
         // The tab in front of a document group: a line of the accent on top.
@@ -484,10 +490,10 @@ impl Behavior<Pane> for DockBehavior<'_> {
             if ui.button(maximize).clicked() {
                 self.app.dock_ops.push(DockOp::ToggleMaximize(tile_id));
             }
-            if let Some(loc) = asset {
+            if let Some((loc, type_id)) = asset {
                 ui.separator();
                 let mut cmds = Vec::new();
-                super::asset_tab::asset_menu(ui, true, &mut cmds);
+                super::asset_tab::asset_menu(ui, true, type_id, &mut cmds);
                 self.app
                     .asset_cmds
                     .extend(cmds.into_iter().map(|c| (loc, c)));
@@ -858,6 +864,8 @@ impl BrowserApp {
             Pane::Outliner => tr("pane.outliner").to_owned(),
             Pane::Zones => tr("pane.zones").to_owned(),
             Pane::History => tr("pane.history").to_owned(),
+            Pane::Timeline => tr("pane.timeline").to_owned(),
+            Pane::CutscenePreview => tr("pane.cutscene_preview").to_owned(),
             Pane::Script => {
                 let mark = if self.script_editor.has_unsaved_edits() {
                     " *"

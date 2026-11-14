@@ -65,6 +65,10 @@ impl BrowserApp {
                 self.live_object_action(tab, a);
                 return;
             }
+            LevelAction::Cutscene(a) => {
+                self.cine_action(tab, a);
+                return;
+            }
             _ => {}
         }
         let (Some(game), Some(index)) = (self.game.clone(), self.index.clone()) else {
@@ -238,7 +242,10 @@ impl BrowserApp {
         for id in changed {
             let serial = self.levels[&id].selection_serial();
             let first = self.selection_seen.insert(id, serial).is_none();
-            if !first || self.levels[&id].primary().is_some() {
+            if !first
+                || self.levels[&id].primary().is_some()
+                || self.levels[&id].cine_selected().is_some()
+            {
                 self.inspect = super::details::Focus::Level(id);
             }
         }
@@ -444,6 +451,7 @@ fn record(
         | LevelAction::LiveObject(_)
         | LevelAction::OpenResource { .. }
         | LevelAction::ShowInOutliner
+        | LevelAction::Cutscene(_)
         | LevelAction::ShowZones => Ok((tr("logic.no_change").to_owned(), Vec::new())),
     }
 }

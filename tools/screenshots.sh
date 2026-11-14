@@ -52,6 +52,7 @@ shots=(
   "logic|-|DOCTOR_TOOLKIT_GUI_LOGIC=checkpoint:737 DOCTOR_TOOLKIT_GUI_SHOT_FRAMES=150"
   "logic-run|-|DOCTOR_TOOLKIT_GUI_LOGIC=checkpoint:737;run=load,send:cp_737_loaded,send:cp_737_was_started,wait:5,enter:#19;until=12 DOCTOR_TOOLKIT_GUI_SHOT_FRAMES=200"
   "cutscene|gf2/cuba/global/objectives/chapter60-mission08-killingcastro/cp_734/_734_igc_content|DOCTOR_TOOLKIT_GUI_SELECT=2 DOCTOR_TOOLKIT_GUI_CUTSCENE=time=7.2,load,zoom=30,preview=0.9 DOCTOR_TOOLKIT_GUI_SHELL=max DOCTOR_TOOLKIT_GUI_SHOT_FRAMES=150"
+  "cutscene-level|gf2/cuba/global/objectives/chapter60-mission08-killingcastro/cp_734/_734_igc_content|DOCTOR_TOOLKIT_GUI_SELECT=2 DOCTOR_TOOLKIT_GUI_CINE=time=7.2,characters,select=camera,nomarkers,behind=3.5/1.0 DOCTOR_TOOLKIT_GUI_SHOT_FRAMES=150"
   "dialogue|gf2/globalfolder/dlg/03ccd0bc|DOCTOR_TOOLKIT_GUI_SELECT=15 DOCTOR_TOOLKIT_GUI_SHELL=pin"
   "movies|-|DOCTOR_TOOLKIT_GUI_MOVIES=FMV02:900"
   "wizards|-|DOCTOR_TOOLKIT_GUI_SHELL=welcome"

@@ -488,6 +488,121 @@ pub fn write_extra_streams(root: &Path) -> Result<()> {
     Ok(())
 }
 
+/// The folder stream of the cut-scene added by [`write_cutscene`].
+pub const CUTSCENE: &str = "gf2/igc99/igc99_folderstream";
+
+/// GUID of the actor of [`sample_shot`].
+pub const CUTSCENE_ACTOR: [u8; 16] = *b"\x01\x02\x03\x04\x05\x06\x07\x08DOCTORTK";
+
+/// A shot of two seconds: an actor created at x = 1 and walking from x = 0
+/// to x = 4 between 1 and 2 s, a camera moving from x = 0 to x = 10 between
+/// 0 and 2 s with a focal length of 50 mm.
+pub fn sample_shot() -> crate::resource::trinity::SeqMaster {
+    use crate::resource::trinity::{
+        Command, CurveKey, FixedText, Guid, PositionKey, RotationKey, SeqBlock, SeqMaster,
+    };
+    let actor = Guid(CUTSCENE_ACTOR);
+    let identity = [0.0, 0.0, 0.0, 1.0];
+    SeqMaster {
+        path: FixedText::new("x:\\assets\\igcs\\igc99\\source\\igc99_s01.xml"),
+        blocks: vec![SeqBlock {
+            version: 4,
+            hash: 0,
+            transform: [-0.0, -0.0, -0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+            name: FixedText::new("trSeq_igc99_s01"),
+            duration: 2.0,
+            commands: vec![
+                Command::ActorCreate {
+                    actor,
+                    name: FixedText::new("igc99_hero"),
+                    flags: [0; 3],
+                    position: [1.0, 0.0, 0.0],
+                    reserved: 0,
+                },
+                Command::CameraCreate {
+                    camera: 0,
+                    flags: 0,
+                    aspect: 16.0 / 9.0,
+                },
+                Command::CameraCurves {
+                    camera: 0,
+                    curves: std::array::from_fn(|i| match i {
+                        0 => vec![CurveKey::flat(0.0, 0.0), CurveKey::flat(2.0, 10.0)],
+                        1 => vec![CurveKey::flat(0.0, 1.7)],
+                        2 => vec![CurveKey::flat(0.0, 8.0)],
+                        _ => vec![CurveKey::flat(0.0, 0.0)],
+                    }),
+                },
+                Command::CameraFov {
+                    camera: 0,
+                    keys: vec![CurveKey::flat(0.0, 50.0)],
+                },
+                Command::Wait { seconds: 1.0 },
+                Command::ActorTransform {
+                    actor,
+                    positions: vec![
+                        PositionKey {
+                            time: 0.0,
+                            position: [0.0, 0.0, 0.0],
+                        },
+                        PositionKey {
+                            time: 1.0,
+                            position: [4.0, 0.0, 0.0],
+                        },
+                    ],
+                    rotations: vec![
+                        RotationKey {
+                            time: 0.0,
+                            rotation: identity,
+                        },
+                        RotationKey {
+                            time: 1.0,
+                            rotation: identity,
+                        },
+                    ],
+                },
+                Command::Wait { seconds: 1.0 },
+            ],
+        }],
+    }
+}
+
+/// Adds the folder stream [`CUTSCENE`] to the miniature game of
+/// [`write_game`]: the shot of [`sample_shot`] and the SimGroup of the
+/// level stream (so that a level of it loads); the table of contents lists
+/// every stream of the game written so far.
+pub fn write_cutscene(root: &Path) -> Result<()> {
+    use crate::resource::trinity::{SeqMaster, TYPE_TRINITY_SEQ_MASTER};
+    let shot = sample_shot();
+    let id = SeqMaster::id_for_path(&shot.path.text);
+    let mut stream = StreamWriter::new(&FileHeader::GF2_PC, Endian::Little);
+    let mut h = header(b"trinity_seq_master", [id; 4]);
+    h.type_id = TYPE_TRINITY_SEQ_MASTER;
+    stream.push_resource(&h, &shot.to_bytes()?, Storage::Raw)?;
+    stream.push_resource(
+        &header(b"simgroup", [0x99; 4]),
+        &crate::resource::simgroup::sample_group(),
+        Storage::RefPack,
+    )?;
+    let data = stream.finish();
+    let path = root.join(format!("{CUTSCENE}.str"));
+    if let Some(dir) = path.parent() {
+        fs::create_dir_all(dir).map_err(|e| Error::io(dir, e))?;
+    }
+    fs::write(&path, &data).map_err(|e| Error::io(&path, e))?;
+    let mut streams = Vec::new();
+    for rel in [LEVEL, TEXT, NAV, GLOBALS, CUTSCENE] {
+        let path = root.join(format!("{rel}.str"));
+        if let Ok(data) = fs::read(&path) {
+            streams.push((rel, StreamLayout::parse(&data)?.total_data_size()));
+        }
+    }
+    let table = Toc::parse(&toc_bytes(&streams))?;
+    let path = root.join("gf2/level.toc");
+    fs::write(&path, table.to_bytes()?).map_err(|e| Error::io(&path, e))?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

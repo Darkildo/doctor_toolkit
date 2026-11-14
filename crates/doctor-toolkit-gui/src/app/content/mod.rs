@@ -512,6 +512,8 @@ enum Act {
     Clone(Asset),
     Export(Location),
     Play(Asset),
+    /// A cut-scene shot: its cut-scene in the level view (stage 62).
+    OpenInLevel(Location),
     Drag(Asset),
     NewBrowser,
 }
@@ -664,6 +666,7 @@ impl BrowserApp {
                 }
                 Act::Clone(asset) => self.content_clone(&asset),
                 Act::Export(loc) => self.nav.export(game, vec![loc]),
+                Act::OpenInLevel(loc) => self.cine_open = Some(loc),
                 Act::Play(asset) => self.content.play(game.clone(), &asset),
                 Act::Drag(asset) => {
                     let dragged = dragged_asset(&asset, game, names);
@@ -1829,6 +1832,12 @@ fn interact(response: &egui::Response, item: &Item, acts: &mut Vec<Act>) {
                 }
                 if ui.button(tr("content.copy_key")).clicked() {
                     acts.push(Act::CopyKey(a.key.to_string()));
+                }
+                if a.key.type_id == doctor_toolkit::resource::trinity::TYPE_TRINITY_SEQ_MASTER
+                    && let Some(at) = a.at
+                    && ui.button(tr("cine.open_in_level")).clicked()
+                {
+                    acts.push(Act::OpenInLevel(at));
                 }
                 ui.separator();
                 if ui

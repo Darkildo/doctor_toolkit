@@ -80,12 +80,16 @@ use doctor_toolkit_mods::icon;
 fn main() -> eframe::Result {
     if print_version_or_help(
         "doctor-toolkit-gui",
-        "doctor-toolkit-gui [GAME_DIR [STREAM]]\n       doctor-toolkit-gui --write-icons DIR",
+        "doctor-toolkit-gui [GAME_DIR [STREAM]]\n       doctor-toolkit-gui --write-icons DIR\n       doctor-toolkit-gui --render-cutscene GAME_DIR FOLDER_STREAM [options]",
     ) {
         return Ok(());
     }
     if std::env::args().nth(1).as_deref() == Some("--write-icons") {
         std::process::exit(write_icons());
+    }
+    if std::env::args().nth(1).as_deref() == Some("--render-cutscene") {
+        let args: Vec<String> = std::env::args().skip(2).collect();
+        std::process::exit(cutscene_view::render::main(&args));
     }
     doctor_toolkit::report::init("doctor-toolkit-gui");
     let game_dir = std::env::args_os().nth(1).map(PathBuf::from);

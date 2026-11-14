@@ -167,6 +167,7 @@ impl BrowserApp {
                 }
             }
             ViewAction::Unlink(key) => self.unlink_external(&key),
+            ViewAction::OpenInLevel => self.cine_open = Some(loc),
             ViewAction::StartWizard(task) => {
                 if let Some(kind) = super::wizard::Kind::from_slug(task) {
                     let start = super::wizard::Start {
@@ -403,6 +404,7 @@ impl BrowserApp {
                 logic.refresh();
             }
         }
+        self.reload_cine();
     }
 
     pub(super) fn apply(&mut self, force: bool) {

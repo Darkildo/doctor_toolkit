@@ -396,6 +396,7 @@ fn outliner_ui(
                 .desired_width(ui.available_width()),
         );
     });
+    cutscene_branch(ui, level, id);
     if let Some((done, total)) = level.progress() {
         ui.add(
             egui::ProgressBar::new(done as f32 / total.max(1) as f32).text(trf(
@@ -772,6 +773,72 @@ fn context_menu(
     if item(ui, lock, "") {
         ops.push(Op::Lock(node, !locked));
     }
+}
+
+/// The branch of the cut-scene over the level (stage 62): its camera and
+/// the actors of the shot at the play head; a click selects one for the
+/// gizmo and Details, a double click flies to it. A • marks a key at the
+/// play head.
+fn cutscene_branch(ui: &mut egui::Ui, level: &mut LevelView, id: u64) {
+    let Some(layer) = &level.cine else { return };
+    let cutscene = layer.cutscene.clone();
+    let Some(s) = layer.shot() else { return };
+    let shot = &cutscene.shots[s];
+    let mut items = vec![(
+        crate::level_view::cine::Item::Camera,
+        layer.name(crate::level_view::cine::Item::Camera),
+        String::new(),
+    )];
+    for actor in &shot.actors {
+        let item = crate::level_view::cine::Item::Actor(actor.guid.0);
+        items.push((
+            item,
+            actor.name.clone(),
+            actor.class.clone().unwrap_or_default(),
+        ));
+    }
+    let selected = layer.selected;
+    let keyed: Vec<bool> = items
+        .iter()
+        .map(|(item, ..)| layer.on_key(*item).is_some())
+        .collect();
+    let mut clicked = None;
+    let mut focus = false;
+    egui::CollapsingHeader::new(trf(
+        "outliner.cutscene",
+        &[
+            ("name", &cutscene.name),
+            ("shot", &shot.seq.source_name()),
+            ("time", &format!("{:.2}", layer.local_time())),
+        ],
+    ))
+    .id_salt(("outliner cutscene", id))
+    .default_open(true)
+    .show(ui, |ui| {
+        for ((item, name, class), keyed) in items.into_iter().zip(keyed) {
+            ui.horizontal(|ui| {
+                let text = if keyed { format!("• {name}") } else { name };
+                let r = ui.selectable_label(selected == Some(item), text);
+                if r.clicked() {
+                    clicked = Some(item);
+                }
+                if r.double_clicked() {
+                    clicked = Some(item);
+                    focus = true;
+                }
+                if !class.is_empty() {
+                    ui.label(RichText::new(class).weak().small());
+                }
+            });
+        }
+    });
+    if let Some(item) = clicked {
+        level.cine_select(Some(item));
+        if focus {
+            level.focus_selection();
+        }
+    }
+    ui.separator();
 }
 
 #[cfg(test)]

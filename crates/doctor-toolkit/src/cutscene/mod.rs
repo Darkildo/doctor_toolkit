@@ -20,8 +20,10 @@
 //! audio scripts start on messages of the cut-scene ([`sound`]).
 
 pub mod cast;
+pub mod edit;
 pub mod gltf;
 pub mod sound;
+pub mod video;
 pub mod world;
 
 use std::collections::HashMap;

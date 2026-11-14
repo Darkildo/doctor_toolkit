@@ -28,6 +28,9 @@ mod asset_tab;
 mod asset_tests;
 mod bridge;
 mod browse;
+#[cfg(test)]
+mod cine_tests;
+mod cinema;
 mod commands;
 mod content;
 mod details;
@@ -268,6 +271,12 @@ pub struct BrowserApp {
     wizards: wizard::Wizards,
     /// The project browser.
     project: project::ProjectPanel,
+    /// The cut-scene edited in the level view (stage 62).
+    cine: Option<cinema::Cinema>,
+    /// Its play head, shared with the cut-scene tabs.
+    cine_cursor: crate::cutscene_view::SharedCursor,
+    /// "Open in the level view" asked for this shot (opened next frame).
+    cine_open: Option<Location>,
 }
 
 impl BrowserApp {
@@ -382,6 +391,9 @@ impl BrowserApp {
             play: play::PlayState::new(ctx),
             wizards: wizard::Wizards::default(),
             project: project::ProjectPanel::default(),
+            cine: None,
+            cine_cursor: Default::default(),
+            cine_open: None,
         };
         app.nav.export_dir = app.settings.export_dirs.export.clone();
         app.saved.1 = app.persisted_state();
@@ -701,7 +713,10 @@ impl BrowserApp {
                     resource: index,
                 };
                 self.nav.visit(loc);
-                if self.pin_on_capture {
+                if std::env::var_os("DOCTOR_TOOLKIT_GUI_CINE").is_some() {
+                    // The shot's cut-scene in the level view (stage 62).
+                    self.cine_open = Some(loc);
+                } else if self.pin_on_capture {
                     self.open_resource_tab(loc);
                 }
             }
@@ -949,6 +964,10 @@ impl eframe::App for BrowserApp {
         }
         self.shortcuts(&ctx);
         self.document_keys(&ctx);
+        if let Some(loc) = self.cine_open.take() {
+            self.open_cutscene_in_level(loc, &ctx);
+        }
+        self.cine_tick(&ctx);
         self.update_panel_level();
         self.track_details_open();
         let visuals = ui.visuals().clone();
@@ -978,6 +997,7 @@ impl eframe::App for BrowserApp {
             })
             .inner;
         self.drawer_ui(&ctx, dock_rect);
+        self.cine_after_dock();
         self.run_asset_cmds(&ctx);
         self.content_drag(&ctx);
         self.play_frame(&ctx);
@@ -1497,7 +1517,7 @@ mod tests {
         app.save_settings();
         let text = std::fs::read_to_string(store.layout_path().unwrap()).unwrap();
         assert!(
-            text.contains("\"version\": 5"),
+            text.contains("\"version\": 6"),
             "written in the new version"
         );
         std::fs::remove_dir_all(dir).unwrap();

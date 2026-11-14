@@ -35,6 +35,8 @@ pub enum AssetCmd {
     ShowInStream,
     CopyKey,
     Export,
+    /// A cut-scene shot: open the cut-scene in the level view (stage 62).
+    OpenInLevel,
 }
 
 /// Keys every editor of the tabs shares (`?` of their bars, the shortcut
@@ -52,7 +54,7 @@ pub const COMMON_KEYS: &[(&str, &str)] = &[
 ];
 
 /// The items of an asset's menu; what is clicked goes to `out`.
-pub fn asset_menu(ui: &mut egui::Ui, in_tab: bool, out: &mut Vec<AssetCmd>) {
+pub fn asset_menu(ui: &mut egui::Ui, in_tab: bool, type_id: u32, out: &mut Vec<AssetCmd>) {
     let mut item = |ui: &mut egui::Ui, cmd: AssetCmd, text: &str| {
         if ui.button(text).clicked() {
             out.push(cmd);
@@ -65,6 +67,9 @@ pub fn asset_menu(ui: &mut egui::Ui, in_tab: bool, out: &mut Vec<AssetCmd>) {
     item(ui, AssetCmd::ShowInContent, tr("doc.show_in_content"));
     item(ui, AssetCmd::ShowInStream, tr("doc.reveal"));
     item(ui, AssetCmd::CopyKey, tr("doc.copy_key"));
+    if type_id == doctor_toolkit::resource::trinity::TYPE_TRINITY_SEQ_MASTER {
+        item(ui, AssetCmd::OpenInLevel, tr("cine.open_in_level"));
+    }
     ui.separator();
     item(ui, AssetCmd::Export, tr("doc.export"));
 }
@@ -113,6 +118,7 @@ impl BrowserApp {
             AssetCmd::OpenTab => {
                 self.open_resource_tab(loc);
             }
+            AssetCmd::OpenInLevel => self.cine_open = Some(loc),
             AssetCmd::ShowInContent => {
                 if let Some(key) = self.key_of(loc) {
                     self.content.reveal(&key);
@@ -231,7 +237,7 @@ impl BrowserApp {
                 Some(Icon::Object),
                 tr("doc.asset"),
                 tr("doc.asset_hint"),
-                |ui| asset_menu(ui, true, &mut cmds),
+                |ui| asset_menu(ui, true, doc.type_id, &mut cmds),
             );
             if theme::icon_button(ui, Icon::Browse, tr("doc.show_in_content")) {
                 cmds.push(AssetCmd::ShowInContent);
@@ -258,6 +264,7 @@ impl BrowserApp {
                 links: &self.external.infos,
                 place: Place::Tab,
                 details,
+                cursor: Some(self.cine_cursor.clone()),
             };
             for (_, view) in &mut doc.views {
                 if let Some(a) = view.toolbar(ui, &mut cx) {
@@ -274,6 +281,7 @@ impl BrowserApp {
             links: &self.external.infos,
             place: Place::Tab,
             details,
+            cursor: Some(self.cine_cursor.clone()),
         };
         match fill {
             Some(i) => {
@@ -348,6 +356,7 @@ impl BrowserApp {
                 links: &self.external.infos,
                 place: Place::Tab,
                 details: true,
+                cursor: Some(self.cine_cursor.clone()),
             };
             for (_, view) in &mut doc.views {
                 if view.has_inspector() {
@@ -365,6 +374,7 @@ impl BrowserApp {
                 links: &self.external.infos,
                 place: Place::Details,
                 details: true,
+                cursor: Some(self.cine_cursor.clone()),
             };
             for (_, view) in &mut doc.views {
                 if view.tab_body() == TabBody::Scroll {

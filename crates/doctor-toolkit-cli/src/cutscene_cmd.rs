@@ -141,6 +141,50 @@ pub enum CutsceneCommand {
         #[arg(short, long)]
         output: PathBuf,
     },
+    /// Render the cut-scene with its world through the shot cameras into a
+    /// video: a movie in the game's format (VP6, with the sound), an MP4
+    /// (ffmpeg) or PNG frames. Runs `doctor-toolkit-gui` (next to this
+    /// program, or $DOCTOR_TOOLKIT_GUI) without a window; needs a GPU.
+    Render {
+        #[command(flatten)]
+        target: Target,
+        #[command(flatten)]
+        read: ReadMode,
+        /// The movie in the game's format (.vp6)
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+        /// An MP4 through ffmpeg
+        #[arg(long)]
+        mp4: Option<PathBuf>,
+        /// A folder for PNG frames
+        #[arg(long)]
+        png_dir: Option<PathBuf>,
+        #[arg(long, default_value_t = 1280)]
+        width: u32,
+        #[arg(long, default_value_t = 720)]
+        height: u32,
+        /// Frames per second (29.97 is NTSC)
+        #[arg(long, default_value_t = 30.0)]
+        fps: f32,
+        /// Seconds from the start of the cut-scene [default: the start of `--shot` or 0]
+        #[arg(long)]
+        from: Option<f32>,
+        /// [default: the end of `--shot` or of the cut-scene]
+        #[arg(long)]
+        to: Option<f32>,
+        /// The actors and cameras alone, without the level
+        #[arg(long)]
+        no_world: bool,
+        /// The actors as characters (reads every material once; slower)
+        #[arg(long)]
+        characters: bool,
+        /// Time of day, hours [default: the cut-scene's]
+        #[arg(long)]
+        hour: Option<f32>,
+        /// No sound
+        #[arg(long)]
+        no_sound: bool,
+    },
 }
 
 pub fn run(command: CutsceneCommand) -> Result<()> {
@@ -207,7 +251,95 @@ pub fn run(command: CutsceneCommand) -> Result<()> {
             skeletons,
             &output,
         ),
+        CutsceneCommand::Render {
+            target,
+            read,
+            output,
+            mp4,
+            png_dir,
+            width,
+            height,
+            fps,
+            from,
+            to,
+            no_world,
+            characters,
+            hour,
+            no_sound,
+        } => {
+            let mut args: Vec<std::ffi::OsString> = vec![
+                "--render-cutscene".into(),
+                target.game_dir.clone().into(),
+                target.stream.clone().into(),
+            ];
+            let mut add = |name: &str, value: std::ffi::OsString| {
+                args.push(name.into());
+                args.push(value);
+            };
+            if let Some(shot) = &target.shot {
+                add("--shot", shot.into());
+            }
+            if let Some(dir) = &read.workspace_dir {
+                add("--workspace-dir", dir.into());
+            }
+            if let Some(p) = output {
+                add("-o", p.into());
+            }
+            if let Some(p) = mp4 {
+                add("--mp4", p.into());
+            }
+            if let Some(p) = png_dir {
+                add("--png-dir", p.into());
+            }
+            add("--width", width.to_string().into());
+            add("--height", height.to_string().into());
+            add("--fps", fps.to_string().into());
+            if let Some(v) = from {
+                add("--from", v.to_string().into());
+            }
+            if let Some(v) = to {
+                add("--to", v.to_string().into());
+            }
+            if let Some(v) = hour {
+                add("--hour", v.to_string().into());
+            }
+            for (on, flag) in [
+                (no_world, "--no-world"),
+                (characters, "--characters"),
+                (no_sound, "--no-sound"),
+            ] {
+                if on {
+                    args.push(flag.into());
+                }
+            }
+            render(&args)
+        }
     }
+}
+
+/// The editor program, which renders without a window.
+fn gui_program() -> PathBuf {
+    if let Some(p) = std::env::var_os("DOCTOR_TOOLKIT_GUI") {
+        return PathBuf::from(p);
+    }
+    let name = format!("doctor-toolkit-gui{}", std::env::consts::EXE_SUFFIX);
+    std::env::current_exe()
+        .ok()
+        .and_then(|e| e.parent().map(|d| d.join(&name)))
+        .filter(|p| p.exists())
+        .unwrap_or_else(|| PathBuf::from(name))
+}
+
+fn render(args: &[std::ffi::OsString]) -> Result<()> {
+    let program = gui_program();
+    let status = std::process::Command::new(&program)
+        .args(args)
+        .status()
+        .with_context(|| format!("cannot run {}", program.display()))?;
+    if !status.success() {
+        bail!("rendering failed ({status})");
+    }
+    Ok(())
 }
 
 impl Target {

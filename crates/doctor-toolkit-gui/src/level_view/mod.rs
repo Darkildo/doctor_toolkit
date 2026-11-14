@@ -41,6 +41,7 @@
 
 pub mod camera;
 pub use camera::Projection;
+pub mod cine;
 pub mod drop;
 mod gizmo;
 pub use gizmo::{
@@ -173,6 +174,9 @@ pub enum LevelAction {
     ShowZones,
     /// Show the shell's Outliner and the selected object in it.
     ShowInOutliner,
+    /// An edit or a command of the cut-scene shown over the level
+    /// (stage 62).
+    Cutscene(cine::CineAction),
     /// Several edits recorded as one operation of the workspace (one undo):
     /// duplicating or removing the objects selected in the Outliner.
     Many {
@@ -217,6 +221,8 @@ struct RenderKey {
     collision: Option<(ObjRef, RowMatrix)>,
     nav: u64,
     walk: u64,
+    /// The cut-scene over the level ([`cine::Layer::revision`]).
+    cine: u64,
 }
 
 /// A drag of the gizmo: every selected object (that is not locked) moves,
@@ -242,6 +248,9 @@ struct Drag {
     change: Option<gizmo::Change>,
     /// Alt: copies move, the objects stay where they are.
     copy: bool,
+    /// A camera or actor of the cut-scene instead: where it started and
+    /// where it is now.
+    cine: Option<(cine::Item, RowMatrix, RowMatrix)>,
 }
 
 impl Drag {
@@ -401,6 +410,20 @@ pub struct LevelView {
     live_pending: Vec<LevelAction>,
     /// The object whose state in the game was asked for last.
     live_asked: Option<[u8; 16]>,
+    /// The cut-scene shown over the level (stage 62), set by the app.
+    pub cine: Option<cine::Layer>,
+    /// Instances of the level in the scene; the cut-scene's follow them.
+    base_instances: usize,
+    /// What the cut-scene added to the scene, and for which revision.
+    cine_cache: Option<(u64, CineDrawn)>,
+}
+
+/// What the cut-scene adds to the view's scene.
+#[derive(Default)]
+struct CineDrawn {
+    instances: Vec<crate::render::Instance>,
+    lines: Vec<crate::render::LineVertex>,
+    overlay: Vec<crate::render::LineVertex>,
 }
 
 impl LevelView {
@@ -478,6 +501,9 @@ impl LevelView {
             live_gizmo: false,
             live_pending: Vec::new(),
             live_asked: None,
+            cine: None,
+            base_instances: 0,
+            cine_cache: None,
             center: [0.0; 3],
             index_stale: false,
         };
@@ -507,6 +533,7 @@ impl LevelView {
             || self.pending_autoload
             || self.preset.as_ref().is_some_and(|p| !p.actions.is_empty())
             || self.walk.busy()
+            || self.cine.as_ref().is_some_and(|c| !c.status.is_empty())
     }
 
     fn apply_preset(&mut self, spec: &str) {
@@ -711,7 +738,10 @@ impl LevelView {
                     if let Some(gpu) = &self.gpu {
                         let mut renderer = gpu.lock();
                         let budget = self.level.as_ref().map_or(0, |l| l.meshes.len());
-                        renderer.set_mesh_budget(budget + 256);
+                        // Only raised: a cut-scene's characters (stage 62) and
+                        // other views share the renderer.
+                        let budget = (budget + 256).max(renderer.mesh_budget());
+                        renderer.set_mesh_budget(budget);
                         let marker = scene::marker_mesh();
                         let b = marker.bounds();
                         self.spheres.insert(MARKER_KEY, (b.center(), b.radius()));
@@ -1221,6 +1251,14 @@ impl LevelView {
         self.autoload = Some(zones);
     }
 
+    /// Loads these zones (streams) instead of the chosen ones: the zones of
+    /// a cut-scene (stage 62).
+    pub fn load_streams(&mut self, streams: impl IntoIterator<Item = usize>) {
+        self.chosen = streams.into_iter().collect();
+        self.pending_autoload = true;
+        self.ctx.request_repaint();
+    }
+
     /// Fills in the "Add object" panel for a wizard: the metamodel `model`,
     /// cloned into the zone (with its own collision) or used as it is.
     pub fn prefill_add(&mut self, model: u32, clone: bool, collision: bool) {
@@ -1307,6 +1345,11 @@ impl LevelView {
         set.extend(primary);
         if primary.is_some() {
             self.nav.select(None);
+            if let Some(layer) = &mut self.cine
+                && layer.selected.take().is_some()
+            {
+                self.selection_serial += 1;
+            }
         }
         let set: HashSet<ObjRef> = set.into_iter().collect();
         if self.filter.selected == primary && self.filter.selection == set {
@@ -1602,6 +1645,10 @@ impl LevelView {
     pub fn focus_selection(&mut self) {
         if self.filter.selected.is_some() {
             self.focus();
+        } else if let Some(m) = self.cine.as_ref().and_then(|l| l.matrix(l.selected?)) {
+            self.camera.look_at([m[12], m[13] + 0.9, m[14]], 4.0);
+            self.camera_moved = true;
+            self.refill = true;
         } else {
             self.frame_all();
         }
@@ -1893,6 +1940,7 @@ impl LevelView {
             None if self.live.is_none() => self.live_follow = false,
             _ => {}
         }
+        self.cine_camera();
         let size = ui.available_size().max(Vec2::splat(64.0));
         let (rect, response) = ui.allocate_exact_size(size, Sense::click_and_drag());
         self.view_rect = rect;
@@ -1952,7 +2000,8 @@ impl LevelView {
                     pivot: t.origin,
                     start,
                     change: None,
-                    copy: alt && t.node.is_none(),
+                    copy: alt && t.node.is_none() && t.cine.is_none(),
+                    cine: t.cine.map(|(item, m)| (item, m, m)),
                 });
                 self.refill = true;
             } else if !alt
@@ -1996,6 +2045,13 @@ impl LevelView {
                         .iter()
                         .map(|(_, m)| change.map_or(*m, |c| gizmo::apply_change(&c, m, drag.pivot)))
                         .collect();
+                    if let Some((item, start, current)) = &mut drag.cine {
+                        *current =
+                            change.map_or(*start, |c| gizmo::apply_change(&c, start, drag.pivot));
+                        if let Some(layer) = &mut self.cine {
+                            layer.dragged = Some((*item, scene::flatten(current)));
+                        }
+                    }
                     moved = true;
                 }
             }
@@ -2057,6 +2113,10 @@ impl LevelView {
             if self.camera.handle_input(ui, &response, pivot, controls) {
                 self.refill = true;
                 self.camera_moved = true;
+                // Moving the camera leaves the shot's.
+                if let Some(layer) = &mut self.cine {
+                    layer.through_shot = false;
+                }
             }
         }
         if moved && let Some(drag) = &self.drag {
@@ -2123,8 +2183,22 @@ impl LevelView {
                 self.select(None);
                 self.nav.select(Some(n));
             }
+        } else if response.clicked()
+            && self.hover_handle.is_none()
+            && let Some(item) = response
+                .interact_pointer_pos()
+                .and_then(|p| self.cine.as_ref()?.pick(&view, rect, p))
+        {
+            // A camera or an actor of the cut-scene.
+            self.nav.select(None);
+            self.cine_select(Some(item));
         } else if response.clicked() && self.hover_handle.is_none() {
             self.nav.select(None);
+            if let Some(layer) = &mut self.cine
+                && layer.selected.take().is_some()
+            {
+                self.selection_serial += 1;
+            }
             let picked = picked_at(self, response.interact_pointer_pos());
             if ctrl {
                 // Ctrl + click: add to the selection or take away from it.
@@ -2177,6 +2251,7 @@ impl LevelView {
                 spheres.get(&key).copied()
             });
             self.add_ghosts();
+            self.base_instances = self.scene.instances.len();
             self.generation += 1;
         }
         // Gizmo lines.
@@ -2226,6 +2301,7 @@ impl LevelView {
         } else {
             Vec::new()
         };
+        let cine_revision = self.cine_scene();
         match self.gpu.clone() {
             Some(gpu) => {
                 let key = RenderKey {
@@ -2238,6 +2314,7 @@ impl LevelView {
                     collision,
                     nav: self.nav.generation,
                     walk: self.walk.revision,
+                    cine: cine_revision,
                 };
                 if self.last_render.as_ref() != Some(&key) {
                     let mut renderer = gpu.lock();
@@ -2272,6 +2349,9 @@ impl LevelView {
             action = Some(a);
         }
         self.bar_ui(ui, rect);
+        if let Some(a) = self.cine.as_mut().and_then(|l| l.bar_ui(ui, rect)) {
+            action = Some(LevelAction::Cutscene(self.fill_cine_action(a)));
+        }
         if let Some(marks) = self.live {
             live_marks(ui, rect, &to_screen, &marks);
             if let Some(a) = live::bar(ui, rect, &marks, &mut self.live_follow, &self.camera) {

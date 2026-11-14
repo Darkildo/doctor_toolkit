@@ -41,6 +41,8 @@ pub enum Command {
     ToggleOutliner,
     ToggleZones,
     ToggleHistory,
+    ToggleTimeline,
+    ToggleCutscenePreview,
     NewDetails,
     ContentDrawer,
     NewContentBrowser,
@@ -62,6 +64,8 @@ pub enum Command {
     GizmoScale,
     GizmoLocal,
     GizmoSnap,
+    CutscenePlay,
+    CutsceneKeyFromView,
     // Tools
     Search,
     NewSearch,
@@ -318,6 +322,20 @@ pub const COMMANDS: &[Spec] = &[
         &[k(CTRL, Key::Num7)],
         Global,
     ),
+    spec(
+        C::ToggleTimeline,
+        "cmd.toggle_timeline",
+        Menu::View,
+        &[k(CTRL, Key::Num8)],
+        Global,
+    ),
+    spec(
+        C::ToggleCutscenePreview,
+        "cmd.toggle_cutscene_preview",
+        Menu::View,
+        &[k(CTRL, Key::Num9)],
+        Global,
+    ),
     spec(C::NewDetails, "cmd.new_details", Menu::View, &[], Global),
     spec(
         C::ContentDrawer,
@@ -398,6 +416,20 @@ pub const COMMANDS: &[Spec] = &[
         Global,
     )),
     spec(C::GizmoSnap, "cmd.gizmo_snap", Menu::Level, &[], Global),
+    group(spec(
+        C::CutscenePlay,
+        "cmd.cutscene_play",
+        Menu::Level,
+        &[],
+        Global,
+    )),
+    spec(
+        C::CutsceneKeyFromView,
+        "cmd.cutscene_key_from_view",
+        Menu::Level,
+        &[],
+        Global,
+    ),
     spec(
         C::Search,
         "cmd.search",
@@ -635,6 +667,9 @@ impl BrowserApp {
                 .as_ref()
                 .is_some_and(|ws| ws.redo_label().is_some()),
             C::Back => self.nav.can_go(false),
+            C::CutscenePlay | C::CutsceneKeyFromView => {
+                self.cine.as_ref().is_some_and(|c| c.level.is_some())
+            }
             C::Forward => self.nav.can_go(true),
             C::Mods | C::IntegrityCheck => game && idle,
             C::GizmoSelect
@@ -689,6 +724,9 @@ impl BrowserApp {
             C::ToggleOutliner => Some(self.panel_shown(&Pane::Outliner)),
             C::ToggleZones => Some(self.panel_shown(&Pane::Zones)),
             C::ToggleHistory => Some(self.panel_shown(&Pane::History)),
+            C::ToggleTimeline => Some(self.panel_shown(&Pane::Timeline)),
+            C::ToggleCutscenePreview => Some(self.panel_shown(&Pane::CutscenePreview)),
+            C::CutscenePlay => Some(self.cine.as_ref().is_some_and(|c| c.playing)),
             C::ContentDrawer => Some(self.panel_shown(&Pane::ContentBrowser)),
             C::Maximize => Some(self.maximized.is_some()),
             C::GizmoSelect | C::GizmoMove | C::GizmoRotate | C::GizmoScale => {
@@ -785,6 +823,16 @@ impl BrowserApp {
             C::ToggleOutliner => self.dock_ops.push(DockOp::TogglePanel(Pane::Outliner)),
             C::ToggleZones => self.dock_ops.push(DockOp::TogglePanel(Pane::Zones)),
             C::ToggleHistory => self.dock_ops.push(DockOp::TogglePanel(Pane::History)),
+            C::ToggleTimeline => self.dock_ops.push(DockOp::TogglePanel(Pane::Timeline)),
+            C::ToggleCutscenePreview => self
+                .dock_ops
+                .push(DockOp::TogglePanel(Pane::CutscenePreview)),
+            C::CutscenePlay => {
+                if let Some(level) = self.cine.as_ref().and_then(|c| c.level) {
+                    self.cine_action(level, crate::level_view::cine::CineAction::Play);
+                }
+            }
+            C::CutsceneKeyFromView => self.cine_key_from_view(),
             C::NewDetails => self.new_details(),
             C::ContentDrawer => self.toggle_content(),
             C::NewContentBrowser => {
@@ -1036,6 +1084,10 @@ mod tests {
             C::ToggleOutliner,
             C::ToggleZones,
             C::ToggleHistory,
+            C::ToggleTimeline,
+            C::ToggleCutscenePreview,
+            C::CutscenePlay,
+            C::CutsceneKeyFromView,
             C::NewDetails,
             C::ContentDrawer,
             C::NewContentBrowser,

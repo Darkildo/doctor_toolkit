@@ -6458,3 +6458,91 @@ fn moves_of_the_live_link_go_into_the_workspace() {
     let back = current_group(&game, &ws, at).unwrap();
     assert_eq!(back.transform(&back.objects[object]).unwrap(), old);
 }
+
+/// Stage 62: a camera key of every shot changed in place — the shot reads
+/// back with the new key, and its bytes differ only in that value; the
+/// same for a key of the focal length.
+#[test]
+fn camera_keys_change_in_place() {
+    use doctor_toolkit::cutscene::edit::{KeyEdit, set_camera, set_focal_length};
+    use doctor_toolkit::cutscene::{Source, list_shots};
+    use doctor_toolkit::resource::trinity::{Command, SeqMaster, eval_curves};
+    let Some(dir) = game_dir() else { return };
+    let game = GameInstance::open(&dir).unwrap();
+    let source = Source::new(&game, None);
+    let failures = Failures::default();
+    let (mut checked, mut skipped, mut focal) = (0, 0, 0);
+    for s in list_shots(&game).unwrap() {
+        let file = game.open_stream(s.stream).unwrap();
+        let data = source.resource(s.stream, &file, s.resource).unwrap();
+        let seq = SeqMaster::parse(&data).unwrap();
+        let Some(block) = seq.block() else { continue };
+        let times = block.times();
+        let Some((index, curves)) = block
+            .commands
+            .iter()
+            .enumerate()
+            .find_map(|(i, c)| match c {
+                Command::CameraCurves { curves, .. } => Some((i, curves)),
+                _ => None,
+            })
+        else {
+            continue;
+        };
+        // A time every curve has a key at.
+        let Some(key) = curves[0].iter().map(|k| k.time).find(|&t| {
+            curves
+                .iter()
+                .all(|c| c.iter().any(|k| (k.time - t).abs() < 1e-6))
+        }) else {
+            skipped += 1;
+            continue;
+        };
+        let mut values = eval_curves(curves, key);
+        values[0] += 1.0;
+        let mut edited = seq.clone();
+        match set_camera(&mut edited, times[index] + key, values) {
+            Ok(KeyEdit::Replaced) => {}
+            other => {
+                failures.push(format!("{}: {other:?}", s.name));
+                continue;
+            }
+        }
+        let bytes = edited.to_bytes().unwrap();
+        let changed = data.iter().zip(&bytes).filter(|(a, b)| a != b).count();
+        if bytes.len() != data.len() || changed == 0 || changed > 4 {
+            failures.push(format!(
+                "{}: {} → {} bytes, {changed} changed",
+                s.name,
+                data.len(),
+                bytes.len()
+            ));
+        }
+        if SeqMaster::parse(&bytes).unwrap() != edited {
+            failures.push(format!("{}: reads back otherwise", s.name));
+        }
+        // The focal length at the start of its curve.
+        if let Some(i) = block
+            .commands
+            .iter()
+            .position(|c| matches!(c, Command::CameraFov { keys, .. } if keys.first().is_some_and(|k| k.time == 0.0 && k.value != 33.0)))
+        {
+            let mut fov = seq.clone();
+            if set_focal_length(&mut fov, times[i], 33.0).ok() != Some(KeyEdit::Replaced) {
+                failures.push(format!("{}: no focal length key", s.name));
+            }
+            let bytes = fov.to_bytes().unwrap();
+            let changed = data.iter().zip(&bytes).filter(|(a, b)| a != b).count();
+            if bytes.len() != data.len() || changed == 0 || changed > 4 {
+                failures.push(format!("{}: focal length: {changed} bytes changed", s.name));
+            }
+            focal += 1;
+        }
+        checked += 1;
+    }
+    println!(
+        "{checked} shots keyed in place ({focal} focal lengths), {skipped} without a key on every curve"
+    );
+    assert!(checked > 200, "{checked}");
+    failures.assert_empty();
+}

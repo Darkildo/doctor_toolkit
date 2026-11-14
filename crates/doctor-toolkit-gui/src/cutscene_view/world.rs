@@ -493,6 +493,47 @@ impl World {
     }
 }
 
+/// The zones a level view loads for a cut-scene (stage 62): the automatic
+/// choice of the preview, or the folder stream alone when nothing is near
+/// the path (worker thread).
+pub fn choose_streams(
+    game: &Arc<GameInstance>,
+    index: &doctor_toolkit::game::ResourceIndex,
+    cutscene: &Cutscene,
+) -> Result<Vec<usize>, String> {
+    let folder = game.streams()[cutscene.stream].stream_name();
+    let key = (game.root().to_path_buf(), folder.clone());
+    let cached = BOXES
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get_or_insert_with(HashMap::new)
+        .get(&key)
+        .cloned();
+    let boxes = match cached {
+        Some(b) => b,
+        None => {
+            let b = Arc::new(candidate_boxes(game, index, &folder).map_err(|e| e.to_string())?);
+            BOXES
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .get_or_insert_with(HashMap::new)
+                .insert(key, b.clone());
+            b
+        }
+    };
+    let points = path_points(cutscene, PATH_STEP);
+    let mut streams: Vec<usize> = choose_zones(&boxes, &points)
+        .iter()
+        .map(|c| c.stream)
+        .collect();
+    if streams.is_empty() {
+        streams.push(cutscene.stream);
+    }
+    streams.sort_unstable();
+    streams.dedup();
+    Ok(streams)
+}
+
 /// Chooses the zones of a cut-scene (worker thread).
 fn plan(
     root: &PathBuf,

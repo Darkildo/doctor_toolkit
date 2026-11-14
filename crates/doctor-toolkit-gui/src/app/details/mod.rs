@@ -103,7 +103,7 @@ pub struct Inspectors {
 
 /// What a Details panel shows this frame.
 #[derive(Debug, Clone, Copy)]
-enum Shown {
+pub(super) enum Shown {
     Object(u64, crate::level_view::ObjRef),
     /// A level is followed but nothing of it is selected.
     NoObject(u64),
@@ -111,6 +111,8 @@ enum Shown {
     Resource,
     /// The selection of an asset editor.
     Document(DocRef),
+    /// The camera or an actor of the cut-scene over a level (stage 62).
+    Cutscene(u64),
     Pinned,
     Nothing,
 }
@@ -158,7 +160,7 @@ impl BrowserApp {
     }
 
     /// What an inspector shows now.
-    fn shown(&self, inspector: &Inspector, level: Option<u64>) -> Shown {
+    pub(super) fn shown(&self, inspector: &Inspector, level: Option<u64>) -> Shown {
         match &inspector.pinned {
             Some(Pinned::Resource(_)) => return Shown::Pinned,
             Some(Pinned::Document(doc)) => {
@@ -180,9 +182,10 @@ impl BrowserApp {
             }
             None => {}
         }
-        let of_level = |id: u64| match self.levels.get(&id).and_then(|l| l.primary()) {
-            Some(r) => Shown::Object(id, r),
-            None => Shown::NoObject(id),
+        let of_level = |id: u64| match self.levels.get(&id) {
+            Some(l) if l.cine_selected().is_some() && l.primary().is_none() => Shown::Cutscene(id),
+            Some(l) if l.primary().is_some() => Shown::Object(id, l.primary().expect("some")),
+            _ => Shown::NoObject(id),
         };
         if let Some(id) = level {
             return of_level(id);
@@ -232,7 +235,7 @@ impl BrowserApp {
                 Some(Pinned::Document(doc)) => Some(Pinned::Document(*doc)),
                 None => None,
             },
-            Shown::NoObject(_) | Shown::Nothing => None,
+            Shown::NoObject(_) | Shown::Cutscene(_) | Shown::Nothing => None,
         }
     }
 
@@ -303,6 +306,7 @@ impl BrowserApp {
                 }
                 Shown::Resource => self.resource_details(ui),
                 Shown::Document(doc) => self.document_details(ui, doc),
+                Shown::Cutscene(id) => self.cutscene_details(ui, id),
                 Shown::Pinned => {
                     if let Some(Pinned::Resource(doc)) = &mut inspector.pinned {
                         self.pinned_resource_details(ui, doc);

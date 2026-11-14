@@ -263,6 +263,53 @@ pub fn decode(snu: &[u8]) -> Result<Pcm> {
     })
 }
 
+/// The sound of a cut-scene as one 48 kHz stereo track from `from` to
+/// `to` seconds: every track that starts itself or on a message of the
+/// cut-scene, at its start and volume (`None` without such tracks).
+pub fn mix(
+    source: &Source<'_>,
+    cutscene: &super::Cutscene,
+    from: f32,
+    to: f32,
+) -> Result<Option<Pcm>> {
+    use crate::resource::video::{MOVIE_AUDIO_RATE, to_movie_audio};
+    let rate = MOVIE_AUDIO_RATE as f32;
+    let frames = ((to - from).max(0.0) * rate).round() as usize;
+    let mut sum = vec![0f32; frames * 2];
+    let mut any = false;
+    for track in &cutscene.audio {
+        let Some(start) = track.placement.start else {
+            continue;
+        };
+        let key = crate::workspace::FileKey::archive_entry(&track.entry);
+        let Ok(data) = source.file(&key) else {
+            continue;
+        };
+        let pcm = to_movie_audio(&decode(&data)?);
+        any = true;
+        // Sample of the track at `from`.
+        let offset = ((from - start) * rate).round() as i64;
+        for i in 0..frames {
+            let at = offset + i as i64;
+            if at < 0 || at as usize >= pcm.frames() {
+                continue;
+            }
+            let at = at as usize;
+            for c in 0..2 {
+                sum[i * 2 + c] += pcm.samples[at * 2 + c] as f32 * track.placement.volume;
+            }
+        }
+    }
+    Ok(any.then(|| Pcm {
+        channels: 2,
+        sample_rate: MOVIE_AUDIO_RATE,
+        samples: sum
+            .into_iter()
+            .map(|v| v.round().clamp(-32768.0, 32767.0) as i16)
+            .collect(),
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

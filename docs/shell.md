@@ -928,6 +928,7 @@ Welcome). Обратная операция `template_of` берёт док ка
 | **Level Editor** | документы (вид уровня) на ~¾ ширины; справа Outliner (за ним вкладки Zones и Files) над Details, 42/58; ящики — Content Browser, Log, Changes, History |
 | **Resources** | прежняя раскладка: Files слева, документы, Details справа, Log и Changes под документами; ящик — Content Browser |
 | **Asset Editor** (этап 56) | редактор ассета на ~¾ ширины, Details справа во всю высоту; ящики — Content Browser, Files, Log, Changes, History |
+| **Cinematics** (этап 62) | вид уровня с роликом на ~70 % ширины, под ним Timeline; справа Cut-scene Preview над Details (за ней Outliner и Zones); ящики — Content Browser, Files, Log, Changes, History (§11.11) |
 
 Свои раскладки: View → **Save layout as…** (и правый щелчок по вкладке)
 открывает окно «Layouts»: имя и «Save» (то же имя — «Replace»), список
@@ -952,11 +953,12 @@ Layouts: <имя>» (и по-английски в русском интерфе
 тогда Tools → Level editor, как раньше, разворачивает вкладку уровня на
 всё окно.
 
-Формат `layout.json`, версия 5 (этап 56; у версий 2–4 тот же вид):
+Формат `layout.json`, версия 6 (этап 62: панели Timeline и
+Cut-scene Preview; у версий 2–5 тот же вид):
 
 ```json
 {
-  "version": 5,
+  "version": 6,
   "next_pane": 7,
   "tree": { "...": "дерево egui_tiles с панелями и документами" },
   "drawers": ["ContentBrowser", "Log", "Changes", "History"],
@@ -1532,4 +1534,94 @@ stream, Open in tab; правка строк — одна операция, Ctrl
 
 Не сделано (`docs/analysis/ui-audit.md` §1): звуковой банк и текстура —
 свои строки кнопок внутри; строки и граф анимации копят правки до «Save»
-/ «Apply»; ролики cut-scene (этапы 61–62); менеджер модов и импорт — окна.
+/ «Apply»; ролики cut-scene (вкладка — прежний просмотр; правка в виде
+уровня — §11.11); менеджер модов и импорт — окна.
+
+### 11.11 Ролик в виде уровня (этап 62)
+
+Ролик правится в виде уровня, как в Sequencer UE; всё — панели оболочки.
+Руководство — `docs/guide/16-cutscenes.md` §15.3a.
+
+**Устройство.**
+
+- `doctor_toolkit::cutscene::edit` (без окна) — ключи кадра на моменте:
+  `set_camera` (шесть кривых `0x304`: ключ на моменте в пределах
+  `KEY_TOLERANCE` = 1/60 с меняется, иначе вставляется с наклоном кривой в
+  этой точке; углы — рядом с текущими, `unwrap_degrees`), `set_focal_length`
+  (`0x307`), `set_actor` (`0x206`: ключ положения и/или поворота; новый
+  ключ положения сохраняет поворот места; актёр без `0x206` получает его
+  там, где создан), `delete_key` (последний ключ кривой остаётся),
+  `key_times`, `key_at`, `next_key`, `euler_of` (углы камеры из матрицы,
+  ближайшее из двух решений), `quaternion_of`, `focal_length` (мм из
+  вертикального поля зрения 16:9).
+- `level_view/cine.rs` — слой ролика над видом уровня (`LevelView::cine`):
+  актёры (`cutscene_view::preview::draw_actors`, общая с просмотром
+  вкладки), камера кадра пирамидой (`frustum_lines`), пути камер всех
+  кадров и точки ключей, путь выбранного актёра; выбор щелчком (проекция
+  точек на экран, 14 pt — работает и без видеокарты), гизмо
+  (`interact::Target::cine`, протяжка `Drag::cine`), отпускание —
+  `LevelAction::Cutscene(CineAction::Transform)`; полоса ролика внизу вида
+  (Play, время, «через камеру кадра», персонажи, ключ из вида, «×»).
+  Экземпляры ролика добавляются после экземпляров уровня
+  (`base_instances`) и кэшируются по `Layer::revision`; ключ рендера —
+  `RenderKey::cine`.
+- `app/cinema.rs` — сессия ролика (`BrowserApp::cine`): загруженный ролик
+  (из рабочего пространства), шкала, Play со звуком (`SoundPlayer`),
+  выбор зон в фоне (`cutscene_view::world::choose_streams` →
+  `LevelView::load_streams`), правки (`cine_action` → `cine_edit`: кадр
+  на курсоре → `SeqMaster::to_bytes` → `Workspace::set_resource`, одна
+  операция), панели **Timeline** (`Pane::Timeline`) и **Cut-scene
+  Preview** (`Pane::CutscenePreview`, `Preview` с камерой кадра), Details
+  камеры и актёра (`details::Shown::Cutscene`), выгрузка видео.
+- **Общий курсор**: `cutscene_view::SharedCursor` — время, Play и
+  запросы вкладок (`toggle`, `moved`); приложение кладёт его в
+  `ViewContext::cursor`, вкладка ролика того же папочного потока берёт
+  курсор оттуда и отдаёт свои перемотки и Play обратно; сессия двигает
+  время в `cine_tick` до дока, вид уровня получает его в `Layer::time`.
+  После любой правки, отмены и повтора (`after_edit`) сессия перечитывает
+  ролик (`reload_cine`).
+- Команды: `ViewAction::OpenInLevel` (кнопка вкладки ролика),
+  `AssetCmd::OpenInLevel` (Asset ▾ и меню ярлыка вкладки кадра),
+  контекстное меню Content Browser; View → Timeline panel (Ctrl+8),
+  Cut-scene Preview panel (Ctrl+9); Level → Cut-scene: play or pause,
+  Cut-scene: camera key from the view. Outliner — ветка **Cut-scene**
+  (камера и актёры кадра на курсоре).
+- Видео (`cutscene_view/render.rs`, `doctor_toolkit::cutscene::video`):
+  `Job::run` рендерит `Preview::render_pixels` (кадр камеры, мир загружен
+  заранее `Preview::load_world`) кадр за кадром; `write_video` отдаёт
+  кадры кодеру VP6 потоком YUV4MPEG2 (кадры рендерятся, когда кодер их
+  читает, — весь ролик в памяти не держится), PNG и ffmpeg (сырой RGBA в
+  stdin, звук — WAV рядом). В редакторе — свой `SceneRenderer` на
+  устройстве редактора в фоновом потоке; без окна —
+  `doctor-toolkit-gui --render-cutscene` (`GpuContext::headless`), его
+  запускает `doctor-toolkit cutscene render`.
+
+**Раскладка Cinematics** (`Builtin::Cinematics`): вид на ~70 % ширины,
+под ним Timeline (30 % высоты), справа Cut-scene Preview над Details (за
+ней Outliner и Zones); ящики — Content Browser, Files, Log, Changes,
+History. Включается при открытии ролика, если панели Timeline нет ни в
+доке, ни в ящиках. `layout.json` — версия 6 (новые панели); версии 1–5
+читаются как раньше.
+
+Найдено при проверке: скиннинг копировал боксы частей из позы привязки —
+вид уровня (он отсекает по боксам) не рисовал персонажей, которые клип
+увёл от начала координат; теперь `skin` пересчитывает боксы частей.
+Позированные копии одного ролика в виде уровня и в Preview — разные
+ключи мешей (`Loaded::salt`); загрузка уровня бюджет мешей только
+повышает.
+
+Снимок — `tools/screenshots.sh … cutscene-level`
+(`DOCTOR_TOOLKIT_GUI_CINE=time=<s>,characters,select=camera|<актёр>,nomarkers,behind=<м назад>/<м вверх>,through,view=<глаз>/<цель>`).
+
+Тесты (`app/cine_tests.rs`, `cutscene::edit`, `cutscene::video`,
+`cutscene_view/render.rs`, `app/layouts.rs`, корпус
+`camera_keys_change_in_place`): открытие ролика мини-игры в виде уровня
+(зоны, раскладка Cinematics, ветка Outliner, Details камеры, закрытие);
+протяжка гизмо камеры — ключ на курсоре, повторная — правка того же
+ключа, две отмены; гизмо актёра — ключ его пути, удаление ключа; ключ из
+вида (положение, направление, поле зрения), команда Level, фокусное
+расстояние; общий курсор вкладки и вида, Play двигает время и актёра,
+пауза со стороны вкладки; «через камеру кадра» и панель Preview;
+несколько кадров в PNG и VP6 (без видеокарты — пропуск); корпус —
+ключ камеры каждого кадра правится на месте: 259 кадров, байты отличаются
+только в изменённом значении (и 252 ключа фокусного расстояния).

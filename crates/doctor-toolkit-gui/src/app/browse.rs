@@ -51,6 +51,8 @@ impl BrowserApp {
             Pane::ContentExtra { id } => self.content_pane(ui, *id),
             Pane::Outliner => self.outliner_pane(ui),
             Pane::History => self.history_pane(ui),
+            Pane::Timeline => self.timeline_pane(ui),
+            Pane::CutscenePreview => self.cutscene_preview_pane(ui),
             Pane::Script => self.script_pane(ui),
             Pane::Movies => {
                 let details = self.details_follow();
@@ -776,6 +778,7 @@ impl BrowserApp {
             links: &self.external.infos,
             place: crate::views::Place::Details,
             details: false,
+            cursor: Some(self.cine_cursor.clone()),
         };
         for (_, view) in &mut doc.views {
             if let Some(a) = view.show(ui, &mut cx) {

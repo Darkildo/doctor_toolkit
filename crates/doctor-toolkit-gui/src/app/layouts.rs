@@ -33,7 +33,7 @@ use super::dock::{self, DockOp, Pane};
 use super::{BrowserApp, Command};
 
 /// Version of the layout file written now.
-pub const LAYOUT_VERSION: u32 = 5;
+pub const LAYOUT_VERSION: u32 = 6;
 
 /// A kind of screen, by the document in front: each remembers its layout.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -77,16 +77,24 @@ pub enum Builtin {
     Level,
     /// The asset editors (stage 56).
     Assets,
+    /// A cut-scene in the level view (stage 62).
+    Cinematics,
 }
 
 impl Builtin {
-    pub const ALL: [Builtin; 3] = [Builtin::Level, Builtin::Assets, Builtin::Resources];
+    pub const ALL: [Builtin; 4] = [
+        Builtin::Level,
+        Builtin::Cinematics,
+        Builtin::Assets,
+        Builtin::Resources,
+    ];
 
     pub fn name(self) -> &'static str {
         match self {
             Self::Resources => tr("layout.resources"),
             Self::Level => tr("layout.level"),
             Self::Assets => tr("layout.assets"),
+            Self::Cinematics => tr("layout.cinematics"),
         }
     }
 
@@ -98,6 +106,7 @@ impl Builtin {
             },
             Self::Level => level_arrangement(),
             Self::Assets => assets_arrangement(),
+            Self::Cinematics => cinematics_arrangement(),
         }
     }
 }
@@ -278,6 +287,42 @@ fn level_arrangement() -> Arrangement {
         tree: Tree::new(egui::Id::unique("dock"), root, tiles),
         drawers: vec![
             Pane::ContentBrowser,
+            Pane::Log,
+            Pane::Changes,
+            Pane::History,
+        ],
+    }
+}
+
+/// "Cinematics" (stage 62): the level view with the cut-scene over it,
+/// the Timeline under it, the Cut-scene Preview over Details (and the
+/// Outliner and Zones behind Details) on the right.
+fn cinematics_arrangement() -> Arrangement {
+    let mut tiles = Tiles::default();
+    let docs = tiles.insert_pane(Pane::Documents);
+    let center = tiles.insert_tab_tile(vec![docs]);
+    let preview = tiles.insert_pane(Pane::CutscenePreview);
+    let top = tiles.insert_tab_tile(vec![preview]);
+    let details = tiles.insert_pane(Pane::Details);
+    let outliner = tiles.insert_pane(Pane::Outliner);
+    let zones = tiles.insert_pane(Pane::Zones);
+    let bottom = tiles.insert_tab_tile(vec![details, outliner, zones]);
+    let right = tiles.insert_vertical_tile(vec![top, bottom]);
+    set_shares(&mut tiles, right, &[(top, 0.36), (bottom, 0.64)]);
+    let upper = tiles.insert_horizontal_tile(vec![center, right]);
+    set_shares(&mut tiles, upper, &[(center, 0.7), (right, 0.3)]);
+    let timeline = tiles.insert_pane(Pane::Timeline);
+    let lower = tiles.insert_tab_tile(vec![timeline]);
+    let root = tiles.insert_vertical_tile(vec![upper, lower]);
+    set_shares(&mut tiles, root, &[(upper, 0.7), (lower, 0.3)]);
+    let mut tree = Tree::new(egui::Id::unique("dock"), root, tiles);
+    // Details in front of the Outliner and Zones.
+    tree.make_active(|id, _| id == details);
+    Arrangement {
+        tree,
+        drawers: vec![
+            Pane::ContentBrowser,
+            Pane::Files,
             Pane::Log,
             Pane::Changes,
             Pane::History,
@@ -1112,7 +1157,7 @@ mod tests {
         assert!(!loaded.layouts.remember);
         assert_eq!(loaded.layouts.user[0].name, "Wide");
         assert!(parse("{").is_none());
-        assert!(parse(&json.replace("\"version\": 5", "\"version\": 999")).is_none());
+        assert!(parse(&json.replace("\"version\": 6", "\"version\": 999")).is_none());
     }
 
     #[test]
@@ -1170,7 +1215,7 @@ mod tests {
     /// A stage 52 file: `ObjectDetails` for the first Details.
     fn as_stage_52(json: &str) -> String {
         json.replacen("\"Details\"", "\"ObjectDetails\"", 1)
-            .replace("\"version\": 5", "\"version\": 2")
+            .replace("\"version\": 6", "\"version\": 2")
     }
 
     #[test]
@@ -1208,7 +1253,7 @@ mod tests {
         );
         // Saved again it is version 4, and reads the same.
         let again = to_json(&loaded.tree, 1, &loaded.drawers, &loaded.layouts);
-        assert!(again.contains("\"version\": 5") && !again.contains("ObjectDetails"));
+        assert!(again.contains("\"version\": 6") && !again.contains("ObjectDetails"));
 
         assert_eq!(panes(&parse(&again).unwrap().tree), panes(&loaded.tree));
 
@@ -1235,7 +1280,7 @@ mod tests {
         layouts.save("Files only", Builtin::Resources.arrangement());
         let stage_53 = [Pane::ContentBrowser, Pane::Log, Pane::Changes];
         let json =
-            to_json(&tree, 1, &stage_53, &layouts).replace("\"version\": 5", "\"version\": 3");
+            to_json(&tree, 1, &stage_53, &layouts).replace("\"version\": 6", "\"version\": 3");
         let loaded = parse(&json).expect("a stage 53 file reads");
         assert_eq!(
             loaded.drawers,
@@ -1256,7 +1301,7 @@ mod tests {
         let mut docked = tree.clone();
         dock::show_panel(&mut docked, Pane::History, None);
         let json = to_json(&docked, 1, &stage_53, &Layouts::default())
-            .replace("\"version\": 5", "\"version\": 3");
+            .replace("\"version\": 6", "\"version\": 3");
         let loaded = parse(&json).unwrap();
         assert_eq!(loaded.drawers, stage_53);
         assert!(dock::find(&loaded.tree, |p| *p == Pane::History).is_some());
@@ -1307,7 +1352,39 @@ mod tests {
         }
         let mut names: Vec<&str> = Builtin::ALL.iter().map(|b| b.name()).collect();
         names.dedup();
-        assert_eq!(names.len(), 3);
+        assert_eq!(names.len(), 4);
+    }
+
+    #[test]
+    fn cinematics_has_the_timeline_under_the_view_and_the_preview_by_details() {
+        let (tree, drawers) = arrange(
+            &Builtin::Cinematics.arrangement(),
+            vec![Pane::Level { id: 9 }],
+        );
+        for pane in [
+            Pane::Level { id: 9 },
+            Pane::Timeline,
+            Pane::CutscenePreview,
+            Pane::Details,
+            Pane::Outliner,
+            Pane::Zones,
+        ] {
+            assert!(dock::find(&tree, |p| *p == pane).is_some(), "{pane:?}");
+        }
+        let details = dock::find(&tree, |p| *p == Pane::Details).unwrap();
+        assert!(dock::is_shown(&tree, details));
+        let timeline = dock::find(&tree, |p| *p == Pane::Timeline).unwrap();
+        assert!(dock::is_shown(&tree, timeline));
+        assert!(drawers.contains(&Pane::ContentBrowser));
+        // Version 6 with the new panels round-trips; version 5 still reads.
+        let json = to_json(&tree, 10, &drawers, &Layouts::default());
+        let loaded = parse(&json).unwrap();
+        assert!(dock::find(&loaded.tree, |p| *p == Pane::Timeline).is_some());
+        let (tree, drawers) = arrange(&Builtin::Level.arrangement(), Vec::new());
+        let v5 = to_json(&tree, 3, &drawers, &Layouts::default())
+            .replace("\"version\": 6", "\"version\": 5");
+        let loaded = parse(&v5).expect("version 5 is read");
+        assert_eq!(loaded.drawers, drawers);
     }
 
     #[test]
@@ -1323,7 +1400,7 @@ mod tests {
                 arrangement: Builtin::Resources.arrangement(),
             },
         );
-        let v4 = to_json(&tree, 3, &drawers, &layouts).replace("\"version\": 5", "\"version\": 4");
+        let v4 = to_json(&tree, 3, &drawers, &layouts).replace("\"version\": 6", "\"version\": 4");
         let loaded = parse(&v4).expect("version 4 is read");
         assert_eq!(
             loaded.layouts.screens[&Screen::Assets].layout,
@@ -1331,7 +1408,7 @@ mod tests {
         );
         // Without a layout of their own: the built-in Asset Editor.
         let v4 = to_json(&tree, 3, &drawers, &Layouts::default())
-            .replace("\"version\": 5", "\"version\": 4");
+            .replace("\"version\": 6", "\"version\": 4");
         let loaded = parse(&v4).unwrap();
         assert!(!loaded.layouts.screens.contains_key(&Screen::Assets));
         // Version 5 with the new tabs round-trips.
@@ -1340,7 +1417,7 @@ mod tests {
             vec![Pane::Script, Pane::Movies],
         );
         let json = to_json(&tree, 3, &drawers, &Layouts::default());
-        assert!(json.contains("\"version\": 5"));
+        assert!(json.contains("\"version\": 6"));
         let loaded = parse(&json).unwrap();
         assert!(dock::find(&loaded.tree, |p| *p == Pane::Script).is_some());
         assert!(dock::find(&loaded.tree, |p| *p == Pane::Movies).is_some());

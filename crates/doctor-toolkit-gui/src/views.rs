@@ -186,6 +186,8 @@ pub enum ViewAction {
     /// Open the shown resource in its own tab, in a mode of its views
     /// ([`ResourceViewer::set_mode`]).
     OpenInTab(Option<&'static str>),
+    /// Open the cut-scene of the shown shot in the level view (stage 62).
+    OpenInLevel,
 }
 
 /// An edit a view hands to the app, see [`ViewAction::Apply`].
@@ -204,6 +206,9 @@ pub struct ViewContext<'a> {
     /// [`ResourceViewer::inspector`], so the view leaves its own side
     /// column out.
     pub details: bool,
+    /// The play head of the cut-scene in the level view (stage 62): a
+    /// cut-scene view of the same cut-scene follows it.
+    pub cursor: Option<crate::cutscene_view::SharedCursor>,
 }
 
 impl ViewContext<'_> {

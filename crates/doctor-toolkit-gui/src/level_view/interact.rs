@@ -99,6 +99,8 @@ pub(super) struct Target {
     pub objects: Vec<(ObjRef, RowMatrix)>,
     /// A node of a navigation graph instead.
     pub node: Option<nav::NodeRef>,
+    /// A camera or actor of the cut-scene instead, and where it is.
+    pub cine: Option<(super::cine::Item, RowMatrix)>,
 }
 
 /// One edit, or one operation of several.
@@ -138,6 +140,7 @@ impl LevelView {
                 mode: drag.mode,
                 objects: Vec::new(),
                 node: drag.node,
+                cine: None,
             });
         }
         let objects = self.gizmo_objects();
@@ -157,6 +160,27 @@ impl LevelView {
                 mode: self.gizmo,
                 objects,
                 node: None,
+                cine: None,
+            });
+        }
+        // A camera or actor of the cut-scene: moved or turned (scaling
+        // means nothing to it).
+        if let Some(layer) = &self.cine
+            && let Some(item) = layer.selected
+            && let Some(m) = layer.row_matrix(item)
+            && self.filter.selected.is_none()
+        {
+            let mode = match self.gizmo {
+                gizmo::Mode::Scale => gizmo::Mode::Move,
+                mode => mode,
+            };
+            return Some(Target {
+                origin: [m[3][0], m[3][1], m[3][2]],
+                axes: gizmo::axes(mode, self.space, &m),
+                mode,
+                objects: Vec::new(),
+                node: None,
+                cine: Some((item, m)),
             });
         }
         let node = self
@@ -169,6 +193,7 @@ impl LevelView {
             mode: gizmo::Mode::Move,
             objects: Vec::new(),
             node: Some(node),
+            cine: None,
         })
     }
 
@@ -225,10 +250,16 @@ impl LevelView {
             } else {
                 self.clear_selection();
                 self.nav.select(None);
+                self.cine_select(None);
             }
         }
         if keys.delete {
-            action = self.edit_selection(true);
+            action = match self.cine.as_ref().and_then(|l| l.selected) {
+                Some(item) if self.filter.selected.is_none() => Some(LevelAction::Cutscene(
+                    super::cine::CineAction::DeleteKey(item),
+                )),
+                _ => self.edit_selection(true),
+            };
         }
         if keys.duplicate {
             action = self.edit_selection(false);
@@ -269,6 +300,9 @@ impl LevelView {
     /// Esc during a drag: everything goes back.
     fn cancel_drag(&mut self) {
         let Some(drag) = self.drag.take() else { return };
+        if let Some(layer) = &mut self.cine {
+            layer.dragged = None;
+        }
         if drag.node.is_some() {
             self.nav.preview = None;
             self.nav.generation += 1;
@@ -285,6 +319,17 @@ impl LevelView {
     /// The edit a finished drag of the gizmo makes: one operation for every
     /// object it changed (copies with Alt).
     pub(super) fn finish_drag(&mut self, drag: Drag) -> Option<LevelAction> {
+        if let Some((item, start, current)) = drag.cine {
+            if let Some(layer) = &mut self.cine {
+                layer.dragged = None;
+            }
+            return (current != start).then(|| {
+                LevelAction::Cutscene(super::cine::CineAction::Transform {
+                    item,
+                    matrix: scene::flatten(&current),
+                })
+            });
+        }
         if let Some(n) = drag.node {
             let to = drag.origin();
             if to != drag.pivot {
