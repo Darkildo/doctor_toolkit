@@ -32,6 +32,7 @@ const MODEL_BASIC: u32 = 1u;
 const MODEL_TINT_MASK: u32 = 2u;
 const MODEL_HAIR: u32 = 3u;
 const MODEL_SKIN: u32 = 4u;
+const MODEL_EYE: u32 = 5u;
 
 // Textures a surface has (Material.flags.z).
 const HAS_NORMAL: u32 = 1u;
@@ -178,6 +179,10 @@ fn surface_color(base: vec4<f32>, gloss: vec4<f32>, mask: vec4<f32>) -> SurfaceC
             weight = gloss.r;
         }
         out.albedo = mix(colour, colour * material.skin.rgb, weight);
+    } else if (model == MODEL_EYE) {
+        // gf_char_eye: the iris (base alpha) takes the eye colour; opaque.
+        out.albedo = mix(colour, colour * material.skin.rgb, base.a);
+        out.alpha = 1.0;
     }
     out.albedo = out.albedo * material.tint.rgb;
     out.alpha = out.alpha * material.tint.a;

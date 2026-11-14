@@ -46,8 +46,10 @@ pub fn decode(format: &Format, width: usize, height: usize, data: &[u8]) -> Resu
             }
         }
         Format::A8 => {
+            // Direct3D 9 samples alpha-only textures as (0, 0, 0, a): the
+            // eyelashes of the game (`lash_c`, A8) are black.
             for (px, &a) in out.chunks_exact_mut(4).zip(data) {
-                px.copy_from_slice(&[255, 255, 255, a]);
+                px.copy_from_slice(&[0, 0, 0, a]);
             }
         }
         Format::L8A8 => {
@@ -280,6 +282,14 @@ pub fn encode_png(width: usize, height: usize, rgba: &[u8]) -> Result<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn alpha_only_textures_are_black() {
+        // Direct3D 9 samples A8 as (0, 0, 0, a); encoding keeps the alpha.
+        let px = decode(&Format::A8, 2, 1, &[0, 200]).unwrap();
+        assert_eq!(px, [0, 0, 0, 0, 0, 0, 0, 200]);
+        assert_eq!(encode(&Format::A8, 2, 1, &px).unwrap(), [0, 200]);
+    }
 
     #[test]
     fn bc1_opaque_and_transparent_modes() {

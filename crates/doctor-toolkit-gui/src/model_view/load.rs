@@ -193,6 +193,7 @@ fn surface(
         Family::TintMask => SurfaceModel::TintMask,
         Family::Hair => SurfaceModel::Hair,
         Family::Skin => SurfaceModel::Skin,
+        Family::Eye => SurfaceModel::Eye,
         _ => SurfaceModel::Basic,
     };
     // Masks are used as stored; colour textures that are not sampled as

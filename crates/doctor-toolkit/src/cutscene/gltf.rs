@@ -517,10 +517,17 @@ pub fn export(
                 report.problems.push(format!("{label}: nothing to show"));
                 continue;
             }
-            let skeleton = models
-                .is_empty()
-                .then(|| animation.as_ref().map(|a| &a.skeleton))
-                .flatten();
+            // The clips move the bones to the proportions of the actor's rig
+            // (`Animated` attribute 2): the joints (inverse bind matrices)
+            // come from it, or the face and body fold (`rig.md` §3.1).
+            let rig_skeleton = models
+                .first()
+                .and_then(|m| assets.rig_skeleton(actor.rig, &m.model.bones));
+            let skeleton = if models.is_empty() {
+                animation.as_ref().map(|a| &a.skeleton)
+            } else {
+                rig_skeleton.as_ref()
+            };
             let glb = match scene_to_glb(&models, skeleton, &animations, assets) {
                 Ok(g) => g,
                 Err(e) => {

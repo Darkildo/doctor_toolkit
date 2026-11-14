@@ -26,6 +26,7 @@ fn family_name(family: Family) -> &'static str {
     match family {
         Family::TintMask => tr("material.family_tint_mask"),
         Family::Hair => tr("material.family_hair"),
+        Family::PlainHair => tr("material.family_plain_hair"),
         Family::Skin => tr("material.family_skin"),
         Family::Eye => tr("material.family_eye"),
         Family::Glass => tr("material.family_glass"),

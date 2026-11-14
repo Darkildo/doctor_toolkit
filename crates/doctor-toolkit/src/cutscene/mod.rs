@@ -140,6 +140,9 @@ pub struct ActorInfo {
     pub set: Option<String>,
     /// Preset and item (`PartedAnimated` attributes 0 and 1).
     pub preset: Option<(String, String)>,
+    /// Resource id of the rig (`rcb`) of the actor (`Animated` attribute 2).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rig: Option<u32>,
 }
 
 /// A shot of a cut-scene.
@@ -445,6 +448,10 @@ impl Shot {
                                     assembly: None,
                                     set: string_attr(&group, o, parted, 2),
                                     preset,
+                                    rig: match group.attr(object, sdbm(b"animated"), 2) {
+                                        Some(Value::Guid(g)) => g.resource_id(),
+                                        _ => None,
+                                    },
                                 },
                             );
                         }

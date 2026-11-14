@@ -672,11 +672,16 @@ impl GameAssets {
         if self.rigs.is_none() {
             let mut rigs = Vec::new();
             for (s, r) in self.rig_locations.clone() {
-                if let Some(rig) = self
+                let id = self
+                    .stream(s)
+                    .and_then(|stream| stream.layout().resources.get(r))
+                    .map_or(0, |res| res.header.ids[3]);
+                if let Some(mut rig) = self
                     .stream(s)
                     .and_then(|stream| stream.resource_data(r).ok())
                     .and_then(|data| crate::resource::rcb::Rig::parse(&data).ok())
                 {
+                    rig.id = id;
                     rigs.push(rig);
                 }
             }
@@ -734,10 +739,7 @@ impl crate::export::gltf::AssetSource for GameAssets {
     }
 
     fn skeleton(&mut self, bones: &[(u32, u32)]) -> Option<crate::resource::rcb::Skeleton> {
-        self.rigs()
-            .iter()
-            .find_map(|rig| rig.skeleton_for(bones))
-            .cloned()
+        crate::resource::rcb::skeleton_for(self.rigs(), None, bones).cloned()
     }
 }
 

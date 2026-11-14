@@ -33,6 +33,19 @@ pub trait AssetSource {
     fn rigs(&mut self) -> &[crate::resource::rcb::Rig] {
         &[]
     }
+    /// The skeleton of rig `rig` (resource id, as a character's SimGroup
+    /// object names it) matching a mesh bone table; [`Self::skeleton`]
+    /// when the rig is not known or has none.
+    fn rig_skeleton(&mut self, rig: Option<u32>, bones: &[(u32, u32)]) -> Option<Skeleton> {
+        let found = rig.and_then(|id| {
+            self.rigs()
+                .iter()
+                .filter(|r| r.id == id)
+                .find_map(|r| r.skeleton_for(bones))
+                .cloned()
+        });
+        found.or_else(|| self.skeleton(bones))
+    }
 }
 
 /// An [`AssetSource`] without assets: geometry only.

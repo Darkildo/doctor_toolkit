@@ -4406,6 +4406,253 @@ fn the_mob_face_editor_parses() {
     assert!(targets.contains(&"headnawd"), "{targets:?}");
 }
 
+/// Every head of every character database (all its levels of detail) skins
+/// within its palette, with at most four weights summing to one on bones of
+/// the human skeleton; its materials and their base textures are found, eye
+/// materials (`gf_char_eye`) have an iris mask in the base alpha, and the
+/// eyelashes (`gf_char_hair_aniso`) an alpha-only base texture.
+#[test]
+fn every_head_skins_within_its_palette_and_finds_its_textures() {
+    use doctor_toolkit::character::MeshLocator;
+    use doctor_toolkit::export::gltf::AssetSource;
+    use doctor_toolkit::game::GameAssets;
+    use doctor_toolkit::resource::mesh;
+    use doctor_toolkit::resource::partsdb::{KIND_CHARACTER, PartsDb};
+    use doctor_toolkit::resource::shading::{Family, Shading};
+    use doctor_toolkit::resource::tg4::Format;
+    let Some(dir) = game_dir() else { return };
+    let game = std::sync::Arc::new(GameInstance::open(&dir).unwrap());
+    let (index, _) = game.build_index(|_| {});
+    let meshes = MeshLocator::new(&index);
+    let mut assets = GameAssets::new(game.clone(), &index);
+    let failures = Failures::default();
+    let mut heads = std::collections::BTreeSet::new();
+    let (mut records, mut eyes, mut lashes, mut influences) = (0, 0, 0, [0usize; 5]);
+    let mut open: std::collections::HashMap<usize, StreamFile> = Default::default();
+    for e in &index.entries {
+        if e.header.type_id != doctor_toolkit::resource::logic::TYPE_PARTSDB {
+            continue;
+        }
+        let file = open
+            .entry(e.stream as usize)
+            .or_insert_with(|| game.open_stream(e.stream as usize).unwrap());
+        let db = PartsDb::parse(&file.resource_data(e.resource as usize).unwrap()).unwrap();
+        if db.kind != KIND_CHARACTER {
+            continue;
+        }
+        for part in db.parts.iter().filter(|p| p.name.contains("head")) {
+            for id in part.mesh_ids() {
+                if !heads.insert(id) {
+                    continue;
+                }
+                let Some((s, r)) = meshes.find(id, e.stream as usize) else {
+                    failures.push(format!("{}/{}: mesh {id:08x} missing", db.name, part.name));
+                    continue;
+                };
+                let stream = open
+                    .entry(s)
+                    .or_insert_with(|| game.open_stream(s).unwrap());
+                let model = mesh::load(stream, r).unwrap();
+                let name = &model.name;
+                if model.bones.iter().any(|b| b.1 >= 102) {
+                    failures.push(format!("{name}: bone outside the human skeleton"));
+                }
+                if assets.skeleton(&model.bones).is_none() {
+                    failures.push(format!("{name}: no skeleton"));
+                }
+                for record in &model.records {
+                    records += 1;
+                    let v = model.vertices(record).unwrap();
+                    let at = format!("{name}/{}", record.name);
+                    if let (Some(joints), Some(weights)) = (&v.joints, &v.weights) {
+                        for (j, w) in joints.iter().zip(weights) {
+                            let used = w.iter().filter(|&&x| x > 0.0).count();
+                            influences[used] += 1;
+                            if (w.iter().sum::<f32>() - 1.0).abs() > 1e-3 {
+                                failures.push(format!(
+                                    "{at}: weights sum to {}",
+                                    w.iter().sum::<f32>()
+                                ));
+                                break;
+                            }
+                            if (0..4).any(|k| w[k] > 0.0 && j[k] as usize >= record.palette.len()) {
+                                failures.push(format!("{at}: joint outside the palette"));
+                                break;
+                            }
+                        }
+                        if record.influences as usize > 4 {
+                            failures.push(format!("{at}: {} influences", record.influences));
+                        }
+                    }
+                    if record.palette.iter().any(|p| p.0 >= 102) {
+                        failures.push(format!("{at}: palette bone outside the skeleton"));
+                    }
+                    let Some(material) = assets.material(record.material_hash) else {
+                        failures.push(format!(
+                            "{at}: material {:08x} missing",
+                            record.material_hash
+                        ));
+                        continue;
+                    };
+                    let shading = Shading::from_material(&material);
+                    let Some(base) = shading.base.and_then(|h| assets.texture(h)) else {
+                        failures.push(format!("{at}: base texture of {} missing", material.name));
+                        continue;
+                    };
+                    match shading.family {
+                        Family::Eye => {
+                            eyes += 1;
+                            let (_, _, rgba) = base.rgba(0).unwrap();
+                            let iris = rgba.chunks_exact(4).filter(|p| p[3] > 128).count();
+                            let n = rgba.len() / 4;
+                            if iris == 0 || iris == n {
+                                failures.push(format!("{at}: eye base alpha is not an iris mask"));
+                            }
+                        }
+                        Family::PlainHair => {
+                            lashes += 1;
+                            if base.header.format() != Format::A8 {
+                                failures
+                                    .push(format!("{at}: eyelashes {:?}", base.header.format()));
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+    }
+    eprintln!(
+        "{} head meshes, {records} records, {eyes} eye and {lashes} eyelash records; vertices by weights used: {influences:?}",
+        heads.len()
+    );
+    assert!(heads.len() > 100, "{}", heads.len());
+    assert!(eyes > 50 && lashes > 0, "{eyes} {lashes}");
+    failures.assert_empty();
+}
+
+/// Cut-scene clips move the bones to the proportions of the actor's own rig
+/// (`Animated` attribute 2): in the first frame, the face bones of every
+/// clip of a character lie where the bind pose of that rig's skeleton puts
+/// them, not where the other human rig does. Female actors name `be9a8908`,
+/// whose `this_lod1` differs from its `puppet`; male actors `b2b17079`.
+#[test]
+fn cutscene_clips_fit_the_rig_of_their_actor() {
+    use doctor_toolkit::cutscene::cast::Cast;
+    use doctor_toolkit::cutscene::{Cutscene, Source, list_shots};
+    use doctor_toolkit::game::GameAssets;
+    use doctor_toolkit::resource::rcb::{Skeleton, skeleton_for};
+    use doctor_toolkit::resource::trinity::Command;
+    let Some(dir) = game_dir() else { return };
+    let game = std::sync::Arc::new(GameInstance::open(&dir).unwrap());
+    let (index, _) = game.build_index(|_| {});
+    let mut assets = GameAssets::new(game.clone(), &index);
+    let rigs = assets.rigs().to_vec();
+    let mut cast = Cast::new(&game, &index, rigs.clone());
+    let source = Source::new(&game, None);
+    let shots = list_shots(&game).unwrap();
+    let mut streams: Vec<usize> = shots.iter().map(|s| s.stream).collect();
+    streams.dedup();
+    let failures = Failures::default();
+    let mut rig_counts: std::collections::BTreeMap<u32, usize> = Default::default();
+    let (mut checked, mut uniform_rigs) = (0, 0);
+    let mut mismatches = Vec::new();
+    for &stream in &streams {
+        let Ok(cutscene) = Cutscene::load(&source, stream, None) else {
+            continue;
+        };
+        for shot in &cutscene.shots {
+            for actor in shot.actors.iter().filter(|a| a.assembly.is_some()) {
+                let Some(rig) = actor.rig else {
+                    failures.push(format!("{}: {} names no rig", shot.stream_name, actor.name));
+                    continue;
+                };
+                let Some(rig_entry) = rigs.iter().find(|r| r.id == rig) else {
+                    failures.push(format!("{}: rig {rig:08x} not found", actor.name));
+                    continue;
+                };
+                *rig_counts.entry(rig).or_default() += 1;
+                uniform_rigs += rig_entry.is_uniform() as usize;
+                let Some(clip) = shot.block().commands.iter().find_map(|c| match c {
+                    Command::ActorAnim { actor: a, clip, .. } if *a == actor.guid => {
+                        Some(clip.text.clone())
+                    }
+                    _ => None,
+                }) else {
+                    continue;
+                };
+                let Ok(anim) = cast.animation(&source, shot, &clip) else {
+                    continue;
+                };
+                let table: Vec<(u32, u32)> = anim
+                    .skeleton
+                    .bones
+                    .iter()
+                    .enumerate()
+                    .map(|(i, b)| (b.hash, i as u32))
+                    .collect();
+                // The actor's skeleton, and one of a human rig unlike it.
+                let own = skeleton_for(&rigs, Some(rig), &table).unwrap();
+                let differs = |s: &Skeleton| {
+                    s.bones
+                        .iter()
+                        .zip(&own.bones)
+                        .any(|(a, b)| (a.inverse_bind[13] - b.inverse_bind[13]).abs() > 1e-3)
+                };
+                let Some(other) = rigs
+                    .iter()
+                    .filter_map(|r| r.skeleton_for(&table))
+                    .find(|s| differs(s))
+                else {
+                    continue;
+                };
+                let neck = own.bones.iter().position(|b| b.name == Some("m_neck2"));
+                let face: Vec<usize> = (0..own.bones.len())
+                    .filter(|&i| {
+                        let p = own.bones[i].parent;
+                        p == neck || p.is_some_and(|p| own.bones[p].parent == neck)
+                    })
+                    .collect();
+                let error = |s: &Skeleton| -> f32 {
+                    let locals = s.bind_locals();
+                    anim.tracks
+                        .iter()
+                        .filter(|t| face.contains(&t.bone) && !t.translations.is_empty())
+                        .map(|t| {
+                            let p = t.translations[0];
+                            (0..3)
+                                .map(|k| (p[k] - locals[t.bone][12 + k]).powi(2))
+                                .sum::<f32>()
+                                .sqrt()
+                        })
+                        .sum()
+                };
+                checked += 1;
+                let (mine, theirs) = (error(own), error(other));
+                if mine > theirs {
+                    mismatches.push(format!(
+                        "{} {clip} ({:?} {:?}): rig {rig:08x} {mine:.4}, the other rig {theirs:.4}",
+                        actor.name, actor.assembly, actor.set
+                    ));
+                }
+            }
+        }
+    }
+    eprintln!(
+        "actors by rig {:?}; {uniform_rigs} uniform; {checked} clips compared; \
+         fitting the other rig: {mismatches:#?}",
+        rig_counts
+            .iter()
+            .map(|(r, n)| format!("{r:08x}: {n}"))
+            .collect::<Vec<_>>()
+    );
+    assert!(checked > 300, "{checked}");
+    // Two extras of igc01 (female shoppers of `mid_class_female`) play
+    // clips of businessmen made for the male proportions.
+    assert!(mismatches.len() <= 2, "{mismatches:#?}");
+    failures.assert_empty();
+}
+
 /// A part added to the `player` database (a hat from its meshes) is worn by
 /// the `_all` set after a write and parse, hides the hair (hat culling tag),
 /// and the character exports to glTF; every character database's every set

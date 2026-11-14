@@ -1060,6 +1060,23 @@ fn resolve_material(
         if named.is_some() && current.as_ref() == Some(&decoded) {
             continue;
         }
+        // Clothes, hair and eyes are exported with their colour baked in
+        // (`scene::game`): that image stands for the game's mask.
+        if role == TextureRole::Diffuse {
+            let shading = crate::resource::shading::Shading::from_material(&base);
+            let baked = crate::scene::game::baked_pixels(assets, &shading, texture_hash);
+            if baked.as_ref() == Some(&decoded) {
+                if named.is_some() {
+                    continue;
+                }
+            } else if baked.is_some() {
+                summary.warnings.push(format!(
+                    "the base texture of `{}` is a mask of tint colours (or an iris mask), not \
+                     the colour: the image `{}` is used as that mask",
+                    base.name, image.name
+                ));
+            }
+        }
         replace.push((role, texture_hash, decoded));
     }
     if named.is_some() && replace.is_empty() {

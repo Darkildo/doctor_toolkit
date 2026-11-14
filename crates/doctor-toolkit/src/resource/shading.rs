@@ -10,6 +10,8 @@
 //! |---|---|
 //! | tint mask (clothes) | `lerp(R·T0 + G·T1 + B·T2, base, detailMask.z · controls.z)` — the base texture is a mask |
 //! | hair | `1 − (1 − R·T0)(1 − G·T1)(1 − B·T2)`, alpha from the gloss map's green, blended |
+//! | hair without tints (eyelashes) | base texture, alpha from its alpha, blended |
+//! | eyes | `lerp(base, base · eyeTint, base.a)`, opaque |
 //! | skin and faces | `lerp(base, base · skinTint, gloss.r)`; detail maps for faces |
 //! | other | base texture |
 //!
@@ -84,6 +86,9 @@ pub enum Family {
     TintMask,
     /// Hair: tint colours combined like screen layers, alpha blended.
     Hair,
+    /// Hair shaders without tints (`gf_char_hair_aniso`, eyelashes): the
+    /// base texture is the colour and its alpha the coverage, blended.
+    PlainHair,
     /// Skin and faces: base colour tinted where the gloss map's red is set.
     Skin,
     Eye,
@@ -97,8 +102,10 @@ impl Family {
         let n = name.to_ascii_lowercase();
         if n.starts_with("gf_char_tint_mask") {
             Self::TintMask
-        } else if n.starts_with("gf_char_hair") {
+        } else if n.starts_with("gf_char_hair") && n.contains("tint") {
             Self::Hair
+        } else if n.starts_with("gf_char_hair") {
+            Self::PlainHair
         } else if n.starts_with("gf_char_skin") || n.starts_with("gf_char_face") {
             Self::Skin
         } else if n.starts_with("gf_char_eye") {
@@ -295,6 +302,42 @@ mod tests {
                 .uv_offsets
         );
         assert!(shader(1).is_none());
+    }
+
+    #[test]
+    fn eye_and_eyelash_families() {
+        // Lit shaders of the eye and eyelash materials of the game.
+        let family = |name: &str| Family::of(name);
+        assert_eq!(family("gf_char_eye"), Family::Eye);
+        assert_eq!(family("gf_char_hair_aniso"), Family::PlainHair);
+        assert_eq!(family("gf_char_hair"), Family::PlainHair);
+        assert_eq!(family("gf_char_hair_aniso_tint"), Family::Hair);
+        assert_eq!(family("gf_char_hair_tint_LowRes"), Family::Hair);
+        let mut m = Material {
+            version: 19,
+            name: "female_eyes".into(),
+            name_hash: 0,
+            flags: 0,
+            shaders: [
+                (0, 0, 0),
+                (crc32(b"gf_char_eye"), 0, 0),
+                (0, 0, 0),
+                (0, 0, 0),
+            ],
+            shadow_shader: 0,
+            params: Vec::new(),
+        };
+        m.params.push(crate::resource::material::Param {
+            hash: crc32(b"g_EyeTintColor"),
+            name: "g_EyeTintColor".into(),
+            source: String::new(),
+            value: ParamValue::Floats(vec![0.5, 0.64, 1.0, 1.0]),
+        });
+        let s = Shading::from_material(&m);
+        assert_eq!(s.family, Family::Eye);
+        assert_eq!(s.blend, Blend::Opaque);
+        // The eye colour is used as stored (the shader does not convert it).
+        assert_eq!(s.skin_tint, [0.5, 0.64, 1.0]);
     }
 
     #[test]

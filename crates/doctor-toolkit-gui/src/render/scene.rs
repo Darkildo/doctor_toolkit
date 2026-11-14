@@ -98,6 +98,9 @@ pub enum SurfaceModel {
     Hair = 3,
     /// The base colour tinted where the gloss map's red is set.
     Skin = 4,
+    /// Eyes: the base colour tinted by the eye colour where the base
+    /// texture's alpha (the iris) is set; opaque.
+    Eye = 5,
 }
 
 /// Game-like shading inputs of a part. Colours are linear.

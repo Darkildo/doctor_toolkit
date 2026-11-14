@@ -111,6 +111,11 @@ pub struct BoneSet {
 /// A parsed `rcb` resource.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Rig {
+    /// Resource id (`ids[3]` of the resource header) when the rig was read
+    /// from a stream that knows it, else 0. Characters name their rig by it
+    /// (`Animated` attribute 2 of their SimGroup object).
+    #[serde(skip)]
+    pub id: u32,
     pub version: u32,
     pub hash: u32,
     pub scale: f32,
@@ -157,6 +162,7 @@ impl Rig {
             bone_sets.push(BoneSet { hash, bones });
         }
         Ok(Self {
+            id: 0,
             version,
             hash: image.u32(8)?,
             scale: image.f32(0x38)?,
@@ -169,6 +175,51 @@ impl Rig {
     pub fn skeleton_for(&self, bones: &[(u32, u32)]) -> Option<&Skeleton> {
         self.skeletons.iter().find(|s| s.matches(bones))
     }
+
+    /// Whether every skeleton of the rig has the same bones in the same bind
+    /// pose. The two human rigs differ here: in the male rig (`b2b17079`)
+    /// `this_lod1`..`this_lod3` equal the animation skeleton `puppet`; in the
+    /// female rig (`be9a8908`) only `puppet` keeps those proportions, and
+    /// `this_lod1`..`this_lod3` move the face and body bones by up to 4 cm
+    /// (`docs/formats/rig.md` §3.1).
+    pub fn is_uniform(&self) -> bool {
+        let Some(first) = self.skeletons.first() else {
+            return true;
+        };
+        self.skeletons.iter().all(|s| {
+            s.bones.len() == first.bones.len()
+                && s.bones.iter().zip(&first.bones).all(|(a, b)| {
+                    a.hash == b.hash
+                        && a.inverse_bind
+                            .iter()
+                            .zip(&b.inverse_bind)
+                            .all(|(x, y)| (x - y).abs() < 1e-5)
+                })
+        })
+    }
+}
+
+/// The skeleton of a mesh bone table `(hash, index)` among `rigs`: one of
+/// rig `rig` (resource id) when it is given and has one, else one of a
+/// uniform rig ([`Rig::is_uniform`]: the proportions the animation clips of
+/// the game are made for), else the first match.
+pub fn skeleton_for<'a>(
+    rigs: &'a [Rig],
+    rig: Option<u32>,
+    bones: &[(u32, u32)],
+) -> Option<&'a Skeleton> {
+    let named = rig.and_then(|id| {
+        rigs.iter()
+            .filter(|r| r.id == id)
+            .find_map(|r| r.skeleton_for(bones))
+    });
+    named
+        .or_else(|| {
+            rigs.iter()
+                .filter(|r| r.is_uniform())
+                .find_map(|r| r.skeleton_for(bones))
+        })
+        .or_else(|| rigs.iter().find_map(|r| r.skeleton_for(bones)))
 }
 
 fn parse_skeleton(image: &Image<'_>, at: usize) -> Result<Skeleton> {
@@ -388,6 +439,61 @@ mod tests {
 
     pub(crate) fn sample() -> Vec<u8> {
         super::sample_rig()
+    }
+
+    /// A one-bone skeleton with the bone at height `y`.
+    fn skeleton(name: &str, y: f32) -> Skeleton {
+        let mut inverse_bind = [0.0; 16];
+        for k in 0..4 {
+            inverse_bind[5 * k] = 1.0;
+        }
+        inverse_bind[13] = -y;
+        Skeleton {
+            name_hash: sdbm(name.as_bytes()),
+            name: name.into(),
+            bones: vec![Bone {
+                hash: sdbm(b"m_root"),
+                name: None,
+                parent: None,
+                bind_index: -1,
+                bind_type: 1,
+                inverse_bind,
+            }],
+        }
+    }
+
+    fn rig(id: u32, lod1: f32, puppet: f32) -> Rig {
+        Rig {
+            id,
+            version: 25,
+            hash: 0,
+            scale: 1.88,
+            skeletons: vec![skeleton("this_lod1", lod1), skeleton("puppet", puppet)],
+            bone_sets: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn characters_take_their_own_rig_or_a_uniform_one() {
+        // Like the female rig (be9a8908): this_lod1 differs from puppet;
+        // like the male rig (b2b17079): all skeletons equal.
+        let rigs = [rig(0xBE9A_8908, 0.9, 1.0), rig(0xB2B1_7079, 1.0, 1.0)];
+        assert!(!rigs[0].is_uniform());
+        assert!(rigs[1].is_uniform());
+        let bones = [(sdbm(b"m_root"), 0)];
+        let height = |s: &Skeleton| -s.bones[0].inverse_bind[13];
+        // The rig the character names wins.
+        let s = skeleton_for(&rigs, Some(0xBE9A_8908), &bones).unwrap();
+        assert_eq!(height(s), 0.9);
+        // Without one (or with an unknown one) the uniform rig, not the first.
+        let s = skeleton_for(&rigs, None, &bones).unwrap();
+        assert_eq!(height(s), 1.0);
+        let s = skeleton_for(&rigs, Some(7), &bones).unwrap();
+        assert_eq!(height(s), 1.0);
+        // Only non-uniform rigs: the first match.
+        let s = skeleton_for(&rigs[..1], None, &bones).unwrap();
+        assert_eq!(height(s), 0.9);
+        assert!(skeleton_for(&rigs, None, &[(1, 0)]).is_none());
     }
 
     #[test]

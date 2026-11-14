@@ -610,7 +610,9 @@ pub(crate) fn ensure_shot(
                         options.swaps.iter().map(|(a, b)| (*a, *b)).collect();
                     swaps.sort_unstable();
                     let bind_key = key_of(("bind", part.location, swaps));
-                    let skeleton = loaded.assets.skeleton(&part.model.bones);
+                    // The actor's own rig: its proportions are the ones the
+                    // clip moves the bones to.
+                    let skeleton = loaded.assets.rig_skeleton(actor.rig, &part.model.bones);
                     let mut renderer = gpu.lock();
                     match load_with(
                         &part.model,
