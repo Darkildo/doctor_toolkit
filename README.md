@@ -13,7 +13,7 @@ First supported game: **The Godfather II (PC)**.
 ![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20Windows%20%7C%20macOS-lightgrey)
 [![Discord](https://img.shields.io/badge/Discord-join%20the%20community-5865F2?logo=discord&logoColor=white)](https://discord.gg/MatbKKdFR)
 
-<img src="docs/images/overview.png" alt="The editor: files of the game, a stream, details of a model" width="900">
+<img src="docs/images/level.png" alt="The level editor: Havana in 3D with the main toolbar, the Outliner and the object panel" width="900">
 
 </div>
 
@@ -27,6 +27,10 @@ original files are never lost.
 
 ## Highlights
 
+- **An editor laid out like a game engine:** a main toolbar with gizmo
+  modes, axes and snapping, a status bar with drawers (Content Drawer on
+  `Ctrl+Space`), ready layouts for levels and resources and your own named
+  layouts; every panel can be docked, split, closed or made a drawer.
 - **Editor for everything in the game files:** browse 212,000+ resources of
   2,300 streams, search by name, hash or text, see what uses what.
 - **Models and characters:** view with the game's shaders, export and import
@@ -44,8 +48,11 @@ original files are never lost.
 - **Play and debug:** start the game from the editor straight into a city or
   at a point, see it in an editor tab (with DXVK under Wine), and talk to the
   running game through a live link: player, camera, objects, teleport,
-  messages, Lua; breakpoints on messages, pause and step, the logic graph
-  lighting up as messages go (`doctor_live.asi` comes with the release).
+  messages, Lua, time of day, money, story variables, loading and unloading
+  streams; breakpoints on messages, pause and step, the logic graph
+  lighting up as messages go. Mods and the workspace can be played without
+  writing anything into the game folder: the live module hands the game the
+  changed files (`doctor_live.asi` comes with the release).
 - **AI assistants:** `doctor-toolkit mcp` lets Claude Code, Claude Desktop or
   any MCP client search the game, read resources as JSON and follow the
   logic of missions; with flags it also edits through the workspace (each
@@ -56,10 +63,12 @@ original files are never lost.
 
 | | |
 |:---:|:---:|
-| <img src="docs/images/character.png" alt="Character preview" width="440"><br>**Characters** assembled from their parts | <img src="docs/images/level.png" alt="Level view" width="440"><br>**Levels** with every object of the city |
-| <img src="docs/images/logic.png" alt="Logic graph" width="440"><br>**Game logic**: who sends which message to whom | <img src="docs/images/movies.png" alt="Movie player" width="440"><br>**Movies**: VP6 player with sound |
-| <img src="docs/images/cutscene.png" alt="Cut-scene timeline" width="440"><br>**Cut-scenes**: shots, subtitles, characters | <img src="docs/images/dialogue.png" alt="Dialogue editor" width="440"><br>**Dialogues**: trees, conditions, lines |
-| <img src="docs/images/model.png" alt="Model viewer" width="440"><br>**Models** with parts, materials and bones | <img src="docs/images/play.png" alt="Play options" width="440"><br>**Play**: straight into a city, in an editor tab |
+| <img src="docs/images/overview.png" alt="Resources layout" width="440"><br>**Resources**: files, a stream, details of a model | <img src="docs/images/level-drawer.png" alt="Content Drawer over the level view" width="440"><br>**Content Drawer** slides over the level view |
+| <img src="docs/images/character.png" alt="Character preview" width="440"><br>**Characters** assembled from their parts | <img src="docs/images/model.png" alt="Model viewer" width="440"><br>**Models** with parts, materials and bones |
+| <img src="docs/images/logic.png" alt="Logic graph" width="440"><br>**Game logic**: who sends which message to whom | <img src="docs/images/logic-run.png" alt="Logic run without the game" width="440"><br>**Logic run** without the game: steps, queue, variables |
+| <img src="docs/images/anim-graph.png" alt="Animation graph" width="440"><br>**Animation graphs**: entries, nodes, parameters | <img src="docs/images/dialogue.png" alt="Dialogue editor" width="440"><br>**Dialogues**: trees, conditions, lines |
+| <img src="docs/images/cutscene.png" alt="Cut-scene timeline" width="440"><br>**Cut-scenes**: shots, subtitles, characters | <img src="docs/images/movies.png" alt="Movie player" width="440"><br>**Movies**: VP6 player with sound |
+| <img src="docs/images/wizards.png" alt="Welcome page" width="440"><br>**Welcome page** with wizards for common tasks | <img src="docs/images/play.png" alt="Play options" width="440"><br>**Play**: straight into a city, in an editor tab, mods without writing to the game |
 
 Pictures are made by `tools/screenshots.sh` and show data of the game for
 documentation of this tool only.
