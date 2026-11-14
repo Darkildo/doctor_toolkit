@@ -433,3 +433,61 @@ pub const CREATE_FILE_W_CALLS: [u32; 6] = [
 pub const CREATE_FILE_W_LOADS: [u32; 1] = [0x00BC_424F];
 /// The only `call [0x00D5528C]` (a walk of a folder, `0x00C724C0`).
 pub const GET_FILE_ATTRIBUTES_A_CALLS: [u32; 1] = [0x00C7_2505];
+
+// --- Editing the world while the game runs (stage 47) -------------------------
+
+/// Vtable of `Entity` (constructor `0x0046E6B0`). Placed objects of most
+/// classes keep its `SetMatrix`; the module moves and hides only objects
+/// whose vtable holds exactly that one (people, cars and the player have
+/// their own).
+pub const ENTITY_VTABLE: u32 = 0x00E3_2858;
+/// Slot `+0x28`: `SetMatrix(this, const Matrix*)` (`0x00470E30`,
+/// `thiscall`, callee pops 4; the matrix aligned on 16 — `movaps`): the
+/// lengths of the rows go to the scale `+0x134..+0x13C`, the matrix to the
+/// local matrix of its node (`+0x90`, matrix `+0xD0`), the node's world
+/// matrix is made again (`0x006101B0`), then `+0x68` (`0x004703C0`) puts the
+/// model's instance into the list of moved models (`0x01205488`, its parts
+/// follow in `0x00442B70`), sends the new matrix to the renderer (command
+/// `0x0110BA6C`, needs the frame's command buffer) and tells the object's
+/// spatial part (`+0x58`, `+0x28(2)`). A fixed or keyframed collision body
+/// does not follow (`0x004B6C20` moves only dynamic ones, and the other
+/// way: body to object).
+pub const ENTITY_SET_MATRIX_SLOT: u32 = 0x28;
+pub const ENTITY_SET_MATRIX: u32 = 0x0047_0E30;
+/// `SetVisible(this, bool)` of `Entity` (`0x00471DB0`, `thiscall`, callee
+/// pops 4): the renderer command `0x0110BA94` shows or hides the object's
+/// render instance (`+0x54`, when `+0x164` has one) — what the game's own
+/// hide (`0x008B9020`) does when it keeps the object active.
+pub const ENTITY_SET_VISIBLE: u32 = 0x0047_1DB0;
+/// The count of deactivations (byte; the constructor sets 1, the game's
+/// activation of a placed object makes it 0; `0x00470460`, `0x00470490`).
+/// The module only reads it: taking an object out of the world and back
+/// (`0x00471EB0`, `0x00471DF0`) stops and starts the state machine of its
+/// metamodel (`0x004A6FA0`, `0x004A6F30`) and all its parts.
+pub const ENTITY_INACTIVE: u32 = 0x161;
+/// The instance of the object's metamodel (parts, collision), or 0.
+pub const ENTITY_MODEL: u32 = 0x130;
+/// Parent of the object's node (`+0x90 + 0x80`): 0 for an object placed in
+/// the world, whose local matrix is its world matrix.
+pub const ENTITY_PARENT: u32 = 0x110;
+/// Parts of a model instance (`0x004A4B10`): `+0x68` array of 16-byte
+/// entries (`+0` the part, `+4` u16 flags — bit 1: the instance activated
+/// it), `+0x6C` their number.
+pub const MODEL_PARTS: u32 = 0x68;
+pub const MODEL_PART_COUNT: u32 = 0x6C;
+pub const MODEL_PART_SIZE: u32 = 0x10;
+pub const MODEL_PART_ACTIVE: u16 = 0x2;
+/// Slot `+8` of every `CollisionHavok4Part` vtable (the plain one
+/// `0x00E358B8` and those of destructibles `0x00D7C188`, `0x00D7C240`,
+/// `0x00D7C488`): `0x004B6810`, "has a body". The module knows a collision
+/// part by it.
+pub const COLLISION_PART_MARKER: u32 = 0x004B_6810;
+/// A collision part's flags (byte `+0x28`): bit 0 — its bodies are in the
+/// physical world.
+pub const COLLISION_PART_FLAGS: u32 = 0x28;
+/// Bodies of a collision part out of the world (`0x004B66A0`, `thiscall`
+/// without arguments; nothing when bit 0 is clear) and into it at the
+/// object's matrix (`0x004B6330`; nothing when bit 0 is set): what every
+/// collision part's deactivation and activation run.
+pub const COLLISION_REMOVE: u32 = 0x004B_66A0;
+pub const COLLISION_ADD: u32 = 0x004B_6330;

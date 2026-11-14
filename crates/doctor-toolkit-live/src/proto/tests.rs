@@ -132,8 +132,30 @@ fn requests() -> Vec<Request> {
             value: -3,
         },
         Request::Files,
+        Request::Object { guid: [3; 16] },
+        Request::ObjectTransform {
+            guid: [4; 16],
+            matrix: MATRIX,
+        },
+        Request::ObjectEnable {
+            guid: [4; 16],
+            enabled: false,
+            logic: true,
+        },
+        Request::ObjectUndo { guid: None },
+        Request::ObjectUndo {
+            guid: Some([4; 16]),
+        },
+        Request::ObjectEdits,
+        Request::ObjectForget {
+            guid: Some([9; 16]),
+        },
     ]
 }
+
+const MATRIX: Matrix = [
+    0.0, 0.0, -2.0, 0.0, 0.0, 2.0, 0.0, 0.0, 2.0, 0.0, 0.0, 0.0, 299.97, 3.0, 368.42, 1.0,
+];
 
 fn responses() -> Vec<(u16, Response)> {
     let pose = Pose {
@@ -344,6 +366,69 @@ fn responses() -> Vec<(u16, Response)> {
         ),
         (kind::FILES, Response::Files(Files::default())),
         (
+            kind::OBJECT,
+            Response::Object(ObjectState {
+                guid: [6; 16],
+                class: 0x3852_3FC3,
+                class_name: "Entity".into(),
+                matrix: Some(MATRIX),
+                inactive: Some(0),
+                has_model: true,
+                listening: true,
+                hidden_by_link: false,
+                unsupported: String::new(),
+            }),
+        ),
+        (
+            kind::OBJECT,
+            Response::Object(ObjectState {
+                guid: [6; 16],
+                unsupported: "class CommonNPC moves by itself".into(),
+                ..ObjectState::default()
+            }),
+        ),
+        (
+            kind::OBJECT_TRANSFORM,
+            Response::ObjectEdit(ObjectEdit {
+                id: 3,
+                guid: [6; 16],
+                kind: EditKind::Transform,
+                before: EditValue::Matrix([0.0; 16]),
+                after: EditValue::Matrix(MATRIX),
+                note: "moved 2.00 m".into(),
+            }),
+        ),
+        (
+            kind::OBJECT_UNDO,
+            Response::ObjectEdit(ObjectEdit {
+                id: 4,
+                guid: [6; 16],
+                kind: EditKind::Shown,
+                before: EditValue::Flag(false),
+                after: EditValue::Flag(true),
+                note: "shown".into(),
+            }),
+        ),
+        (
+            kind::OBJECT_EDITS,
+            Response::ObjectEdits(vec![ObjectEdit {
+                id: 1,
+                guid: [1; 16],
+                kind: EditKind::Listening,
+                before: EditValue::Flag(true),
+                after: EditValue::Flag(false),
+                note: String::new(),
+            }]),
+        ),
+        (kind::OBJECT_EDITS, Response::ObjectEdits(Vec::new())),
+        (
+            kind::OBJECT_FORGET,
+            Response::Done(Done {
+                count: 2,
+                note: "forgot 2 edit(s)".into(),
+            }),
+        ),
+        (
             kind::SET_MONEY,
             Response::Done(Done {
                 count: 1,
@@ -524,7 +609,7 @@ fn writes_are_marked() {
             false, false, false, false, false, false, false, true, true, true, true, true, false,
             false, false, false, false, false, false, false, false, true, true, true, false, true,
             true, false, true, true, false, false, true, true, false, false, false, false, true,
-            false
+            false, false, true, true, true, true, false, false
         ]
     );
 }
@@ -534,7 +619,7 @@ fn header_layout_is_fixed() {
     let bytes = Request::Status.to_frame(0x0102_0304);
     assert_eq!(
         bytes,
-        [b'D', b'T', b'L', b'V', 5, 0, 2, 0, 4, 3, 2, 1, 0, 0, 0, 0]
+        [b'D', b'T', b'L', b'V', 6, 0, 2, 0, 4, 3, 2, 1, 0, 0, 0, 0]
     );
     // A client of stage 34 sends version 1, and gets its answer in it.
     let old = Request::Status.to_frame_of(1, 0x0102_0304);
@@ -557,8 +642,8 @@ fn header_layout_is_fixed() {
 
 #[test]
 fn versions_and_their_requests() {
-    assert!(supported(1) && supported(2) && supported(3) && supported(4) && supported(5));
-    assert!(!supported(0) && !supported(6));
+    assert!((1..=6).all(supported));
+    assert!(!supported(0) && !supported(7));
     assert_eq!(OLDEST_PROTOCOL_VERSION, 1);
     for r in requests() {
         let since = match r {
@@ -581,6 +666,12 @@ fn versions_and_their_requests() {
             | Request::Variables { .. }
             | Request::SetVariable { .. } => 4,
             Request::Files => 5,
+            Request::Object { .. }
+            | Request::ObjectTransform { .. }
+            | Request::ObjectEnable { .. }
+            | Request::ObjectUndo { .. }
+            | Request::ObjectEdits
+            | Request::ObjectForget { .. } => 6,
             _ => 1,
         };
         assert_eq!(r.since(), since, "{r:?}");

@@ -41,6 +41,7 @@ pub use gizmo::{
     Space as GizmoSpace,
 };
 mod live;
+pub use live::{LiveEdit, ObjectAction};
 pub mod loader;
 mod marks;
 pub mod nav;
@@ -135,6 +136,9 @@ pub enum LevelAction {
     /// The game draws with this camera (the module's free camera), or with
     /// its own again (`None`).
     LiveCamera(Option<doctor_toolkit::live::proto::CameraView>),
+    /// Edit the object in the running game (stage 47; writes are asked
+    /// first, the gizmo's once).
+    LiveObject(ObjectAction),
     /// An edited navigation graph; `renumbered` (after a removed node) makes
     /// links of other graphs into it follow.
     Graph {
@@ -315,6 +319,14 @@ pub struct LevelView {
     walk: walk::Walk,
     /// The camera follows the game's (stage 35).
     live_follow: bool,
+    /// Editing the running game (stage 47), set by the app.
+    pub live_edit: LiveEdit,
+    /// The gizmo moves the object in the running game too.
+    live_gizmo: bool,
+    /// A move of the gizmo for the game, returned by the next `ui`.
+    live_pending: Option<LevelAction>,
+    /// The object whose state in the game was asked for last.
+    live_asked: Option<[u8; 16]>,
 }
 
 impl LevelView {
@@ -379,6 +391,10 @@ impl LevelView {
             nav_action: None,
             walk: walk::Walk::default(),
             live_follow: false,
+            live_edit: LiveEdit::default(),
+            live_gizmo: false,
+            live_pending: None,
+            live_asked: None,
             center: [0.0; 3],
             index_stale: false,
         };
@@ -1115,6 +1131,51 @@ impl LevelView {
         self.add.fixed = true;
     }
 
+    /// GUID of the selected object.
+    fn selected_guid(&self) -> Option<[u8; 16]> {
+        let r = self.filter.selected?;
+        let level = self.level.as_ref()?;
+        Some(level.groups.get(r.group)?.objects.get(r.object)?.guid.0)
+    }
+
+    /// Selects the object with this GUID when the loaded zones have it (the
+    /// selection of the running game, stage 47).
+    pub fn select_guid(&mut self, guid: &[u8; 16]) -> bool {
+        let Some(level) = &self.level else {
+            return false;
+        };
+        let found = level.groups.iter().enumerate().find_map(|(g, group)| {
+            group
+                .objects
+                .iter()
+                .position(|o| &o.guid.0 == guid)
+                .map(|object| ObjRef { group: g, object })
+        });
+        match found {
+            Some(r) => {
+                self.select(Some(r));
+                self.focus();
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// The section "In the running game" of the Details of object `r`
+    /// (stage 47): its state in the game and the edits there, while the
+    /// live link edits the world.
+    pub fn live_section(&mut self, ui: &mut egui::Ui, r: ObjRef) -> Option<LevelAction> {
+        let o = self.object(r)?.clone();
+        live::object_section(
+            ui,
+            o.guid.0,
+            o.transform.as_ref().map(live::flat),
+            &mut self.live_gizmo,
+            &self.live_edit,
+        )
+        .map(LevelAction::LiveObject)
+    }
+
     /// Clears the selection (after the selected objects were removed).
     pub fn clear_selection(&mut self) {
         self.set_selection(None, BTreeSet::new());
@@ -1614,6 +1675,17 @@ impl LevelView {
         if let Some(a) = self.nav_action.take() {
             action = Some(a);
         }
+        if let Some(a) = self.live_pending.take() {
+            action = Some(a);
+        } else if action.is_none()
+            && self.live_edit.reads
+            && let Some(g) = self.selected_guid()
+            && self.live_asked != Some(g)
+        {
+            // The selection in the running game: its state there.
+            self.live_asked = Some(g);
+            action = Some(LevelAction::LiveObject(ObjectAction::Get(g)));
+        }
         if std::mem::take(&mut self.play_here)
             && let Some(level) = &self.level
         {
@@ -1879,6 +1951,18 @@ impl LevelView {
                         object: drag.object.object,
                         matrix: drag.current,
                     });
+                    if self.live_gizmo
+                        && self.live_edit.writes
+                        && let Some(o) = level.groups[drag.object.group]
+                            .objects
+                            .get(drag.object.object)
+                    {
+                        self.live_pending = Some(LevelAction::LiveObject(ObjectAction::Move(
+                            o.guid.0,
+                            live::flat(&drag.current),
+                            true,
+                        )));
+                    }
                 }
             }
         } else if let (Some(level), Some(input)) = (&self.level, &self.input)

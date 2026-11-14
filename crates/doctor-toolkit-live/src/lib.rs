@@ -23,7 +23,9 @@
 //!   (stage 48);
 //! - [`files`]: files the game opens from the toolkit's folder instead of
 //!   its own — a mod or a workspace without writing into the game (stage
-//!   46).
+//!   46);
+//! - [`edit`]: moving, turning, hiding and showing objects while the game
+//!   runs, and the journal of those edits for undo (stage 47).
 //!
 //! The crate has no dependencies: the module builds it for
 //! `i686-pc-windows-gnu`, the editor for the host.
@@ -31,6 +33,7 @@
 pub mod addr;
 pub mod config;
 pub mod debug;
+pub mod edit;
 pub mod edition;
 pub mod files;
 pub mod journal;

@@ -221,6 +221,11 @@ fn object_ui(
     group(ui, "details-logic", tr("details.logic"), true, |ui| {
         logic_ui(ui, state, id, level, r, location, out);
     });
+    if level.live_edit.reads {
+        group(ui, "details-live", tr("level.live_title"), true, |ui| {
+            out.extend(level.live_section(ui, r));
+        });
+    }
     group(
         ui,
         "details-collision",

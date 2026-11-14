@@ -3,14 +3,149 @@
 //! the game — as the game's own camera (the free camera of the module) or
 //! by moving the player there ("editor → game"). Both writes go through
 //! the confirmation of the Link panel.
+//!
+//! Stage 47: the selected object in the running game (same GUID) — its
+//! state there, the gizmo moving it in the game too, hide and show, undo in
+//! the game, and the moves of the game written into the workspace.
 
-use doctor_toolkit::live::proto::CameraView;
-use doctor_toolkit_mods::i18n::tr;
+use doctor_toolkit::live::proto::{CameraView, Guid, Matrix, ObjectState};
+use doctor_toolkit_mods::i18n::{tr, trf};
 use egui::{Rect, RichText, Vec2};
 
 use super::LevelAction;
 use super::camera::FlyCamera;
 use crate::render::math;
+
+/// What the Link panel knows of editing the running game, for the level
+/// tabs (set by the app every frame).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct LiveEdit {
+    /// The module edits the world (protocol 6).
+    pub reads: bool,
+    /// And writes are on.
+    pub writes: bool,
+    /// The state in the game of the object last asked for.
+    pub state: Option<ObjectState>,
+    /// How many edits of the link are not undone, and how many of them are
+    /// moves.
+    pub edits: usize,
+    pub moves: usize,
+    /// The gizmo's moves go to the game without asking (allowed once).
+    pub gizmo_allowed: bool,
+}
+
+/// An edit of the running game from a level tab.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ObjectAction {
+    /// Read the state of this object in the game.
+    Get(Guid),
+    /// Give it this matrix; `gizmo`: from a drag of the gizmo.
+    Move(Guid, Matrix, bool),
+    /// Hide (`false`) or show it.
+    Enable(Guid, bool),
+    /// Undo the latest edit of the link (of this object).
+    Undo(Option<Guid>),
+    /// Write the moves of the link into the workspace.
+    ToWorkspace,
+}
+
+/// A row matrix of the level as the link sends it.
+pub fn flat(m: &doctor_toolkit::level::model::RowMatrix) -> Matrix {
+    std::array::from_fn(|i| m[i / 4][i % 4])
+}
+
+/// The section of the details of the selected object while the link edits
+/// the world: its state in the game and the actions.
+pub fn object_section(
+    ui: &mut egui::Ui,
+    guid: Guid,
+    matrix: Option<Matrix>,
+    gizmo_too: &mut bool,
+    info: &LiveEdit,
+) -> Option<ObjectAction> {
+    let mut action = None;
+    let state = info.state.as_ref().filter(|s| s.guid == guid);
+    match state {
+        None => {
+            ui.label(RichText::new(tr("level.live_not_in_game")).weak().small());
+        }
+        Some(s) if !s.supported() => {
+            ui.label(
+                RichText::new(trf("level.live_unsupported", &[("why", &s.unsupported)]))
+                    .weak()
+                    .small(),
+            );
+        }
+        Some(s) => {
+            let place = s
+                .position()
+                .map(|p| format!("({:.2}, {:.2}, {:.2})", p[0], p[1], p[2]))
+                .unwrap_or_default();
+            let key = if s.hidden_by_link {
+                "level.live_hidden"
+            } else if s.shown() == Some(true) {
+                "level.live_shown"
+            } else {
+                "level.live_inactive"
+            };
+            ui.label(RichText::new(trf(key, &[("place", &place)])).small());
+        }
+    }
+    let can = info.writes && state.is_some_and(ObjectState::supported);
+    ui.horizontal_wrapped(|ui| {
+        if ui
+            .button(tr("level.live_refresh"))
+            .on_hover_text(tr("level.live_refresh_hint"))
+            .clicked()
+        {
+            action = Some(ObjectAction::Get(guid));
+        }
+        ui.add_enabled(
+            info.writes,
+            egui::Checkbox::new(gizmo_too, tr("level.live_gizmo")),
+        )
+        .on_hover_text(tr("level.live_gizmo_hint"));
+        if let Some(m) = matrix
+            && ui
+                .add_enabled(can, egui::Button::new(tr("level.live_place")))
+                .on_hover_text(tr("level.live_place_hint"))
+                .clicked()
+        {
+            action = Some(ObjectAction::Move(guid, m, false));
+        }
+        let hidden = state.is_some_and(|s| s.hidden_by_link);
+        let (key, hint) = if hidden {
+            ("level.live_show", "level.live_show_hint")
+        } else {
+            ("level.live_hide", "level.live_hide_hint")
+        };
+        if ui
+            .add_enabled(can, egui::Button::new(tr(key)))
+            .on_hover_text(tr(hint))
+            .clicked()
+        {
+            action = Some(ObjectAction::Enable(guid, hidden));
+        }
+        if ui
+            .add_enabled(
+                info.writes && info.edits > 0,
+                egui::Button::new(tr("level.live_undo")),
+            )
+            .on_hover_text(tr("level.live_undo_hint"))
+            .clicked()
+        {
+            action = Some(ObjectAction::Undo(Some(guid)));
+        }
+        if ui
+            .add_enabled(info.moves > 0, egui::Button::new(tr("level.live_keep")))
+            .on_hover_text(trf("level.live_keep_hint", &[("count", &info.moves)]))
+            .clicked()
+        {
+            action = Some(ObjectAction::ToWorkspace);
+        }
+    });
+    action
+}
 
 /// The editor's fly camera at the game's camera: same eye, direction and
 /// vertical field of view.

@@ -674,3 +674,67 @@ fn staging_needs_the_known_edition() {
     assert!(!game.join("scripts").exists());
     assert!(!game.join("cmd.txt").exists());
 }
+
+/// `live object …` (stage 47): state, move and turn, hide and show, logic,
+/// the journal and undo on the fake module; writes need --yes, a module of
+/// protocol 5 is told it is too old.
+#[test]
+fn objects_edited_in_the_running_game() {
+    let game = fake(true);
+    let logs = tempfile::tempdir().unwrap();
+    let port = game.port.to_string();
+    let link = ["--port", port.as_str(), "--token", "tok"];
+    let cmd = |sub: &[&str]| {
+        let mut args = vec!["live", "object"];
+        args.extend_from_slice(sub);
+        args.extend_from_slice(&link);
+        run(&args, logs.path())
+    };
+    let g = "03030303030303030303030303030303";
+    let o = cmd(&["get", g]);
+    assert!(o.status.success(), "{}", stderr(&o));
+    assert!(stdout(&o).contains("MessageRelay"), "{}", stdout(&o));
+    assert!(stdout(&o).contains("in the world"));
+    let o = cmd(&["move", g, "--by", "1,0,-2"]);
+    assert!(!o.status.success());
+    assert!(stderr(&o).contains("--yes"));
+    let o = cmd(&["move", g, "--by", "1,0,-2", "--yes"]);
+    assert!(o.status.success(), "{}", stderr(&o));
+    assert!(stdout(&o).contains("moved 2.24 m"), "{}", stdout(&o));
+    let o = cmd(&["rotate", g, "--yaw", "90", "--yes", "--json"]);
+    let v: serde_json::Value = serde_json::from_str(stdout(&o).trim()).unwrap();
+    assert_eq!(v["kind"], "transform");
+    assert_eq!(v["after"]["position"][0], 301.0);
+    let o = cmd(&["disable", g, "--yes"]);
+    assert!(stdout(&o).contains("hidden"), "{}", stdout(&o));
+    let o = cmd(&["hide", g, "--yes"]);
+    assert!(!o.status.success());
+    let o = cmd(&[
+        "disable",
+        "04040404040404040404040404040404",
+        "--logic",
+        "--yes",
+    ]);
+    assert!(o.status.success(), "{}", stderr(&o));
+    let o = cmd(&["edits", "--json"]);
+    let v: serde_json::Value = serde_json::from_str(stdout(&o).trim()).unwrap();
+    assert_eq!(v.as_array().unwrap().len(), 4);
+    let o = cmd(&["undo", "--all", "--yes"]);
+    assert!(o.status.success(), "{}", stderr(&o));
+    assert_eq!(stdout(&o).lines().count(), 4);
+    let o = cmd(&["edits"]);
+    assert!(stdout(&o).contains("changed nothing"));
+    let o = cmd(&["get", g, "--json"]);
+    let v: serde_json::Value = serde_json::from_str(stdout(&o).trim()).unwrap();
+    assert_eq!(v["position"][0], 300.0);
+    assert_eq!(v["in_world"], true);
+    // Writing into the workspace needs a game folder.
+    let o = cmd(&["to-workspace"]);
+    assert!(!o.status.success());
+    assert!(stderr(&o).contains("--game"), "{}", stderr(&o));
+
+    game.world.lock().unwrap().protocol = 5;
+    let o = cmd(&["get", g]);
+    assert!(!o.status.success());
+    assert!(stderr(&o).contains("protocol 5"), "{}", stderr(&o));
+}

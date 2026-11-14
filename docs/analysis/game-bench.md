@@ -1528,3 +1528,56 @@ DOCTOR_TOOLKIT_GAME_PROCESS=no-such-game.exe DURATION=150 \
 uninstall` (папка подмен удалена) — `verify`: оригиналы не менялись (27
 файлов); в тени нет `gf2/doctor/`. Снимки (`c0-spawn`, `f1`, `r2-control`,
 `r2-walls`, `r2-w/s/a/d`) и журналы — в рабочей папке проверки.
+
+## 26. Этап 47: правка мира вживую (2026-11-14)
+
+Быстрый стенд, как в §21–§25: `DXVK=1`, `SERVER=xvfb` (свой Xvfb на
+свободном номере), 1024×768, `WINEDLLOVERRIDES=dinput8=n,b`, новая тень с
+выключенным GF2ASI; префикс — копия базового `wine-gf2-bench-s47` (рядом
+шёл другой прогон), модуль на своём порту (`--port`). Старт в Гаване —
+`cmd.txt` подменой модуля (§24), папка игры не пишется. Устройство и
+адреса — `live-link.md` §15. Снимки — в рабочей папке проверки.
+
+```sh
+doctor-toolkit live install $S/shadow --writes --port 47847 "--cmd-txt=-stream gf2 cuba"
+tools/game-bench.sh start $S/shadow $S/out
+P=ff32c9362ecd3b0547524148414d3034           # самолёт G-STAN, Destructible
+doctor-toolkit live object get $P --game $S/shadow
+doctor-toolkit live object rotate $P --by 30 --yes --game $S/shadow
+doctor-toolkit live object move $P --by 10,0,-10 --yes --game $S/shadow
+doctor-toolkit live object disable $P --yes --game $S/shadow     # и enable, --logic
+doctor-toolkit live object undo --all --yes --game $S/shadow
+doctor-toolkit live object commit --game $S/shadow                # в рабочее пространство тени
+doctor-toolkit live uninstall $S/shadow
+doctor-toolkit live install $S/shadow --writes --port 47847 --apply "--cmd-txt=-stream gf2 cuba"
+```
+
+Ходьба — `teleport` в начало пути с курсом 0 (+Z), шаг `hold w 4–5` сеанса,
+затем `live player`.
+
+| Проверка | Результат |
+|---|---|
+| Классы рядом | `Destructible`, `Entity` — поддерживаются; `Player`, `CommonNPC` (`PartedAnimated`), `AICarBehavior` — `live object get` пишет «sets its matrix its own way» |
+| Поворот и сдвиг | `rotate --by 30` и `move --by 4,0,-3` — «turned 30.0°, collision placed again (1 part(s))», самолёт на новом месте с поворотом в следующем кадре |
+| Коллизия на новом месте | самолёт сдвинут на (+10, 0, −10); путь по `x = 288` от `z = 355`: без сдвига игрок пробежал до `z = 386,6`, со сдвигом — уведён коллизией в сторону и встал на (280,4; 370,2) |
+| Старое место свободно | путь по `x = 278` от `z = 362` через прежнее место самолёта (`z = 379,4`): до `z = 387,0` без помех; после `undo` (самолёт вернулся) — упирается на `z = 375,3` |
+| Скрыть и показать | скрыт — самолёта нет на снимке, путь по `x = 278` свободен (`z = 387,0`); показан — виден, упирается (`z = 375,3`) |
+| Логика | `disable --logic` — `logic off`, `undo` — снова принимает сообщения |
+| Отмена | `undo --all`: четыре правки в обратном порядке, место и поворот как до правок |
+| Перенос и запуск с рабочим пространством | `object commit` за 0,5 с: «Move object 4 (Destructible) in gf2/cuba/local/yuri/medium/zone4»; затем `live install --apply` — игра получила `zone4.str` подменой (`live files`: 2 подмены, обе открыты), самолёт на (288,08; 0; 369,44) с поворотом 45°, **целый**; игрок на точке старта сдвинут коллизией самолёта (281,6; 373,5 вместо 283,9; 371,8) |
+| Исключения | ни одного в `wine.log` за семь сеансов; `verify` — оригиналы не менялись (27 файлов) |
+
+Найдено:
+
+- Первая версия ставила коллизию заново, вынимая объект из мира целиком
+  и возвращая (счётчик `+0x161`): это перезапускает машину состояний
+  metamodel и все части. Теперь модуль переставляет только тела частей
+  коллизии и скрывает через `SetVisible`.
+- Самолёт (`Destructible` с состояниями по здоровью) после скачка на
+  метры за кадр показывает обломки — и без перестановки коллизии, и
+  скрытый во время сдвига; сдвиг на 0,05–0,3 м — цел. Причина не найдена
+  (§15.5 `live-link.md`). Записанный в рабочее пространство и загруженный
+  заново — целый.
+- В папке игры пользователя к началу прогона лежали `d3d9.dll`,
+  `scripts/doctor_live.*` и `GF2_Hook.txt` от чужого запуска (04:15) —
+  тень их скопировала; в тени они убраны вручную, оригиналы не тронуты.

@@ -16,7 +16,7 @@ use doctor_toolkit::project::{self, CreateOptions};
 use doctor_toolkit::testing::{self, LEVEL, SIMGROUP, TEXT};
 use doctor_toolkit::workspace::Workspace;
 
-const TOOLS: [&str; 25] = [
+const TOOLS: [&str; 27] = [
     "game_info",
     "list_streams",
     "search",
@@ -39,6 +39,8 @@ const TOOLS: [&str; 25] = [
     "objects_near",
     "game_state",
     "variables",
+    "live_object",
+    "live_object_edits",
     "editor_selection",
     "editor_open",
     "editor_show_object",

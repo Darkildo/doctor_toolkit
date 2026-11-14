@@ -9,6 +9,7 @@ mod edit_cmd;
 mod graph_cmd;
 mod level_cmd;
 mod live_cmd;
+mod live_object_cmd;
 mod live_state_cmd;
 mod logic_cmd;
 mod logic_graph_cmd;

@@ -46,6 +46,13 @@
 //! from the toolkit's folder instead of its own ([`crate::files`]) and how
 //! often it opened each.
 //!
+//! Version 6 (stage 47) edits the world while the game runs
+//! ([`crate::edit`]): the state of one object ([`Request::Object`]), its
+//! matrix ([`Request::ObjectTransform`]), hiding and showing it or its
+//! logic ([`Request::ObjectEnable`]), undo ([`Request::ObjectUndo`]) and
+//! the module's journal of edits ([`Request::ObjectEdits`],
+//! [`Request::ObjectForget`]).
+//!
 //! Writes into the game ([`Request::Teleport`], [`Request::Send`],
 //! [`Request::Lua`]) are separate requests: the editor asks before it sends
 //! them, and the module refuses them when its configuration says
@@ -55,6 +62,7 @@ use std::fmt;
 use std::io::{Read, Write};
 
 pub use crate::debug::{BreakOn, BreakRule, Control, DebugState, Stop, StopPlace, StopReason};
+pub use crate::edit::{EditJournal, EditKind, EditValue, Matrix, ObjectEdit, ObjectState};
 pub use crate::files::{FileUse, Files};
 pub use crate::journal::{Event, EventBatch, EventBody, MessageOrigin, OutputSource};
 pub use crate::state::{
@@ -67,7 +75,7 @@ pub use crate::world::{World, WorldFilter, WorldObject};
 /// Magic of every frame.
 pub const MAGIC: [u8; 4] = *b"DTLV";
 /// Version of this protocol: what a client sends first.
-pub const PROTOCOL_VERSION: u16 = 5;
+pub const PROTOCOL_VERSION: u16 = 6;
 /// Oldest version a module still answers.
 pub const OLDEST_PROTOCOL_VERSION: u16 = 1;
 
@@ -335,6 +343,30 @@ pub enum Request {
     /// Version 5: the files the game opens from elsewhere and their use
     /// ([`crate::files`]).
     Files,
+    /// Version 6: the state of one SimGroup object ([`crate::edit`]).
+    Object { guid: Guid },
+    /// Version 6, writes: gives an object a new matrix (rows right, up,
+    /// forward, translation, with its scale) through the game's own
+    /// `Entity` method; the module takes the object out of the world and
+    /// puts it back, so its collision follows.
+    ObjectTransform { guid: Guid, matrix: Matrix },
+    /// Version 6, writes: hides or shows an object (`logic` false: its model
+    /// and collision, through the game's count of deactivations) or stops
+    /// and starts its logic (`logic` true: whether its listener takes
+    /// messages). Showing is only for what the link hid.
+    ObjectEnable {
+        guid: Guid,
+        enabled: bool,
+        logic: bool,
+    },
+    /// Version 6, writes: undoes the latest edit of the link (of `guid`
+    /// when given) and takes it out of the journal.
+    ObjectUndo { guid: Option<Guid> },
+    /// Version 6: the edits of the link not undone, oldest first.
+    ObjectEdits,
+    /// Version 6: drops the edits of `guid` (all when `None`) from the
+    /// journal without undoing them — after they went into a workspace.
+    ObjectForget { guid: Option<Guid> },
 }
 
 /// Kinds of requests.
@@ -369,6 +401,12 @@ pub mod kind {
     pub const VARIABLES: u16 = 28;
     pub const SET_VARIABLE: u16 = 29;
     pub const FILES: u16 = 30;
+    pub const OBJECT: u16 = 31;
+    pub const OBJECT_TRANSFORM: u16 = 32;
+    pub const OBJECT_ENABLE: u16 = 33;
+    pub const OBJECT_UNDO: u16 = 34;
+    pub const OBJECT_EDITS: u16 = 35;
+    pub const OBJECT_FORGET: u16 = 36;
 }
 
 impl Request {
@@ -404,6 +442,12 @@ impl Request {
             Self::Variables { .. } => kind::VARIABLES,
             Self::SetVariable { .. } => kind::SET_VARIABLE,
             Self::Files => kind::FILES,
+            Self::Object { .. } => kind::OBJECT,
+            Self::ObjectTransform { .. } => kind::OBJECT_TRANSFORM,
+            Self::ObjectEnable { .. } => kind::OBJECT_ENABLE,
+            Self::ObjectUndo { .. } => kind::OBJECT_UNDO,
+            Self::ObjectEdits => kind::OBJECT_EDITS,
+            Self::ObjectForget { .. } => kind::OBJECT_FORGET,
         }
     }
 
@@ -429,6 +473,12 @@ impl Request {
             | Self::Variables { .. }
             | Self::SetVariable { .. } => 4,
             Self::Files => 5,
+            Self::Object { .. }
+            | Self::ObjectTransform { .. }
+            | Self::ObjectEnable { .. }
+            | Self::ObjectUndo { .. }
+            | Self::ObjectEdits
+            | Self::ObjectForget { .. } => 6,
             _ => 1,
         }
     }
@@ -447,6 +497,9 @@ impl Request {
                 | Self::StreamUnload { .. }
                 | Self::SetMoney(_)
                 | Self::SetVariable { .. }
+                | Self::ObjectTransform { .. }
+                | Self::ObjectEnable { .. }
+                | Self::ObjectUndo { .. }
         )
     }
 
@@ -546,7 +599,29 @@ impl Request {
             | Self::Money
             | Self::Family
             | Self::Mission
-            | Self::Files => {}
+            | Self::Files
+            | Self::ObjectEdits => {}
+            Self::Object { guid } => w.bytes(guid),
+            Self::ObjectTransform { guid, matrix } => {
+                w.bytes(guid);
+                crate::edit::put_matrix(&mut w, matrix);
+            }
+            Self::ObjectEnable {
+                guid,
+                enabled,
+                logic,
+            } => {
+                w.bytes(guid);
+                w.bool(*enabled);
+                w.bool(*logic);
+            }
+            Self::ObjectUndo { guid } | Self::ObjectForget { guid } => match guid {
+                Some(g) => {
+                    w.u8(1);
+                    w.bytes(g);
+                }
+                None => w.u8(0),
+            },
             Self::SetTime(c) => crate::state::put_time_change(&mut w, c),
             Self::StreamLoad { name } => w.str(name),
             Self::StreamUnload { name, force } => {
@@ -674,6 +749,23 @@ impl Request {
                 value: r.u32()? as i32,
             },
             kind::FILES => Self::Files,
+            kind::OBJECT => Self::Object { guid: r.guid()? },
+            kind::OBJECT_TRANSFORM => Self::ObjectTransform {
+                guid: r.guid()?,
+                matrix: crate::edit::get_matrix(&mut r)?,
+            },
+            kind::OBJECT_ENABLE => Self::ObjectEnable {
+                guid: r.guid()?,
+                enabled: r.bool()?,
+                logic: r.bool()?,
+            },
+            kind::OBJECT_UNDO => Self::ObjectUndo {
+                guid: if r.bool()? { Some(r.guid()?) } else { None },
+            },
+            kind::OBJECT_EDITS => Self::ObjectEdits,
+            kind::OBJECT_FORGET => Self::ObjectForget {
+                guid: if r.bool()? { Some(r.guid()?) } else { None },
+            },
             other => return Err(DecodeError::UnknownKind(other)),
         };
         r.finish()?;
@@ -898,6 +990,14 @@ pub enum Response {
     Variables(Vec<Variable>),
     /// Version 5: answer to [`Request::Files`].
     Files(Files),
+    /// Version 6: answer to [`Request::Object`].
+    Object(ObjectState),
+    /// Version 6: answer to [`Request::ObjectTransform`],
+    /// [`Request::ObjectEnable`] and [`Request::ObjectUndo`] — the edit made
+    /// (for an undo: the change back, under the number of the edit undone).
+    ObjectEdit(ObjectEdit),
+    /// Version 6: answer to [`Request::ObjectEdits`].
+    ObjectEdits(Vec<ObjectEdit>),
     Error(Failure),
 }
 
@@ -1019,6 +1119,9 @@ impl Response {
             Self::Mission(m) => crate::state::put_mission(&mut w, m),
             Self::Variables(v) => crate::state::put_variables(&mut w, v),
             Self::Files(f) => crate::files::put_files(&mut w, f),
+            Self::Object(s) => crate::edit::put_state(&mut w, s),
+            Self::ObjectEdit(e) => crate::edit::put_edit(&mut w, e),
+            Self::ObjectEdits(list) => crate::edit::put_edits(&mut w, list),
             Self::Error(e) => {
                 w.u16(e.code as u16);
                 w.str(&e.message);
@@ -1103,7 +1206,8 @@ impl Response {
                 | kind::STREAM_LOAD
                 | kind::STREAM_UNLOAD
                 | kind::SET_MONEY
-                | kind::SET_VARIABLE => Self::Done(Done {
+                | kind::SET_VARIABLE
+                | kind::OBJECT_FORGET => Self::Done(Done {
                     count: r.u32()?,
                     note: r.str()?,
                 }),
@@ -1131,6 +1235,11 @@ impl Response {
                 kind::MISSION => Self::Mission(crate::state::get_mission(&mut r)?),
                 kind::VARIABLES => Self::Variables(crate::state::get_variables(&mut r)?),
                 kind::FILES => Self::Files(crate::files::get_files(&mut r)?),
+                kind::OBJECT => Self::Object(crate::edit::get_state(&mut r)?),
+                kind::OBJECT_TRANSFORM | kind::OBJECT_ENABLE | kind::OBJECT_UNDO => {
+                    Self::ObjectEdit(crate::edit::get_edit(&mut r)?)
+                }
+                kind::OBJECT_EDITS => Self::ObjectEdits(crate::edit::get_edits(&mut r)?),
                 other => return Err(DecodeError::UnknownKind(other | REPLY)),
             }
         };

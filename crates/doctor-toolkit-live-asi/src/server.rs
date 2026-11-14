@@ -152,6 +152,9 @@ fn answer(request: Request, config: &Config, version: u16) -> Response {
         Request::SetCamera { camera } => return crate::debug::set_camera(camera),
         // The files the game opens (stage 46): counters of the hooks.
         Request::Files => return Response::Files(crate::files::state()),
+        // The journal of edits of the world (stage 47) is the module's own.
+        Request::ObjectEdits => return crate::edit::edits(),
+        Request::ObjectForget { guid } => return crate::edit::forget(guid),
         _ => {}
     }
     let (tx, rx) = sync_channel(1);

@@ -9,6 +9,8 @@
 //!   afterwards, like `cmd.txt` ([`crate::play::start::CmdFile`]);
 //! - [`fake`]: a server that answers like the module, for tests and for
 //!   trying the editor without the game;
+//! - [`commit`]: objects moved in the running game written into the
+//!   workspace as SimGroup records (stage 47);
 //! - [`names`]: names, classes and streams of SimGroup objects by GUID and
 //!   names of messages by hash, from the SimGroups of the game and its
 //!   workspace (stage 49: the journal and every object).
@@ -32,6 +34,7 @@ use doctor_toolkit_live::{
 
 use crate::{Error, Result};
 
+pub mod commit;
 pub mod fake;
 pub mod loader;
 pub mod names;
@@ -525,6 +528,73 @@ impl Client {
 
     fn done(&mut self, request: &Request) -> LinkResult<Done> {
         match self.request(request)? {
+            Response::Done(d) => Ok(d),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    /// Whether the module edits the world (protocol 6, stage 47): objects
+    /// moved, turned, hidden and shown, with undo.
+    pub fn has_edits(&self) -> bool {
+        self.version >= 6
+    }
+
+    /// The state of one object (stage 47).
+    pub fn object(&mut self, guid: proto::Guid) -> LinkResult<proto::ObjectState> {
+        match self.request(&Request::Object { guid })? {
+            Response::Object(s) => Ok(s),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    /// Gives an object a new matrix (a write).
+    pub fn object_transform(
+        &mut self,
+        guid: proto::Guid,
+        matrix: proto::Matrix,
+    ) -> LinkResult<proto::ObjectEdit> {
+        match self.request(&Request::ObjectTransform { guid, matrix })? {
+            Response::ObjectEdit(e) => Ok(e),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    /// Hides or shows an object, or stops and starts its logic (a write).
+    pub fn object_enable(
+        &mut self,
+        guid: proto::Guid,
+        enabled: bool,
+        logic: bool,
+    ) -> LinkResult<proto::ObjectEdit> {
+        match self.request(&Request::ObjectEnable {
+            guid,
+            enabled,
+            logic,
+        })? {
+            Response::ObjectEdit(e) => Ok(e),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    /// Undoes the latest edit of the link (of `guid`) in the game (a write).
+    pub fn object_undo(&mut self, guid: Option<proto::Guid>) -> LinkResult<proto::ObjectEdit> {
+        match self.request(&Request::ObjectUndo { guid })? {
+            Response::ObjectEdit(e) => Ok(e),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    /// The edits of the link not undone, oldest first.
+    pub fn object_edits(&mut self) -> LinkResult<Vec<proto::ObjectEdit>> {
+        match self.request(&Request::ObjectEdits)? {
+            Response::ObjectEdits(list) => Ok(list),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    /// Drops edits from the module's journal without undoing them.
+    pub fn object_forget(&mut self, guid: Option<proto::Guid>) -> LinkResult<Done> {
+        match self.request(&Request::ObjectForget { guid })? {
             Response::Done(d) => Ok(d),
             other => Err(unexpected(other)),
         }

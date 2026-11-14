@@ -22,12 +22,16 @@
 //! game: time of day, weather, streams one at a time, money, family,
 //! missions, variables of the story.
 //!
+//! Stage 47 ([`edit`]) moves, turns, hides and shows SimGroup objects and
+//! keeps a journal of those edits for undo.
+//!
 //! Nothing here unwinds into the game: every entry point catches panics.
 //! The module writes no game file; its log is `doctor_live.log` next to it.
 
 #![allow(clippy::missing_safety_doc)]
 
 mod debug;
+mod edit;
 mod files;
 mod game;
 mod journal;
@@ -248,6 +252,14 @@ fn execute(request: Request) -> Response {
         Request::Mission => state::mission(),
         Request::Variables { hashes } => state::variables(hashes),
         Request::SetVariable { hash, value } => state::set_variable(*hash, *value),
+        Request::Object { guid } => edit::object(*guid),
+        Request::ObjectTransform { guid, matrix } => edit::transform(*guid, *matrix),
+        Request::ObjectEnable {
+            guid,
+            enabled,
+            logic,
+        } => edit::enable(*guid, *enabled, *logic),
+        Request::ObjectUndo { guid } => edit::undo(*guid),
         _ => Response::error(
             doctor_toolkit_live::ErrorCode::BadRequest,
             "not a main-thread request",

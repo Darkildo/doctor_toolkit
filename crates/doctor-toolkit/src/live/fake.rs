@@ -16,6 +16,9 @@
 //! (it is done at the next look at the queue), money, a crew, checkpoints
 //! and variables of the story. Protocol 5 (stage 46): the files of the
 //! configuration's `redirect` lines, each opened once by the fake game.
+//! Protocol 6 (stage 47): objects with a matrix move, turn, hide and show
+//! and the journal of these edits undoes them, as in the module
+//! ([`FakeEntity`]).
 
 use std::net::{Ipv4Addr, TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -34,6 +37,21 @@ use doctor_toolkit_live::{
 };
 
 use super::Config;
+
+use doctor_toolkit_live::edit::{
+    EditJournal, EditKind, EditValue, Matrix, ObjectState, transform_note,
+};
+
+/// An object of the fake game the link can edit (protocol 6).
+#[derive(Debug, Clone, PartialEq)]
+pub struct FakeEntity {
+    pub guid: Guid,
+    /// `None`: logic without a matrix (only its listener can be switched).
+    pub matrix: Option<Matrix>,
+    /// The count of deactivations: 0 in the world.
+    pub inactive: u8,
+    pub listening: bool,
+}
 
 /// The world of the fake game.
 #[derive(Debug, Clone)]
@@ -76,6 +94,11 @@ pub struct FakeWorld {
     pub variables: Vec<Variable>,
     /// Stream requests of the link.
     pub stream_requests: Vec<StreamRequest>,
+    /// Objects the link can edit: the positioned ones and the logic
+    /// (protocol 6).
+    pub entities: Vec<FakeEntity>,
+    /// The journal of edits.
+    pub edits: EditJournal,
 }
 
 /// A variable of the fake game: `doctor_fake_flag`, 0 at the start.
@@ -185,11 +208,203 @@ impl Default for FakeWorld {
                 kind: 1,
             }],
             stream_requests: Vec::new(),
+            entities: [1u8, 2, 3]
+                .iter()
+                .zip([
+                    [285.0, 0.0, 372.0],
+                    [283.9, -0.07, 371.8],
+                    [300.0, 0.0, 400.0],
+                ])
+                .map(|(&g, p)| FakeEntity {
+                    guid: [g; 16],
+                    matrix: Some([
+                        1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, p[0], p[1],
+                        p[2], 1.0,
+                    ]),
+                    inactive: 0,
+                    listening: true,
+                })
+                .chain([4u8, 5].iter().map(|&g| FakeEntity {
+                    guid: [g; 16],
+                    matrix: None,
+                    inactive: 0,
+                    listening: true,
+                }))
+                .collect(),
+            edits: EditJournal::new(),
         }
     }
 }
 
 impl FakeWorld {
+    /// The state of an edited object, as the module reports it.
+    pub fn object_state(&self, guid: &Guid) -> Option<ObjectState> {
+        let e = self.entities.iter().find(|e| &e.guid == guid)?;
+        let (class, class_name) = self
+            .objects
+            .iter()
+            .map(|(o, _)| (o.guid, o.class, o.class_name.clone()))
+            .chain(
+                self.logic
+                    .iter()
+                    .map(|(g, c, _)| (*g, doctor_toolkit_live::name_hash(c), c.clone())),
+            )
+            .find(|(g, _, _)| g == guid)
+            .map(|(_, c, n)| (c, n))
+            .unwrap_or_default();
+        Some(ObjectState {
+            guid: *guid,
+            class,
+            class_name,
+            matrix: e.matrix,
+            inactive: e.matrix.map(|_| e.inactive),
+            has_model: e.matrix.is_some(),
+            listening: e.listening,
+            hidden_by_link: self.edits.hidden(guid),
+            unsupported: if e.matrix.is_some() {
+                String::new()
+            } else {
+                "no world matrix at +0xD0".into()
+            },
+        })
+    }
+
+    /// Gives an object a matrix; its position follows in the list of
+    /// objects.
+    fn place(&mut self, guid: &Guid, m: Matrix) {
+        if let Some(e) = self.entities.iter_mut().find(|e| &e.guid == guid) {
+            e.matrix = Some(m);
+        }
+        if let Some((o, _)) = self.objects.iter_mut().find(|(o, _)| &o.guid == guid) {
+            o.position = [m[12], m[13], m[14]];
+        }
+    }
+
+    /// `ObjectTransform`, `ObjectEnable`, `ObjectUndo` (protocol 6).
+    fn edit(&mut self, request: Request) -> Response {
+        let missing = |g: &Guid| {
+            Response::error(
+                ErrorCode::Failed,
+                format!(
+                    "no object {} in the game (its stream is not loaded, or it was never made)",
+                    doctor_toolkit_live::guid_hex(g)
+                ),
+            )
+        };
+        if self.state != LoopState::Game {
+            return Response::error(ErrorCode::NotReady, "not in a level");
+        }
+        match request {
+            Request::ObjectTransform { guid, matrix } => {
+                if !doctor_toolkit_live::is_world_matrix(&matrix, true) {
+                    return Response::error(ErrorCode::BadRequest, "not a world matrix");
+                }
+                let Some(state) = self.object_state(&guid) else {
+                    return missing(&guid);
+                };
+                let Some(before) = state.matrix else {
+                    return Response::error(
+                        ErrorCode::Failed,
+                        format!("not changed: {}", state.unsupported),
+                    );
+                };
+                self.place(&guid, matrix);
+                let note = transform_note(&before, &matrix);
+                Response::ObjectEdit(self.edits.record(
+                    guid,
+                    EditKind::Transform,
+                    EditValue::Matrix(before),
+                    EditValue::Matrix(matrix),
+                    note,
+                ))
+            }
+            Request::ObjectEnable {
+                guid,
+                enabled,
+                logic,
+            } => {
+                let held = self.edits.hidden(&guid);
+                let Some(e) = self.entities.iter_mut().find(|e| e.guid == guid) else {
+                    return missing(&guid);
+                };
+                if logic {
+                    if e.listening == enabled {
+                        return Response::error(ErrorCode::BadRequest, "its logic is so already");
+                    }
+                    e.listening = enabled;
+                    return Response::ObjectEdit(self.edits.record(
+                        guid,
+                        EditKind::Listening,
+                        EditValue::Flag(!enabled),
+                        EditValue::Flag(enabled),
+                        format!("logic {}", if enabled { "on" } else { "off" }),
+                    ));
+                }
+                if e.matrix.is_none() {
+                    return Response::error(
+                        ErrorCode::Failed,
+                        "not changed: no world matrix at +0xD0",
+                    );
+                }
+                if enabled != held {
+                    return Response::error(
+                        ErrorCode::BadRequest,
+                        if enabled {
+                            "it is in the world already"
+                        } else {
+                            "the link hid it already"
+                        },
+                    );
+                }
+                if enabled {
+                    e.inactive = e.inactive.saturating_sub(1);
+                } else {
+                    e.inactive += 1;
+                }
+                Response::ObjectEdit(self.edits.record(
+                    guid,
+                    EditKind::Shown,
+                    EditValue::Flag(!enabled),
+                    EditValue::Flag(enabled),
+                    if enabled { "shown" } else { "hidden" }.into(),
+                ))
+            }
+            Request::ObjectUndo { guid } => {
+                let Some(edit) = self.edits.last(guid.as_ref()).cloned() else {
+                    return Response::error(ErrorCode::BadRequest, "nothing to undo");
+                };
+                if !self.entities.iter().any(|e| e.guid == edit.guid) {
+                    return missing(&edit.guid);
+                }
+                match (edit.kind, edit.before) {
+                    (EditKind::Transform, EditValue::Matrix(m)) => self.place(&edit.guid, m),
+                    (kind, EditValue::Flag(on)) => {
+                        if let Some(e) = self.entities.iter_mut().find(|e| e.guid == edit.guid) {
+                            if kind == EditKind::Listening {
+                                e.listening = on;
+                            } else if on {
+                                e.inactive = e.inactive.saturating_sub(1);
+                            } else {
+                                e.inactive += 1;
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+                self.edits.take(edit.id);
+                Response::ObjectEdit(doctor_toolkit_live::ObjectEdit {
+                    id: edit.id,
+                    guid: edit.guid,
+                    kind: edit.kind,
+                    before: edit.after,
+                    after: edit.before,
+                    note: format!("undid #{}", edit.id),
+                })
+            }
+            _ => Response::error(ErrorCode::BadRequest, "not an edit"),
+        }
+    }
+
     /// Requests of the streamer are done at the next look at the queue.
     fn stream_tick(&mut self) {
         for r in self.stream_requests.iter_mut().filter(|r| !r.done) {
@@ -890,6 +1105,27 @@ fn answer(request: Request, config: &Config, version: u16, w: &mut FakeWorld) ->
                 format!("no variable {hash:#010x} in the loaded streams"),
             ),
         },
+        Request::Object { guid } => match w.object_state(&guid) {
+            Some(s) => Response::Object(s),
+            None => Response::error(
+                ErrorCode::Failed,
+                format!(
+                    "no object {} in the game (its stream is not loaded, or it was never made)",
+                    doctor_toolkit_live::guid_hex(&guid)
+                ),
+            ),
+        },
+        r @ (Request::ObjectTransform { .. }
+        | Request::ObjectEnable { .. }
+        | Request::ObjectUndo { .. }) => w.edit(r),
+        Request::ObjectEdits => Response::ObjectEdits(w.edits.list().to_vec()),
+        Request::ObjectForget { guid } => {
+            let n = w.edits.forget(guid.as_ref());
+            Response::Done(Done {
+                count: n as u32,
+                note: format!("forgot {n} edit(s); the game keeps them"),
+            })
+        }
         Request::Peek { address, len } => {
             if address < 0x0040_0000 {
                 Response::error(

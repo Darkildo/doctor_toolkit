@@ -61,7 +61,8 @@ const GAME: &str = "\n\nGame (--allow-game): apply writes the workspace into the
 (backups kept; unapply puts them back). play starts the game on an X server of its own (nothing \
 shows on the desktop) with the workspace applied, optionally right in a level stream at a spawn \
 point, and waits for the level; screenshot returns a frame; teleport, send_message and lua act \
-in the running game; set_time, set_money, set_variable, stream_load and stream_unload change \
+in the running game; move_live_object, live_object_enable and live_object_undo edit its world \
+(placed objects moved, turned, hidden); set_time, set_money, set_variable, stream_load and stream_unload change \
 its world and state for checks without playing through (streams one at a time); stop ends it \
 and takes back what play wrote. mods_manage installs, switches and applies mods of the \
 mod manager. Ask the user before acting in their game.";
@@ -546,6 +547,48 @@ impl Server {
         self.run("variables", move |k| tools::live::variables(k, params.0))
             .await
     }
+
+    #[tool(
+        description = "One SimGroup object of the running game by GUID: class, matrix, position, heading, \
+                       whether it is in the world, its logic on, whether the link can move and hide \
+                       it (and why not). Read-only; needs the live link (protocol 6).",
+        annotations(
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = false,
+            open_world_hint = false
+        )
+    )]
+    async fn live_object(
+        &self,
+        params: Parameters<tools::live::LiveObjectParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.run("live_object", move |k| {
+            tools::live::live_object(k, params.0)
+        })
+        .await
+    }
+
+    #[tool(
+        description = "The edits of the running game made through the live link and not undone (moves, \
+                       turns, hiding, logic), oldest first, with the values before and after. \
+                       Read-only.",
+        annotations(
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = false,
+            open_world_hint = false
+        )
+    )]
+    async fn live_object_edits(
+        &self,
+        params: Parameters<tools::live::LiveObjectEditsParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.run("live_object_edits", move |k| {
+            tools::live::live_object_edits(k, params.0)
+        })
+        .await
+    }
 }
 
 #[tool_router(router = editor_router)]
@@ -922,6 +965,27 @@ impl Server {
     ) -> Result<CallToolResult, ErrorData> {
         self.run("validate", move |k| tools::build::validate(k, params.0))
             .await
+    }
+
+    #[tool(
+        description = "Write the objects moved in the running game through the live link into the \
+                       workspace: the matrix of each in its SimGroup, one undoable operation with its \
+                       diff (hiding is not written). The game files are not changed.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
+    )]
+    async fn live_objects_to_workspace(
+        &self,
+        params: Parameters<tools::live::LiveObjectsToWorkspaceParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.run("live_objects_to_workspace", move |k| {
+            tools::live::live_objects_to_workspace(k, params.0)
+        })
+        .await
     }
 }
 
@@ -1585,6 +1649,68 @@ impl Server {
     ) -> Result<CallToolResult, ErrorData> {
         self.run("stream_unload", move |k| {
             tools::live::stream_unload(k, params.0)
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Move or turn a placed object in the running game (GUID from objects_near): \
+                       `position` or `offset`, `yaw_degrees` or `turn_degrees`. Its model and \
+                       collision follow at once; undo with live_object_undo, keep it with \
+                       live_objects_to_workspace. People, cars and the player are refused.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = false,
+            open_world_hint = false
+        )
+    )]
+    async fn move_live_object(
+        &self,
+        params: Parameters<tools::live::MoveLiveObjectParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.run("move_live_object", move |k| {
+            tools::live::move_live_object(k, params.0)
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Hide an object of the running game (off the screen, its collision out of the world) \
+                       or show what the link hid; with `logic` switch whether it takes messages. \
+                       Undo with live_object_undo.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = false,
+            open_world_hint = false
+        )
+    )]
+    async fn live_object_enable(
+        &self,
+        params: Parameters<tools::live::LiveObjectEnableParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.run("live_object_enable", move |k| {
+            tools::live::live_object_enable(k, params.0)
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Undo in the running game the latest edit of the live link (of one object, or `all`).",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = false,
+            open_world_hint = false
+        )
+    )]
+    async fn live_object_undo(
+        &self,
+        params: Parameters<tools::live::LiveObjectUndoParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.run("live_object_undo", move |k| {
+            tools::live::live_object_undo(k, params.0)
         })
         .await
     }

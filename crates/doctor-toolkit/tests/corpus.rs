@@ -6309,3 +6309,52 @@ fn logic_runs_of_missions_go_without_the_game() {
     eprintln!("globals_global: {loaded} scripts started");
     assert!(loaded >= 5, "{loaded} scripts started");
 }
+
+/// Stage 47: a move made in the running game goes into the workspace as
+/// the matrix of its SimGroup record (the G-STAN plane of Havana, found by
+/// GUID through the names of the live link), one operation; undo puts the
+/// record back.
+#[test]
+fn moves_of_the_live_link_go_into_the_workspace() {
+    use doctor_toolkit::level::edit::current_group;
+    use doctor_toolkit::live::{commit, names::LiveNames, proto};
+    use doctor_toolkit::workspace::Workspace;
+
+    let Some(dir) = game_dir() else { return };
+    const REL: &str = "gf2/cuba/local/yuri/medium/zone4.str";
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    std::fs::create_dir_all(root.join(REL).parent().unwrap()).unwrap();
+    std::fs::copy(dir.join(REL), root.join(REL)).unwrap();
+    // A table of contents near the top makes the folder a game.
+    std::fs::copy(dir.join("gf2/cuba.toc"), root.join("gf2/cuba.toc")).unwrap();
+    let game = GameInstance::open(root).unwrap();
+    let (index, _) = game.build_index(|_| {});
+    let names = LiveNames::build(&game, &index, None);
+    let plane = proto::parse_guid("ff32c9362ecd3b0547524148414d3034").unwrap();
+    let (at, object) = commit::locate(&game, &names, &plane).expect("the plane");
+    let mut ws = Workspace::for_game(&game, None).unwrap();
+    let before = current_group(&game, &ws, at).unwrap();
+    let old = before.transform(&before.objects[object]).unwrap();
+    let flat: proto::Matrix = std::array::from_fn(|i| old[i / 4][i % 4]);
+    let moved = proto::edit::with_position(
+        &proto::edit::rotate_y(&flat, 45f32.to_radians()),
+        [288.08, 0.0, 369.44],
+    );
+    let lost = proto::parse_guid("00112233445566778899aabbccddeeff").unwrap();
+    let done =
+        commit::commit_moves(&game, &mut ws, &names, &[(plane, moved), (lost, moved)]).unwrap();
+    assert_eq!(done.written, vec![(plane, at, object, true)]);
+    assert_eq!(done.skipped.len(), 1);
+    assert_eq!(ws.head(), 1);
+    assert!(done.operation.is_some());
+    let after = current_group(&game, &ws, at).unwrap();
+    assert_eq!(
+        after.transform(&after.objects[object]).unwrap(),
+        commit::rows(&moved)
+    );
+    assert_eq!(after.objects.len(), before.objects.len());
+    ws.undo().unwrap();
+    let back = current_group(&game, &ws, at).unwrap();
+    assert_eq!(back.transform(&back.objects[object]).unwrap(), old);
+}

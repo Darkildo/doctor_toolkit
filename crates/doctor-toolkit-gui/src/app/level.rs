@@ -53,6 +53,10 @@ impl BrowserApp {
                 }
                 return;
             }
+            LevelAction::LiveObject(a) => {
+                self.live_object_action(tab, a);
+                return;
+            }
             _ => {}
         }
         let (Some(game), Some(index)) = (self.game.clone(), self.index.clone()) else {
@@ -158,6 +162,7 @@ impl BrowserApp {
         self.last_level = Some(id);
         let level = self.levels.get_mut(&id).expect("just made");
         level.live = marks;
+        level.live_edit = self.play.live.edit_info();
         if let Some(action) = level.ui(ui, self.workspace.as_ref()) {
             self.level_action(id, action);
         }
@@ -403,6 +408,7 @@ fn record(
         | LevelAction::PlayHere { .. }
         | LevelAction::LiveTeleport { .. }
         | LevelAction::LiveCamera(_)
+        | LevelAction::LiveObject(_)
         | LevelAction::OpenResource { .. }
         | LevelAction::ShowZones => Ok((tr("logic.no_change").to_owned(), None)),
     }

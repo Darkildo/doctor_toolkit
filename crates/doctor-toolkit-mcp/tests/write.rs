@@ -21,7 +21,7 @@ use doctor_toolkit::workspace::{Workspace, WorkspaceLock};
 use doctor_toolkit_mcp::Config;
 use doctor_toolkit_mcp::game::XServer;
 
-const EDIT_TOOLS: [&str; 29] = [
+const EDIT_TOOLS: [&str; 30] = [
     "set_attribute",
     "move_object",
     "duplicate_object",
@@ -37,6 +37,7 @@ const EDIT_TOOLS: [&str; 29] = [
     "project_build",
     "mod_build",
     "validate",
+    "live_objects_to_workspace",
     "add_stream",
     "remove_stream",
     "add_simgroup",
@@ -55,9 +56,9 @@ const EDIT_TOOLS: [&str; 29] = [
 ];
 
 /// Tools of a server without flags (reading, the live link, the editor).
-const READ_TOOLS: usize = 25;
+const READ_TOOLS: usize = 27;
 
-const GAME_TOOLS: [&str; 14] = [
+const GAME_TOOLS: [&str; 17] = [
     "apply",
     "unapply",
     "play",
@@ -71,6 +72,9 @@ const GAME_TOOLS: [&str; 14] = [
     "set_variable",
     "stream_load",
     "stream_unload",
+    "move_live_object",
+    "live_object_enable",
+    "live_object_undo",
     "mods_manage",
 ];
 
@@ -831,6 +835,113 @@ async fn the_world_and_state_of_the_live_game() {
         .await;
     assert_eq!(s["request"]["done"], true, "{s}");
     assert_eq!(module.world.lock().unwrap().money.cash, 1500.0);
+}
+
+/// Stage 47: objects of the running game moved, hidden and undone through
+/// the fake module, the journal read without flags, and the move written
+/// into the workspace as the trigger's matrix — one operation with its diff.
+#[tokio::test(flavor = "multi_thread")]
+async fn objects_of_the_live_game_are_edited_and_kept_in_the_workspace() {
+    let f = fixture();
+    let token = "t";
+    let module = FakeGame::start(doctor_toolkit::live::Config {
+        port: 0,
+        token: token.into(),
+        writes: true,
+        ..Default::default()
+    })
+    .unwrap();
+    // The trigger of the fixture's level stands in the fake game too.
+    let mut trigger = [1u8; 16];
+    trigger[8..].copy_from_slice(b"TESTTEST");
+    module
+        .world
+        .lock()
+        .unwrap()
+        .entities
+        .push(doctor_toolkit::live::fake::FakeEntity {
+            guid: trigger,
+            matrix: Some([
+                1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 10.0, 2.0, -5.0, 1.0,
+            ]),
+            inactive: 0,
+            listening: true,
+        });
+    let hex = doctor_toolkit::live::proto::guid_hex(&trigger);
+    let mut config = configured(&f, false, false);
+    config.live = Some(module.endpoint(token));
+    let mut c = start(&config);
+    c.initialize().await;
+    let s = c.json("live_object", json!({ "object": hex })).await;
+    assert_eq!(s["position"], json!([10.0, 2.0, -5.0]), "{s}");
+    assert_eq!(s["can_move_and_hide"], true, "{s}");
+    let r = c
+        .request(
+            "tools/call",
+            json!({ "name": "move_live_object", "arguments": { "object": hex, "offset": [1.0, 0.0, 0.0] } }),
+        )
+        .await;
+    assert!(
+        r["error"].is_object() || r["result"]["isError"] == json!(true),
+        "{r}"
+    );
+
+    config.allow_game = true;
+    config.allow_edits = true;
+    let mut c = start(&config);
+    c.initialize().await;
+    let m = c
+        .json(
+            "move_live_object",
+            json!({ "object": hex, "offset": [2.0, 0.0, 0.0], "turn_degrees": 90.0 }),
+        )
+        .await;
+    assert_eq!(
+        m["edit"]["after"]["position"],
+        json!([12.0, 2.0, -5.0]),
+        "{m}"
+    );
+    let h = c
+        .json(
+            "live_object_enable",
+            json!({ "object": "02020202020202020202020202020202", "enabled": false }),
+        )
+        .await;
+    assert_eq!(h["edit"]["kind"], "shown", "{h}");
+    let e = c.json("live_object_edits", json!({})).await;
+    assert_eq!(e["count"], 2, "{e}");
+    let u = c
+        .json(
+            "live_object_undo",
+            json!({ "object": "02020202020202020202020202020202" }),
+        )
+        .await;
+    assert_eq!(u["undone"][0]["after"], true, "{u}");
+    let (text, error) = c.call("move_live_object", json!({ "object": hex })).await;
+    assert!(error && text.contains("position"), "{text}");
+
+    let w = c.json("live_objects_to_workspace", json!({})).await;
+    assert_eq!(w["changed"], true, "{w}");
+    assert_eq!(w["done"]["written"][0]["object"], hex, "{w}");
+    assert!(w["diff"].as_array().is_some_and(|d| !d.is_empty()), "{w}");
+    let game = GameInstance::open(&f.game).unwrap();
+    let ws = Workspace::open(&f.workspace).unwrap();
+    let level = game.find_stream(LEVEL).unwrap();
+    let g = doctor_toolkit::level::edit::current_group(
+        &game,
+        &ws,
+        doctor_toolkit::level::Location {
+            stream: level,
+            resource: SIMGROUP,
+        },
+    )
+    .unwrap();
+    let t = g.transform(&g.objects[0]).unwrap();
+    assert_eq!(t[3], [12.0, 2.0, -5.0, 1.0]);
+    assert!((t[2][0] - 1.0).abs() < 1e-5, "turned: {t:?}");
+    // Still in the game's journal: undo there reaches it.
+    let u = c.json("live_object_undo", json!({ "all": true })).await;
+    assert_eq!(u["undone"].as_array().unwrap().len(), 1, "{u}");
 }
 
 #[tokio::test(flavor = "multi_thread")]

@@ -88,6 +88,12 @@ pub(super) struct Shared {
     pub(super) state_ok: bool,
     /// What "World and state" last read (stage 48).
     pub(super) world_state: super::live_state::WorldState,
+    /// The module edits the world (protocol 6, stage 47).
+    pub(super) edits_ok: bool,
+    /// The edits of the link not undone, oldest first.
+    pub(super) edits: Vec<proto::ObjectEdit>,
+    /// The state in the game of the object a level tab asked for.
+    pub(super) object: Option<proto::ObjectState>,
 }
 
 /// Events the panel keeps.
@@ -121,6 +127,16 @@ pub(super) enum Cmd {
     /// Load or unload one stream (a write); `force` unloads one the game
     /// loaded.
     Stream(String, proto::StreamAction, bool),
+    /// Stage 47: the state of one object in the game and the journal of
+    /// edits.
+    ObjectGet(Guid),
+    /// A new matrix for an object (a write); `true`: from a level tab's
+    /// gizmo.
+    ObjectMove(Guid, proto::Matrix, bool),
+    /// Hide (`false`) or show an object (a write).
+    ObjectEnable(Guid, bool),
+    /// Undo the latest edit of the link, of one object or of all (a write).
+    ObjectUndo(Option<Guid>),
 }
 
 impl Cmd {
@@ -136,6 +152,9 @@ impl Cmd {
                 | Self::SetMoney(_)
                 | Self::SetVariable(..)
                 | Self::Stream(..)
+                | Self::ObjectMove(..)
+                | Self::ObjectEnable(..)
+                | Self::ObjectUndo(_)
         )
     }
 }
@@ -182,6 +201,9 @@ pub(super) struct LiveState {
     pub(super) hold_s: u16,
     /// Fields of "World and state" (stage 48).
     pub(super) world: super::live_state::WorldFields,
+    /// The gizmo of the level tabs moves objects in the game without asking
+    /// (allowed once for this link).
+    pub(super) gizmo_allowed: bool,
 }
 
 /// The index of names for the live link.
@@ -223,6 +245,7 @@ impl Default for LiveState {
             break_print: String::new(),
             hold_s: proto::debug::HOLD_DEFAULT_S,
             world: Default::default(),
+            gizmo_allowed: false,
         }
     }
 }
@@ -339,7 +362,48 @@ fn run(client: &mut Client, cmd: Cmd, s: &Mutex<Shared>) -> Result<String, live:
             shared(s).world_state.streams = Some(client.stream_queue()?);
             note
         }
+        Cmd::ObjectGet(g) => {
+            let state = client.object(g);
+            let edits = client.object_edits()?;
+            let mut sh = shared(s);
+            sh.edits = edits;
+            match state {
+                Ok(st) => {
+                    sh.object = Some(st);
+                    tr("live.object_read").to_owned()
+                }
+                Err(e) => {
+                    sh.object = None;
+                    trf("live.object_not_read", &[("error", &e)])
+                }
+            }
+        }
+        Cmd::ObjectMove(g, m, _) => object_edit(client, s, g, |c| c.object_transform(g, m))?,
+        Cmd::ObjectEnable(g, on) => object_edit(client, s, g, |c| c.object_enable(g, on, false))?,
+        Cmd::ObjectUndo(g) => {
+            let e = client.object_undo(g)?;
+            let note = e.note.clone();
+            object_edit(client, s, e.guid, |_| Ok(e))?;
+            note
+        }
     })
+}
+
+/// Runs an edit of the running game, then reads the object and the journal
+/// again.
+fn object_edit(
+    client: &mut Client,
+    s: &Mutex<Shared>,
+    guid: Guid,
+    edit: impl FnOnce(&mut Client) -> Result<proto::ObjectEdit, live::LinkError>,
+) -> Result<String, live::LinkError> {
+    let e = edit(client)?;
+    let state = client.object(guid).ok();
+    let edits = client.object_edits()?;
+    let mut sh = shared(s);
+    sh.object = state;
+    sh.edits = edits;
+    Ok(format!("#{}: {}", e.id, e.note))
 }
 
 /// Reads new events of the journal into `s`.
@@ -405,6 +469,7 @@ fn worker(
                     sh.journal_ok = c.has_journal();
                     sh.debug_ok = c.has_debug();
                     sh.state_ok = c.has_state();
+                    sh.edits_ok = c.has_edits();
                     sh.error = None;
                     client = Some(c);
                     next = 0;
@@ -572,6 +637,23 @@ impl LiveState {
             can_free_camera: s.debug_ok && writes,
             free_camera: s.debug.as_ref().is_some_and(|d| d.camera.is_some()),
         })
+    }
+
+    /// What the level tabs need to edit the running game (stage 47).
+    pub(super) fn edit_info(&self) -> crate::level_view::LiveEdit {
+        if !self.connected() {
+            return crate::level_view::LiveEdit::default();
+        }
+        let s = shared(&self.shared);
+        let writes = s.hello.as_ref().is_some_and(|h| h.writes && h.edition_ok);
+        crate::level_view::LiveEdit {
+            reads: s.edits_ok,
+            writes: s.edits_ok && writes,
+            state: s.object.clone(),
+            edits: s.edits.len(),
+            moves: proto::edit::moved(&s.edits).len(),
+            gizmo_allowed: self.gizmo_allowed,
+        }
     }
 
     pub(super) fn send(&self, cmd: Cmd) {
@@ -995,12 +1077,18 @@ impl BrowserApp {
                                 if r.clicked() {
                                     self.play.live.target = proto::braced_guid(&o.guid);
                                     self.play.live.teleport = o.position.map(|v| format!("{v:.2}"));
+                                    self.live_select_in_levels(&o.guid);
                                 }
                             }
                         });
                 });
         }
         self.live_world_list(ui);
+        let writes_on = shared(&self.play.live.shared)
+            .hello
+            .as_ref()
+            .is_some_and(|h| h.writes && h.edition_ok);
+        self.live_edits_section(ui, writes_on);
         if !streams.is_empty() {
             egui::CollapsingHeader::new(trf("live.streams_list", &[("count", &streams.len())]))
                 .show(ui, |ui| {
@@ -1174,7 +1262,35 @@ impl BrowserApp {
                 },
                 &[("name", name)],
             ),
+            Cmd::ObjectMove(g, m, gizmo) => trf(
+                if *gizmo {
+                    "live.confirm_object_gizmo"
+                } else {
+                    "live.confirm_object_move"
+                },
+                &[
+                    ("object", &proto::guid_hex(g)),
+                    ("position", &vec3_text([m[12], m[13], m[14]])),
+                ],
+            ),
+            Cmd::ObjectEnable(g, on) => trf(
+                if *on {
+                    "live.confirm_object_show"
+                } else {
+                    "live.confirm_object_hide"
+                },
+                &[("object", &proto::guid_hex(g))],
+            ),
+            Cmd::ObjectUndo(g) => trf(
+                "live.confirm_object_undo",
+                &[(
+                    "object",
+                    &g.map(|g| proto::guid_hex(&g))
+                        .unwrap_or_else(|| tr("live.target_all").to_owned()),
+                )],
+            ),
             Cmd::State(_)
+            | Cmd::ObjectGet(_)
             | Cmd::Objects(_)
             | Cmd::Streams
             | Cmd::World(_)
@@ -1200,6 +1316,9 @@ impl BrowserApp {
         if let Some(yes) = answer {
             self.play.live.confirm = None;
             if yes {
+                if let Cmd::ObjectMove(_, _, true) = cmd {
+                    self.play.live.gizmo_allowed = true;
+                }
                 self.play.live.send(cmd);
             }
         }
@@ -1207,6 +1326,120 @@ impl BrowserApp {
 }
 
 impl BrowserApp {
+    /// An edit of the running game from a level tab (stage 47): reads go at
+    /// once, writes are asked first — the gizmo's once for the link.
+    pub(super) fn live_object_action(&mut self, tab: u64, action: crate::level_view::ObjectAction) {
+        use crate::level_view::ObjectAction as A;
+        if !self.play.live.connected() {
+            return;
+        }
+        match action {
+            A::Get(g) => self.play.live.send(Cmd::ObjectGet(g)),
+            A::Move(g, m, true) if self.play.live.gizmo_allowed => {
+                self.play.live.send(Cmd::ObjectMove(g, m, true));
+            }
+            A::Move(g, m, gizmo) => self.play.live.confirm = Some(Cmd::ObjectMove(g, m, gizmo)),
+            A::Enable(g, on) => self.play.live.confirm = Some(Cmd::ObjectEnable(g, on)),
+            A::Undo(g) => self.play.live.confirm = Some(Cmd::ObjectUndo(g)),
+            A::ToWorkspace => self.live_to_workspace(tab),
+        }
+    }
+
+    /// Selects the object of the running game in the level tabs that have
+    /// it loaded.
+    fn live_select_in_levels(&mut self, guid: &Guid) {
+        let mut found = false;
+        for level in self.levels.values_mut() {
+            found |= level.select_guid(guid);
+        }
+        if found {
+            self.play.live.send(Cmd::ObjectGet(*guid));
+        }
+    }
+
+    /// "Move into the workspace": the moves of the link become the
+    /// matrices of their SimGroup records, one operation.
+    fn live_to_workspace(&mut self, tab: u64) {
+        let moves = proto::edit::moved(&shared(&self.play.live.shared).edits);
+        let (Some(game), Some(names)) = (self.game.clone(), self.play.live.names_now()) else {
+            self.notify(Level::Warning, tr("live.names_not_ready").to_owned());
+            return;
+        };
+        let ws = match self.workspace_mut() {
+            Ok(ws) => ws,
+            Err(error) => {
+                self.status = trf("level.cannot_open_workspace", &[("error", &error)]);
+                return;
+            }
+        };
+        match live::commit::commit_moves(&game, ws, &names, &moves) {
+            Ok(done) => {
+                let mut text = trf(
+                    "live.kept",
+                    &[
+                        ("count", &done.written.len()),
+                        (
+                            "operation",
+                            &done
+                                .operation
+                                .clone()
+                                .unwrap_or_else(|| tr("logic.no_change").to_owned()),
+                        ),
+                    ],
+                );
+                if !done.skipped.is_empty() {
+                    text += &trf("live.kept_skipped", &[("count", &done.skipped.len())]);
+                }
+                self.status = text;
+                let select = done.written.first().map(|w| (w.1, w.2));
+                self.after_level_edit(tab, select);
+            }
+            Err(e) => self.notify(
+                Level::Error,
+                trf("level.cannot_edit", &[("error", &e.to_string())]),
+            ),
+        }
+    }
+
+    /// The edits of the running game the link made (stage 47): undo there.
+    fn live_edits_section(&mut self, ui: &mut egui::Ui, writes: bool) {
+        let (ok, edits) = {
+            let s = shared(&self.play.live.shared);
+            (s.edits_ok, s.edits.clone())
+        };
+        if !ok {
+            return;
+        }
+        egui::CollapsingHeader::new(trf("live.edits", &[("count", &edits.len())]))
+            .id_salt("live-edits")
+            .show(ui, |ui| {
+                ui.label(RichText::new(tr("live.edits_hint")).weak().small());
+                for e in edits.iter().rev().take(50) {
+                    ui.label(
+                        RichText::new(format!("#{} {} {}", e.id, proto::guid_hex(&e.guid), e.note))
+                            .monospace()
+                            .small(),
+                    );
+                }
+                ui.horizontal(|ui| {
+                    if ui
+                        .add_enabled(
+                            writes && !edits.is_empty(),
+                            egui::Button::new(tr("live.edits_undo")),
+                        )
+                        .clicked()
+                    {
+                        self.play.live.confirm = Some(Cmd::ObjectUndo(None));
+                    }
+                    if ui.button(tr("live.edits_read")).clicked()
+                        && let Some(e) = edits.last()
+                    {
+                        self.play.live.send(Cmd::ObjectGet(e.guid));
+                    }
+                });
+            });
+    }
+
     /// Search of the running game by GUID or by name (names from the
     /// SimGroups of the game and its workspace).
     fn live_find(&mut self, ui: &mut egui::Ui, busy: bool) {
@@ -1334,6 +1567,7 @@ impl BrowserApp {
                                 if let Some(p) = o.position {
                                     self.play.live.teleport = p.map(|v| format!("{v:.2}"));
                                 }
+                                self.live_select_in_levels(&o.guid);
                             }
                         }
                     });
@@ -1634,6 +1868,61 @@ mod tests {
         assert!(wait_for(&state, |s| s.connected
             && !s.state_ok
             && s.debug_ok));
+        state.disconnect();
+    }
+
+    /// Stage 47: the level tabs read an object of the fake game, move and
+    /// hide it and undo; what they are told follows each edit.
+    #[test]
+    fn objects_of_the_fake_game_are_edited_for_the_level_tabs() {
+        let game = FakeGame::start(live::Config {
+            port: 0,
+            token: "t".into(),
+            writes: true,
+            ..Default::default()
+        })
+        .unwrap();
+        let ctx = egui::Context::default();
+        let mut state = LiveState::default();
+        state.connect(game.endpoint("t"), &ctx);
+        assert!(wait_for(&state, |s| s.connected && s.edits_ok));
+        let info = state.edit_info();
+        assert!(info.reads && info.writes && info.edits == 0);
+        let g = [3u8; 16];
+        state.send(Cmd::ObjectGet(g));
+        assert!(wait_for(&state, |s| s
+            .object
+            .as_ref()
+            .is_some_and(|o| o.guid == g)));
+        let m = state.edit_info().state.unwrap().matrix.unwrap();
+        assert!(Cmd::ObjectMove(g, m, true).writes() && !Cmd::ObjectGet(g).writes());
+        state.send(Cmd::ObjectMove(
+            g,
+            proto::edit::with_position(&m, [310.0, 0.0, 400.0]),
+            true,
+        ));
+        assert!(wait_for(&state, |s| s.edits.len() == 1));
+        state.send(Cmd::ObjectEnable(g, false));
+        assert!(wait_for(&state, |s| s
+            .object
+            .as_ref()
+            .is_some_and(|o| o.hidden_by_link)));
+        let info = state.edit_info();
+        assert_eq!((info.edits, info.moves), (2, 1));
+        assert_eq!(info.state.unwrap().position(), Some([310.0, 0.0, 400.0]));
+        state.send(Cmd::ObjectUndo(None));
+        state.send(Cmd::ObjectUndo(Some(g)));
+        assert!(wait_for(&state, |s| s.edits.is_empty()
+            && s.object.as_ref().is_some_and(|o| o.matrix == Some(m))));
+        // An object that is not in the game: no state, no error left behind.
+        state.send(Cmd::ObjectGet([9; 16]));
+        assert!(wait_for(&state, |s| s.object.is_none()));
+        // A module of stage 46: nothing to edit.
+        state.disconnect();
+        game.world.lock().unwrap().protocol = 5;
+        state.connect(game.endpoint("t"), &ctx);
+        assert!(wait_for(&state, |s| s.connected && !s.edits_ok));
+        assert!(!state.edit_info().reads);
         state.disconnect();
     }
 }

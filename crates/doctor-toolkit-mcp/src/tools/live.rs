@@ -2,7 +2,11 @@
 //! game answers. Reading (`live_status`, `player`, `objects_near`) is always
 //! there; writing into the running game (`teleport`, `send_message`, `lua`)
 //! only with `--allow-game`, and the module itself must allow it (the
-//! launches of `play` do).
+//! launches of `play` do). Stage 47: objects of the running game moved,
+//! turned, hidden and shown (`move_live_object`, `live_object_enable`,
+//! `live_object_undo` with `--allow-game`), their state and the journal of
+//! the link (`live_object`, `live_object_edits`), and the moves written
+//! into the workspace (`live_objects_to_workspace`, `--allow-edits`).
 
 use std::time::Duration;
 
@@ -10,7 +14,8 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use doctor_toolkit::live::{Client, Endpoint, LinkError, proto};
+use doctor_toolkit::live::names::LiveNames;
+use doctor_toolkit::live::{Client, Endpoint, LinkError, commit, proto};
 use doctor_toolkit::play::SessionState;
 
 use super::Output;
@@ -490,6 +495,245 @@ pub fn stream_unload(kit: &Toolkit, p: StreamParams) -> ToolResult<Output> {
     let done = c.stream_unload(&p.name, p.force)?;
     let result = stream_result(&mut c)?;
     Ok(Output::Json(json!({"note": done.note, "request": result})))
+}
+
+// ------------------------------------------------------------ editing the world (stage 47)
+
+#[derive(Debug, Default, Deserialize, JsonSchema)]
+pub struct LiveObjectParams {
+    /// The object's GUID (32 hexadecimal digits, as `objects_near` prints it).
+    pub object: String,
+}
+
+#[derive(Debug, Default, Deserialize, JsonSchema)]
+pub struct LiveObjectEditsParams {}
+
+#[derive(Debug, Default, Deserialize, JsonSchema)]
+pub struct MoveLiveObjectParams {
+    /// The object's GUID (32 hexadecimal digits).
+    pub object: String,
+    /// New position `[x, y, z]` (Y is up).
+    #[serde(default)]
+    pub position: Option<[f32; 3]>,
+    /// Or an offset `[dx, dy, dz]` in metres.
+    #[serde(default)]
+    pub offset: Option<[f32; 3]>,
+    /// New heading in degrees (0 faces +Z, 90 faces +X), keeping its tilt.
+    #[serde(default)]
+    pub yaw_degrees: Option<f32>,
+    /// Or degrees to turn by about the up axis.
+    #[serde(default)]
+    pub turn_degrees: Option<f32>,
+}
+
+#[derive(Debug, Default, Deserialize, JsonSchema)]
+pub struct LiveObjectEnableParams {
+    /// The object's GUID (32 hexadecimal digits).
+    pub object: String,
+    /// false hides it (off the screen, its collision out of the physical
+    /// world); true shows what the link hid.
+    pub enabled: bool,
+    /// Instead switch its logic: whether its listener takes messages.
+    #[serde(default)]
+    pub logic: bool,
+}
+
+#[derive(Debug, Default, Deserialize, JsonSchema)]
+pub struct LiveObjectUndoParams {
+    /// Undo the latest edit of this object (GUID); the latest of all when
+    /// not given.
+    #[serde(default)]
+    pub object: Option<String>,
+    /// Undo every edit of the link, newest first.
+    #[serde(default)]
+    pub all: bool,
+}
+
+#[derive(Debug, Default, Deserialize, JsonSchema)]
+pub struct LiveObjectsToWorkspaceParams {
+    /// Then drop those moves from the module's journal (undo in the game no
+    /// longer reaches them).
+    #[serde(default)]
+    pub forget: bool,
+}
+
+fn guid_of(text: &str) -> ToolResult<proto::Guid> {
+    proto::parse_guid(text)
+        .ok_or_else(|| ToolError(format!("`{text}` is not a GUID (32 hexadecimal digits)")))
+}
+
+fn connect_edits(kit: &Toolkit, write: bool) -> ToolResult<Client> {
+    let client = if write {
+        connect_for_write(kit)?
+    } else {
+        connect(kit)?
+    };
+    if !client.has_edits() {
+        return fail(format!(
+            "the module in the game speaks protocol {}: editing the world needs the module of this toolkit (protocol 6)",
+            client.version()
+        ));
+    }
+    Ok(client)
+}
+
+fn edit_value(v: &proto::EditValue) -> Value {
+    match v {
+        proto::EditValue::Matrix(m) => json!({
+            "position": [m[12], m[13], m[14]],
+            "yaw_degrees": proto::edit::yaw(m).to_degrees(),
+            "matrix": m,
+        }),
+        proto::EditValue::Flag(f) => json!(f),
+    }
+}
+
+fn edit_json(e: &proto::ObjectEdit) -> Value {
+    json!({
+        "id": e.id,
+        "object": proto::guid_hex(&e.guid),
+        "kind": e.kind.name(),
+        "before": edit_value(&e.before),
+        "after": edit_value(&e.after),
+        "note": e.note,
+    })
+}
+
+fn object_state_json(s: &proto::ObjectState) -> Value {
+    json!({
+        "object": proto::guid_hex(&s.guid),
+        "class": s.class_name,
+        "position": s.position(),
+        "yaw_degrees": s.matrix.map(|m| proto::edit::yaw(&m).to_degrees()),
+        "matrix": s.matrix,
+        "in_world": s.shown(),
+        "has_model": s.has_model,
+        "logic_on": s.listening,
+        "hidden_by_link": s.hidden_by_link,
+        "can_move_and_hide": s.supported(),
+        "why_not": (!s.supported()).then_some(&s.unsupported),
+    })
+}
+
+pub fn live_object(kit: &Toolkit, p: LiveObjectParams) -> ToolResult<Output> {
+    let guid = guid_of(&p.object)?;
+    let mut c = connect_edits(kit, false)?;
+    Ok(Output::Json(object_state_json(&c.object(guid)?)))
+}
+
+pub fn live_object_edits(kit: &Toolkit, _: LiveObjectEditsParams) -> ToolResult<Output> {
+    let mut c = connect_edits(kit, false)?;
+    let list = c.object_edits()?;
+    Ok(Output::Json(json!({
+        "count": list.len(),
+        "edits": list.iter().map(edit_json).collect::<Vec<_>>(),
+    })))
+}
+
+pub fn move_live_object(kit: &Toolkit, p: MoveLiveObjectParams) -> ToolResult<Output> {
+    if p.position.is_none()
+        && p.offset.is_none()
+        && p.yaw_degrees.is_none()
+        && p.turn_degrees.is_none()
+    {
+        return fail("give `position`, `offset`, `yaw_degrees` or `turn_degrees`");
+    }
+    if p.position.is_some() && p.offset.is_some() {
+        return fail("give `position` or `offset`, not both");
+    }
+    if p.yaw_degrees.is_some() && p.turn_degrees.is_some() {
+        return fail("give `yaw_degrees` or `turn_degrees`, not both");
+    }
+    let guid = guid_of(&p.object)?;
+    let mut c = connect_edits(kit, true)?;
+    let s = c.object(guid)?;
+    if !s.supported() {
+        return fail(format!("the link does not move it: {}", s.unsupported));
+    }
+    let Some(mut m) = s.matrix else {
+        return fail("it has no matrix");
+    };
+    if let Some(y) = p.yaw_degrees {
+        m = proto::edit::rotate_y(&m, y.to_radians() - proto::edit::yaw(&m));
+    }
+    if let Some(t) = p.turn_degrees {
+        m = proto::edit::rotate_y(&m, t.to_radians());
+    }
+    if let Some(pos) = p.position {
+        m = proto::edit::with_position(&m, pos);
+    }
+    if let Some(d) = p.offset {
+        m = proto::edit::with_position(&m, [m[12] + d[0], m[13] + d[1], m[14] + d[2]]);
+    }
+    let e = c.object_transform(guid, m)?;
+    Ok(Output::Json(json!({
+        "edit": edit_json(&e),
+        "undo": "live_object_undo; live_objects_to_workspace keeps it in the workspace",
+    })))
+}
+
+pub fn live_object_enable(kit: &Toolkit, p: LiveObjectEnableParams) -> ToolResult<Output> {
+    let guid = guid_of(&p.object)?;
+    let mut c = connect_edits(kit, true)?;
+    let e = c.object_enable(guid, p.enabled, p.logic)?;
+    Ok(Output::Json(json!({ "edit": edit_json(&e) })))
+}
+
+pub fn live_object_undo(kit: &Toolkit, p: LiveObjectUndoParams) -> ToolResult<Output> {
+    let guid = p.object.as_deref().map(guid_of).transpose()?;
+    let mut c = connect_edits(kit, true)?;
+    let mut undone = Vec::new();
+    loop {
+        let e = c.object_undo(guid)?;
+        undone.push(edit_json(&e));
+        if !p.all || c.object_edits()?.is_empty() {
+            break;
+        }
+    }
+    Ok(Output::Json(json!({ "undone": undone })))
+}
+
+pub fn live_objects_to_workspace(
+    kit: &Toolkit,
+    p: LiveObjectsToWorkspaceParams,
+) -> ToolResult<Output> {
+    let mut c = connect_edits(kit, false)?;
+    let moves = proto::edit::moved(&c.object_edits()?);
+    if moves.is_empty() {
+        return fail("no object was moved through the live link: nothing to write");
+    }
+    let mut access = kit.write_workspace("live_objects_to_workspace")?;
+    let ws = &mut access.ws;
+    let names = LiveNames::build(&kit.game, kit.resources(), Some(ws));
+    let since = ws.head();
+    let done = commit::commit_moves(&kit.game, ws, &names, &moves)?;
+    if p.forget {
+        for (g, ..) in &done.written {
+            c.object_forget(Some(*g))?;
+        }
+    }
+    let label = done
+        .operation
+        .clone()
+        .unwrap_or_else(|| "Move objects as in the running game".to_owned());
+    super::edit::finish(
+        ws,
+        since,
+        &label,
+        json!({
+            "written": done.written.iter().map(|(g, l, o, changed)| json!({
+                "object": proto::guid_hex(g),
+                "id": format!("{}#{}:{}", kit.game.streams()[l.stream].stream_name(), l.resource, o),
+                "changed": changed,
+            })).collect::<Vec<_>>(),
+            "skipped": done.skipped.iter().map(|(g, why)| json!({
+                "object": proto::guid_hex(g),
+                "why": why,
+            })).collect::<Vec<_>>(),
+            "hidden_objects": "not written: SimGroup keeps no hidden state; hiding stays in the running game",
+            "forgot_in_game_journal": p.forget,
+        }),
+    )
 }
 
 #[cfg(test)]

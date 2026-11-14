@@ -280,7 +280,7 @@ fn as_class(m: &mut Mem, object: u32, class: u32) -> bool {
 }
 
 /// Registered classes: hash, size, name.
-fn class_registry(m: &mut Mem) -> Vec<(u32, u32, String)> {
+pub(crate) fn class_registry(m: &mut Mem) -> Vec<(u32, u32, String)> {
     let (Some(array), Some(count)) = (m.ptr(CLASS_REGISTRY), m.u32(CLASS_REGISTRY + 4)) else {
         return Vec::new();
     };
@@ -885,7 +885,7 @@ fn stream_ids(m: &mut Mem) -> Vec<(u32, String)> {
 /// `0x0046D450`), `cmp eax|ecx|edx|…, HASH` (`3D`, `81 F8+r`), following
 /// `jmp` to the base class's `As` and the `sub ecx, N; jmp` thunks of
 /// classes with several bases. `Base` compares nothing (class 0).
-fn class_of_vtable(m: &mut Mem, vtable: u32, known: &std::collections::BTreeSet<u32>) -> u32 {
+pub(crate) fn class_of_vtable(m: &mut Mem, vtable: u32, known: &std::collections::BTreeSet<u32>) -> u32 {
     let Some(start) = m.u32(vtable + OBJECT_AS_METHOD).filter(|&p| in_text(p)) else {
         return 0;
     };

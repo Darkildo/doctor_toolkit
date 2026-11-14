@@ -718,7 +718,7 @@ fn redirected_files_of_protocol_5() {
     }];
     let game = FakeGame::start(cfg).unwrap();
     let mut c = Client::connect(&game.endpoint("t"), "test", T).unwrap();
-    assert_eq!(c.version(), 5);
+    assert_eq!(c.version(), proto::PROTOCOL_VERSION);
     assert!(c.has_files());
     let f = c.files().unwrap();
     assert!(f.hooked);
@@ -743,4 +743,85 @@ fn opened_redirects_are_counted_from_the_module_log() {
         [frame 9] files: CreateFileW from 0x00acf5c8 gf2/cuba.toc -> Z:\\o\\cuba.toc\n";
     assert_eq!(redirected_in_log(log), 2);
     assert_eq!(redirected_in_log(""), 0);
+}
+
+/// Protocol 6 (stage 47): an object moved, turned, hidden and its logic
+/// stopped in the fake game, the journal of the link and undo; refusals
+/// for logic without a matrix, writes off and an older module.
+#[test]
+fn objects_edited_through_the_client_of_protocol_6() {
+    use proto::edit::{EditKind, EditValue, moved, rotate_y, with_position};
+    let game = FakeGame::start(config("t", true)).unwrap();
+    let mut c = Client::connect(&game.endpoint("t"), "test", T).unwrap();
+    assert_eq!(c.version(), 6);
+    assert!(c.has_edits());
+    let g = [3u8; 16];
+    let s = c.object(g).unwrap();
+    assert!(s.supported() && s.shown() == Some(true) && s.listening);
+    let m = s.matrix.unwrap();
+    let e = c
+        .object_transform(g, with_position(&m, [301.0, 0.0, 400.0]))
+        .unwrap();
+    assert_eq!(e.kind, EditKind::Transform);
+    assert_eq!(e.before, EditValue::Matrix(m));
+    // The object list follows.
+    let near = c.objects(Some([301.0, 0.0, 400.0]), 0.5, None, 5).unwrap();
+    assert_eq!(near[0].guid, g);
+    let turned = rotate_y(&c.object(g).unwrap().matrix.unwrap(), 1.0);
+    c.object_transform(g, turned).unwrap();
+    c.object_enable(g, false, false).unwrap();
+    let s = c.object(g).unwrap();
+    assert!(s.hidden_by_link && s.shown() == Some(false));
+    // Hiding twice, or showing what the link did not hide, is refused.
+    assert_eq!(
+        c.object_enable(g, false, false).unwrap_err().code(),
+        Some(ErrorCode::BadRequest)
+    );
+    assert_eq!(
+        c.object_enable([1; 16], true, false).unwrap_err().code(),
+        Some(ErrorCode::BadRequest)
+    );
+    // Logic without a matrix: its listener only.
+    c.object_enable([4; 16], false, true).unwrap();
+    assert!(!c.object([4; 16]).unwrap().listening);
+    assert_eq!(
+        c.object_transform([4; 16], m).unwrap_err().code(),
+        Some(ErrorCode::Failed)
+    );
+    assert_eq!(c.object_edits().unwrap().len(), 4);
+    assert_eq!(moved(&c.object_edits().unwrap()), vec![(g, turned)]);
+    // Undo of one object goes past the edits of others.
+    let u = c.object_undo(Some(g)).unwrap();
+    assert_eq!((u.kind, u.after), (EditKind::Shown, EditValue::Flag(true)));
+    assert!(c.object(g).unwrap().shown() == Some(true));
+    c.object_undo(Some(g)).unwrap();
+    c.object_undo(Some(g)).unwrap();
+    assert_eq!(c.object(g).unwrap().matrix, Some(m));
+    assert_eq!(
+        c.object_undo(Some(g)).unwrap_err().code(),
+        Some(ErrorCode::BadRequest)
+    );
+    assert_eq!(c.object_forget(None).unwrap().count, 1);
+    assert!(c.object_edits().unwrap().is_empty());
+    assert_eq!(
+        c.object([9; 16]).unwrap_err().code(),
+        Some(ErrorCode::Failed)
+    );
+
+    // Writes off: reads still answer.
+    let ro = FakeGame::start(config("t", false)).unwrap();
+    let mut c = Client::connect(&ro.endpoint("t"), "test", T).unwrap();
+    assert!(c.object(g).is_ok());
+    assert_eq!(
+        c.object_transform(g, m).unwrap_err().code(),
+        Some(ErrorCode::Denied)
+    );
+    // A module of stage 46 speaks protocol 5.
+    game.world.lock().unwrap().protocol = 5;
+    let mut c = Client::connect(&game.endpoint("t"), "test", T).unwrap();
+    assert!(!c.has_edits());
+    assert_eq!(
+        c.object(g).unwrap_err().code(),
+        Some(ErrorCode::Unsupported)
+    );
 }

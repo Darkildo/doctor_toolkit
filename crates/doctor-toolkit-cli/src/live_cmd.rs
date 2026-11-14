@@ -2,7 +2,8 @@
 //! journal and every object (stage 49); breakpoints, pause and step, the
 //! free camera and textures without a restart (stage 35); the world and
 //! the state of the game — time, weather, streams, money, family,
-//! missions, variables (stage 48, [`crate::live_state_cmd`]).
+//! missions, variables (stage 48, [`crate::live_state_cmd`]); editing the
+//! world while it runs (stage 47, [`crate::live_object_cmd`]).
 
 use std::io::Write as _;
 use std::path::PathBuf;
@@ -50,6 +51,11 @@ pub struct LinkArgs {
 }
 
 impl LinkArgs {
+    /// The game folder of `--game`.
+    pub fn game_dir(&self) -> Option<&std::path::Path> {
+        self.game.as_deref()
+    }
+
     fn endpoint(&self) -> Endpoint {
         let mut e = self
             .game
@@ -154,6 +160,10 @@ pub enum LiveCommand {
     /// Variables of the story (variabledictionary): get and set by name
     #[command(subcommand)]
     Var(crate::live_state_cmd::VarCommand),
+    /// Edit the world while the game runs: move, turn, hide and show
+    /// SimGroup objects, undo, and write the moves into the workspace
+    #[command(subcommand)]
+    Object(crate::live_object_cmd::ObjectCommand),
     /// SimGroup objects near the player (or a point): GUID, class, position;
     /// with --all every object of the game, logic included
     Objects {
@@ -800,6 +810,7 @@ pub fn run(command: LiveCommand) -> Result<()> {
         LiveCommand::Family(link) => st::family(&link)?,
         LiveCommand::Mission(link) => st::mission(&link)?,
         LiveCommand::Var(c) => st::var(c)?,
+        LiveCommand::Object(c) => crate::live_object_cmd::run(c)?,
         LiveCommand::Status(link) => {
             let mut c = link.connect()?;
             let s = c.status()?;
