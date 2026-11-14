@@ -33,6 +33,7 @@ pub fn run(spec: &str, game_dir: Option<&Path>) -> i32 {
     };
     println!("adapter: {}", context.adapter_summary());
     let mut renderer = SceneRenderer::new(context);
+    println!("batching: {:?}", renderer.batching());
     renderer.set_mesh_budget(1024);
     let (scene, bounds) = match spec.split(':').collect::<Vec<_>>().as_slice() {
         ["instances", n] => {
@@ -358,7 +359,7 @@ fn level(renderer: &mut SceneRenderer, dir: &Path, zones: &str) -> Result<(), St
                 println!(
                     "level {zones}: {} zone(s); index {:.0} ms, level read {:.0} ms, \
                      meshes and textures {:.1} s (GPU upload {:.0} ms): {meshes} meshes, \
-                     {} k triangles, {textures} textures, {:.0} MB of textures",
+                     {} k triangles, {textures} textures, {:.0} MB of textures, {:.0} MB of mesh buffers",
                     streams.len(),
                     indexed.as_secs_f64() * 1000.0,
                     read.as_secs_f64() * 1000.0,
@@ -366,6 +367,7 @@ fn level(renderer: &mut SceneRenderer, dir: &Path, zones: &str) -> Result<(), St
                     upload.as_secs_f64() * 1000.0,
                     triangles / 1000,
                     renderer.texture_bytes() as f64 / 1e6,
+                    renderer.mesh_bytes() as f64 / 1e6,
                 );
                 break;
             }
@@ -454,7 +456,7 @@ fn measure_level(
     }
     renderer.wait();
     let frames = frames();
-    let (mut times, mut fills) = (Vec::new(), Vec::new());
+    let (mut times, mut fills, mut cpu, mut gpu) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
     for frame in 0..frames {
         camera.yaw += 0.02;
         if !street {
@@ -466,8 +468,16 @@ fn measure_level(
         renderer.render(&mut viewport, SIZE, &scene, &camera.view(aspect));
         renderer.wait();
         times.push(started.elapsed());
-        let _ = frame;
+        cpu.push(renderer.stats.cpu_time);
+        // The pass time arrives with the next frame.
+        if frame > 0 {
+            gpu.extend(renderer.stats.gpu_time);
+        }
     }
+    renderer.render(&mut viewport, SIZE, &scene, &camera.view(aspect));
+    renderer.wait();
+    renderer.render(&mut viewport, SIZE, &scene, &camera.view(aspect));
+    gpu.extend(renderer.stats.gpu_time);
     let stats = renderer.stats;
     if let Ok(path) = std::env::var("DOCTOR_TOOLKIT_GUI_BENCH_SHOT")
         && let path = path.replace(".png", &format!("_{}.png", title.replace([' ', ','], "_")))
@@ -509,7 +519,7 @@ fn measure_level(
         )
     };
     println!(
-        "{frames} frames at {}×{}: {} (instance selection {}); {} drawn, {} culled, {} draw calls, {} k triangles",
+        "{frames} frames at {}×{}: {} (instance selection {}); {} drawn, {} culled, {} draw calls of {} parts, {} k triangles",
         SIZE[0],
         SIZE[1],
         summary(times),
@@ -517,7 +527,17 @@ fn measure_level(
         stats.instances,
         stats.culled,
         stats.draw_calls,
+        stats.parts,
         stats.triangles / 1000
+    );
+    println!(
+        "render CPU (prepare, record, submit) {}; GPU scene pass {}",
+        summary(cpu),
+        if gpu.is_empty() {
+            "not timed".to_owned()
+        } else {
+            summary(gpu)
+        }
     );
     println!(
         "pick: GPU id pass {}; CPU ray {}",

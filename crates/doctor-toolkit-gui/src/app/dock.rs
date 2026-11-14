@@ -383,6 +383,17 @@ impl Behavior<Pane> for DockBehavior<'_> {
             self.app.active_doc = Some(tile_id);
             self.app.focus_document(pane);
         }
+        let _profile = crate::profile::scope(match pane {
+            Pane::Stream { .. } => "pane: stream",
+            Pane::Resource { .. } => "pane: resource",
+            Pane::Level { .. } => "pane: level",
+            Pane::ContentBrowser | Pane::ContentExtra { .. } => "pane: content",
+            Pane::Timeline => "pane: timeline",
+            Pane::CutscenePreview => "pane: cut-scene preview",
+            Pane::Details | Pane::DetailsCopy { .. } => "pane: details",
+            Pane::Outliner => "pane: outliner",
+            _ => "pane: other",
+        });
         self.app.pane_ui(ui, pane);
         UiResponse::None
     }

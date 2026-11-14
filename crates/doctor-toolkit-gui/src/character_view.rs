@@ -16,7 +16,7 @@ use std::collections::BTreeMap;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use doctor_toolkit::character::{Character, MeshLocator, parse_selection};
 use doctor_toolkit::game::{GameAssets, GameInstance, ResourceIndex};
@@ -28,9 +28,6 @@ use crate::model_view::{LoadOptions, LoadedModel, load_with, material_panel};
 use crate::render::{
     Gpu, Instance, MeshKey, OrbitCamera, Pick, Scene, SceneOptions, Viewport, math,
 };
-
-/// A game directory with its game and resource index.
-type OpenedGame = (PathBuf, Arc<GameInstance>, Arc<ResourceIndex>);
 
 const TYPE_PARTSDB: u32 = doctor_toolkit::hash::sdbm(b"partsdb");
 
@@ -205,20 +202,11 @@ impl CharacterView {
 
     /// The game and its resource index, opened once per game directory.
     fn game(&mut self) -> Result<(Arc<GameInstance>, Arc<ResourceIndex>), String> {
-        static OPENED: Mutex<Option<OpenedGame>> = Mutex::new(None);
         if let Some(g) = &self.game {
             return Ok(g.clone());
         }
-        let mut cache = OPENED.lock().unwrap_or_else(|e| e.into_inner());
-        let pair = match &*cache {
-            Some((root, game, index)) if *root == self.root => (game.clone(), index.clone()),
-            _ => {
-                let game = Arc::new(GameInstance::open(&self.root).map_err(|e| e.to_string())?);
-                let index = Arc::new(game.build_index(|_| {}).0);
-                *cache = Some((self.root.clone(), game.clone(), index.clone()));
-                (game, index)
-            }
-        };
+        // The editor's index once it has one (shared with the cut-scenes).
+        let pair = crate::cutscene_view::preview::open_game(&self.root)?;
         self.game = Some(pair.clone());
         Ok(pair)
     }

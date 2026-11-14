@@ -3,19 +3,22 @@
 
 use std::collections::HashMap;
 use std::num::NonZeroU64;
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 use std::time::{Duration, Instant};
 
 use eframe::egui_wgpu;
 use eframe::wgpu;
 use eframe::wgpu::util::DeviceExt;
 
+use super::batch::{self, Arena, Batching, DrawCmd, DrawKey, Run, Slot};
 use super::camera::View;
 use super::math::{self, Aabb, Mat4};
 use super::scene::{
     Instance, LineVertex, MaterialData, MeshData, MeshKey, Pick, Scene, TextureData, TextureKey,
     Vertex,
 };
+use super::timing::GpuTimer;
+use crate::profile;
 
 const COLOR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
@@ -189,6 +192,8 @@ impl GpuContext {
             };
             let descriptor = wgpu::DeviceDescriptor {
                 label: Some("doctor_toolkit headless"),
+                // Batched draws; benchmarks time the scene pass (stage 67).
+                required_features: adapter.features() & optional_features(true),
                 required_limits: wgpu::Limits {
                     max_texture_dimension_2d: 8192,
                     ..limits
@@ -214,10 +219,20 @@ impl GpuContext {
 struct GpuTexture {
     view: wgpu::TextureView,
     bytes: usize,
+    /// Unique per upload: materials made with this texture name it.
+    serial: u64,
+}
+
+/// The bind group of a material, shared by every part with the same
+/// uniform and textures (stage 67).
+struct MaterialBind {
+    /// Unique per bind group: parts are sorted and batched by it.
+    id: u32,
+    bind_group: wgpu::BindGroup,
 }
 
 struct GpuPart {
-    bind_group: wgpu::BindGroup,
+    material: Arc<MaterialBind>,
     first_index: u32,
     index_count: u32,
     /// Drawn in the alpha-blended pass.
@@ -227,8 +242,8 @@ struct GpuPart {
 struct GpuMesh {
     data: Arc<MeshData>,
     bounds: Aabb,
-    vertices: wgpu::Buffer,
-    indices: wgpu::Buffer,
+    /// Vertices and indices in the shared buffers; `None` when empty.
+    slot: Option<Slot>,
     parts: Vec<GpuPart>,
     /// Line-list indices of the triangle edges, built on first use.
     edges: Option<(wgpu::Buffer, u32)>,
@@ -417,10 +432,24 @@ impl Drop for Viewport {
 pub struct RenderStats {
     pub instances: usize,
     pub culled: usize,
+    /// Draw calls sent to the GPU (an indirect multi-draw counts once).
     pub draw_calls: usize,
+    /// Parts drawn: one mesh part for all its instances.
+    pub parts: usize,
     pub triangles: usize,
     /// CPU time spent recording and submitting the frame.
     pub cpu_time: Duration,
+    /// GPU time of the scene pass of a recent frame, where the device can
+    /// time passes (profiler, benchmark).
+    pub gpu_time: Option<Duration>,
+}
+
+/// The parts of a frame in drawing order, cut into runs, and the bind
+/// groups of their materials.
+struct Commands {
+    cmds: Vec<DrawCmd>,
+    runs: Vec<Run>,
+    binds: HashMap<u32, Arc<MaterialBind>>,
 }
 
 /// One mesh with the slice of the instance buffer holding its instances.
@@ -454,11 +483,21 @@ pub struct SceneRenderer {
     overlay_pipeline: wgpu::RenderPipeline,
     meshes: HashMap<MeshKey, GpuMesh>,
     textures: HashMap<TextureKey, GpuTexture>,
+    /// Shared vertex and index buffers of the meshes.
+    arena: Arena,
+    /// Bind groups of materials by uniform and texture serials.
+    materials: HashMap<Vec<u8>, Weak<MaterialBind>>,
+    next_material: u32,
+    next_texture: u64,
+    batching: Batching,
+    /// Arguments of the indirect draws of a frame.
+    indirect: Option<(wgpu::Buffer, u64)>,
     instances: Option<(wgpu::Buffer, u64)>,
     identity: wgpu::Buffer,
     lines: Option<(wgpu::Buffer, u64)>,
     frame: u64,
     mesh_budget: usize,
+    timer: Option<GpuTimer>,
     pub stats: RenderStats,
 }
 
@@ -769,6 +808,17 @@ impl SceneRenderer {
             contents: bytemuck::bytes_of(&InstanceRaw::new(&Instance::new(0, math::IDENTITY), 0)),
             usage: wgpu::BufferUsages::VERTEX,
         });
+        let timer = GpuTimer::new(&context.device, &context.queue);
+        let batching = Batching::for_device(&context.device, &context.adapter);
+        let arena = Arena::new(
+            std::mem::size_of::<Vertex>(),
+            context.device.limits().max_buffer_size,
+            context
+                .adapter
+                .get_downlevel_capabilities()
+                .flags
+                .contains(wgpu::DownlevelFlags::BASE_VERTEX),
+        );
         Self {
             context,
             sample_count,
@@ -786,11 +836,18 @@ impl SceneRenderer {
             overlay_pipeline,
             meshes: HashMap::new(),
             textures: HashMap::new(),
+            arena,
+            materials: HashMap::new(),
+            next_material: 0,
+            next_texture: 0,
+            batching,
+            indirect: None,
             instances: None,
             identity,
             lines: None,
             frame: 0,
             mesh_budget: DEFAULT_MESH_BUDGET,
+            timer,
             stats: RenderStats::default(),
         }
     }
@@ -898,13 +955,49 @@ impl SceneRenderer {
             );
             bytes += pixels.len();
         }
+        self.next_texture += 1;
         self.textures.insert(
             key,
             GpuTexture {
                 view: texture.create_view(&Default::default()),
                 bytes,
+                serial: self.next_texture,
             },
         );
+    }
+
+    /// How parts are sent to the GPU (see [`Batching`]).
+    pub fn batching(&self) -> Batching {
+        self.batching
+    }
+
+    /// Chooses how parts are sent to the GPU (indirect calls only where
+    /// the device has them).
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn set_batching(&mut self, mut batching: Batching) {
+        batching.indirect &=
+            Batching::device_can_draw_indirect(&self.context.device, &self.context.adapter);
+        self.batching = batching;
+    }
+
+    /// Bytes of GPU memory of the shared mesh buffers.
+    pub fn mesh_bytes(&self) -> u64 {
+        self.arena.bytes()
+    }
+
+    /// Bind groups of materials in use.
+    #[cfg(test)]
+    fn material_count(&self) -> usize {
+        self.materials
+            .values()
+            .filter(|m| m.strong_count() > 0)
+            .count()
+    }
+
+    /// Where a mesh lives in the shared buffers.
+    #[cfg(test)]
+    fn mesh_slot(&self, key: MeshKey) -> Option<Slot> {
+        self.meshes.get(&key)?.slot
     }
 
     /// Whether a mesh is uploaded; marks it as used.
@@ -924,83 +1017,39 @@ impl SceneRenderer {
     /// Uploads a mesh. Textures its parts name must be uploaded first; parts
     /// whose texture is missing are drawn untextured.
     pub fn upload_mesh(&mut self, key: MeshKey, data: Arc<MeshData>) {
-        let device = &self.context.device;
-        let vertices = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("mesh vertices"),
-            contents: if data.vertices.is_empty() {
-                &[0; std::mem::size_of::<Vertex>()]
-            } else {
-                bytemuck::cast_slice(&data.vertices)
-            },
-            usage: wgpu::BufferUsages::VERTEX,
-        });
-        let indices = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("mesh indices"),
-            contents: if data.indices.is_empty() {
-                &[0; 4]
-            } else {
-                bytemuck::cast_slice(&data.indices)
-            },
-            usage: wgpu::BufferUsages::INDEX,
-        });
+        let vertex_count = data.vertices.len() as u32;
+        let index_count = data.indices.len() as u32;
+        if self.update_in_place(key, &data) {
+            return;
+        }
+        if let Some(old) = self.meshes.remove(&key)
+            && let Some(slot) = old.slot
+        {
+            self.arena.free(slot);
+        }
+        let device = self.context.device.clone();
+        let slot = if vertex_count == 0 || index_count == 0 {
+            None
+        } else {
+            let slot = self.arena.alloc(&device, vertex_count, index_count);
+            if let Some(slot) = slot {
+                self.arena.write(
+                    &self.context.queue,
+                    slot,
+                    bytemuck::cast_slice(&data.vertices),
+                    bytemuck::cast_slice(&data.indices),
+                );
+            }
+            slot
+        };
         let parts = data
             .parts
             .iter()
-            .map(|part| {
-                let material = &part.material;
-                let view = |key: Option<TextureKey>| key.and_then(|k| self.textures.get(&k));
-                let uniform = MaterialUniform::new(material, |k| view(k).is_some());
-                let buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                    label: Some("material"),
-                    contents: bytemuck::bytes_of(&uniform),
-                    usage: wgpu::BufferUsages::UNIFORM,
-                });
-                let surface = material.surface.as_deref();
-                let keys = [
-                    material.texture,
-                    surface.and_then(|s| s.normal),
-                    surface.and_then(|s| s.gloss),
-                    surface.and_then(|s| s.detail_normal),
-                    surface.and_then(|s| s.detail_mask),
-                    surface.and_then(|s| s.detail_gloss),
-                ];
-                let views: Vec<&wgpu::TextureView> = keys
-                    .iter()
-                    .enumerate()
-                    .map(|(i, &k)| match view(k) {
-                        Some(t) => &t.view,
-                        // Normal maps (bindings 3 and 5) default to "up".
-                        None if i == 1 || i == 3 => &self.flat_normal,
-                        None => &self.white,
-                    })
-                    .collect();
-                let mut entries = vec![
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: buffer.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 2,
-                        resource: wgpu::BindingResource::Sampler(&self.sampler),
-                    },
-                ];
-                for (binding, view) in MATERIAL_TEXTURES.iter().zip(&views) {
-                    entries.push(wgpu::BindGroupEntry {
-                        binding: *binding,
-                        resource: wgpu::BindingResource::TextureView(view),
-                    });
-                }
-                let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                    label: Some(&part.name),
-                    layout: &self.material_layout,
-                    entries: &entries,
-                });
-                GpuPart {
-                    bind_group,
-                    first_index: part.first_index,
-                    index_count: part.index_count,
-                    blend: material.blended(),
-                }
+            .map(|part| GpuPart {
+                material: self.material(&part.material, &part.name),
+                first_index: part.first_index,
+                index_count: part.index_count,
+                blend: part.material.blended(),
             })
             .collect();
         let bounds = data.bounds();
@@ -1009,8 +1058,7 @@ impl SceneRenderer {
             GpuMesh {
                 data,
                 bounds,
-                vertices,
-                indices,
+                slot,
                 parts,
                 edges: None,
                 normals: None,
@@ -1018,6 +1066,124 @@ impl SceneRenderer {
             },
         );
         self.evict();
+    }
+
+    /// A new version of a mesh with the same shape (vertex and index
+    /// counts, parts and materials), e.g. a posed character of a playing
+    /// cut-scene: written over the old one in place.
+    fn update_in_place(&mut self, key: MeshKey, data: &Arc<MeshData>) -> bool {
+        let Some(slot) = self.meshes.get(&key).and_then(|m| m.slot) else {
+            return false;
+        };
+        if slot.vertex_count as usize != data.vertices.len()
+            || slot.index_count as usize != data.indices.len()
+        {
+            return false;
+        }
+        let materials: Vec<Arc<MaterialBind>> = data
+            .parts
+            .iter()
+            .map(|part| self.material(&part.material, &part.name))
+            .collect();
+        let mesh = &self.meshes[&key];
+        let same =
+            mesh.parts.len() == data.parts.len()
+                && mesh.parts.iter().zip(&data.parts).zip(&materials).all(
+                    |((old, new), material)| {
+                        old.first_index == new.first_index
+                            && old.index_count == new.index_count
+                            && old.blend == new.material.blended()
+                            && Arc::ptr_eq(&old.material, material)
+                    },
+                );
+        if !same {
+            return false;
+        }
+        self.arena.write(
+            &self.context.queue,
+            slot,
+            bytemuck::cast_slice(&data.vertices),
+            bytemuck::cast_slice(&data.indices),
+        );
+        let frame = self.frame;
+        let mesh = self.meshes.get_mut(&key).expect("checked above");
+        mesh.bounds = data.bounds();
+        mesh.data = data.clone();
+        mesh.edges = None;
+        mesh.normals = None;
+        mesh.last_used = frame;
+        true
+    }
+
+    /// The bind group of a material: one per uniform and set of textures.
+    fn material(&mut self, material: &MaterialData, label: &str) -> Arc<MaterialBind> {
+        let view = |key: Option<TextureKey>| key.and_then(|k| self.textures.get(&k));
+        let uniform = MaterialUniform::new(material, |k| view(k).is_some());
+        let surface = material.surface.as_deref();
+        let keys = [
+            material.texture,
+            surface.and_then(|s| s.normal),
+            surface.and_then(|s| s.gloss),
+            surface.and_then(|s| s.detail_normal),
+            surface.and_then(|s| s.detail_mask),
+            surface.and_then(|s| s.detail_gloss),
+        ];
+        let mut cache_key = bytemuck::bytes_of(&uniform).to_vec();
+        for &k in &keys {
+            let serial = view(k).map_or(0, |t| t.serial);
+            cache_key.extend_from_slice(&serial.to_le_bytes());
+        }
+        if let Some(bind) = self.materials.get(&cache_key).and_then(Weak::upgrade) {
+            return bind;
+        }
+        let device = &self.context.device;
+        let buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("material"),
+            contents: bytemuck::bytes_of(&uniform),
+            usage: wgpu::BufferUsages::UNIFORM,
+        });
+        let views: Vec<&wgpu::TextureView> = keys
+            .iter()
+            .enumerate()
+            .map(|(i, &k)| match view(k) {
+                Some(t) => &t.view,
+                // Normal maps (bindings 3 and 5) default to "up".
+                None if i == 1 || i == 3 => &self.flat_normal,
+                None => &self.white,
+            })
+            .collect();
+        let mut entries = vec![
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: buffer.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: wgpu::BindingResource::Sampler(&self.sampler),
+            },
+        ];
+        for (binding, view) in MATERIAL_TEXTURES.iter().zip(&views) {
+            entries.push(wgpu::BindGroupEntry {
+                binding: *binding,
+                resource: wgpu::BindingResource::TextureView(view),
+            });
+        }
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some(label),
+            layout: &self.material_layout,
+            entries: &entries,
+        });
+        self.next_material += 1;
+        let bind = Arc::new(MaterialBind {
+            id: self.next_material,
+            bind_group,
+        });
+        // Forget the materials no mesh uses any more now and then.
+        if self.materials.len() >= 64 && self.materials.len().is_power_of_two() {
+            self.materials.retain(|_, m| m.strong_count() > 0);
+        }
+        self.materials.insert(cache_key, Arc::downgrade(&bind));
+        bind
     }
 
     /// Drops the least recently drawn meshes over the budget and textures no
@@ -1031,8 +1197,11 @@ impl SceneRenderer {
         order.sort();
         let excess = self.meshes.len() - self.mesh_budget;
         for (_, key) in order.into_iter().take(excess) {
-            self.meshes.remove(&key);
+            if let Some(slot) = self.meshes.remove(&key).and_then(|m| m.slot) {
+                self.arena.free(slot);
+            }
         }
+        self.materials.retain(|_, m| m.strong_count() > 0);
         let used: std::collections::HashSet<TextureKey> = self
             .meshes
             .values()
@@ -1109,7 +1278,8 @@ impl SceneRenderer {
             .write_buffer(&self.globals, 0, bytemuck::bytes_of(&globals));
 
         let planes = frustum_planes(&view_proj);
-        let mut groups: HashMap<MeshKey, Vec<InstanceRaw>> = HashMap::new();
+        // Visible instances by mesh key, each mesh's in the scene's order.
+        let mut visible: Vec<(MeshKey, u32)> = Vec::with_capacity(scene.instances.len());
         let mut culled = 0;
         let frame = self.frame;
         for (index, instance) in scene.instances.iter().enumerate() {
@@ -1125,23 +1295,24 @@ impl SceneRenderer {
                     continue;
                 }
             }
-            groups
-                .entry(instance.mesh)
-                .or_default()
-                .push(InstanceRaw::new(instance, index as u32 + 1));
+            visible.push((instance.mesh, index as u32));
         }
-        let mut order: Vec<MeshKey> = groups.keys().copied().collect();
-        order.sort_unstable();
-        let mut raw = Vec::with_capacity(scene.instances.len());
-        let mut draws = Vec::with_capacity(order.len());
-        for key in order {
-            let list = &groups[&key];
-            draws.push(DrawGroup {
-                mesh: key,
-                first: raw.len() as u32,
-                count: list.len() as u32,
-            });
-            raw.extend_from_slice(list);
+        visible.sort_unstable();
+        let mut raw = Vec::with_capacity(visible.len());
+        let mut draws: Vec<DrawGroup> = Vec::new();
+        for &(key, index) in &visible {
+            match draws.last_mut() {
+                Some(group) if group.mesh == key => group.count += 1,
+                _ => draws.push(DrawGroup {
+                    mesh: key,
+                    first: raw.len() as u32,
+                    count: 1,
+                }),
+            }
+            raw.push(InstanceRaw::new(
+                &scene.instances[index as usize],
+                index + 1,
+            ));
         }
         if !raw.is_empty() {
             let bytes: &[u8] = bytemuck::cast_slice(&raw);
@@ -1150,6 +1321,7 @@ impl SceneRenderer {
                 &mut self.instances,
                 bytes.len() as u64,
                 "instances",
+                wgpu::BufferUsages::VERTEX,
             );
             self.context.queue.write_buffer(buffer, 0, bytes);
         }
@@ -1164,6 +1336,7 @@ impl SceneRenderer {
                 &mut self.lines,
                 bytes.len() as u64,
                 "lines",
+                wgpu::BufferUsages::VERTEX,
             );
             self.context.queue.write_buffer(buffer, 0, &bytes);
         }
@@ -1212,33 +1385,23 @@ impl SceneRenderer {
         }
     }
 
-    /// Draws the triangles of every group; returns (draw calls, triangles).
-    /// `blended`: `Some(false)` only opaque parts, `Some(true)` only
-    /// alpha-blended parts, `None` every part.
-    fn draw_meshes(
+    /// The parts of every group to draw, as the unbatched renderer drew
+    /// them: by mesh, then by part. `blended`: `Some(false)` only opaque
+    /// parts, `Some(true)` only alpha-blended parts, `None` every part (as
+    /// opaque ones, for the id pass).
+    fn draw_commands(
         &self,
-        pass: &mut wgpu::RenderPass<'_>,
         scene: &Scene,
         draws: &[DrawGroup],
         blended: Option<bool>,
-    ) -> (usize, usize) {
-        let Some((instances, _)) = &self.instances else {
-            return (0, 0);
-        };
-        let stride = std::mem::size_of::<InstanceRaw>() as u64;
-        let mut calls = 0;
-        let mut triangles = 0;
+        out: &mut Vec<DrawCmd>,
+        binds: &mut HashMap<u32, Arc<MaterialBind>>,
+    ) {
         for draw in draws {
             let Some(mesh) = self.meshes.get(&draw.mesh) else {
                 continue;
             };
-            pass.set_vertex_buffer(0, mesh.vertices.slice(..));
-            pass.set_vertex_buffer(
-                1,
-                instances
-                    .slice(draw.first as u64 * stride..(draw.first + draw.count) as u64 * stride),
-            );
-            pass.set_index_buffer(mesh.indices.slice(..), wgpu::IndexFormat::Uint32);
+            let Some(slot) = mesh.slot else { continue };
             for (index, part) in mesh.parts.iter().enumerate() {
                 if part.index_count == 0
                     || blended.is_some_and(|b| b != part.blend)
@@ -1247,17 +1410,138 @@ impl SceneRenderer {
                 {
                     continue;
                 }
-                pass.set_bind_group(1, &part.bind_group, &[]);
-                pass.draw_indexed(
-                    part.first_index..part.first_index + part.index_count,
-                    0,
-                    0..draw.count,
-                );
-                calls += 1;
-                triangles += part.index_count as usize / 3 * draw.count as usize;
+                binds
+                    .entry(part.material.id)
+                    .or_insert_with(|| part.material.clone());
+                out.push(DrawCmd {
+                    key: DrawKey {
+                        blend: blended == Some(true),
+                        page: slot.page,
+                        material: part.material.id,
+                    },
+                    args: wgpu::util::DrawIndexedIndirectArgs {
+                        index_count: part.index_count,
+                        instance_count: draw.count,
+                        first_index: slot.first_index + part.first_index,
+                        base_vertex: slot.first_vertex as i32,
+                        first_instance: draw.first,
+                    },
+                });
             }
         }
-        (calls, triangles)
+    }
+
+    /// The commands of a pass, sorted and cut into runs, with the indirect
+    /// arguments written for the GPU.
+    fn prepare_commands(
+        &mut self,
+        scene: &Scene,
+        draws: &[DrawGroup],
+        passes: &[Option<bool>],
+    ) -> Commands {
+        let mut cmds = Vec::new();
+        let mut binds = HashMap::new();
+        for &blended in passes {
+            self.draw_commands(scene, draws, blended, &mut cmds, &mut binds);
+        }
+        let runs = batch::batches(&mut cmds, self.batching.sort);
+        if self.batching.indirect && runs.iter().any(|r| r.count > 1) {
+            let args: Vec<wgpu::util::DrawIndexedIndirectArgs> =
+                cmds.iter().map(|c| c.args).collect();
+            let bytes: &[u8] = bytemuck::cast_slice(&args);
+            let buffer = grow_buffer(
+                &self.context.device,
+                &mut self.indirect,
+                bytes.len() as u64,
+                "indirect draws",
+                wgpu::BufferUsages::INDIRECT,
+            );
+            self.context.queue.write_buffer(buffer, 0, bytes);
+        }
+        Commands { cmds, runs, binds }
+    }
+
+    /// Draws runs of commands; `pipelines` gives the pipeline of the opaque
+    /// and of the blended runs. Returns (draw calls, parts, triangles).
+    fn draw_runs(
+        &self,
+        pass: &mut wgpu::RenderPass<'_>,
+        commands: &Commands,
+        pipelines: [&wgpu::RenderPipeline; 2],
+    ) -> (usize, usize, usize) {
+        let Commands { cmds, runs, binds } = commands;
+        let Some((instances, _)) = &self.instances else {
+            return (0, 0, 0);
+        };
+        if runs.is_empty() {
+            return (0, 0, 0);
+        }
+        pass.set_vertex_buffer(1, instances.slice(..));
+        let stride = std::mem::size_of::<wgpu::util::DrawIndexedIndirectArgs>() as u64;
+        let (mut calls, mut triangles) = (0, 0);
+        let mut bound: (Option<bool>, Option<u32>, Option<u32>) = (None, None, None);
+        for run in runs.iter() {
+            if bound.0 != Some(run.key.blend) {
+                pass.set_pipeline(pipelines[run.key.blend as usize]);
+                bound.0 = Some(run.key.blend);
+            }
+            if bound.1 != Some(run.key.page) {
+                let Some(page) = self.arena.page(run.key.page) else {
+                    continue;
+                };
+                pass.set_vertex_buffer(0, page.vertices.slice(..));
+                pass.set_index_buffer(page.indices.slice(..), wgpu::IndexFormat::Uint32);
+                bound.1 = Some(run.key.page);
+            }
+            if bound.2 != Some(run.key.material) {
+                let Some(bind) = binds.get(&run.key.material) else {
+                    continue;
+                };
+                pass.set_bind_group(1, &bind.bind_group, &[]);
+                bound.2 = Some(run.key.material);
+            }
+            let list = &cmds[run.first as usize..(run.first + run.count) as usize];
+            for c in list {
+                triangles += c.args.index_count as usize / 3 * c.args.instance_count as usize;
+            }
+            match &self.indirect {
+                Some((buffer, _)) if self.batching.indirect && run.count > 1 => {
+                    pass.multi_draw_indexed_indirect(buffer, run.first as u64 * stride, run.count);
+                    calls += 1;
+                }
+                _ if self.batching.indirect => {
+                    for c in list {
+                        let a = c.args;
+                        pass.draw_indexed(
+                            a.first_index..a.first_index + a.index_count,
+                            a.base_vertex,
+                            a.first_instance..a.first_instance + a.instance_count,
+                        );
+                    }
+                    calls += list.len();
+                }
+                _ => {
+                    // Without indirect draws (OpenGL among others) the
+                    // instances of a part are bound as a slice, as before.
+                    let size = std::mem::size_of::<InstanceRaw>() as u64;
+                    for c in list {
+                        let a = c.args;
+                        let first = a.first_instance as u64 * size;
+                        pass.set_vertex_buffer(
+                            1,
+                            instances.slice(first..first + a.instance_count as u64 * size),
+                        );
+                        pass.draw_indexed(
+                            a.first_index..a.first_index + a.index_count,
+                            a.base_vertex,
+                            0..a.instance_count,
+                        );
+                    }
+                    calls += list.len();
+                }
+            }
+        }
+        (calls, cmds.len(), triangles)
     }
 
     /// Renders a scene into a viewport of `size` pixels.
@@ -1265,8 +1549,18 @@ impl SceneRenderer {
         let started = Instant::now();
         viewport.ensure(self, size);
         let aspect = viewport.size[0] as f32 / viewport.size[1] as f32;
-        let draws = self.prepare(scene, view, aspect);
+        let draws = {
+            let _profile = profile::scope("render: instances");
+            self.prepare(scene, view, aspect)
+        };
         self.build_overlays(scene, &draws);
+        let commands = {
+            let _profile = profile::scope("render: commands");
+            self.prepare_commands(scene, &draws, &[Some(false), Some(true)])
+        };
+        let prepared = started.elapsed();
+        profile::record("render: prepare", prepared);
+        let timestamps = self.timer.as_mut().and_then(|t| t.begin());
         let device = &self.context.device;
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("scene"),
@@ -1276,7 +1570,7 @@ impl SceneRenderer {
             return;
         };
         let bg = scene.options.background;
-        let (draw_calls, triangles) = {
+        let (draw_calls, parts, triangles) = {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("scene"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -1302,26 +1596,41 @@ impl SceneRenderer {
                     stencil_ops: None,
                 }),
                 occlusion_query_set: None,
-                timestamp_writes: None,
+                timestamp_writes: timestamps,
                 multiview_mask: None,
             });
             pass.set_bind_group(0, &self.globals_bind_group, &[]);
             let cull = scene.options.backface_culling as usize;
-            pass.set_pipeline(&self.mesh_pipelines[cull]);
-            let (mut calls, mut triangles) =
-                self.draw_meshes(&mut pass, scene, &draws, Some(false));
-            pass.set_pipeline(&self.blend_pipelines[cull]);
-            let (blend_calls, blend_triangles) =
-                self.draw_meshes(&mut pass, scene, &draws, Some(true));
-            calls += blend_calls;
-            triangles += blend_triangles;
+            let (mut calls, parts, triangles) = self.draw_runs(
+                &mut pass,
+                &commands,
+                [&self.mesh_pipelines[cull], &self.blend_pipelines[cull]],
+            );
             calls += self.draw_overlays(&mut pass, scene, &draws);
-            (calls, triangles)
+            let _profile = profile::scope("render: end of the pass");
+            drop(pass);
+            (calls, parts, triangles)
         };
+        if let Some(timer) = &self.timer {
+            timer.resolve(&mut encoder);
+        }
+        let submit = profile::scope("render: finish and submit");
         self.context.queue.submit([encoder.finish()]);
+        drop(submit);
+        if let Some(timer) = &mut self.timer {
+            timer.submitted();
+        }
         self.stats.draw_calls = draw_calls;
+        self.stats.parts = parts;
         self.stats.triangles = triangles;
         self.stats.cpu_time = started.elapsed();
+        self.stats.gpu_time = self.timer.as_ref().and_then(|t| t.last);
+        profile::record("render: record and submit", self.stats.cpu_time - prepared);
+        if let Some(gpu) = self.stats.gpu_time {
+            profile::record("render: GPU scene pass", gpu);
+        }
+        profile::value("render: draw calls", draw_calls as f64);
+        profile::value("render: instances", self.stats.instances as f64);
     }
 
     /// Wireframe, normals and scene lines; returns the number of draw calls.
@@ -1345,12 +1654,14 @@ impl SceneRenderer {
                 if scene.options.wireframe
                     && let Some((edges, count)) = &mesh.edges
                     && *count > 0
+                    && let Some(slot) = mesh.slot
+                    && let Some(page) = self.arena.page(slot.page)
                 {
                     pass.set_pipeline(&self.wire_pipeline);
-                    pass.set_vertex_buffer(0, mesh.vertices.slice(..));
+                    pass.set_vertex_buffer(0, page.vertices.slice(..));
                     pass.set_vertex_buffer(1, slice);
                     pass.set_index_buffer(edges.slice(..), wgpu::IndexFormat::Uint32);
-                    pass.draw_indexed(0..*count, 0, 0..draw.count);
+                    pass.draw_indexed(0..*count, slot.first_vertex as i32, 0..draw.count);
                     calls += 1;
                 }
                 if scene.options.normals
@@ -1405,6 +1716,7 @@ impl SceneRenderer {
         let aspect = viewport.size[0] as f32 / viewport.size[1] as f32;
         let stats = self.stats;
         let draws = self.prepare(scene, view, aspect);
+        let commands = self.prepare_commands(scene, &draws, &[None]);
         self.stats = stats;
         let device = self.context.device.clone();
         let targets = viewport.pick_targets(&device);
@@ -1437,8 +1749,8 @@ impl SceneRenderer {
             });
             pass.set_scissor_rect(pixel[0], pixel[1], 1, 1);
             pass.set_bind_group(0, &self.globals_bind_group, &[]);
-            pass.set_pipeline(&self.pick_pipelines[scene.options.backface_culling as usize]);
-            self.draw_meshes(&mut pass, scene, &draws, None);
+            let pick = &self.pick_pipelines[scene.options.backface_culling as usize];
+            self.draw_runs(&mut pass, &commands, [pick, pick]);
         }
         encoder.copy_texture_to_buffer(
             wgpu::TexelCopyTextureInfo {
@@ -1554,6 +1866,17 @@ fn texture_entry(binding: u32) -> wgpu::BindGroupLayoutEntry {
     }
 }
 
+/// Device features the renderer uses where the adapter has them: indirect
+/// draws with a first instance (batches, stage 67) and, for `timing`,
+/// timestamps of passes (the profiler).
+pub fn optional_features(timing: bool) -> wgpu::Features {
+    let mut features = wgpu::Features::INDIRECT_FIRST_INSTANCE;
+    if timing {
+        features |= wgpu::Features::TIMESTAMP_QUERY;
+    }
+    features
+}
+
 pub fn adapter_rank(adapter: &wgpu::Adapter) -> (u8, bool) {
     let info = adapter.get_info();
     let kind = match info.device_type {
@@ -1570,6 +1893,7 @@ fn grow_buffer<'a>(
     slot: &'a mut Option<(wgpu::Buffer, u64)>,
     size: u64,
     label: &str,
+    usage: wgpu::BufferUsages,
 ) -> &'a wgpu::Buffer {
     if slot.as_ref().is_none_or(|(_, capacity)| *capacity < size) {
         let capacity = size.next_power_of_two().max(4096);
@@ -1577,7 +1901,7 @@ fn grow_buffer<'a>(
             device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some(label),
                 size: capacity,
-                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                usage: usage | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: false,
             }),
             capacity,
@@ -1614,6 +1938,7 @@ mod tests {
     use super::super::camera::OrbitCamera;
     use super::super::scene::tests::cube;
     use super::*;
+    use crate::render::Batching;
 
     #[test]
     fn frustum_culls_spheres_behind_the_camera() {
@@ -1700,5 +2025,234 @@ mod tests {
                 part: 0
             })
         );
+    }
+
+    /// A mesh of `n` cubes side by side, one part each, the parts cycling
+    /// through `materials`.
+    fn cubes(n: usize, materials: &[MaterialData]) -> MeshData {
+        cubes_at(n, materials, 0.0)
+    }
+
+    /// [`cubes`] raised by `dy`.
+    fn cubes_at(n: usize, materials: &[MaterialData], dy: f32) -> MeshData {
+        let one = cube();
+        let mut mesh = MeshData::default();
+        for i in 0..n {
+            let vertices: Vec<Vertex> = one
+                .vertices
+                .iter()
+                .map(|v| Vertex {
+                    position: math::add(v.position, [i as f32 * 1.5, dy, 0.0]),
+                    ..*v
+                })
+                .collect();
+            mesh.push_part(
+                format!("cube {i}"),
+                vertices,
+                &one.indices,
+                materials[i % materials.len()].clone(),
+            );
+        }
+        mesh
+    }
+
+    /// Many meshes and instances, textured, untextured and blended parts:
+    /// the scene of the batching tests.
+    fn batching_scene(renderer: &mut SceneRenderer) -> (Scene, View) {
+        let checker: Vec<u8> = (0..16 * 16)
+            .flat_map(|i| {
+                if (i / 16 + i % 16) % 2 == 0 {
+                    [230, 80, 40, 255]
+                } else {
+                    [40, 90, 220, 255]
+                }
+            })
+            .collect();
+        renderer.upload_texture(
+            100,
+            &TextureData {
+                name: "checker".into(),
+                width: 16,
+                height: 16,
+                srgb: true,
+                mips: vec![checker],
+            },
+        );
+        let plain = |c: [f32; 4]| MaterialData {
+            texture: None,
+            color: c,
+            surface: None,
+        };
+        let materials = [
+            plain([0.9, 0.2, 0.2, 1.0]),
+            MaterialData {
+                texture: Some(100),
+                color: [1.0; 4],
+                surface: None,
+            },
+            plain([0.2, 0.9, 0.3, 1.0]),
+            MaterialData {
+                texture: None,
+                color: [0.3, 0.4, 1.0, 0.5],
+                surface: Some(Box::new(super::super::scene::Surface {
+                    blend: true,
+                    ..Default::default()
+                })),
+            },
+        ];
+        let mut scene = Scene::default();
+        for m in 0..12u64 {
+            renderer.upload_mesh(
+                m + 1,
+                Arc::new(cubes(1 + m as usize % 4, &materials[m as usize % 3..])),
+            );
+            for i in 0..3 {
+                let at = [
+                    i as f32 * 7.0 - 7.0,
+                    m as f32 * 0.9 - 5.0,
+                    -(m as f32) * 1.3,
+                ];
+                scene.instances.push(Instance::new(
+                    m + 1,
+                    math::mul(&math::translation(at), &math::rotation_y(m as f32 * 0.3)),
+                ));
+            }
+        }
+        scene.options.background = [0.0, 0.0, 0.0, 1.0];
+        let mut bounds = Aabb::EMPTY;
+        for instance in &scene.instances {
+            let mesh = renderer.mesh_data(instance.mesh).unwrap();
+            bounds.union(&mesh.bounds().transformed(&instance.transform));
+        }
+        let mut camera = OrbitCamera::framing(&bounds);
+        camera.yaw = 0.4;
+        camera.pitch = 0.3;
+        (scene, camera.view(4.0 / 3.0))
+    }
+
+    /// Batched draws (shared buffers, shared materials, indirect runs, even
+    /// sorted by material) give the picture of part-by-part drawing.
+    #[test]
+    fn batched_draws_render_the_same_picture() {
+        let Some(context) = GpuContext::headless() else {
+            eprintln!("no wgpu adapter; GPU test skipped");
+            return;
+        };
+        let mut renderer = SceneRenderer::new(context);
+        renderer.set_mesh_budget(64);
+        let (scene, view) = batching_scene(&mut renderer);
+        let size = [160, 120];
+        let mut pictures = Vec::new();
+        for (indirect, sort) in [(false, false), (true, false), (true, true), (false, true)] {
+            renderer.set_batching(Batching { indirect, sort });
+            let mut viewport = Viewport::new();
+            renderer.render(&mut viewport, size, &scene, &view);
+            let stats = renderer.stats;
+            let (_, _, pixels) = renderer.read_pixels(&viewport).unwrap();
+            // Indirect calls only where the device has them.
+            let indirect = renderer.batching().indirect;
+            pictures.push((indirect, sort, stats, pixels));
+        }
+        let (_, _, first, reference) = &pictures[0];
+        assert_eq!(first.parts, first.draw_calls, "one call per part");
+        assert!(first.parts > 20, "{} parts", first.parts);
+        let lit = reference
+            .chunks_exact(4)
+            .filter(|p| p[..3] != [0, 0, 0])
+            .count();
+        assert!(lit > 1000, "{lit} lit pixels");
+        for (indirect, sort, stats, pixels) in &pictures[1..] {
+            assert_eq!(stats.parts, first.parts);
+            assert_eq!(stats.triangles, first.triangles);
+            let differ = pixels
+                .chunks_exact(4)
+                .zip(reference.chunks_exact(4))
+                .filter(|(a, b)| a != b)
+                .count();
+            assert_eq!(differ, 0, "indirect {indirect}, sorted {sort}");
+            if *sort && *indirect {
+                assert!(stats.draw_calls < first.draw_calls / 2, "{stats:?}");
+            }
+        }
+        // The id pass agrees in every mode, on lit pixels.
+        let targets: Vec<[u32; 2]> = reference
+            .chunks_exact(4)
+            .enumerate()
+            .filter(|(_, p)| p[..3] != [0, 0, 0])
+            .step_by(97)
+            .take(12)
+            .map(|(i, _)| [i as u32 % size[0], i as u32 / size[0]])
+            .collect();
+        let mut viewport = Viewport::new();
+        renderer.set_batching(Batching {
+            indirect: false,
+            sort: false,
+        });
+        renderer.render(&mut viewport, size, &scene, &view);
+        let picks: Vec<_> = targets
+            .iter()
+            .map(|&pixel| renderer.pick(&mut viewport, &scene, &view, pixel))
+            .collect();
+        assert!(
+            picks.iter().filter(|p| p.is_some()).count() > 3,
+            "{picks:?}"
+        );
+        renderer.set_batching(Batching {
+            indirect: true,
+            sort: false,
+        });
+        let again: Vec<_> = targets
+            .iter()
+            .map(|&pixel| renderer.pick(&mut viewport, &scene, &view, pixel))
+            .collect();
+        assert_eq!(picks, again);
+    }
+
+    /// Meshes share the arena and the bind groups of equal materials; a
+    /// mesh of the same shape is written in place; evicted meshes give
+    /// their room back.
+    #[test]
+    fn meshes_share_buffers_and_materials() {
+        let Some(context) = GpuContext::headless() else {
+            eprintln!("no wgpu adapter; GPU test skipped");
+            return;
+        };
+        let mut renderer = SceneRenderer::new(context);
+        renderer.set_mesh_budget(8);
+        let red = MaterialData {
+            texture: None,
+            color: [1.0, 0.0, 0.0, 1.0],
+            surface: None,
+        };
+        for key in 1..=4 {
+            renderer.upload_mesh(key, Arc::new(cubes(2, std::slice::from_ref(&red))));
+        }
+        assert_eq!(renderer.material_count(), 1);
+        assert_eq!(
+            renderer.mesh_slot(1).unwrap().page,
+            renderer.mesh_slot(4).unwrap().page
+        );
+        let bytes = renderer.mesh_bytes();
+        // The same shape again (a posed copy): same room.
+        let slot = renderer.mesh_slot(2);
+        let moved = cubes_at(2, std::slice::from_ref(&red), 1.0);
+        renderer.upload_mesh(2, Arc::new(moved));
+        assert_eq!(renderer.mesh_slot(2), slot);
+        assert_eq!(renderer.mesh_data(2).unwrap().bounds().min[1], 0.5);
+        // Another shape: new room, the old one is free again.
+        renderer.upload_mesh(2, Arc::new(cubes(3, std::slice::from_ref(&red))));
+        assert_ne!(renderer.mesh_slot(2), slot);
+        // Over the budget the least recently drawn go, with their room.
+        for key in 10..30 {
+            renderer.upload_mesh(key, Arc::new(cubes(1, std::slice::from_ref(&red))));
+        }
+        assert_eq!(renderer.mesh_count(), 8);
+        assert_eq!(renderer.mesh_bytes(), bytes, "no new page");
+        let green = MaterialData {
+            color: [0.0, 1.0, 0.0, 1.0],
+            ..red.clone()
+        };
+        renderer.upload_mesh(40, Arc::new(cubes(2, &[red, green])));
+        assert_eq!(renderer.material_count(), 2);
     }
 }

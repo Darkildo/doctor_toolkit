@@ -30,8 +30,17 @@ use crate::render::{
 /// A game directory with its game and resource index, opened once.
 type OpenedGame = (PathBuf, Arc<GameInstance>, Arc<ResourceIndex>);
 
-pub(super) fn open_game(root: &PathBuf) -> Result<(Arc<GameInstance>, Arc<ResourceIndex>), String> {
-    static OPENED: Mutex<Option<OpenedGame>> = Mutex::new(None);
+/// The game the previews open: the editor's own once it has indexed it.
+static OPENED: Mutex<Option<OpenedGame>> = Mutex::new(None);
+
+/// Hands the editor's game and resource index to the previews, which
+/// otherwise open and index the game again (stage 67).
+pub fn share_game(game: Arc<GameInstance>, index: Arc<ResourceIndex>) {
+    *OPENED.lock().unwrap_or_else(|e| e.into_inner()) =
+        Some((game.root().to_path_buf(), game, index));
+}
+
+pub(crate) fn open_game(root: &PathBuf) -> Result<(Arc<GameInstance>, Arc<ResourceIndex>), String> {
     let mut cache = OPENED.lock().unwrap_or_else(|e| e.into_inner());
     if let Some((r, game, index)) = &*cache
         && r == root
@@ -270,6 +279,7 @@ impl Preview {
 
     /// Opens the game index, rigs and parts databases (once per game).
     pub fn load(&mut self) {
+        let _profile = crate::profile::scope("cut-scene: open the game and its rigs");
         let result = open_game(&self.root).map(|(game, index)| Loaded::new(game, &index));
         *self.shared.lock().unwrap_or_else(|e| e.into_inner()) = Some(result);
         self.generation += 1;
@@ -307,6 +317,7 @@ impl Preview {
             _ => None,
         };
         if let Some(l) = loaded.as_deref_mut() {
+            let _profile = crate::profile::scope("cut-scene: characters and clips of a shot");
             ensure_shot(l, self.gpu.as_ref(), self.characters, cutscene, s);
         }
         let loaded = loaded.as_deref();

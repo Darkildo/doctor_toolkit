@@ -206,6 +206,7 @@ impl Nav {
                 } => {
                     self.indexing = None;
                     self.dictionary = None;
+                    crate::profile::mark("index");
                     self.status = Some(trf(
                         "nav.indexed",
                         &[

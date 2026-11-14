@@ -21,15 +21,19 @@
 //! depth, MSAA and the id pass independent of the window surface and lets an
 //! unchanged view cost nothing per frame.
 
+mod batch;
 mod camera;
 mod gpu;
 pub mod math;
 mod scene;
+mod timing;
 
 use std::sync::{Arc, Mutex, MutexGuard};
 
+#[allow(unused_imports)]
+pub use batch::Batching;
 pub use camera::{OrbitCamera, View};
-pub use gpu::{GpuContext, RenderStats, SceneRenderer, Viewport, adapter_rank};
+pub use gpu::{GpuContext, RenderStats, SceneRenderer, Viewport, adapter_rank, optional_features};
 // The whole scene API is public for the level view, even parts the model viewer does not use.
 #[allow(unused_imports)]
 pub use scene::{

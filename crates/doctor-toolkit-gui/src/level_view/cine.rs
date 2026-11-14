@@ -282,6 +282,7 @@ impl Layer {
             return;
         };
         if let Some(Ok(loaded)) = &mut self.characters {
+            let _profile = crate::profile::scope("cut-scene: characters and clips of a shot");
             preview::ensure_shot(loaded, gpu, true, &cutscene, s);
         }
         let loaded = match &self.characters {

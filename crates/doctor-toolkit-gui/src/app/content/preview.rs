@@ -812,17 +812,26 @@ pub fn make(
     job: &PreviewJob,
     gpu: &Mutex<GpuSlot>,
 ) -> Result<(Thumbnail, bool), String> {
+    let started = std::time::Instant::now();
     let data = thumb::data_hash(source, job)?;
     let key = cache_key(&job.id, job.kind, data, RENDER_VERSION);
     if let Some(cache) = &source.cache
         && let Some(image) = cache.get(key)
     {
+        crate::profile::record("preview: from the disk cache", started.elapsed());
         return Ok((image, true));
     }
     let image = match job.kind {
         Kind::Texture => thumb::texture(source, job)?,
         Kind::Model => thumb::model(source, job, gpu)?,
     };
+    crate::profile::record(
+        match job.kind {
+            Kind::Texture => "preview: make texture",
+            Kind::Model => "preview: make model",
+        },
+        started.elapsed(),
+    );
     if let Some(cache) = &source.cache
         && let Err(error) = cache.put(key, &image)
     {

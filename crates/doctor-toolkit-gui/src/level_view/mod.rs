@@ -800,6 +800,7 @@ impl LevelView {
         if self.pending.is_empty() {
             return;
         }
+        let _profile = crate::profile::scope("level: upload");
         let started = Instant::now();
         let mut renderer = gpu.lock();
         while let Some(batch) = self.pending.pop_front() {
@@ -1826,6 +1827,9 @@ impl LevelView {
         }
         self.poll(&ctx);
         self.upload();
+        if self.level.is_some() && self.job.is_none() && self.pending.is_empty() {
+            crate::profile::mark("level");
+        }
         if let (Some(level), Some(input)) = (&self.level, &self.input) {
             let mut streams: Vec<usize> = level.groups.iter().map(|g| g.location.stream).collect();
             streams.sort_unstable();
@@ -2239,6 +2243,7 @@ impl LevelView {
         }
 
         if self.refill {
+            let _profile = crate::profile::scope("level: fill");
             self.refill = false;
             let eye = self.camera.lod_eye();
             self.filter.min_angle = if self.hide_tiny {
@@ -2317,6 +2322,7 @@ impl LevelView {
                     cine: cine_revision,
                 };
                 if self.last_render.as_ref() != Some(&key) {
+                    let _profile = crate::profile::scope("level: render");
                     let mut renderer = gpu.lock();
                     renderer.render(&mut self.viewport, pixels, &self.scene, &view);
                     self.stats = renderer.stats;

@@ -59,6 +59,7 @@ mod logic_view;
 mod model_view;
 mod nav;
 mod node_graph;
+mod profile;
 mod render;
 mod resource_view;
 mod sbk_view;
@@ -91,12 +92,15 @@ fn main() -> eframe::Result {
         let args: Vec<String> = std::env::args().skip(2).collect();
         std::process::exit(cutscene_view::render::main(&args));
     }
+    profile::init();
     doctor_toolkit::report::init("doctor-toolkit-gui");
     let game_dir = std::env::args_os().nth(1).map(PathBuf::from);
     let stream = std::env::args().nth(2);
     let selftest = std::env::var("DOCTOR_TOOLKIT_GUI_SELFTEST").ok();
     if let Ok(spec) = std::env::var("DOCTOR_TOOLKIT_GUI_BENCH") {
-        std::process::exit(bench::run(&spec, game_dir.as_deref()));
+        let code = bench::run(&spec, game_dir.as_deref());
+        profile::write_report();
+        std::process::exit(code);
     }
     let store = settings::Store::for_run();
     let (settings, settings_error) = store.load();
@@ -116,18 +120,30 @@ fn main() -> eframe::Result {
     if let (Some(x), Some(y)) = (window.x, window.y) {
         viewport = viewport.with_position([x, y]);
     }
+    let renderer = choose_renderer(settings.renderer);
+    profile::mark("renderer chosen");
     let mut options = eframe::NativeOptions {
         viewport,
-        renderer: choose_renderer(settings.renderer),
+        renderer,
         ..Default::default()
     };
     if let eframe::egui_wgpu::WgpuSetup::CreateNew(setup) = &mut options.wgpu_options.wgpu_setup {
         setup.native_adapter_selector = Some(std::sync::Arc::new(select_adapter));
+        // Batched draws of the scene renderer; the profiler also times the
+        // scene pass on the GPU (stage 67).
+        let features = render::optional_features(profile::enabled());
+        let base = setup.device_descriptor.clone();
+        setup.device_descriptor = std::sync::Arc::new(move |adapter| {
+            let mut descriptor = base(adapter);
+            descriptor.required_features |= adapter.features() & features;
+            descriptor
+        });
     }
-    eframe::run_native(
+    let result = eframe::run_native(
         "doctor_toolkit",
         options,
         Box::new(move |cc| {
+            profile::mark("window and device");
             let mut app = app::BrowserApp::new(cc, game_dir, stream, selftest, settings, store);
             if let Some(error) = settings_error {
                 app.warn(doctor_toolkit_mods::i18n::trf(
@@ -135,9 +151,12 @@ fn main() -> eframe::Result {
                     &[("error", &error)],
                 ));
             }
+            profile::mark("editor created");
             Ok(Box::new(Guarded::new(app)))
         }),
-    )
+    );
+    profile::write_report();
+    result
 }
 
 /// `--write-icons <dir>`: the icons of both programs as `hicolor/…` files.
@@ -174,16 +193,24 @@ fn choose_renderer(preference: settings::Renderer) -> eframe::Renderer {
         settings::Renderer::Wgpu => return eframe::Renderer::Wgpu,
         settings::Renderer::Auto => {}
     }
-    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
-        backends: wgpu::Backends::from_env()
-            .unwrap_or(wgpu::Backends::PRIMARY | wgpu::Backends::GL),
-        flags: wgpu::InstanceFlags::from_build_config().with_env(),
-        backend_options: wgpu::BackendOptions::from_env_or_default(),
-        memory_budget_thresholds: wgpu::MemoryBudgetThresholds::default(),
-        display: None,
-    });
-    let adapters = pollster::block_on(instance.enumerate_adapters(wgpu::Backends::all()));
-    if adapters.is_empty() {
+    let backends =
+        wgpu::Backends::from_env().unwrap_or(wgpu::Backends::PRIMARY | wgpu::Backends::GL);
+    // Vulkan, Metal or DirectX 12 first: starting OpenGL (EGL) only to
+    // learn that a better adapter exists costs a tenth of a second.
+    let any_adapter = |backends: wgpu::Backends| {
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+            backends,
+            flags: wgpu::InstanceFlags::from_build_config().with_env(),
+            backend_options: wgpu::BackendOptions::from_env_or_default(),
+            memory_budget_thresholds: wgpu::MemoryBudgetThresholds::default(),
+            display: None,
+        });
+        !pollster::block_on(instance.enumerate_adapters(backends)).is_empty()
+    };
+    let primary = backends & wgpu::Backends::PRIMARY;
+    let found = (!primary.is_empty() && any_adapter(primary))
+        || (!(backends - primary).is_empty() && any_adapter(backends - primary));
+    if !found {
         eprintln!("No wgpu adapter found; using OpenGL and the software model preview.");
         eframe::Renderer::Glow
     } else {

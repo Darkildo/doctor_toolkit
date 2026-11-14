@@ -463,6 +463,7 @@ impl BrowserApp {
             return;
         };
         if let Some(layer) = self.levels.get_mut(&id).and_then(|l| l.cine.as_mut()) {
+            let _profile = crate::profile::scope("cut-scene: rigs and parts databases");
             let mut loaded = crate::cutscene_view::preview::Loaded::new(game, &index);
             loaded.salt = 1;
             layer.characters = Some(Ok(loaded));

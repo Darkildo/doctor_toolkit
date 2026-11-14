@@ -294,6 +294,10 @@ impl BrowserApp {
         ctx.set_zoom_factor(settings.ui_scale);
         let (tx, rx) = channel();
         let gpu = crate::render::Gpu::from_creation_context(cc);
+        crate::profile::note(format!(
+            "adapter: {}",
+            gpu.as_ref().map_or("none (OpenGL)", |g| g.summary())
+        ));
         let content = content::Content::new(ctx, gpu.as_ref().map(crate::render::Gpu::context));
         let loaded = layouts::load(&store);
         let mut drawers = drawer::Drawers::default();
@@ -484,6 +488,7 @@ impl BrowserApp {
                             ),
                         );
                     }
+                    crate::profile::mark("game");
                     self.game_opened(game, index, ctx);
                 }
                 JobResult::GameOpened(Err(error)) => {
@@ -543,6 +548,7 @@ impl BrowserApp {
         self.open_workspace();
         self.assets = None;
         let index = Arc::new(index);
+        crate::cutscene_view::preview::share_game(game.clone(), index.clone());
         for level in self.levels.values_mut() {
             level.open_game(game.clone(), index.clone());
         }
@@ -575,7 +581,10 @@ impl BrowserApp {
         self.refilter_index();
         if let Some(name) = self.initial_stream.take() {
             match game.find_stream(&name) {
-                Some(i) => self.open_file(FileSel::Stream(i), false),
+                Some(i) => {
+                    let _open = crate::profile::scope("stream: open");
+                    self.open_file(FileSel::Stream(i), false);
+                }
                 None => self.notify(
                     Level::Warning,
                     trf("app.stream_not_found", &[("name", &name)]),
@@ -676,15 +685,34 @@ impl BrowserApp {
 
     // ------------------------------------------------------------- self-test
 
-    fn drive_capture(&mut self, ui: &egui::Ui) {
-        let busy = self.mods_busy()
+    /// Whether anything still loads: screenshots and profiled runs wait.
+    fn busy(&self) -> bool {
+        self.mods_busy()
             || self.nav.busy()
             || self.levels.values().any(LevelView::busy)
             || crate::cutscene_view::busy()
             || self.play.busy()
             || self.movies.busy()
             || self.content.previews.busy()
-            || self.job.is_some();
+            || self.job.is_some()
+    }
+
+    /// Milestones of the profiler and the end of a profiled run (stage 67).
+    fn profile_frame(&mut self, ctx: &egui::Context, update: Duration) {
+        use crate::profile::{self, Next};
+        if self.game.is_some() && !self.busy() {
+            profile::mark("ready");
+        }
+        match profile::frame(update) {
+            Next::Idle => {}
+            Next::Repaint => ctx.request_repaint(),
+            Next::RepaintAfter(after) => ctx.request_repaint_after(after),
+            Next::Exit => std::process::exit(0),
+        }
+    }
+
+    fn drive_capture(&mut self, ui: &egui::Ui) {
+        let busy = self.busy();
         let Some(capture) = &mut self.capture else {
             return;
         };
@@ -731,6 +759,8 @@ impl BrowserApp {
         // behind, as a closed window does.
         self.save_settings();
         let callback = egui::ScreenshotCallback::new(move |image| {
+            crate::profile::mark("shot");
+            crate::profile::write_report();
             let [w, h] = image.size;
             let code = match doctor_toolkit::resource::pixels::encode_png(w, h, image.as_raw())
                 .map_err(|e| e.to_string())
@@ -965,9 +995,13 @@ impl eframe::App for BrowserApp {
         self.shortcuts(&ctx);
         self.document_keys(&ctx);
         if let Some(loc) = self.cine_open.take() {
+            let _profile = crate::profile::scope("ui: open a cut-scene in the level view");
             self.open_cutscene_in_level(loc, &ctx);
         }
-        self.cine_tick(&ctx);
+        {
+            let _profile = crate::profile::scope("ui: cut-scene tick");
+            self.cine_tick(&ctx);
+        }
         self.update_panel_level();
         self.track_details_open();
         let visuals = ui.visuals().clone();
@@ -992,11 +1026,15 @@ impl eframe::App for BrowserApp {
                     .inner_margin(2.0),
             )
             .show(ui, |ui| {
+                let _profile = crate::profile::scope("ui: dock");
                 self.dock_ui(ui);
                 ui.max_rect()
             })
             .inner;
-        self.drawer_ui(&ctx, dock_rect);
+        {
+            let _profile = crate::profile::scope("ui: drawer");
+            self.drawer_ui(&ctx, dock_rect);
+        }
         self.cine_after_dock();
         self.run_asset_cmds(&ctx);
         self.content_drag(&ctx);
@@ -1027,6 +1065,9 @@ impl eframe::App for BrowserApp {
         let frame_time = started.elapsed();
         self.drive_selftest(ui, frame_time);
         self.drive_capture(ui);
+        if crate::profile::enabled() {
+            self.profile_frame(&ctx, started.elapsed());
+        }
     }
 }
 
