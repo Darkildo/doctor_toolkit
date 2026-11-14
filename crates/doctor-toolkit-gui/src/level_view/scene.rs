@@ -23,7 +23,8 @@ pub enum ItemKind {
     Mesh,
     /// An object with a position but nothing drawable.
     Marker,
-    /// A tree of the model (tree models are not decoded).
+    /// A tree of the model (`treemodel`); trees not in the game files are
+    /// markers.
     Tree,
     /// A point of a point table (`0xDF14DA75`).
     Point,
@@ -162,20 +163,37 @@ pub fn build_items(level: &Level) -> (Vec<Item>, HashMap<ObjRef, Vec<usize>>) {
                     );
                 }
                 for tree in &model.desc.trees {
-                    let local = compose(&scale_matrix(1.0, 6.0, 1.0), &tree.matrix);
-                    push(
-                        Item {
+                    let found = level
+                        .tree_slot(tree.resource)
+                        .and_then(|slot| level.trees[slot].found);
+                    let item = match found {
+                        Some(found) => Item {
                             kind: ItemKind::Tree,
-                            mesh: MARKER_KEY,
-                            local,
-                            world: flatten(&compose(&local, &transform)),
+                            mesh: loader::tree_key(tree.resource, Some(found)),
+                            local: tree.matrix,
+                            world: flatten(&compose(&tree.matrix, &transform)),
                             object: Some(r),
                             class: object.class,
                             lod: None,
-                            tint: [0.3, 0.75, 0.3, 1.0],
+                            tint: [1.0; 4],
                         },
-                        &mut items,
-                    );
+                        // A tree that is not in the game files: a green post.
+                        None => {
+                            let local = compose(&scale_matrix(1.0, 6.0, 1.0), &tree.matrix);
+                            Item {
+                                kind: ItemKind::Marker,
+                                mesh: MARKER_KEY,
+                                local,
+                                world: flatten(&compose(&local, &transform)),
+                                object: Some(r),
+                                class: object.class,
+                                lod: None,
+                                tint: [0.3, 0.75, 0.3, 1.0],
+                            }
+                        }
+                    };
+                    drawn |= found.is_some();
+                    push(item, &mut items);
                 }
             }
             if !drawn {
@@ -318,9 +336,13 @@ pub fn fill(
     scene.instances.clear();
     let mut visible = Vec::with_capacity(items.len());
     for (i, item) in items.iter().enumerate() {
+        let selected = item
+            .object
+            .is_some_and(|r| filter.selected == Some(r) || filter.selection.contains(&r));
         let shown = match item.kind {
             ItemKind::Mesh => filter.meshes,
-            ItemKind::Marker => filter.markers,
+            // A selected object stays visible with the markers hidden.
+            ItemKind::Marker => filter.markers || selected,
             ItemKind::Tree => filter.trees,
             ItemKind::Point => filter.points,
         };
@@ -348,9 +370,6 @@ pub fn fill(
                 }
             }
         }
-        let selected = item
-            .object
-            .is_some_and(|r| filter.selected == Some(r) || filter.selection.contains(&r));
         if filter.min_angle > 0.0
             && !selected
             && let Some((centre, radius)) = sphere(item.mesh)

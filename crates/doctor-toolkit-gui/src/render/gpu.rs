@@ -65,6 +65,9 @@ struct Globals {
     fog_color: [f32; 4],
     /// x: fog start, y: fog end (metres from the eye), z: fog at the end (0 = none).
     fog: [f32; 4],
+    /// The camera's right, up and forward axes in the world (leaf cards
+    /// turned to the camera, [`Vertex::BILLBOARD`]).
+    camera: [[f32; 4]; 3],
     game: super::game_look::GameUniform,
 }
 
@@ -1300,6 +1303,7 @@ impl SceneRenderer {
             ambient,
             fog_color,
             fog,
+            camera: camera_axes(&view.view),
             game: super::game_look::GameUniform::new(
                 options.game.as_ref().filter(|_| options.lighting),
                 &view_proj,
@@ -1947,6 +1951,14 @@ fn grow_buffer<'a>(
 }
 
 /// The six clip planes `(normal, distance)` of a view-projection matrix with depth 0..1.
+/// Right, up and forward of a view matrix (column-major, camera looking
+/// down −z) in world space.
+fn camera_axes(view: &Mat4) -> [[f32; 4]; 3] {
+    let row = |r: usize| [view[r], view[4 + r], view[8 + r], 0.0];
+    let back = row(2);
+    [row(0), row(1), [-back[0], -back[1], -back[2], 0.0]]
+}
+
 fn frustum_planes(m: &Mat4) -> [[f32; 4]; 6] {
     let row = |r: usize| [m[r], m[4 + r], m[8 + r], m[12 + r]];
     let (r0, r1, r2, r3) = (row(0), row(1), row(2), row(3));

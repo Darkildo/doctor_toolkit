@@ -12,7 +12,9 @@ use doctor_toolkit::resource::rcb::{Skeleton, translation};
 use doctor_toolkit::resource::shading::{Blend, Family, Shading};
 use doctor_toolkit::resource::texture::Texture;
 use doctor_toolkit::resource::tg4::{Format, Kind};
+use doctor_toolkit::resource::treemodel::{PartKind, TreeModel};
 
+use crate::render::tree::{TreeMaterial, tree_mesh, tree_part_material};
 use crate::render::{
     MaterialData, MeshData, MeshKey, SceneRenderer, Surface, SurfaceModel, TextureData, Vertex,
 };
@@ -412,6 +414,112 @@ pub fn load_limited(
         bone_table: model.bones.len(),
         textured_materials: materials.values().filter(|m| m.diffuse.is_some()).count(),
     })
+}
+
+/// Uploads a tree model under `key` (`docs/formats/treemodel.md`): one part
+/// per tree part with its material's colour texture and tint; textures from
+/// the first mip level not wider than `limit`, when given.
+pub fn load_tree(
+    tree: &TreeModel,
+    name: &str,
+    key: MeshKey,
+    assets: &mut dyn AssetSource,
+    renderer: &mut SceneRenderer,
+    limit: Option<u32>,
+) -> LoadedModel {
+    let mut infos: HashMap<u32, (Option<MaterialInfo>, MaterialData)> = HashMap::new();
+    for part in &tree.parts {
+        let hash = part.material_hash;
+        if infos.contains_key(&hash) {
+            continue;
+        }
+        let entry = match assets.material(hash) {
+            None => (None, tree_part_material(None, [1.0; 4])),
+            Some(material) => {
+                let tm = TreeMaterial::of(&material);
+                let mut srgb = None;
+                let texture = tm
+                    .texture
+                    .and_then(|h| upload(h, assets, renderer, &mut srgb, limit));
+                let mut texture_names = HashMap::new();
+                let textures = material
+                    .params
+                    .iter()
+                    .filter_map(|p| match p.value {
+                        doctor_toolkit::resource::material::ParamValue::Texture(h) => {
+                            let name = assets
+                                .texture(h)
+                                .map(|t| t.header.name.clone())
+                                .unwrap_or_else(|| format!("{h:08x}"));
+                            texture_names.insert(h, name.clone());
+                            Some((p.name.clone(), name))
+                        }
+                        _ => None,
+                    })
+                    .collect();
+                let mut shaders: Vec<String> =
+                    material.shaders.iter().map(|s| shader_label(s.0)).collect();
+                shaders.push(shader_label(material.shadow_shader));
+                let info = MaterialInfo {
+                    name: Some(material.name.clone()),
+                    textures,
+                    diffuse: texture,
+                    shading: None,
+                    surface: None,
+                    shaders,
+                    params: param_rows(&material, &texture_names),
+                };
+                (Some(info), tree_part_material(texture, tm.tint))
+            }
+        };
+        infos.insert(hash, entry);
+    }
+    let mesh = match renderer.mesh_data(key).cloned() {
+        Some(mesh) => mesh,
+        None => {
+            let data = Arc::new(tree_mesh(tree, |hash| infos[&hash].1.clone()));
+            renderer.upload_mesh(key, data.clone());
+            data
+        }
+    };
+    let parts = tree
+        .parts
+        .iter()
+        .zip(&mesh.parts)
+        .map(|(part, data)| {
+            let info = infos[&part.material_hash].0.as_ref();
+            PartInfo {
+                name: tree.part_name(part).to_owned(),
+                material_hash: part.material_hash,
+                swapped_from: None,
+                shading: None,
+                shaders: info.map(|i| i.shaders.clone()).unwrap_or_default(),
+                params: info.map(|i| i.params.clone()).unwrap_or_default(),
+                material: info.and_then(|i| i.name.clone()),
+                textures: info.map(|i| i.textures.clone()).unwrap_or_default(),
+                format: match part.kind {
+                    PartKind::Trunk => "tree: strips",
+                    PartKind::RotatingLeaves => "tree: leaves to the camera",
+                    PartKind::Leaves => "tree: leaves",
+                },
+                vertices: part.meshes.iter().map(|m| m.vertices.len()).sum(),
+                triangles: data.index_count as usize / 3,
+                influences: None,
+                rigid_bone: None,
+                palette: Vec::new(),
+            }
+        })
+        .collect();
+    LoadedModel {
+        key,
+        name: name.to_owned(),
+        textured_materials: infos.values().filter(|(_, m)| m.texture.is_some()).count(),
+        mesh,
+        parts,
+        skeleton_name: None,
+        bones: Vec::new(),
+        bone_table: 0,
+    }
 }
 
 /// One part per draw record, in record order (empty records stay as empty parts).

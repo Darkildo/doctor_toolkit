@@ -30,6 +30,15 @@ doctor-toolkit models "$GAME" gf2/globalfolder/characters/allcharacters -o model
 (File → Import → glTF 2.0) и любом просмотрщике glTF. `--no-textures` —
 только геометрия.
 
+Деревья и пальмы (`treemodel`) этого же потока выгружаются той же командой
+под именем своей папки и id (`palm_08_60be5e28.glb`): ствол, ветви и листва
+с текстурой и альфа-маской; листья, которые игра поворачивает к камере,
+— двумя скрещёнными карточками, чтобы крона читалась с любой стороны:
+
+```sh
+doctor-toolkit models "$GAME" gf2/miami/local -o trees --name palm
+```
+
 Скелеты отдельно: `doctor-toolkit skeletons "$GAME" -o rigs` (JSON: кости,
 родители, позы).
 

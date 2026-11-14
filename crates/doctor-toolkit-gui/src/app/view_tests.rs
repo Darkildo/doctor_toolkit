@@ -205,11 +205,11 @@ fn q_w_e_r_choose_the_gizmo_and_the_right_button_flies() {
 #[test]
 fn a_frame_selects_what_is_inside_it() {
     let mut f = view("frame");
-    f.app
-        .levels
-        .get_mut(&f.id)
-        .unwrap()
-        .set_gizmo_mode(GizmoMode::Select);
+    let view = f.app.levels.get_mut(&f.id).unwrap();
+    view.set_gizmo_mode(GizmoMode::Select);
+    // The objects are markers (no model); shading as in the game hides them.
+    view.set_markers(true);
+    frame(&f.ctx, &mut f.app);
     let (a, b, c) = (at(&f, 0), at(&f, 1), at(&f, 2));
     let around = |p: Pos2, q: Pos2| {
         let min = p.min(q) - Vec2::splat(12.0);

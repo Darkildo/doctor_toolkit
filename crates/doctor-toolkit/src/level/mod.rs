@@ -333,6 +333,14 @@ impl LevelSource {
         };
         crate::resource::mesh::Model::parse(&mesh, &volatile.unwrap_or_default())
     }
+
+    /// The tree model with id `id`.
+    pub fn tree(&self, id: u32) -> Result<crate::resource::treemodel::TreeModel> {
+        let (_, data) = self
+            .data(TYPE_TREE, id)
+            .ok_or_else(|| Error::InvalidArgument(format!("treemodel {id:08x} not found")))?;
+        crate::resource::treemodel::TreeModel::parse(&data)
+    }
 }
 
 impl LevelSource {
@@ -475,6 +483,9 @@ pub struct Level {
     pub models: HashMap<u32, LevelModel>,
     pub meshes: Vec<LevelMesh>,
     mesh_index: HashMap<u32, usize>,
+    /// Tree models (`treemodel`) of the models, found like the meshes.
+    pub trees: Vec<LevelMesh>,
+    tree_index: HashMap<u32, usize>,
 }
 
 impl Level {
@@ -531,6 +542,8 @@ impl Level {
             models: HashMap::new(),
             meshes: Vec::new(),
             mesh_index: HashMap::new(),
+            trees: Vec::new(),
+            tree_index: HashMap::new(),
         };
         for r in read {
             match r {
@@ -571,8 +584,22 @@ impl Level {
                     });
                 }
             }
+            for tree in &m.desc.trees {
+                if !self.tree_index.contains_key(&tree.resource) {
+                    self.tree_index.insert(tree.resource, self.trees.len());
+                    self.trees.push(LevelMesh {
+                        id: tree.resource,
+                        found: source.find(TYPE_TREE, tree.resource),
+                    });
+                }
+            }
             self.models.insert(id, m);
         }
+    }
+
+    /// Index into [`Self::trees`] of a tree model id.
+    pub fn tree_slot(&self, id: u32) -> Option<usize> {
+        self.tree_index.get(&id).copied()
     }
 
     /// Index into [`Self::meshes`] of a mesh id.

@@ -442,7 +442,6 @@ impl World {
         let filter = Filter {
             lod: LodMode::Distance,
             markers: false,
-            trees: false,
             min_angle: MIN_ANGLE,
             ..Filter::default()
         };

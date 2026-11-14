@@ -65,7 +65,7 @@ impl Category {
             sdbm(tag)
         }
         match type_id {
-            x if x == t(b"metamodel") || x == t(b"mesh") => Self::Model,
+            x if x == t(b"metamodel") || x == t(b"mesh") || x == t(b"treemodel") => Self::Model,
             x if x == t(b"tg4h") => Self::Texture,
             x if x == t(b"material") || x == t(b"materialswaplistresource") => Self::Material,
             x if x == t(b"sbk") || x == t(b"mix") || x == t(b"emx") || x == t(b"auc") => {
@@ -647,6 +647,7 @@ mod tests {
     fn categories_and_filters() {
         assert_eq!(Category::of(sdbm(b"metamodel")), Category::Model);
         assert_eq!(Category::of(sdbm(b"mesh")), Category::Model);
+        assert_eq!(Category::of(sdbm(b"treemodel")), Category::Model);
         assert_eq!(Category::of(sdbm(b"tg4h")), Category::Texture);
         assert_eq!(Category::of(sdbm(b"sbk")), Category::Sound);
         assert_eq!(Category::of(sdbm(b"simgroup")), Category::Logic);

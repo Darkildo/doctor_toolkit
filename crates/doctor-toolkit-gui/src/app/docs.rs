@@ -129,7 +129,9 @@ impl BrowserApp {
         };
         doc.type_id = header.type_id;
         doc.size = header.data_size as usize;
-        if (header.type_id == TYPE_MESH || header.type_id == TYPE_BNK)
+        if (header.type_id == TYPE_MESH
+            || header.type_id == TYPE_BNK
+            || header.type_id == doctor_toolkit::resource::treemodel::TYPE_TREE)
             && self.assets.is_none()
             && let Some(index) = &self.index
         {

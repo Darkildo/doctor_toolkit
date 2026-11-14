@@ -937,3 +937,75 @@ fn compare_game_clips() {
     eprintln!("worst rotation dot {worst_dot}, worst translation {worst_t}");
     assert!(worst_dot > 0.9999 && worst_t < 1e-3);
 }
+
+/// A tree's rotating leaves become two crossed cards; trunks stay as strips
+/// turned into triangles (stage 68).
+#[test]
+fn tree_leaves_become_crossed_cards() {
+    use crate::export::gltf::NoAssets;
+    use crate::resource::treemodel::{
+        LeafVertex, PartKind, TreeMesh, TreeModel, TreePart, TreeVertex, Vertices,
+    };
+    let leaf = |c: usize| LeafVertex {
+        position: [0.0, 5.0, 0.0],
+        uv: [0.0; 2],
+        size: 1.0,
+        corner: c as f32,
+        shade: 0.0,
+    };
+    let tree = TreeModel {
+        path_hash: 0,
+        reserved: [0; 2],
+        sphere: [0.0; 4],
+        height: 6.0,
+        parts: vec![
+            TreePart {
+                kind: PartKind::Trunk,
+                material_hash: 1,
+                name_offset: 0,
+                meshes: vec![TreeMesh {
+                    quads: 0,
+                    vertices: Vertices::Mesh(
+                        (0..3)
+                            .map(|i| TreeVertex {
+                                position: [i as f32, 0.0, 0.0],
+                                uv: [0.0; 2],
+                                normal: [127, 255, 127, 255],
+                            })
+                            .collect(),
+                    ),
+                    indices: vec![0, 1, 2],
+                    padding: Vec::new(),
+                }],
+            },
+            TreePart {
+                kind: PartKind::RotatingLeaves,
+                material_hash: 2,
+                name_offset: 0,
+                meshes: vec![TreeMesh {
+                    quads: 1,
+                    vertices: Vertices::Leaves((0..4).map(leaf).collect()),
+                    indices: Vec::new(),
+                    padding: Vec::new(),
+                }],
+            },
+        ],
+        strings: b"x\0".to_vec(),
+        tail: Vec::new(),
+    };
+    let scene = game::tree_scene(&tree, "tree", &mut NoAssets).unwrap();
+    assert_eq!(scene.parts.len(), 2);
+    assert_eq!(scene.parts[0].geometry.triangles.len(), 1);
+    let leaves = &scene.parts[1].geometry;
+    assert_eq!(leaves.positions.len(), 8, "two cards of four corners");
+    assert_eq!(leaves.triangles.len(), 4);
+    // The first card spreads along X, the second along Z.
+    let spread = |range: std::ops::Range<usize>, axis: usize| {
+        let v: Vec<f32> = leaves.positions[range].iter().map(|p| p[axis]).collect();
+        v.iter().copied().fold(f32::MIN, f32::max) - v.iter().copied().fold(f32::MAX, f32::min)
+    };
+    assert!(spread(0..4, 0) > 1.5 && spread(4..8, 2) > 1.5);
+    assert!(spread(0..4, 2) < 1.0 && spread(4..8, 0) < 1.0);
+    let glb = crate::export::gltf::write_glb(&scene).unwrap();
+    assert!(glb.starts_with(b"glTF"));
+}

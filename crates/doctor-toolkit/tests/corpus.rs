@@ -1861,6 +1861,108 @@ fn every_parts_database_parses_and_reencodes_byte_for_byte() {
     assert_eq!(sets.into_inner(), 1251);
 }
 
+/// Tree models (stage 68): every `treemodel` parses and writes back byte for
+/// byte; its header hash is the CRC-32 of its source path and its id the
+/// SDBM of it; every part's material is in the game and uses the tree
+/// shader of the part's kind; corner indices of rotating leaves are whole
+/// numbers below 40 and strip indices stay within the vertices.
+#[test]
+fn every_tree_model_parses_writes_back_and_finds_its_materials() {
+    use doctor_toolkit::hash::{crc32, sdbm};
+    use doctor_toolkit::resource::material::Material;
+    use doctor_toolkit::resource::shading::shader;
+    use doctor_toolkit::resource::treemodel::{LEAF_CORNERS, PartKind, TreeModel, Vertices};
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+    let Some(dir) = game_dir() else { return };
+    let game = GameInstance::open(&dir).unwrap();
+    let (material, tree) = (sdbm(b"material"), sdbm(b"treemodel"));
+    // Lit shader of every material by name hash.
+    let shaders: Mutex<HashMap<u32, &'static str>> = Mutex::default();
+    let trees: Mutex<Vec<(String, u32, Vec<u8>)>> = Mutex::default();
+    game.streams().par_iter().for_each(|file| {
+        let stream = StreamFile::open(&file.path).unwrap();
+        for (index, resource) in stream.layout().resources.iter().enumerate() {
+            let t = resource.header.type_id;
+            if t == material {
+                let m = Material::parse(&stream.resource_data(index).unwrap()).unwrap();
+                let name = shader(m.shaders[1].0).map_or("?", |s| s.name);
+                shaders.lock().unwrap().insert(m.name_hash, name);
+            } else if t == tree {
+                trees.lock().unwrap().push((
+                    format!("{} #{index}", file.rel_path),
+                    resource.header.ids[3],
+                    stream.resource_data(index).unwrap(),
+                ));
+            }
+        }
+    });
+    let shaders = shaders.into_inner().unwrap();
+    let trees = trees.into_inner().unwrap();
+    let failures = Failures::default();
+    let mut kinds: HashMap<PartKind, (usize, usize)> = HashMap::new();
+    let mut empty = Vec::new();
+    for (at, id, data) in &trees {
+        let model = match TreeModel::parse(data) {
+            Ok(m) => m,
+            Err(error) => {
+                failures.push(format!("{at}: {error}"));
+                continue;
+            }
+        };
+        if model.to_bytes() != *data {
+            failures.push(format!("{at}: does not write back byte for byte"));
+        }
+        let path = model.source_path().as_bytes();
+        if crc32(path) != model.path_hash || sdbm(path) != *id {
+            failures.push(format!("{at}: hashes of the path differ"));
+        }
+        for part in &model.parts {
+            let entry = kinds.entry(part.kind).or_default();
+            entry.0 += 1;
+            entry.1 += part.meshes.len();
+            let lit = shaders.get(&part.material_hash).copied();
+            let expected: &[&str] = match part.kind {
+                PartKind::Trunk => &["TreeTrunk", "TreeNonRotatingLeaf"],
+                PartKind::RotatingLeaves => &["TreeRotatingLeaf"],
+                PartKind::Leaves => &["TreeNonRotatingLeaf"],
+            };
+            if !lit.is_some_and(|s| expected.contains(&s)) {
+                failures.push(format!(
+                    "{at}: part `{}` ({:?}) has material {:08x} with shader {lit:?}",
+                    model.part_name(part),
+                    part.kind,
+                    part.material_hash
+                ));
+            }
+            for mesh in &part.meshes {
+                let n = mesh.vertices.len();
+                if mesh.indices.iter().any(|&i| i as usize >= n) {
+                    failures.push(format!("{at}: strip index outside the vertices"));
+                }
+                if let Vertices::Leaves(leaves) = &mesh.vertices
+                    && leaves.iter().any(|v| {
+                        v.corner.fract() != 0.0 || !(0.0..LEAF_CORNERS as f32).contains(&v.corner)
+                    })
+                {
+                    failures.push(format!("{at}: leaf corner outside the table"));
+                }
+                if mesh.triangles(part.kind).is_empty() {
+                    empty.push(format!("{at}: {} {:?}", model.part_name(part), part.kind));
+                }
+            }
+        }
+    }
+    failures.assert_empty();
+    assert_eq!(trees.len(), 432);
+    // (parts, meshes) by kind; 66 frond parts have a second, triangle mesh.
+    assert_eq!(kinds[&PartKind::Trunk], (575, 575));
+    assert_eq!(kinds[&PartKind::RotatingLeaves], (239, 239));
+    assert_eq!(kinds[&PartKind::Leaves], (291, 357));
+    // One palm (in the three cities) has a frond quad mesh without vertices.
+    assert_eq!(empty.len(), 3, "{empty:?}");
+}
+
 #[test]
 fn every_point_table_parses() {
     use doctor_toolkit::resource::points::PointTable;

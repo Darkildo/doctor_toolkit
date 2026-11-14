@@ -4,7 +4,8 @@
 //!   and halved down to it, opaque.
 //! - Models: a metamodel expanded into its meshes (the finest level of
 //!   detail; meshes found from the stream's scope, the workspace's first),
-//!   or one mesh, converted as the model viewer converts them (game-like
+//!   or one mesh, or one tree model with the trees of a metamodel
+//!   (`treemodel`), converted as the model viewer converts them (game-like
 //!   surfaces: tint masks, skin, hair; textures at most [`SIZE`] wide) and
 //!   drawn by the scene renderer of the model and level views into an
 //!   offscreen target of [`SIZE`]² on a transparent background, then read
@@ -13,8 +14,8 @@
 use std::collections::HashMap;
 use std::sync::Mutex;
 
-use doctor_toolkit::level::model::{self, Piece};
-use doctor_toolkit::level::{IDENTITY, TYPE_METAMODEL};
+use doctor_toolkit::level::model::{self, Marker, Piece};
+use doctor_toolkit::level::{IDENTITY, TYPE_METAMODEL, TYPE_TREE};
 use doctor_toolkit::resource::texture::{self, TYPE_TG4D, TYPE_TG4H, Texture};
 use doctor_toolkit::resource::tg4::{Format, Tg4Header};
 use doctor_toolkit::workspace::ResourceKey;
@@ -177,15 +178,31 @@ pub fn texture(source: &PreviewSource, job: &PreviewJob) -> Result<Thumbnail, St
     })
 }
 
-/// The meshes of a model at its finest level of detail.
-fn pieces(context: &super::preview::LevelContext, job: &PreviewJob) -> Vec<Piece> {
+/// The meshes of a model at its finest level of detail, and its trees:
+/// a metamodel expanded, or one mesh, or one tree model.
+fn pieces(context: &super::preview::LevelContext, job: &PreviewJob) -> (Vec<Piece>, Vec<Marker>) {
     let id = job.id.key.ids[3];
-    if job.id.key.type_id != TYPE_METAMODEL {
-        return vec![Piece {
-            mesh: id,
-            matrix: IDENTITY,
-            lod: None,
-        }];
+    match job.id.key.type_id {
+        TYPE_METAMODEL => {}
+        TYPE_TREE => {
+            return (
+                Vec::new(),
+                vec![Marker {
+                    resource: id,
+                    matrix: IDENTITY,
+                }],
+            );
+        }
+        _ => {
+            return (
+                vec![Piece {
+                    mesh: id,
+                    matrix: IDENTITY,
+                    lod: None,
+                }],
+                Vec::new(),
+            );
+        }
     }
     let desc = model::expand(id, &mut &context.source);
     let nearest = desc
@@ -193,13 +210,15 @@ fn pieces(context: &super::preview::LevelContext, job: &PreviewJob) -> Vec<Piece
         .iter()
         .map(|p| p.lod.map_or(0.0, |l| l[0]))
         .fold(f32::INFINITY, f32::min);
-    desc.pieces
+    let pieces = desc
+        .pieces
         .into_iter()
         .filter(|p| p.lod.map_or(0.0, |l| l[0]) <= nearest)
-        .collect()
+        .collect();
+    (pieces, desc.trees)
 }
 
-/// The preview of a model (a metamodel or a mesh).
+/// The preview of a model (a metamodel, a mesh or a tree model).
 pub fn model(
     source: &PreviewSource,
     job: &PreviewJob,
@@ -212,8 +231,8 @@ pub fn model(
         .or_else(|| source.game.find_stream(&key.stream))
         .ok_or("the stream is not in the game files")?;
     let context = source.level(stream);
-    let pieces = pieces(&context, job);
-    if pieces.is_empty() {
+    let (pieces, trees) = pieces(&context, job);
+    if pieces.is_empty() && trees.is_empty() {
         return Err("no meshes".to_owned());
     }
     // Meshes parsed on this thread, converted and uploaded as the model
@@ -229,12 +248,23 @@ pub fn model(
             Err(error) => failed = Some(error.to_string()),
         }
     }
-    if models.is_empty() {
+    let mut tree_models = Vec::new();
+    for tree in &trees {
+        if tree_models.iter().any(|(id, _)| *id == tree.resource) || tree_models.len() >= MAX_MESHES
+        {
+            continue;
+        }
+        match context.source.tree(tree.resource) {
+            Ok(model) => tree_models.push((tree.resource, model)),
+            Err(error) => failed = Some(error.to_string()),
+        }
+    }
+    if models.is_empty() && tree_models.is_empty() {
         return Err(failed.unwrap_or_else(|| "no meshes".to_owned()));
     }
     let mut slot = gpu.lock().unwrap_or_else(|e| e.into_inner());
     let first_key = slot.next_key;
-    slot.next_key += models.len() as u64;
+    slot.next_key += (models.len() + tree_models.len()) as u64;
     let renderer = slot.renderer().ok_or("no GPU for previews")?;
     let mut assets = source.assets();
     let mut keys = HashMap::new();
@@ -255,17 +285,29 @@ pub fn model(
             Err(error) => failed = Some(error.to_string()),
         }
     }
+    let mut tree_keys = HashMap::new();
+    for (i, (id, tree)) in tree_models.iter().enumerate() {
+        let key = MESH_TAG | (first_key + (models.len() + i) as u64);
+        let loaded =
+            crate::model_view::load_tree(tree, "", key, &mut *assets, renderer, Some(SIZE));
+        tree_keys.insert(*id, (key, loaded.mesh.bounds()));
+    }
     drop(assets);
-    if keys.is_empty() {
+    if keys.is_empty() && tree_keys.is_empty() {
         return Err(failed.unwrap_or_else(|| "no meshes".to_owned()));
     }
     let mut scene = Scene::default();
     let mut bounds = math::Aabb::EMPTY;
-    for piece in &pieces {
-        let Some((key, mesh_bounds)) = keys.get(&piece.mesh) else {
-            continue;
-        };
-        let transform = flatten(&piece.matrix);
+    let placed = pieces
+        .iter()
+        .filter_map(|p| Some((keys.get(&p.mesh)?, &p.matrix)))
+        .chain(
+            trees
+                .iter()
+                .filter_map(|t| Some((tree_keys.get(&t.resource)?, &t.matrix))),
+        );
+    for ((key, mesh_bounds), matrix) in placed {
+        let transform = flatten(matrix);
         bounds.union(&mesh_bounds.transformed(&transform));
         scene.instances.push(Instance::new(*key, transform));
     }

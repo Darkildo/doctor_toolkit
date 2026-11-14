@@ -286,6 +286,114 @@ pub fn model_scene(
     build(&[SceneModel::new(model)], None, &[], source)
 }
 
+/// A tree model (`treemodel`, `docs/formats/treemodel.md`) as a scene named
+/// `name`: one part per tree part with its material (colour texture
+/// `sampColor` with an alpha mask, tint `g_BaseTintColor`). Leaves that the
+/// game turns to the camera become two crossed cards each (facing +Z and
+/// +X), with the game's tilt and turn of the leaf, so they read from any
+/// side in other programs.
+pub fn tree_scene(
+    tree: &crate::resource::treemodel::TreeModel,
+    name: &str,
+    source: &mut dyn AssetSource,
+) -> Result<Scene> {
+    use crate::resource::material::ParamValue;
+    use crate::resource::treemodel::{Vertices, leaf_corner};
+
+    let mut images = Materials::default();
+    let mut index: HashMap<u32, Option<usize>> = HashMap::new();
+    let mut scene = Scene {
+        name: name.to_owned(),
+        ..Default::default()
+    };
+    for part in &tree.parts {
+        let material = match index.get(&part.material_hash) {
+            Some(&m) => m,
+            None => {
+                let m = source.material(part.material_hash).map(|material| {
+                    let texture = material
+                        .params
+                        .iter()
+                        .find_map(|p| match p.value {
+                            ParamValue::Texture(h) if p.name == "sampColor" => Some(h),
+                            _ => None,
+                        })
+                        .or_else(|| material.texture(TextureRole::Diffuse));
+                    let tint = material
+                        .floats("g_BaseTintColor")
+                        .filter(|v| v.len() >= 3)
+                        .map_or([1.0; 4], |v| [v[0], v[1], v[2], 1.0]);
+                    let base_color = texture.and_then(|t| images.image(source, t, false));
+                    scene.materials.push(SceneMaterial {
+                        name: material.name.clone(),
+                        alpha: base_color.is_some()
+                            && material.flags & crate::resource::material::FLAG_ALPHA_TEST != 0,
+                        base_color,
+                        base_color_factor: tint,
+                        ..Default::default()
+                    });
+                    scene.materials.len() - 1
+                });
+                index.insert(part.material_hash, m);
+                m
+            }
+        };
+        let mut geometry = PartGeometry {
+            name: tree.part_name(part).to_owned(),
+            material_hash: part.material_hash,
+            normals: Some(Vec::new()),
+            uv0: Some(Vec::new()),
+            ..Default::default()
+        };
+        for mesh in &part.meshes {
+            let base = geometry.positions.len() as u32;
+            let triangles = mesh.triangles(part.kind);
+            match &mesh.vertices {
+                Vertices::Mesh(vertices) => {
+                    for v in vertices {
+                        geometry.positions.push(v.position);
+                        geometry.normals.as_mut().expect("set").push(v.normal());
+                        geometry.uv0.as_mut().expect("set").push(v.uv);
+                    }
+                    geometry
+                        .triangles
+                        .extend(triangles.iter().map(|t| t.map(|i| i + base)));
+                }
+                Vertices::Leaves(vertices) => {
+                    // Camera space (x right, y up, z forward) of a viewer on
+                    // +Z, then of one on +X.
+                    let views: [fn([f32; 3]) -> [f32; 3]; 2] =
+                        [|v| [v[0], v[1], -v[2]], |v| [v[2], v[1], v[0]]];
+                    for (k, view) in views.iter().enumerate() {
+                        let base = base + (k * vertices.len()) as u32;
+                        for v in vertices {
+                            let (offset, normal) = leaf_corner(v.corner);
+                            let o = view(offset);
+                            geometry.positions.push([
+                                v.position[0] + o[0] * v.size,
+                                v.position[1] + o[1] * v.size,
+                                v.position[2] + o[2] * v.size,
+                            ]);
+                            geometry.normals.as_mut().expect("set").push(view(normal));
+                            geometry.uv0.as_mut().expect("set").push(v.uv);
+                        }
+                        geometry
+                            .triangles
+                            .extend(triangles.iter().map(|t| t.map(|i| i + base)));
+                    }
+                }
+            }
+        }
+        scene.parts.push(ScenePart {
+            name: geometry.name.clone(),
+            object: name.to_owned(),
+            material,
+            geometry,
+        });
+    }
+    Ok(scene)
+}
+
 /// A scene of models sharing one skeleton (the parts of a character): all
 /// skinned to the largest skeleton found, joints of models matched to another
 /// skeleton mapped by bone hash. `skeleton` replaces the skeleton found from

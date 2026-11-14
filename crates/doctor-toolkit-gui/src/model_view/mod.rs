@@ -22,6 +22,7 @@ use std::time::{Duration, Instant};
 use doctor_toolkit::export::gltf::AssetSource;
 use doctor_toolkit::game::StreamFile;
 use doctor_toolkit::resource::mesh::{Model, TYPE_MESH};
+use doctor_toolkit::resource::treemodel::{TYPE_TREE, TreeModel};
 use doctor_toolkit_mods::i18n::{tr, trf, trn};
 use egui::{Color32, Pos2, Rect, RichText, Sense, Stroke, Vec2};
 
@@ -30,7 +31,7 @@ use crate::render::{
 };
 use load::PartInfo;
 
-pub use load::{LoadOptions, LoadedModel, load_limited, load_model, load_with};
+pub use load::{LoadOptions, LoadedModel, load_limited, load_model, load_tree, load_with};
 
 pub enum ModelPreview {
     Gpu(Box<GpuModelView>),
@@ -52,6 +53,44 @@ impl ModelPreview {
             Some(gpu) => Self::Gpu(Box::new(GpuModelView::load(stream, index, assets, gpu))),
             None => Self::Software(software::ModelPreview::load(stream, index, assets)?),
         })
+    }
+
+    /// Loads tree model resource `index` (`treemodel`); drawn on the GPU only.
+    pub fn load_tree(
+        stream: &StreamFile,
+        index: usize,
+        assets: &mut dyn AssetSource,
+        gpu: &Gpu,
+    ) -> Option<Self> {
+        if stream.layout().resources[index].header.type_id != TYPE_TREE {
+            return None;
+        }
+        let started = Instant::now();
+        let loaded = stream
+            .resource_data(index)
+            .and_then(|data| TreeModel::parse(&data))
+            .map(|tree| {
+                let name = tree
+                    .source_path()
+                    .rsplit(['\\', '/'])
+                    .nth(1)
+                    .unwrap_or("tree");
+                let name = name.to_owned();
+                load::load_tree(
+                    &tree,
+                    &name,
+                    load::mesh_key(stream, index),
+                    assets,
+                    &mut gpu.lock(),
+                    None,
+                )
+            })
+            .map_err(|e| e.to_string());
+        Some(Self::Gpu(Box::new(GpuModelView::new(
+            loaded,
+            started.elapsed(),
+            gpu,
+        ))))
     }
 
     /// A preview of a model that is not in a stream; `key` must be unique to it.
@@ -898,6 +937,10 @@ pub const VIEW: crate::views::ViewEntry = crate::views::ViewEntry {
 fn load_view(
     source: &mut crate::views::ViewSource<'_>,
 ) -> Option<Box<dyn crate::views::ResourceViewer>> {
+    if source.type_id == TYPE_TREE {
+        return ModelPreview::load_tree(source.stream, source.index, source.assets, source.gpu?)
+            .map(|v| Box::new(v) as Box<dyn crate::views::ResourceViewer>);
+    }
     if source.type_id != TYPE_MESH {
         return None;
     }

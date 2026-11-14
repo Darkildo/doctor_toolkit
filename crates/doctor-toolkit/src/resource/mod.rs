@@ -41,6 +41,7 @@ pub mod speech;
 pub mod texture;
 pub mod tg4;
 pub mod tob;
+pub mod treemodel;
 pub mod trinity;
 pub mod variabledictionary;
 pub mod video;

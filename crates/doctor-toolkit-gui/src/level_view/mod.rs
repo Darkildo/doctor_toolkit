@@ -384,6 +384,9 @@ pub struct LevelView {
     spheres: HashMap<u64, scene::MeshSphere>,
     /// Skip instances smaller than [`TINY_PIXELS`] on the screen.
     hide_tiny: bool,
+    /// Markers chosen by the user ("Markers" on the bar, Show); `None`
+    /// follows the shading: hidden as in the game, shown otherwise.
+    markers_choice: Option<bool>,
     /// Centre of the level, for orbiting.
     center: [f32; 3],
     /// The game files changed since the zones were indexed.
@@ -492,6 +495,7 @@ impl LevelView {
             camera_moved: false,
             spheres: HashMap::new(),
             hide_tiny: true,
+            markers_choice: None,
             show_collision: false,
             play_here: false,
             collisions: HashMap::new(),
@@ -1132,12 +1136,9 @@ impl LevelView {
             return;
         }
         // Meshes of new models.
-        let new: Vec<(u32, Option<Found>)> = level
-            .meshes
-            .iter()
-            .filter(|m| m.found.is_some())
-            .filter(|m| !self.uploaded.contains(&loader::mesh_key(m.id, m.found)))
-            .map(|m| (m.id, m.found))
+        let new: Vec<loader::Part> = loader::parts(level)
+            .into_iter()
+            .filter(|p| !self.uploaded.contains(&p.key()))
             .collect();
         self.coverage = level.coverage();
         if !new.is_empty()
@@ -2269,6 +2270,11 @@ impl LevelView {
             action = Some(a);
         }
 
+        let markers = self.markers_shown();
+        if self.filter.markers != markers {
+            self.filter.markers = markers;
+            self.refill = true;
+        }
         if self.refill {
             let _profile = crate::profile::scope("level: fill");
             self.refill = false;

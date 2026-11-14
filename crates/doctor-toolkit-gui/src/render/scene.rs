@@ -22,8 +22,22 @@ pub struct Vertex {
     pub joints: [u8; 4],
     /// Weights of `joints`, 0..255.
     pub weights: [u8; 4],
-    /// Index of the part the vertex belongs to.
+    /// Index of the part the vertex belongs to, with [`Vertex::BILLBOARD`]
+    /// for a corner of a leaf card that faces the camera.
     pub part: u32,
+}
+
+impl Vertex {
+    /// Bit of [`Vertex::part`]: the vertex is a corner of a card turned to the
+    /// camera (the rotating leaves of trees, `docs/formats/treemodel.md`).
+    /// `position` is the card centre, `normal` the corner's offset in camera
+    /// space (x right, y up, z forward) scaled by the object's height scale,
+    /// and `weights` the card's normal in camera space as `n · ½ + ½`.
+    pub const BILLBOARD: u32 = 0x8000_0000;
+
+    pub fn is_billboard(&self) -> bool {
+        self.part & Self::BILLBOARD != 0
+    }
 }
 
 /// A coloured line vertex.
@@ -195,8 +209,15 @@ impl MeshData {
         let base = self.vertices.len() as u32;
         let mut bounds = Aabb::EMPTY;
         for v in &mut vertices {
-            v.part = part;
-            bounds.add_point(v.position);
+            v.part = part | (v.part & Vertex::BILLBOARD);
+            if v.is_billboard() {
+                // The card turns to the camera: any direction up to its corner.
+                let r = math::length(v.normal);
+                bounds.add_point(math::sub(v.position, [r; 3]));
+                bounds.add_point(math::add(v.position, [r; 3]));
+            } else {
+                bounds.add_point(v.position);
+            }
         }
         let first_index = self.indices.len() as u32;
         self.indices.extend(indices.iter().map(|i| i + base));

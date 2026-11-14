@@ -531,8 +531,7 @@ impl super::LevelView {
 
     /// Shows or hides the markers of objects without a model (screenshots).
     pub fn show_markers(&mut self, on: bool) {
-        self.filter.markers = on;
-        self.refill = true;
+        self.set_markers(on);
     }
 
     /// The selected camera or actor of the cut-scene.

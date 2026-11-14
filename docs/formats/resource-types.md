@@ -351,8 +351,8 @@ RGBA8 13, A8 4, L8A8 1.
 ресурса.
 
 **Теги, найденные на этапе 40** (SDBM, совпадают с id в данных):
-`treemodel` = `0xCDB9D42B` (модели деревьев, `logic-types.md` §5),
-`covernodetable` = `0xDF14DA75` (таблицы точек, §4 там же), `hka` =
+`treemodel` = `0xCDB9D42B` (модели деревьев, `treemodel.md`),
+`covernodetable` = `0xDF14DA75` (таблицы точек, `logic-types.md` §4), `hka` =
 `0x33A1671E` (тип ссылок metamodel на коллизию `hkx`), `emx` = `0x32293930`
 (тип ссылок `Door.CMD_Set*Audio` metamodel). Ресурсов `hka` и `emx` в потоках
 нет. Теперь названы все 45 типов, которые встречаются в GF2 PC.

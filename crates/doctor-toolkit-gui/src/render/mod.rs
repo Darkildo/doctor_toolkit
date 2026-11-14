@@ -28,6 +28,7 @@ mod gpu;
 pub mod math;
 mod scene;
 mod timing;
+pub mod tree;
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};

@@ -51,6 +51,22 @@ impl LevelView {
             bounds.union(&data.bounds().transformed(&world));
             scene.instances.push(Instance::new(key, world));
         }
+        for tree in &model.desc.trees {
+            let Some(slot) = level.tree_slot(tree.resource) else {
+                continue;
+            };
+            let found = level.trees[slot].found;
+            if found.is_none() {
+                continue;
+            }
+            let key = loader::tree_key(tree.resource, found);
+            let Some(data) = renderer.mesh_data(key) else {
+                continue;
+            };
+            let world = scene::flatten(&tree.matrix);
+            bounds.union(&data.bounds().transformed(&world));
+            scene.instances.push(Instance::new(key, world));
+        }
         if scene.instances.is_empty() || bounds.is_empty() {
             return false;
         }

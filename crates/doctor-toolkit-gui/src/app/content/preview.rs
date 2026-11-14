@@ -33,7 +33,7 @@ use super::thumb::{self, GpuSlot, Thumbnail};
 use crate::nav::Location;
 
 /// Changes when the look of the previews changes: older images are not used.
-pub const RENDER_VERSION: u32 = 1;
+pub const RENDER_VERSION: u32 = 2;
 /// Previews in memory, in bytes of their pixels.
 pub const MEMORY_BUDGET: usize = 256 << 20;
 /// Previews on disk; over it, the oldest go until three quarters are left.
@@ -319,6 +319,7 @@ impl PreviewSource {
                 sdbm(b"metamodel"),
                 sdbm(b"mesh"),
                 sdbm(b"meshvolatile"),
+                sdbm(b"treemodel"),
                 sdbm(b"hkx"),
                 sdbm(b"tg4h"),
                 sdbm(b"tg4d"),

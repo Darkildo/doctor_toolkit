@@ -378,6 +378,7 @@ $T replace "$GAME" gf2/frontend --index 17 --data new.apx
 $T textures "$GAME" -o textures                 # every texture as DDS (add --png for PNG)
 $T models "$GAME" gf2/globalfolder/characters/allcharacters -o models --name head
 $T models "$GAME" gf2/globals_global -o models --name colt --format fbx   # glb, fbx, obj, usd, usda, usdc, usdz
+$T models "$GAME" gf2/miami/local -o trees --name palm   # trees and palms (treemodel) of a stream
 $T model-info models/colt_m1911.fbx               # what the importer sees in a model file
 $T texture-import "$GAME" gf2/frontend buttons buttons.png
 $T apx-export "$GAME" -o ui                      # Flash UI data and its textures
@@ -764,7 +765,10 @@ cargo run --release -p doctor-toolkit-gui -- "$GAME" gf2/frontend   # open a str
   steps (0.5 m / 15° / ×0.25 by default) always or with Ctrl. **Duplicate**, **Remove** and
   **Add object** (a copy of the selected object with another metamodel, or a
   clone of one in this zone) record their edit in the workspace; undo works
-  as everywhere. Filters hide markers, trees, AI points and object classes.
+  as everywhere. Trees and palms (`treemodel`) are drawn as in the game, leaves
+  turned to the camera. Filters hide markers, trees, AI points and object
+  classes; **Markers** over the view hides spawn points, triggers and other
+  editor markers (hidden by default when shading as in the game).
   New objects have the
   collision of their model; a clone can get its own ("Own collision"), and
   "Collision" draws the collision of the selected object. Details in

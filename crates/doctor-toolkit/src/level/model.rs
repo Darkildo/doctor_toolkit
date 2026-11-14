@@ -12,7 +12,7 @@
 //!   `BuildingWindow`) and `MetaModelPart.fileName` are nested metamodels
 //!   placed by `CSystemCommands.CMD_LoadMatrix`, `MetaModelPart.CMD_LoadMatrix`
 //!   or `TransformedPart.Transform`; `TreeModelPart.TreeModel` is a tree (type
-//!   `0xCDB9D42B`, not decoded) at `TreeModelPart.CMD_LoadMatrix`;
+//!   `0xCDB9D42B`, [`crate::resource::treemodel`]) at `TreeModelPart.CMD_LoadMatrix`;
 //!   `MinimapPart.Model` (the map icon) is skipped;
 //!   `CollisionHavok4Part.CollisionModel` is the collision (`hkx`) of the
 //!   object, in the same space as its meshes.
@@ -31,7 +31,7 @@ pub const TYPE_MESH: u32 = crate::hash::sdbm(b"mesh");
 /// Type id of `metamodel`.
 pub const TYPE_METAMODEL: u32 = crate::hash::sdbm(b"metamodel");
 /// Type id of tree models, `treemodel` (`0xCDB9D42B`, `TreeModelPart.TreeModel`).
-pub const TYPE_TREE: u32 = crate::hash::sdbm(b"treemodel");
+pub const TYPE_TREE: u32 = crate::resource::treemodel::TYPE_TREE;
 
 /// Nested metamodels deeper than this are not expanded (the game has 3).
 pub const MAX_DEPTH: usize = 8;

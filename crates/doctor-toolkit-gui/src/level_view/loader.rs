@@ -14,8 +14,10 @@ use doctor_toolkit::resource::material::TextureRole;
 use doctor_toolkit::resource::mesh::Model;
 use doctor_toolkit::resource::texture::Texture;
 use doctor_toolkit::resource::tg4::{Format, Kind};
+use doctor_toolkit::resource::treemodel::TreeModel;
 use rayon::prelude::*;
 
+use crate::render::tree::{TreeMaterial, tree_mesh, tree_part_material};
 use crate::render::{MaterialData, MeshData, MeshKey, TextureData, TextureKey, Vertex};
 
 /// Meshes converted per batch.
@@ -24,6 +26,7 @@ const BATCH: usize = 32;
 const MESH_TAG: u64 = 0x4C56_0000_0000_0000;
 const OVERRIDE_TAG: u64 = 0x0001_0000_0000_0000;
 const TEXTURE_TAG: u64 = 0x4C54_0000_0000_0000;
+const TREE_TAG: u64 = 0x4C52_0000_0000_0000;
 
 /// Renderer key of a level mesh.
 pub fn mesh_key(id: u32, found: Option<Found>) -> MeshKey {
@@ -32,6 +35,47 @@ pub fn mesh_key(id: u32, found: Option<Found>) -> MeshKey {
         _ => MESH_TAG,
     };
     tag | id as u64
+}
+
+/// Renderer key of a level tree model.
+pub fn tree_key(id: u32, found: Option<Found>) -> MeshKey {
+    let tag = match found {
+        Some(Found::Override(..)) => TREE_TAG | OVERRIDE_TAG,
+        _ => TREE_TAG,
+    };
+    tag | id as u64
+}
+
+/// Something of a level the loader converts: a mesh or a tree model.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Part {
+    Mesh(u32, Option<Found>),
+    Tree(u32, Option<Found>),
+}
+
+impl Part {
+    pub fn key(&self) -> MeshKey {
+        match *self {
+            Part::Mesh(id, found) => mesh_key(id, found),
+            Part::Tree(id, found) => tree_key(id, found),
+        }
+    }
+
+    fn id(&self) -> u32 {
+        match *self {
+            Part::Mesh(id, _) | Part::Tree(id, _) => id,
+        }
+    }
+}
+
+/// The meshes and trees of a level that are in the game files.
+pub fn parts(level: &Level) -> Vec<Part> {
+    let meshes = level.meshes.iter().filter(|m| m.found.is_some());
+    let trees = level.trees.iter().filter(|m| m.found.is_some());
+    meshes
+        .map(|m| Part::Mesh(m.id, m.found))
+        .chain(trees.map(|t| Part::Tree(t.id, t.found)))
+        .collect()
 }
 
 pub fn texture_key(hash: u32) -> TextureKey {
@@ -115,12 +159,7 @@ pub fn start(input: LoadInput, streams: Vec<usize>, ctx: egui::Context) -> LoadJ
             }
         };
         let assets = Arc::new(LevelAssets::new(&source, &input.index));
-        let meshes: Vec<(u32, Option<Found>)> = level
-            .meshes
-            .iter()
-            .filter(|m| m.found.is_some())
-            .map(|m| (m.id, m.found))
-            .collect();
+        let meshes = parts(&level);
         let _ = tx.send(Msg::Level {
             level: Box::new(level),
             assets: assets.clone(),
@@ -147,7 +186,7 @@ pub fn start(input: LoadInput, streams: Vec<usize>, ctx: egui::Context) -> LoadJ
 pub fn more(
     source: Arc<LevelSource>,
     assets: Arc<LevelAssets>,
-    meshes: Vec<(u32, Option<Found>)>,
+    meshes: Vec<Part>,
     texture_limit: u32,
     ctx: egui::Context,
 ) -> LoadJob {
@@ -177,13 +216,13 @@ pub fn more(
 }
 
 /// A mesh with the texture hashes it uses, or why it failed.
-type Converted = (u32, Option<Found>, Result<(MeshData, Vec<u32>), String>);
+type Converted = (Part, Result<(MeshData, Vec<u32>), String>);
 
 #[allow(clippy::too_many_arguments)]
 fn convert(
     source: &LevelSource,
     assets: &LevelAssets,
-    meshes: &[(u32, Option<Found>)],
+    meshes: &[Part],
     texture_limit: u32,
     tx: &Sender<Msg>,
     ctx: &egui::Context,
@@ -194,6 +233,7 @@ fn convert(
 ) {
     total.store(meshes.len(), Ordering::Relaxed);
     let materials: Mutex<HashMap<u32, (Option<u32>, bool)>> = Mutex::default();
+    let tree_materials: Mutex<HashMap<u32, Option<TreeMaterial>>> = Mutex::default();
     let mut sent_textures: HashSet<u32> = HashSet::new();
     let (mut mesh_count, mut texture_count, mut triangles) = (0, 0, 0);
     for chunk in meshes.chunks(BATCH) {
@@ -202,16 +242,22 @@ fn convert(
         }
         let converted: Vec<Converted> = chunk
             .par_iter()
-            .map(|&(id, found)| {
-                let result = source
-                    .mesh(id)
-                    .map_err(|e| e.to_string())
-                    .and_then(|model| mesh_data(&model, source, assets, &materials));
-                (id, found, result)
+            .map(|&part| {
+                let result = match part {
+                    Part::Mesh(id, _) => source
+                        .mesh(id)
+                        .map_err(|e| e.to_string())
+                        .and_then(|model| mesh_data(&model, source, assets, &materials)),
+                    Part::Tree(id, _) => source
+                        .tree(id)
+                        .map_err(|e| e.to_string())
+                        .map(|tree| tree_data(&tree, source, assets, &tree_materials)),
+                };
+                (part, result)
             })
             .collect();
         let mut wanted = Vec::new();
-        for (_, _, r) in &converted {
+        for (_, r) in &converted {
             if let Ok((_, textures)) = r {
                 for &t in textures {
                     if sent_textures.insert(t) {
@@ -232,13 +278,13 @@ fn convert(
             meshes: Vec::new(),
             failed: Vec::new(),
         };
-        for (id, found, r) in converted {
+        for (part, r) in converted {
             match r {
                 Ok((data, _)) => {
                     triangles += data.triangle_count();
-                    batch.meshes.push((id, mesh_key(id, found), Arc::new(data)));
+                    batch.meshes.push((part.id(), part.key(), Arc::new(data)));
                 }
-                Err(error) => batch.failed.push((id, error)),
+                Err(error) => batch.failed.push((part.id(), error)),
             }
         }
         mesh_count += batch.meshes.len();
@@ -354,6 +400,42 @@ fn mesh_data(
     Ok((data, textures))
 }
 
+/// A tree model with the texture hashes it uses.
+fn tree_data(
+    tree: &TreeModel,
+    source: &LevelSource,
+    assets: &LevelAssets,
+    materials: &Mutex<HashMap<u32, Option<TreeMaterial>>>,
+) -> (MeshData, Vec<u32>) {
+    let mut textures = Vec::new();
+    let data = tree_mesh(tree, |hash| {
+        let cached = materials
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&hash)
+            .copied();
+        let material = cached.unwrap_or_else(|| {
+            let m = assets.material(source, hash).as_ref().map(TreeMaterial::of);
+            materials
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .insert(hash, m);
+            m
+        });
+        let texture = material.and_then(|m| m.texture);
+        if let Some(t) = texture
+            && !textures.contains(&t)
+        {
+            textures.push(t);
+        }
+        tree_part_material(
+            texture.map(texture_key),
+            material.map_or([1.0; 4], |m| m.tint),
+        )
+    });
+    (data, textures)
+}
+
 /// Records of one texture: the texture, part names, vertices, indices.
 /// Texture, sky dome, names of the records, vertices, indices.
 type PartGroup = (Option<u32>, bool, String, Vec<Vertex>, Vec<u32>);
@@ -408,5 +490,7 @@ mod tests {
             mesh_key(5, Some(Found::Override(0, true)))
         );
         assert_ne!(texture_key(5), mesh_key(5, None));
+        assert_ne!(tree_key(5, None), mesh_key(5, None));
+        assert_ne!(tree_key(5, None), texture_key(5));
     }
 }

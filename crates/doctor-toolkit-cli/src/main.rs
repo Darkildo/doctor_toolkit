@@ -223,8 +223,8 @@ enum Command {
         name: Option<String>,
     },
 
-    /// Export models (`mesh`) of a stream with materials, textures and skins
-    /// (glTF, FBX, OBJ or USD)
+    /// Export models (`mesh`) and trees (`treemodel`) of a stream with
+    /// materials, textures and skins (glTF, FBX, OBJ or USD)
     Models {
         game_dir: PathBuf,
         /// Stream name, e.g. `gf2/miami/local/danny/high/building_004`
@@ -1568,6 +1568,7 @@ fn export_models(
     use doctor_toolkit::export::gltf::{AssetSource, NoAssets};
     use doctor_toolkit::game::GameAssets;
     use doctor_toolkit::resource::mesh::{self, TYPE_MESH};
+    use doctor_toolkit::resource::treemodel::{TYPE_TREE, TreeModel};
     use doctor_toolkit::scene;
 
     let game = std::sync::Arc::new(GameInstance::open(game_dir)?);
@@ -1588,6 +1589,30 @@ fn export_models(
     fs::create_dir_all(output)?;
     let mut written = 0;
     for (i, resource) in stream.layout().resources.iter().enumerate() {
+        if resource.header.type_id == TYPE_TREE {
+            // Trees: named after their folder and id (stage 68).
+            let tree = TreeModel::parse(&stream.resource_data(i)?)
+                .with_context(|| format!("resource {i}"))?;
+            let folder = tree
+                .source_path()
+                .rsplit(['\\', '/'])
+                .nth(1)
+                .unwrap_or("tree");
+            let name = format!("{folder}_{:08x}", resource.header.ids[3]);
+            if filter
+                .as_ref()
+                .is_some_and(|f| !name.to_ascii_lowercase().contains(f))
+            {
+                continue;
+            }
+            let built = scene::game::tree_scene(&tree, &name, assets.as_mut())
+                .with_context(|| name.clone())?;
+            let path = output.join(format!("{}.{}", sanitize(&name), format.extension()));
+            scene::write_file(&built, &path, Some(format)).with_context(|| name.clone())?;
+            out!("{} ({} part(s))", path.display(), tree.parts.len());
+            written += 1;
+            continue;
+        }
         if resource.header.type_id != TYPE_MESH {
             continue;
         }

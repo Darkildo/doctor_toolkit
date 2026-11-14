@@ -340,5 +340,8 @@ impl LevelView {
         if before != after {
             self.refill = true;
         }
+        if before.1 != after.1 {
+            self.markers_choice = Some(self.filter.markers);
+        }
     }
 }

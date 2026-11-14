@@ -18,6 +18,8 @@ struct Globals {
     fog_color: vec4<f32>,
     // x: fog start, y: fog end (metres from the eye), z: fog at the end (0 = none).
     fog: vec4<f32>,
+    // Camera right, up and forward in the world (leaf cards).
+    camera: array<vec4<f32>, 3>,
     game: Game,
 };
 
@@ -127,23 +129,54 @@ struct VertexOut {
     @location(7) bone_weight: f32,
 };
 
+// Vertex.part bit: a corner of a leaf card turned to the camera (trees,
+// docs/formats/treemodel.md). position: card centre, normal: corner offset in
+// camera space, weights: card normal in camera space as n / 2 + 1/2.
+const BILLBOARD: u32 = 0x80000000u;
+
+fn camera_vector(v: vec3<f32>) -> vec3<f32> {
+    return v.x * globals.camera[0].xyz + v.y * globals.camera[1].xyz + v.z * globals.camera[2].xyz;
+}
+
+// World position and normal of a vertex.
+struct Placed {
+    world: vec4<f32>,
+    normal: vec3<f32>,
+};
+
+fn place(v: VertexIn, model: mat4x4<f32>) -> Placed {
+    var out: Placed;
+    out.world = model * vec4<f32>(v.position, 1.0);
+    out.normal = (model * vec4<f32>(v.normal, 0.0)).xyz;
+    if ((v.part & BILLBOARD) != 0u) {
+        // The game scales the corners by the object's vertical scale.
+        let scale = length(model[1].xyz);
+        out.world = vec4<f32>(out.world.xyz + camera_vector(v.normal) * scale, out.world.w);
+        out.normal = camera_vector(v.weights.xyz * 2.0 - 1.0);
+    }
+    return out;
+}
+
 @vertex
 fn vs_mesh(v: VertexIn, inst: InstanceIn) -> VertexOut {
     let model = mat4x4<f32>(inst.m0, inst.m1, inst.m2, inst.m3);
-    let world = model * vec4<f32>(v.position, 1.0);
+    let placed = place(v, model);
+    let world = placed.world;
     var out: VertexOut;
     out.clip = globals.view_proj * world;
     out.world = world.xyz;
-    out.normal = (model * vec4<f32>(v.normal, 0.0)).xyz;
+    out.normal = placed.normal;
     out.uv = v.uv;
     out.color = v.color;
     out.tint = inst.tint;
     out.ids = inst.ids;
-    out.part = v.part;
+    out.part = v.part & ~BILLBOARD;
     var weight = 0.0;
-    for (var i = 0; i < 4; i++) {
-        if (v.joints[i] == globals.params.y) {
-            weight += v.weights[i];
+    if ((v.part & BILLBOARD) == 0u) {
+        for (var i = 0; i < 4; i++) {
+            if (v.joints[i] == globals.params.y) {
+                weight += v.weights[i];
+            }
         }
     }
     out.bone_weight = weight;
@@ -241,6 +274,11 @@ fn fs_mesh(v: VertexOut, @builtin(front_facing) front: bool) -> @location(0) vec
     let detail_uv = v.uv * material.detail_uv.xy + material.detail_uv.zw;
     let mask_uv = v.uv * material.mask_uv.xy + material.mask_uv.zw;
     let base = textureSample(diffuse, diffuse_sampler, v.uv);
+    // Alpha-tested plain surfaces (leaves of trees, most of the world) are
+    // cut before the other maps are read: the same test as below.
+    if (!uses_surface() && (globals.params.x & FLAG_ALPHA_TEST) != 0u && base_color(v).a < 0.5) {
+        discard;
+    }
     let normal_texel = textureSample(normal_map, diffuse_sampler, v.uv);
     let gloss_texel = textureSample(gloss_map, diffuse_sampler, v.uv);
     let detail_normal_texel = textureSample(detail_normal_map, diffuse_sampler, detail_uv);
@@ -464,7 +502,7 @@ fn fs_pick(v: VertexOut) -> @location(0) vec2<u32> {
 @vertex
 fn vs_wire(v: VertexIn, inst: InstanceIn) -> @builtin(position) vec4<f32> {
     let model = mat4x4<f32>(inst.m0, inst.m1, inst.m2, inst.m3);
-    var clip = globals.view_proj * model * vec4<f32>(v.position, 1.0);
+    var clip = globals.view_proj * place(v, model).world;
     clip.z -= globals.line.x * clip.w;
     return clip;
 }

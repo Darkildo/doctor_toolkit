@@ -274,6 +274,30 @@ impl LevelView {
         egui::Popup::menu(&button)
             .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
             .show(|ui| self.show_menu(ui));
+
+        let markers = self.markers_shown();
+        if theme::tool_button(ui, None, tr("view.markers"), markers, Tone::Flat)
+            .on_hover_text(tr("view.markers_hint"))
+            .clicked()
+        {
+            self.set_markers(!markers);
+        }
+    }
+
+    /// Whether the editor's markers are drawn: spawn points, triggers and
+    /// other objects without a model, trees that are not in the game files.
+    /// Until the user chooses, hidden when shading as in the game.
+    pub fn markers_shown(&self) -> bool {
+        self.markers_choice.unwrap_or(!crate::render::game_look())
+    }
+
+    /// Shows or hides the markers (the bar's "Markers", Show, screenshots).
+    pub fn set_markers(&mut self, on: bool) {
+        self.markers_choice = Some(on);
+        if self.filter.markers != on {
+            self.filter.markers = on;
+            self.refill = true;
+        }
     }
 
     /// "Show": the switches of the Zones panel's "Show" and the view's own.
@@ -320,6 +344,9 @@ impl LevelView {
         if before != after {
             self.refill = true;
             self.nav.generation += 1;
+        }
+        if before.1 != after.1 {
+            self.markers_choice = Some(self.filter.markers);
         }
     }
 
