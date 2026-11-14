@@ -204,7 +204,7 @@ pub fn mod_build(kit: &Toolkit, p: ModBuildParams) -> ToolResult<Output> {
         "new_streams": report.new_streams,
         "payload_bytes": report.payload_bytes,
         "file_bytes": report.file_size,
-        "note": "players install it with the mod manager (doctor-toolkit-mods or `doctor-toolkit mods install`)",
+        "note": "players install it with the mod manager (Open Mod Manager, `open-mod-manager`, or `doctor-toolkit mods install`)",
     })))
 }
 

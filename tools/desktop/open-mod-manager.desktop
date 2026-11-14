@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Name=Open Mod Manager
+GenericName=Mod manager
+Comment=Install, order, apply and remove mods for The Godfather II (Powered by Doctor)
+Exec=open-mod-manager %F
+Icon=open-mod-manager
+Terminal=false
+Categories=Game;
+Keywords=Godfather;EARS;mods;mod manager;doctor_toolkit;
+StartupNotify=true
+StartupWMClass=open-mod-manager
+MimeType=application/zip;application/x-godfather2-vpat;

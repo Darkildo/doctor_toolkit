@@ -14,8 +14,8 @@
 
 Код: `crates/doctor-toolkit/src/mods/` (библиотека), команды
 `doctor-toolkit mods …` и `doctor-toolkit integrity` (CLI), окно **Mods**
-редактора и отдельная программа `doctor-toolkit-mods`
-(`crates/doctor-toolkit-mods`, общая панель для обоих).
+редактора и отдельная программа для игроков Open Mod Manager — файл
+`open-mod-manager` (`crates/doctor-toolkit-mods`, общая панель для обоих).
 
 ## 1. Формат мода
 
@@ -432,30 +432,84 @@ old toolkit**):
 прерванной записи (`*.doctor-toolkit-tmp`, игра их не читает).
 `integrity --adopt-old-backups` делает только шаг 1 перехода со старого тулкита.
 
-## 7. Программа `doctor-toolkit-mods`
+## 7. Open Mod Manager (`open-mod-manager`)
 
 ```sh
-cargo run --release -p doctor-toolkit-mods -- "$GAME"
+cargo run --release -p doctor-toolkit-mods --bin open-mod-manager -- "$GAME"
 ```
 
-Окно для игроков: выбор каталога игры, установка модов из файла, список с
-включением и порядком, конфликты, совместимость, картинка и описание мода,
-**Apply to game**, **Restore originals**, **Check integrity**, **Import from
-old toolkit**. Это та же панель, что окно **Mods** в редакторе (крейт
+Отдельная программа для игроков, часть doctor_toolkit («Powered by Doctor»
+в правом верхнем углу окна; файл `open-mod-manager`, на Windows
+`open-mod-manager.exe`). Руководство — `docs/guide/07-mods-players.md`.
+Это та же панель, что окно **Mods** в редакторе (крейт
 `doctor-toolkit-mods`, библиотека и программа); в редакторе к ней добавлен
-раздел сборки мода из рабочего пространства. Чтение и запись игры идут в
-фоновом потоке. Столбец Resources показывает число ресурсов и в скобках
-добавленные и новые потоки (`12 (+3, 1 new str.)`), подробности мода — какие
-потоки он создаёт и где они загружаются, список ресурсов помечает добавленные,
-раздел **Conflicts** — столкновения (красным те, что не дают записать моды).
+раздел сборки мода из рабочего пространства, а кнопка «Играть с модами»,
+перетаскивание файлов и клавиши — только в программе
+(`ModsPanel::standalone`). Чтение и запись игры идут в фоновом потоке.
+
+**Этап 64 — удобство для игроков.**
+
+- Игра (`games.rs`): папка из командной строки, иначе запомненная (`game`
+  в `mods.toml`), иначе поиск `install::detect` (плюс папки
+  `$DOCTOR_TOOLKIT_MODS_SEARCH`; с `DOCTOR_TOOLKIT_MODS_SEARCH_ONLY=1` —
+  только они). Одна найденная копия открывается сразу, несколько — выбор
+  (путь, издание `Edition::name`, где найдена), ни одной — подсказка и
+  «Указать папку игры…».
+- Аргументы: папка — игра, файлы `.zip`/`.vpat` — моды; они ставятся после
+  вопроса, когда игра открыта. Файлы, брошенные на окно (`dropped_files`),
+  ставятся сразу, прочие отклоняются словами. Ярлык
+  `tools/desktop/open-mod-manager.desktop` объявляет `MimeType`
+  `application/zip` и `application/x-godfather2-vpat` (тип описан в
+  `open-mod-manager.xml`, `install-desktop.sh` кладёт его в
+  `$XDG_DATA_HOME/mime`): программа появляется в «Открыть с помощью», не
+  становясь обработчиком `.zip` по умолчанию. На Windows — «Открыть с
+  помощью» → `open-mod-manager.exe`, реестр не трогается.
+- Карточки (`cards.rs`): картинка мода, имя, версия, автор, первый абзац
+  описания, переключатель, состояние (`state.rs`, `ModState`): Готов,
+  Выключен, Не подходит к этой версии игры (несовпадения `check`, кроме
+  замечаний), Не работает вместе с … (роковые `Clash`), Конфликт с … (общие
+  ресурсы с другими данными; подсказка — чей вариант берётся), Ещё не
+  записан в игру (поток мода не `up_to_date`), Повреждён. Порядок —
+  перетаскиванием (`DragAndDrop`, линия вставки между карточками),
+  контекстное меню и клавиши (Alt+↑/↓) — запасные пути.
+- Главные кнопки: «Играть с модами» (`play.rs`: `overlay::availability`;
+  копия `Overlay::build(Source::Mods)`, модуль с перенаправлениями, без
+  записи в игру; после выхода игры модуль и копия убираются; без модуля
+  или загрузчика ASI — окно с объяснением и «Записать в игру и играть»),
+  «Записать в игру», «Вернуть оригиналы» — после вопроса, с окном хода
+  (`ModManager::apply_with_progress`, `Deployment::sync_with_progress`:
+  поток за потоком) и итогом словами.
+- Наборы модов: `ModManager::save_set`, `use_set`, `delete_set`,
+  `current_set`, `arrange` (файл `sets.json` рядом с `registry.json`,
+  формат `doctor-toolkit-mod-sets`). Мод набора, которого уже нет,
+  называется; установленный позже набора — выключается и идёт в конец.
+- Отмена последнего изменения (вкл/выкл, порядок, набор — прежний
+  `arrangement`; удаление — `remove_undoable`: файлы мода переносятся в
+  `.removed-*` и возвращаются `restore_removed` на прежнее место;
+  `discard_removed`/`purge_removed` удаляют их, когда отмена уже не нужна).
+- Свёрнутый раздел «Подробности»: id, источник, потоки и ресурсы мода,
+  создаваемые потоки, несовпадения, конфликты по ключам ресурсов,
+  проверенные файлы игры. Проверка целостности — в меню «Ещё», итог —
+  словами (`integrity_words`).
+- Тема — общая с редактором (`doctor_toolkit_mods::theme`, редактор
+  реэкспортирует её как `app::theme`).
 
 Python (`docs/python.md`): `ModManager.clashes()`, поля `added` и
 `new_streams` в `mods`, `install()` и `Workspace.build_mod()`.
 
 Режим снимка для проверок без пользователя: `DOCTOR_TOOLKIT_MODS_SHOT=<png>`
 (снимок и выход), `DOCTOR_TOOLKIT_MODS_SELECT=<id>`,
-`DOCTOR_TOOLKIT_MODS_INTEGRITY=1`; в редакторе `DOCTOR_TOOLKIT_GUI_MODS=1`
+`DOCTOR_TOOLKIT_MODS_INTEGRITY=1`, `DOCTOR_TOOLKIT_MODS_ASK=write` (вопрос
+перед записью), `DOCTOR_TOOLKIT_MODS_SIZE=<w>x<h>`; слежение за процессом
+игры в этом режиме выключено. В редакторе `DOCTOR_TOOLKIT_GUI_MODS=1`
 открывает окно Mods.
+
+**Проверка.** `crates/doctor-toolkit-mods/src/tests.rs` (панель без окна:
+брошенные файлы, состояния карточек, отмена, наборы, итоги словами),
+`games.rs` (настройки, аргументы, поиск в папке), `play.rs` (объяснение без
+загрузчика), `crates/doctor-toolkit/src/mods/tests.rs` (наборы, ход записи,
+возврат удалённого мода). Снимок `docs/images/mod-manager.png` — 1920×1080,
+`WINIT_X11_SCALE_FACTOR=1.5`, в Xvfb, на тени игры с тремя модами.
 
 ## 8. Открытые вопросы
 

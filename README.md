@@ -82,7 +82,7 @@ documentation of this tool only.
 2. Unpack it and start the editor with the folder of your game:
 
    ```sh
-   tar xzf doctor_toolkit-0.0.2-linux-x86_64.tar.gz && cd doctor_toolkit-0.0.2-linux-x86_64
+   tar xzf doctor_toolkit-0.0.3-linux-x86_64.tar.gz && cd doctor_toolkit-0.0.3-linux-x86_64
    ./doctor-toolkit-gui "/path/to/The Godfather II"
    ```
 
@@ -279,9 +279,9 @@ Download `doctor_toolkit-<version>-linux-x86_64.tar.gz` from the releases,
 unpack it anywhere and run the programs from that folder:
 
 ```sh
-tar xzf doctor_toolkit-0.0.2-linux-x86_64.tar.gz && cd doctor_toolkit-0.0.2-linux-x86_64
+tar xzf doctor_toolkit-0.0.3-linux-x86_64.tar.gz && cd doctor_toolkit-0.0.3-linux-x86_64
 ./doctor-toolkit-gui "/path/to/The Godfather II"     # the editor
-./doctor-toolkit-mods "/path/to/The Godfather II"    # the mod manager for players
+./open-mod-manager "/path/to/The Godfather II"       # Open Mod Manager, for players
 ./doctor-toolkit --help                              # the command line
 ./install-desktop.sh                                 # menu entries and icons (optional)
 ```
@@ -314,9 +314,9 @@ The full guide is in Russian: [`docs/guide/`](docs/guide/README.md). In short:
    (`workspace apply`). Every changed game file is backed up first;
    **Restore originals** (`restore`) puts them back.
 4. **Mods**: build a mod from the workspace (`mods build`, a single `.zip`),
-   players install and apply it with `doctor-toolkit-mods`. Patches of the old
-   closed toolkit (`.vpat`) install as mods; `mods import-old` takes over a
-   game patched by it.
+   players install and apply it with Open Mod Manager (`open-mod-manager`).
+   Patches of the old closed toolkit (`.vpat`) install as mods;
+   `mods import-old` takes over a game patched by it.
 5. **Play** (F5, `doctor-toolkit play`) starts the game, applying the
    workspace first and reverting it after the game exits if asked to.
    **Close the game** before changing its files: the editor and the mod
@@ -517,10 +517,21 @@ mod manager never write into the game at the same time; to test a workspace
 together with other mods, install it as a mod (`mods install-workspace`).
 Details, the `.vpat` format and what was found about it: `docs/mods.md` (Russian).
 
-For players there is a separate program with only the mod manager:
+For players there is a separate program with only the mod manager,
+**Open Mod Manager** (`open-mod-manager`, `open-mod-manager.exe` on Windows;
+"Powered by Doctor": it is part of doctor_toolkit). It finds the installed
+game by itself, installs mod files dropped on its window or opened from the
+system, shows each mod as a card with its picture and its state in words
+(ready, in conflict with another mod, not fitting this version of the game,
+not written to the game yet), reorders them by dragging, keeps named sets
+of mods, undoes the last change, and plays the mods without writing them
+into the game ("Play with mods", through the live module) or writes them in
+for good:
+
+<img src="docs/images/mod-manager.png" alt="Open Mod Manager: mod cards, Play with mods, Write to game, Restore originals" width="900">
 
 ```sh
-cargo run --release -p doctor-toolkit-mods -- "$GAME"
+cargo run --release -p doctor-toolkit-mods --bin open-mod-manager -- "$GAME"
 ```
 
 ### Search, references, unpack and pack

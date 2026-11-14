@@ -49,7 +49,7 @@ Blender читает и пишет GLB своим glTF-импортёром и �
 Нужен Blender 4.2 или новее (проверено на 5.3).
 
 **Расширение с модулем (Linux x86-64).** `tools/release.sh` кладёт рядом с
-архивом `dist/doctor_toolkit_blender-0.0.2-linux-x64.zip` — дополнение с
+архивом `dist/doctor_toolkit_blender-0.0.3-linux-x64.zip` — дополнение с
 колесом `doctor_toolkit` внутри (и копию в `blender/` архива). В Blender:
 Edit → Preferences → Get Extensions → ▾ (вверху справа) → **Install from
 Disk…** → этот zip. Blender ставит колесо в свою папку расширений
@@ -66,7 +66,7 @@ pip install --target ~/doctor-toolkit-py target/wheels/doctor_toolkit-*.whl
 python3 tools/blender/build-extension.py -o dist
 ```
 
-Поставьте `dist/doctor_toolkit_blender-0.0.2-no-module.zip` так же и в
+Поставьте `dist/doctor_toolkit_blender-0.0.3-no-module.zip` так же и в
 настройках дополнения (Preferences → Add-ons → doctor_toolkit) укажите
 **Module folder** = `~/doctor-toolkit-py`. Там же видно, откуда загружен
 модуль, или почему он не загрузился. Своё колесо можно и вложить в пакет:

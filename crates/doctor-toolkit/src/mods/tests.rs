@@ -520,6 +520,158 @@ fn unapply_restores_originals_and_keeps_the_mods() {
 }
 
 #[test]
+fn applying_tells_its_progress() {
+    let (_dir, game) = fake_game();
+    let temp = tempfile::tempdir().unwrap();
+    let a = build_mod(&game, temp.path(), "a", vec![(MESH, mesh(1))]);
+    let mut mods = ModManager::open(&game).unwrap();
+    mods.install_file(&game, &a, true).unwrap();
+    let mut seen = Vec::new();
+    mods.apply_with_progress(&game, ModApplyOptions::default(), &mut |p| {
+        seen.push((p.done, p.total, p.stream.to_owned()));
+    })
+    .unwrap();
+    assert_eq!(seen, [(0, 1, LEVEL.to_owned()), (1, 1, String::new())]);
+    seen.clear();
+    mods.unapply_with_progress(&game, false, &mut |p| {
+        seen.push((p.done, p.total, p.stream.to_owned()));
+    })
+    .unwrap();
+    assert_eq!(seen, [(0, 1, LEVEL.to_owned()), (1, 1, String::new())]);
+}
+
+/// `(id, enabled)` of the installed mods in load order.
+fn order(mods: &ModManager) -> Vec<(String, bool)> {
+    mods.mods()
+        .iter()
+        .map(|m| (m.id.clone(), m.enabled))
+        .collect()
+}
+
+fn pairs(list: &[(&str, bool)]) -> Vec<(String, bool)> {
+    list.iter()
+        .map(|(id, on)| ((*id).to_owned(), *on))
+        .collect()
+}
+
+#[test]
+fn sets_of_mods_are_saved_and_switched() {
+    use super::manager::SetEntry;
+    let (_dir, game) = fake_game();
+    let temp = tempfile::tempdir().unwrap();
+    let mut mods = ModManager::open(&game).unwrap();
+    for (id, byte) in [("a", 1), ("b", 2), ("c", 3)] {
+        let path = build_mod(&game, temp.path(), id, vec![(MESH, mesh(byte))]);
+        mods.install_file(&game, &path, true).unwrap();
+    }
+    assert!(mods.sets().unwrap().is_empty());
+    assert_eq!(mods.current_set(), None);
+    mods.save_set(" All ").unwrap();
+    assert_eq!(mods.current_set().as_deref(), Some("All"));
+
+    mods.set_enabled("b", false).unwrap();
+    mods.move_mod("c", 0).unwrap();
+    assert_eq!(mods.current_set(), None);
+    mods.save_set("Light").unwrap();
+    assert_eq!(
+        mods.sets()
+            .unwrap()
+            .iter()
+            .map(|s| s.name.as_str())
+            .collect::<Vec<_>>(),
+        ["All", "Light"]
+    );
+
+    // Switching sets restores order and enabled mods, and survives reopening.
+    assert!(mods.use_set("All").unwrap().is_empty());
+    assert_eq!(
+        order(&mods),
+        pairs(&[("a", true), ("b", true), ("c", true)])
+    );
+    let mut mods = ModManager::open(&game).unwrap();
+    assert_eq!(mods.current_set().as_deref(), Some("All"));
+    mods.use_set("Light").unwrap();
+    assert_eq!(
+        order(&mods),
+        pairs(&[("c", true), ("a", true), ("b", false)])
+    );
+
+    // A set's mod that is gone is reported; a mod the set does not know is
+    // disabled after its mods.
+    mods.uninstall("a").unwrap();
+    let d = build_mod(&game, temp.path(), "d", vec![(MESH, mesh(4))]);
+    mods.install_file(&game, &d, true).unwrap();
+    assert_eq!(mods.use_set("All").unwrap(), ["a"]);
+    assert_eq!(
+        order(&mods),
+        pairs(&[("b", true), ("c", true), ("d", false)])
+    );
+    assert_eq!(
+        mods.arrange(&[SetEntry {
+            id: "d".into(),
+            enabled: true
+        }])
+        .unwrap(),
+        Vec::<String>::new()
+    );
+    assert_eq!(
+        order(&mods),
+        pairs(&[("d", true), ("b", false), ("c", false)])
+    );
+
+    // Replacing and deleting.
+    mods.save_set("Light").unwrap();
+    assert_eq!(mods.sets().unwrap()[1].mods.len(), 3);
+    assert!(mods.delete_set("All").unwrap());
+    assert!(!mods.delete_set("All").unwrap());
+    assert!(mods.use_set("All").is_err());
+    for bad in ["", "   ", "a\nb", &"x".repeat(65)] {
+        assert!(mods.save_set(bad).is_err(), "{bad:?}");
+    }
+}
+
+#[test]
+fn a_removed_mod_comes_back_in_its_place() {
+    let (_dir, game) = fake_game();
+    let temp = tempfile::tempdir().unwrap();
+    let mut mods = ModManager::open(&game).unwrap();
+    for (id, byte) in [("a", 1), ("b", 2), ("c", 3)] {
+        let path = build_mod(&game, temp.path(), id, vec![(MESH, mesh(byte))]);
+        mods.install_file(&game, &path, true).unwrap();
+    }
+    mods.set_enabled("b", false).unwrap();
+    let removed = mods.remove_undoable("b").unwrap();
+    assert_eq!(removed.name, "Mod b");
+    assert_eq!(order(&mods), pairs(&[("a", true), ("c", true)]));
+    assert!(!mods.dir().join("b").exists());
+    // Gone after reopening too, until restored.
+    let mut mods = ModManager::open(&game).unwrap();
+    assert!(mods.get("b").is_none());
+    mods.restore_removed(&removed).unwrap();
+    assert_eq!(
+        order(&mods),
+        pairs(&[("a", true), ("b", false), ("c", true)])
+    );
+    let b = mods.get("b").unwrap();
+    assert!(b.problem.is_none());
+    assert_eq!(b.source, "b.zip");
+    assert!(mods.restore_removed(&removed).is_err(), "installed again");
+
+    // Discarded files are deleted; leftovers of a stopped program too.
+    let removed = mods.remove_undoable("a").unwrap();
+    mods.discard_removed(&removed).unwrap();
+    assert!(mods.restore_removed(&removed).is_err());
+    mods.remove_undoable("c").unwrap();
+    assert_eq!(mods.purge_removed().unwrap(), 1);
+    let leftovers: Vec<_> = fs::read_dir(mods.dir())
+        .unwrap()
+        .map(|e| e.unwrap().file_name().into_string().unwrap())
+        .filter(|n| n.starts_with('.'))
+        .collect();
+    assert!(leftovers.is_empty(), "{leftovers:?}");
+}
+
+#[test]
 fn mods_that_do_not_fit_are_refused() {
     let (dir, game) = fake_game();
     let temp = tempfile::tempdir().unwrap();

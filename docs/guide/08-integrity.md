@@ -6,7 +6,7 @@
 doctor-toolkit integrity "$GAME"
 ```
 
-В редакторе и в `doctor-toolkit-mods` — кнопка **Check integrity**. Для
+В редакторе и в Open Mod Manager — кнопка **Check integrity**. Для
 каждого потока и таблицы содержимого показывается состояние:
 
 | Состояние | Значит |

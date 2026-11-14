@@ -46,7 +46,7 @@ use crate::game::{GameInstance, StreamFile};
 use crate::toc::Toc;
 use crate::workspace::{
     ApplyReport, Blob, Change, DeployStatus, Deployment, GameFingerprint, NewStream, PayloadStore,
-    ResourceKey, Workspace,
+    ResourceKey, SyncProgress, Workspace,
 };
 use crate::{Error, Result};
 
@@ -56,6 +56,9 @@ const REGISTRY_FORMAT: &str = "doctor-toolkit-mods";
 const REGISTRY_VERSION: u32 = 1;
 const STAGING_PREFIX: &str = ".staging-";
 const OLD_PREFIX: &str = ".old-";
+const REMOVED_PREFIX: &str = ".removed-";
+const SETS_FILE: &str = "sets.json";
+const SETS_FORMAT: &str = "doctor-toolkit-mod-sets";
 
 /// Path of the mod manager's record of what it wrote into the game.
 pub fn applied_path(game_root: &Path) -> PathBuf {
@@ -1187,6 +1190,17 @@ impl ModManager {
     /// `options.ignore_compatibility` for different originals), and for
     /// streams changed by another program (unless `options.force`).
     pub fn apply(&mut self, game: &GameInstance, options: ModApplyOptions) -> Result<ApplyReport> {
+        self.apply_with_progress(game, options, &mut |_| {})
+    }
+
+    /// [`Self::apply`], telling `progress` before each stream is written
+    /// (after every check passed) and when all are.
+    pub fn apply_with_progress(
+        &mut self,
+        game: &GameInstance,
+        options: ModApplyOptions,
+        progress: &mut dyn FnMut(SyncProgress<'_>),
+    ) -> Result<ApplyReport> {
         if let Some(m) = self.enabled().map(|(_, m)| m).find(|m| m.problem.is_some()) {
             return Err(Error::mod_error(format!(
                 "mod `{}` is damaged ({}); disable or uninstall it",
@@ -1249,7 +1263,7 @@ impl ModManager {
             .map(|(name, changes)| (name, changes.into_iter().cloned().collect()))
             .collect();
         let path = self.dir.join(APPLIED_FILE);
-        self.deployment.sync_with(
+        self.deployment.sync_with_progress(
             &path,
             game,
             &names,
@@ -1262,21 +1276,34 @@ impl ModManager {
                     .ok_or_else(|| Error::mod_error(format!("{} is not planned", change.key)))?;
                 stores[*index].get(&change.payload)
             },
+            progress,
         )
     }
 
     /// Puts back the original of every stream the mod manager has written.
     /// The mods stay installed.
     pub fn unapply(&mut self, game: &GameInstance, force: bool) -> Result<ApplyReport> {
+        self.unapply_with_progress(game, force, &mut |_| {})
+    }
+
+    /// [`Self::unapply`], telling `progress` before each stream is put back.
+    pub fn unapply_with_progress(
+        &mut self,
+        game: &GameInstance,
+        force: bool,
+        progress: &mut dyn FnMut(SyncProgress<'_>),
+    ) -> Result<ApplyReport> {
         let names: BTreeSet<String> = self.deployment.streams.keys().cloned().collect();
         let path = self.dir.join(APPLIED_FILE);
-        self.deployment.sync(
+        self.deployment.sync_with_progress(
             &path,
             game,
             &names,
             force,
+            &BTreeMap::new(),
             |_| Vec::new(),
             |change| Err(Error::mod_error(format!("{} is not planned", change.key))),
+            progress,
         )
     }
 
@@ -1308,6 +1335,287 @@ impl ModManager {
         }
         Ok(OldToolkitImport { adopted, installed })
     }
+
+    // ------------------------------------------------- order, sets and undo
+
+    /// The load order with the enabled state of every installed mod.
+    pub fn arrangement(&self) -> Vec<SetEntry> {
+        self.mods
+            .iter()
+            .map(|m| SetEntry {
+                id: m.id.clone(),
+                enabled: m.enabled,
+            })
+            .collect()
+    }
+
+    /// The arrangement [`Self::arrange`] would make of `entries`, and the
+    /// ids of `entries` that are not installed.
+    fn arranged(&self, entries: &[SetEntry]) -> (Vec<SetEntry>, Vec<String>) {
+        let mut out: Vec<SetEntry> = Vec::new();
+        let mut missing = Vec::new();
+        for entry in entries {
+            if out.iter().any(|e| e.id == entry.id) || missing.contains(&entry.id) {
+                continue;
+            }
+            match self.get(&entry.id) {
+                Some(m) => out.push(SetEntry {
+                    id: m.id.clone(),
+                    enabled: entry.enabled && m.problem.is_none(),
+                }),
+                None => missing.push(entry.id.clone()),
+            }
+        }
+        for m in &self.mods {
+            if !out.iter().any(|e| e.id == m.id) {
+                out.push(SetEntry {
+                    id: m.id.clone(),
+                    enabled: false,
+                });
+            }
+        }
+        (out, missing)
+    }
+
+    /// Puts the mods in the order of `entries` and enables them as listed
+    /// there; installed mods that `entries` does not list follow in their
+    /// order, disabled. A damaged mod stays disabled. Returns the ids of
+    /// `entries` that are not installed. The game is not changed until
+    /// [`Self::apply`].
+    pub fn arrange(&mut self, entries: &[SetEntry]) -> Result<Vec<String>> {
+        let (order, missing) = self.arranged(entries);
+        let mut rest = std::mem::take(&mut self.mods);
+        for entry in order {
+            if let Some(i) = rest.iter().position(|m| m.id == entry.id) {
+                let mut m = rest.remove(i);
+                m.enabled = entry.enabled;
+                self.mods.push(m);
+            }
+        }
+        self.mods.append(&mut rest);
+        self.save_registry()?;
+        Ok(missing)
+    }
+
+    /// The saved sets of mods (`sets.json` of the mod manager directory).
+    pub fn sets(&self) -> Result<Vec<ModSet>> {
+        let path = self.dir.join(SETS_FILE);
+        if !path.is_file() {
+            return Ok(Vec::new());
+        }
+        let text = fs::read(&path).map_err(|e| Error::io(&path, e))?;
+        let file: SetsFile = serde_json::from_slice(&text)
+            .map_err(|e| Error::mod_error(format!("{}: {e}", path.display())))?;
+        if file.format != SETS_FORMAT || file.version > REGISTRY_VERSION {
+            return Err(Error::mod_error(format!(
+                "{} was written by a newer program or is not a list of mod sets",
+                path.display()
+            )));
+        }
+        Ok(file.sets)
+    }
+
+    fn save_sets(&self, sets: Vec<ModSet>) -> Result<()> {
+        let file = SetsFile {
+            format: SETS_FORMAT.to_owned(),
+            version: REGISTRY_VERSION,
+            sets,
+        };
+        fs::create_dir_all(&self.dir).map_err(|e| Error::io(&self.dir, e))?;
+        let mut text =
+            serde_json::to_vec_pretty(&file).map_err(|e| Error::mod_error(format!("sets: {e}")))?;
+        text.push(b'\n');
+        crate::atomic::write(&self.dir.join(SETS_FILE), &text)
+    }
+
+    /// Saves the current order and enabled mods as the set `name`,
+    /// replacing a set of that name.
+    pub fn save_set(&self, name: &str) -> Result<()> {
+        let name = validate_set_name(name)?;
+        let mut sets = self.sets()?;
+        let set = ModSet {
+            name: name.to_owned(),
+            mods: self.arrangement(),
+        };
+        match sets.iter_mut().find(|s| s.name == name) {
+            Some(old) => *old = set,
+            None => sets.push(set),
+        }
+        self.save_sets(sets)
+    }
+
+    /// Forgets the set `name`; returns whether there was one.
+    pub fn delete_set(&self, name: &str) -> Result<bool> {
+        let mut sets = self.sets()?;
+        let before = sets.len();
+        sets.retain(|s| s.name != name);
+        if sets.len() == before {
+            return Ok(false);
+        }
+        self.save_sets(sets)?;
+        Ok(true)
+    }
+
+    /// Arranges the mods as the saved set `name` ([`Self::arrange`]);
+    /// returns the ids of its mods that are not installed.
+    pub fn use_set(&mut self, name: &str) -> Result<Vec<String>> {
+        let set = self
+            .sets()?
+            .into_iter()
+            .find(|s| s.name == name)
+            .ok_or_else(|| Error::mod_error(format!("no set of mods `{name}`")))?;
+        self.arrange(&set.mods)
+    }
+
+    /// The saved set the mods are arranged as now, if any.
+    pub fn current_set(&self) -> Option<String> {
+        let now = self.arrangement();
+        self.sets()
+            .ok()?
+            .into_iter()
+            .find(|s| self.arranged(&s.mods).0 == now)
+            .map(|s| s.name)
+    }
+
+    /// Removes a mod like [`Self::uninstall`], but keeps its files aside so
+    /// that [`Self::restore_removed`] can bring it back to its place.
+    /// [`Self::discard_removed`] deletes them.
+    pub fn remove_undoable(&mut self, id: &str) -> Result<RemovedMod> {
+        let index = self.position(id)?;
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_nanos());
+        let kept = self.dir.join(format!(
+            "{REMOVED_PREFIX}{id}-{}-{stamp}",
+            std::process::id()
+        ));
+        let dir = self.mods[index].dir.clone();
+        let moved = dir.is_dir();
+        if moved {
+            fs::rename(&dir, &kept).map_err(|e| Error::io(&dir, e))?;
+        }
+        let m = self.mods.remove(index);
+        if let Err(error) = self.save_registry() {
+            if moved {
+                let _ = fs::rename(&kept, &dir);
+            }
+            self.mods.insert(index, m);
+            return Err(error);
+        }
+        Ok(RemovedMod {
+            id: m.id.clone(),
+            name: m.manifest.name.clone(),
+            position: index,
+            entry: RegistryEntry {
+                id: m.id,
+                enabled: m.enabled,
+                installed: m.installed,
+                source: m.source,
+            },
+            kept: moved.then_some(kept),
+        })
+    }
+
+    /// Brings back a mod taken out by [`Self::remove_undoable`], in its
+    /// place and with its enabled state. Refused when a mod of that id was
+    /// installed since.
+    pub fn restore_removed(&mut self, removed: &RemovedMod) -> Result<()> {
+        if self.get(&removed.id).is_some() {
+            return Err(Error::mod_error(format!(
+                "a mod `{}` is installed again",
+                removed.id
+            )));
+        }
+        let dir = self.dir.join(&removed.id);
+        if let Some(kept) = &removed.kept {
+            if !kept.is_dir() {
+                return Err(Error::mod_error(format!(
+                    "the files of mod `{}` are gone",
+                    removed.id
+                )));
+            }
+            if dir.exists() {
+                return Err(Error::mod_error(format!("{} is in the way", dir.display())));
+            }
+            fs::rename(kept, &dir).map_err(|e| Error::io(kept, e))?;
+        }
+        let m = load_installed(&self.dir, removed.entry.clone());
+        let position = removed.position.min(self.mods.len());
+        self.mods.insert(position, m);
+        self.save_registry()
+    }
+
+    /// Deletes the files of a mod taken out by [`Self::remove_undoable`].
+    pub fn discard_removed(&self, removed: &RemovedMod) -> Result<()> {
+        match &removed.kept {
+            Some(kept) if kept.is_dir() => fs::remove_dir_all(kept).map_err(|e| Error::io(kept, e)),
+            _ => Ok(()),
+        }
+    }
+
+    /// Deletes the files of every mod kept aside for undo, e.g. left by a
+    /// program that stopped. Returns how many there were.
+    pub fn purge_removed(&self) -> Result<usize> {
+        let Ok(entries) = fs::read_dir(&self.dir) else {
+            return Ok(0);
+        };
+        let mut count = 0;
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if name.starts_with(REMOVED_PREFIX) && entry.file_type().is_ok_and(|t| t.is_dir()) {
+                let path = entry.path();
+                fs::remove_dir_all(&path).map_err(|e| Error::io(&path, e))?;
+                count += 1;
+            }
+        }
+        Ok(count)
+    }
+}
+
+/// One mod of a [`ModSet`] or of [`ModManager::arrangement`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SetEntry {
+    pub id: String,
+    pub enabled: bool,
+}
+
+/// A named set of mods: which are enabled and in which order.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ModSet {
+    pub name: String,
+    /// In load order.
+    pub mods: Vec<SetEntry>,
+}
+
+/// `sets.json`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct SetsFile {
+    format: String,
+    version: u32,
+    sets: Vec<ModSet>,
+}
+
+/// The name of a set: trimmed, not empty, at most 64 characters, no
+/// control characters.
+fn validate_set_name(name: &str) -> Result<&str> {
+    let name = name.trim();
+    if name.is_empty() || name.chars().count() > 64 || name.chars().any(char::is_control) {
+        return Err(Error::mod_error(format!(
+            "`{name}` is not a name for a set of mods: 1 to 64 characters, no control characters"
+        )));
+    }
+    Ok(name)
+}
+
+/// A mod taken out by [`ModManager::remove_undoable`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RemovedMod {
+    pub id: String,
+    pub name: String,
+    position: usize,
+    entry: RegistryEntry,
+    /// Where its files are kept; `None` for a mod without files (damaged).
+    kept: Option<PathBuf>,
 }
 
 /// Result of [`ModManager::import_old_toolkit`].

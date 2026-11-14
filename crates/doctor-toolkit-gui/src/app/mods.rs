@@ -1,6 +1,6 @@
 //! The Mods window of the editor: the mod manager of the open game, plus
 //! building a mod from the workspace. The window is the shared panel of
-//! `doctor-toolkit-mods`.
+//! Open Mod Manager (`open-mod-manager`).
 
 use std::sync::Arc;
 
@@ -45,7 +45,7 @@ impl BrowserApp {
                 self.refresh_status();
                 self.files_changed();
             }
-            None => {}
+            Some(PanelEvent::PlayWithMods) | None => {}
         }
     }
 

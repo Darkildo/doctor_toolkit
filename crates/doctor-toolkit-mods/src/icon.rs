@@ -23,7 +23,7 @@ impl Variant {
     pub fn name(self) -> &'static str {
         match self {
             Self::Editor => "doctor-toolkit",
-            Self::Mods => "doctor-toolkit-mods",
+            Self::Mods => "open-mod-manager",
         }
     }
 

@@ -1,0 +1,332 @@
+//! The panel without a window: dropped files, sets of mods, undo, the
+//! states of the cards, writing with a result.
+
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+
+use doctor_toolkit::game::GameInstance;
+use doctor_toolkit::mods::{ModInfo, build_from_workspace};
+use doctor_toolkit::testing::{self, LEVEL, MESH, NAV};
+use doctor_toolkit::workspace::{ResourceEdit, StorageChoice, StreamAction, Workspace};
+
+use super::*;
+use crate::state::ModState;
+
+/// A miniature game in a temporary folder (with the extra streams when
+/// `extra`).
+fn game(extra: bool) -> (tempfile::TempDir, Arc<GameInstance>) {
+    let dir = tempfile::tempdir().unwrap();
+    testing::write_game(dir.path()).unwrap();
+    if extra {
+        testing::write_extra_streams(dir.path()).unwrap();
+    }
+    let game = GameInstance::open(dir.path()).unwrap();
+    (dir, Arc::new(game))
+}
+
+/// A mod `id` that sets resource `index` of `stream` to `data`.
+fn build(
+    game: &GameInstance,
+    out: &Path,
+    id: &str,
+    stream: &str,
+    index: usize,
+    data: Vec<u8>,
+) -> PathBuf {
+    let mut ws = Workspace::create(out.join(format!("ws-{id}")), game).unwrap();
+    let edit = ResourceEdit {
+        index,
+        data,
+        storage: StorageChoice::Keep,
+    };
+    ws.set_resources(game, "edit", game.find_stream(stream).unwrap(), &[edit])
+        .unwrap();
+    let info = ModInfo {
+        id: id.to_owned(),
+        name: format!("Mod {id}"),
+        version: "1.0".into(),
+        author: "tester".into(),
+        description: "A test mod.\n\nMore.".into(),
+        url: None,
+    };
+    let path = out.join(format!("{id}.zip"));
+    build_from_workspace(&ws, &info, None, None, &path).unwrap();
+    path
+}
+
+fn panel(game: &Arc<GameInstance>, ctx: &egui::Context) -> ModsPanel {
+    let mut panel = ModsPanel::standalone();
+    panel.set_game(Some(game.clone()), ctx);
+    panel.wait();
+    panel
+}
+
+/// `(id, enabled)` in load order.
+fn order(panel: &ModsPanel) -> Vec<(String, bool)> {
+    panel
+        .manager()
+        .unwrap()
+        .mods()
+        .iter()
+        .map(|m| (m.id.clone(), m.enabled))
+        .collect()
+}
+
+fn pairs(list: &[(&str, bool)]) -> Vec<(String, bool)> {
+    list.iter().map(|(i, e)| ((*i).to_owned(), *e)).collect()
+}
+
+/// A file dropped on the window.
+#[derive(Debug)]
+struct Dropped(PathBuf);
+
+impl egui::DroppedFile for Dropped {
+    fn path(&self) -> &Path {
+        &self.0
+    }
+
+    fn bytes(&self) -> Result<Vec<u8>, String> {
+        std::fs::read(&self.0).map_err(|e| e.to_string())
+    }
+}
+
+/// One frame of the panel; `dropped` are files dropped on the window.
+fn frame(ctx: &egui::Context, panel: &mut ModsPanel, dropped: &[PathBuf]) -> Option<PanelEvent> {
+    let input = egui::RawInput {
+        screen_rect: Some(egui::Rect::from_min_size(
+            egui::Pos2::ZERO,
+            egui::vec2(1280.0, 800.0),
+        )),
+        dropped_files: dropped
+            .iter()
+            .map(|p| Arc::new(Dropped(p.clone())) as egui::DroppedFileHandle)
+            .collect(),
+        ..Default::default()
+    };
+    let mut event = None;
+    let mut output = ctx.run_ui(input, |ui| {
+        egui::CentralPanel::default().show(ui, |ui| {
+            event = panel.show(ui, None);
+        });
+    });
+    output.textures_delta.clear();
+    event
+}
+
+#[test]
+fn dropped_mod_files_install_and_others_are_refused() {
+    let (_dir, game) = game(false);
+    let temp = tempfile::tempdir().unwrap();
+    let a = build(&game, temp.path(), "a", LEVEL, MESH, vec![1; 300]);
+    let text = temp.path().join("notes.txt");
+    std::fs::write(&text, "hello").unwrap();
+    let ctx = egui::Context::default();
+    let mut panel = panel(&game, &ctx);
+    frame(&ctx, &mut panel, &[]);
+    frame(&ctx, &mut panel, &[a, text]);
+    panel.wait();
+    assert_eq!(order(&panel), pairs(&[("a", true)]));
+    assert_eq!(panel.selected(), Some("a"), "the new mod is selected");
+    let (message, error) = panel.message().unwrap();
+    assert!(error && message.contains("notes.txt"), "{message}");
+    // The panel draws its cards, the selected mod and the dialogs.
+    for _ in 0..3 {
+        frame(&ctx, &mut panel, &[]);
+    }
+    // Opened from the system: asks first.
+    panel.offer_install(vec![temp.path().join("a.zip")]);
+    assert!(panel.has_dialog());
+    frame(&ctx, &mut panel, &[]);
+}
+
+#[test]
+fn cards_tell_the_state_of_each_mod() {
+    let (_dir, game) = game(false);
+    let (_other_dir, other) = game_with_nav();
+    let temp = tempfile::tempdir().unwrap();
+    let ctx = egui::Context::default();
+    let mut panel = panel(&game, &ctx);
+    let a = build(&game, temp.path(), "a", LEVEL, MESH, vec![1; 300]);
+    let b = build(&game, temp.path(), "b", LEVEL, MESH, vec![2; 300]);
+    let nav = build(&other, temp.path(), "nav", NAV, 0, vec![3; 64]);
+    panel.install_files(&ctx, vec![a, b, nav]);
+    panel.wait();
+    assert_eq!(
+        panel.state_of("a"),
+        Some(ModState::Conflict(vec![state::Rival {
+            name: "Mod b".into(),
+            wins: true,
+            resources: 1
+        }]))
+    );
+    assert!(matches!(panel.state_of("b"), Some(ModState::Conflict(_))));
+    assert_eq!(panel.state_of("nav"), Some(ModState::Misfit(1)));
+    for id in ["a", "nav"] {
+        panel.set_enabled(&ctx, id, false);
+        panel.wait();
+    }
+    assert_eq!(panel.state_of("a"), Some(ModState::Off));
+    assert_eq!(panel.state_of("b"), Some(ModState::NotWritten));
+    assert!(!panel.up_to_date());
+    panel.apply(&ctx);
+    panel.wait();
+    assert_eq!(panel.state_of("b"), Some(ModState::Ready));
+    assert!(panel.up_to_date());
+    // Writing told its result in a window.
+    assert!(matches!(
+        panel.dialog,
+        Some(dialogs::Dialog::Report(Report { error: false, .. }))
+    ));
+    for id in ["a", "b", "nav"] {
+        let state = panel.state_of(id).unwrap();
+        assert!(!state.text().is_empty() && !state.hint().is_empty());
+    }
+}
+
+/// A game whose extra streams the plain game lacks.
+fn game_with_nav() -> (tempfile::TempDir, Arc<GameInstance>) {
+    game(true)
+}
+
+#[test]
+fn changes_are_undone() {
+    let (_dir, game) = game(false);
+    let temp = tempfile::tempdir().unwrap();
+    let ctx = egui::Context::default();
+    let mut panel = panel(&game, &ctx);
+    let files: Vec<PathBuf> = ["a", "b", "c"]
+        .iter()
+        .enumerate()
+        .map(|(i, id)| build(&game, temp.path(), id, LEVEL, MESH, vec![i as u8; 300]))
+        .collect();
+    panel.install_files(&ctx, files);
+    panel.wait();
+    assert_eq!(panel.undo_label(), None, "installing is not undone");
+
+    panel.set_enabled(&ctx, "b", false);
+    panel.wait();
+    assert!(panel.undo_label().unwrap().contains("Mod b"));
+    panel.undo(&ctx);
+    panel.wait();
+    assert_eq!(
+        order(&panel),
+        pairs(&[("a", true), ("b", true), ("c", true)])
+    );
+    assert_eq!(panel.undo_label(), None);
+
+    panel.move_mod(&ctx, "c", 0);
+    panel.wait();
+    assert_eq!(order(&panel)[0].0, "c");
+    panel.undo(&ctx);
+    panel.wait();
+    assert_eq!(
+        order(&panel),
+        pairs(&[("a", true), ("b", true), ("c", true)])
+    );
+
+    panel.set_enabled(&ctx, "a", false);
+    panel.wait();
+    panel.remove(&ctx, "a");
+    panel.wait();
+    assert_eq!(order(&panel), pairs(&[("b", true), ("c", true)]));
+    panel.undo(&ctx);
+    panel.wait();
+    assert_eq!(
+        order(&panel),
+        pairs(&[("a", false), ("b", true), ("c", true)]),
+        "back in its place, still off"
+    );
+
+    // A removed mod that is not undone leaves no files behind.
+    panel.remove(&ctx, "c");
+    panel.wait();
+    let dir = panel.manager().unwrap().dir().to_path_buf();
+    drop(panel);
+    let left: Vec<String> = std::fs::read_dir(dir)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .filter(|n| n.starts_with('.') || n == "c")
+        .collect();
+    assert!(left.is_empty(), "{left:?}");
+}
+
+#[test]
+fn sets_of_mods_switch_and_undo() {
+    let (_dir, game) = game(false);
+    let temp = tempfile::tempdir().unwrap();
+    let ctx = egui::Context::default();
+    let mut panel = panel(&game, &ctx);
+    let files: Vec<PathBuf> = ["a", "b"]
+        .iter()
+        .enumerate()
+        .map(|(i, id)| build(&game, temp.path(), id, LEVEL, MESH, vec![i as u8; 300]))
+        .collect();
+    panel.install_files(&ctx, files);
+    panel.wait();
+    panel.save_set(&ctx, " Everything ");
+    panel.wait();
+    assert_eq!(
+        panel.sets(),
+        (&["Everything".to_owned()][..], Some("Everything"))
+    );
+    panel.set_enabled(&ctx, "a", false);
+    panel.wait();
+    assert_eq!(panel.sets().1, None);
+    panel.save_set(&ctx, "Only b");
+    panel.wait();
+    panel.use_set(&ctx, "Everything");
+    panel.wait();
+    assert_eq!(order(&panel), pairs(&[("a", true), ("b", true)]));
+    assert_eq!(panel.sets().1, Some("Everything"));
+    panel.undo(&ctx);
+    panel.wait();
+    assert_eq!(panel.sets().1, Some("Only b"));
+    panel.delete_set(&ctx, "Only b");
+    panel.wait();
+    assert_eq!(panel.sets().0, ["Everything".to_owned()]);
+    // The menu of sets draws.
+    frame(&ctx, &mut panel, &[]);
+}
+
+#[test]
+fn integrity_and_reports_are_plain_words() {
+    let (_dir, game) = game(false);
+    let ctx = egui::Context::default();
+    let mut panel = panel(&game, &ctx);
+    panel.check_integrity(&ctx);
+    panel.wait();
+    let Some(dialogs::Dialog::Report(report)) = &panel.dialog else {
+        panic!("no report");
+    };
+    assert!(!report.error, "{}", report.text);
+    let mut report = ApplyReport::default();
+    assert!(describe(&report, "Applied").starts_with("Nothing to do"));
+    report
+        .streams
+        .push(("gf2/a".into(), StreamAction::Rebuilt(2)));
+    report
+        .streams
+        .push(("gf2/b".into(), StreamAction::Restored));
+    report.written.push("gf2/a.str".into());
+    assert_eq!(
+        describe(&report, "Applied"),
+        "Applied: 1 stream rebuilt, 1 restored, 1 file written"
+    );
+}
+
+#[test]
+fn a_card_moves_to_the_gap_it_is_dropped_in() {
+    use crate::cards::target;
+    assert_eq!(target(0, 0), None);
+    assert_eq!(target(0, 1), None);
+    assert_eq!(target(0, 2), Some(1));
+    assert_eq!(target(0, 3), Some(2));
+    assert_eq!(target(2, 0), Some(0));
+    assert_eq!(target(2, 2), None);
+    assert_eq!(target(2, 3), None);
+    assert_eq!(
+        crate::cards::summary("One\ntwo  three\n\nNext"),
+        "One two three"
+    );
+    assert!(is_mod_file(Path::new("a/b.ZIP")) && !is_mod_file(Path::new("a.txt")));
+}

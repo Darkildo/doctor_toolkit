@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- The file type of old toolkit patches, so that the desktop offers Open
+     Mod Manager for them (tools/install-desktop.sh installs it). -->
+<mime-info xmlns="http://www.freedesktop.org/standards/shared-mime-info">
+  <mime-type type="application/x-godfather2-vpat">
+    <comment>Patch for The Godfather II</comment>
+    <glob pattern="*.vpat"/>
+  </mime-type>
+</mime-info>

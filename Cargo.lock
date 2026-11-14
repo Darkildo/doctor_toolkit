@@ -815,7 +815,7 @@ dependencies = [
 
 [[package]]
 name = "doctor-toolkit"
-version = "0.0.2"
+version = "0.0.3"
 dependencies = [
  "binrw",
  "doctor-toolkit-live",
@@ -841,7 +841,7 @@ dependencies = [
 
 [[package]]
 name = "doctor-toolkit-cli"
-version = "0.0.2"
+version = "0.0.3"
 dependencies = [
  "anyhow",
  "clap",
@@ -855,7 +855,7 @@ dependencies = [
 
 [[package]]
 name = "doctor-toolkit-gui"
-version = "0.0.2"
+version = "0.0.3"
 dependencies = [
  "bytemuck",
  "cpal",
@@ -880,11 +880,11 @@ dependencies = [
 
 [[package]]
 name = "doctor-toolkit-live"
-version = "0.0.2"
+version = "0.0.3"
 
 [[package]]
 name = "doctor-toolkit-mcp"
-version = "0.0.2"
+version = "0.0.3"
 dependencies = [
  "doctor-toolkit",
  "png",
@@ -901,19 +901,20 @@ dependencies = [
 
 [[package]]
 name = "doctor-toolkit-mods"
-version = "0.0.2"
+version = "0.0.3"
 dependencies = [
  "doctor-toolkit",
  "eframe",
  "egui",
  "egui_extras",
  "rfd",
+ "tempfile",
  "toml",
 ]
 
 [[package]]
 name = "doctor-toolkit-py"
-version = "0.0.2"
+version = "0.0.3"
 dependencies = [
  "doctor-toolkit",
  "pyo3",

@@ -2,7 +2,7 @@
 # Builds the release package for Windows or macOS (Linux: tools/release.sh):
 #   dist/doctor_toolkit-<version>-windows-x86_64.zip
 #   dist/doctor_toolkit-<version>-macos-<arch>.tar.gz
-# with doctor-toolkit, doctor-toolkit-gui, doctor-toolkit-mods, README,
+# with doctor-toolkit, doctor-toolkit-gui, open-mod-manager, README,
 # LICENSE, the documentation and BUILD-INFO.txt, plus a .sha256 file next to
 # it. Run on the system the package is for (the release workflow does);
 # Git Bash on Windows.
@@ -11,7 +11,7 @@
 #
 # The binaries are built with the `dist` profile (thin LTO, one codegen unit,
 # stripped). macOS binaries are not signed: Gatekeeper asks before the first
-# start (or: xattr -d com.apple.quarantine doctor-toolkit*).
+# start (or: xattr -d com.apple.quarantine doctor-toolkit* open-mod-manager).
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -25,7 +25,7 @@ case "$(uname -s)" in
 esac
 [[ $arch == arm64 ]] && arch=aarch64
 name="doctor_toolkit-$version-$os-$arch"
-bins=(doctor-toolkit doctor-toolkit-gui doctor-toolkit-mods)
+bins=(doctor-toolkit doctor-toolkit-gui open-mod-manager)
 
 if [[ ${1:-} != --skip-build ]]; then
     cargo build --profile dist --locked -p doctor-toolkit-cli -p doctor-toolkit-gui -p doctor-toolkit-mods
@@ -53,7 +53,7 @@ EOF
 if [[ $os == macos ]]; then
     cat >>"$stage/$name/BUILD-INFO.txt" <<EOF
 The programs are not signed: allow them in System Settings > Privacy & Security,
-or run: xattr -d com.apple.quarantine doctor-toolkit doctor-toolkit-gui doctor-toolkit-mods
+or run: xattr -d com.apple.quarantine doctor-toolkit doctor-toolkit-gui open-mod-manager
 EOF
 fi
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Builds the Linux release archive:
 #   dist/doctor_toolkit-<version>-linux-x86_64.tar.gz
-# with doctor-toolkit, doctor-toolkit-gui, doctor-toolkit-mods, README,
+# with doctor-toolkit, doctor-toolkit-gui, open-mod-manager, README,
 # LICENSE, the documentation, the menu entries with their icons and
 # install-desktop.sh, plus a .sha256 file next to it. Next to the archive:
 # the Python module as a wheel (when maturin is installed) and the Blender
@@ -40,7 +40,7 @@ target_dir=${CARGO_TARGET_DIR:-$root/target}
 version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n1)
 arch=$(uname -m)
 name="doctor_toolkit-$version-linux-$arch"
-bins=(doctor-toolkit doctor-toolkit-gui doctor-toolkit-mods)
+bins=(doctor-toolkit doctor-toolkit-gui open-mod-manager)
 
 packages=(-p doctor-toolkit-cli -p doctor-toolkit-gui -p doctor-toolkit-mods)
 if [[ ${1:-} != --skip-build ]] && ! pkg-config --exists alsa; then
@@ -116,7 +116,7 @@ fi
 # next to itself and the entries in desktop/; icons/ is for packagers.
 cp tools/install-desktop.sh "$stage/$name/"
 mkdir -p "$stage/$name/desktop"
-cp tools/desktop/*.desktop "$stage/$name/desktop/"
+cp tools/desktop/*.desktop tools/desktop/*.xml "$stage/$name/desktop/"
 "$bin_dir/doctor-toolkit-gui" --write-icons "$stage/$name/icons" >/dev/null
 cp -r docs/guide docs/formats docs/workspace.md docs/mods.md docs/navigation.md "$stage/$name/docs/"
 cp docs/viewers.md docs/shell.md docs/model-import.md docs/blender.md docs/external-editors.md docs/python.md \

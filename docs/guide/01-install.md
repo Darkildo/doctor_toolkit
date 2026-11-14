@@ -6,9 +6,9 @@
 SHA-256 рядом.
 
 ```sh
-sha256sum -c doctor_toolkit-0.0.2-linux-x86_64.tar.gz.sha256
-tar xzf doctor_toolkit-0.0.2-linux-x86_64.tar.gz
-cd doctor_toolkit-0.0.2-linux-x86_64
+sha256sum -c doctor_toolkit-0.0.3-linux-x86_64.tar.gz.sha256
+tar xzf doctor_toolkit-0.0.3-linux-x86_64.tar.gz
+cd doctor_toolkit-0.0.3-linux-x86_64
 ./doctor-toolkit --version
 ./doctor-toolkit-gui
 ```
@@ -19,11 +19,11 @@ cd doctor_toolkit-0.0.2-linux-x86_64
 |---|---|
 | `doctor-toolkit` | командная строка |
 | `doctor-toolkit-gui` | редактор |
-| `doctor-toolkit-mods` | менеджер модов для игроков |
+| `open-mod-manager` | Open Mod Manager — менеджер модов для игроков (часть doctor_toolkit, «Powered by Doctor») |
 | `README.md`, `LICENSE` | краткое описание на английском, лицензия GPL-3.0 |
 | `docs/` | это руководство и описания форматов |
 | `BUILD-INFO.txt` | версия, коммит, компилятор, минимальная версия glibc, версии символов ALSA, нужные редактору |
-| `install-desktop.sh`, `desktop/`, `icons/` | ярлыки редактора и менеджера модов для меню приложений и их значки |
+| `install-desktop.sh`, `desktop/`, `icons/` | ярлыки редактора и Open Mod Manager для меню приложений, их значки и тип файлов `.vpat` (Open Mod Manager предлагается в «Открыть с помощью» для `.zip` и `.vpat`) |
 
 Установка не нужна: программы можно запускать из любого каталога. Чтобы
 вызывать их по имени, скопируйте их в `~/.local/bin` (он обычно уже в `PATH`).
@@ -104,6 +104,6 @@ ALSA не нужна в любом случае.
 | Индекс игры (кэш) | `~/.cache/doctor-toolkit/` (`$DOCTOR_TOOLKIT_CACHE_DIR`) | да, построится заново |
 | Журнал | `~/.local/state/doctor-toolkit/log.txt` (`$DOCTOR_TOOLKIT_LOG_DIR`) | да |
 | Настройки и раскладка редактора | `~/.config/doctor-toolkit/settings.toml`, `layout.json` (`$DOCTOR_TOOLKIT_CONFIG_DIR`) | да, вернутся умолчания |
-| Ярлыки и значки | `~/.local/share/applications/doctor-toolkit*.desktop`, `~/.local/share/icons/hicolor/*/apps/doctor-toolkit*` | `install-desktop.sh --uninstall` |
+| Ярлыки и значки | `~/.local/share/applications/{doctor-toolkit,open-mod-manager}.desktop`, `~/.local/share/icons/hicolor/*/apps/{doctor-toolkit,open-mod-manager}.*`, `~/.local/share/mime/packages/open-mod-manager.xml` | `install-desktop.sh --uninstall` |
 
 Сканер игры каталог `_doctor_toolkit` пропускает, игра его не читает.

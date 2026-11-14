@@ -72,6 +72,15 @@ pub struct DeployStatus {
     pub pending_reverts: Vec<ResourceKey>,
 }
 
+/// How far [`Deployment::sync_with_progress`] is: `done` of `total`
+/// streams are written, `stream` is written next (empty at the end).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SyncProgress<'a> {
+    pub done: usize,
+    pub total: usize,
+    pub stream: &'a str,
+}
+
 /// No new streams.
 fn no_streams() -> &'static BTreeMap<String, NewStream> {
     static EMPTY: BTreeMap<String, NewStream> = BTreeMap::new();
@@ -310,6 +319,32 @@ impl Deployment {
         desired: impl Fn(&str) -> Vec<Change>,
         payload: impl Fn(&Change) -> Result<Vec<u8>>,
     ) -> Result<ApplyReport> {
+        self.sync_with_progress(
+            record_path,
+            game,
+            names,
+            force,
+            new_streams,
+            desired,
+            payload,
+            &mut |_| {},
+        )
+    }
+
+    /// Like [`Self::sync_with`], telling `progress` before each stream is
+    /// written and once more when all are.
+    #[allow(clippy::too_many_arguments)]
+    pub fn sync_with_progress(
+        &mut self,
+        record_path: &Path,
+        game: &GameInstance,
+        names: &BTreeSet<String>,
+        force: bool,
+        new_streams: &BTreeMap<String, NewStream>,
+        desired: impl Fn(&str) -> Vec<Change>,
+        payload: impl Fn(&Change) -> Result<Vec<u8>>,
+        progress: &mut dyn FnMut(SyncProgress<'_>),
+    ) -> Result<ApplyReport> {
         let mut plan = Vec::new();
         let mut conflicts = Vec::new();
         for name in names {
@@ -356,12 +391,20 @@ impl Deployment {
             }
         }
         let mut report = ApplyReport::default();
+        let total = plan.iter().filter(|(_, _, _, write)| *write).count();
+        let mut done = 0;
         for (name, state, wanted, write) in plan {
             if !write {
                 self.streams.remove(&name);
                 self.save(record_path)?;
                 continue;
             }
+            progress(SyncProgress {
+                done,
+                total,
+                stream: &name,
+            });
+            done += 1;
             let created = self.created(&name, new_streams.get(&name)).cloned();
             match created {
                 Some(stream) => self.sync_new_stream(
@@ -387,6 +430,11 @@ impl Deployment {
         if !stream_tocs.is_empty() {
             self.sync_new_stream_tocs(game, &stream_tocs, &mut report)?;
         }
+        progress(SyncProgress {
+            done: total,
+            total,
+            stream: "",
+        });
         Ok(report)
     }
 

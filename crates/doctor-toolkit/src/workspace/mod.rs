@@ -47,7 +47,7 @@ use crate::resource::lh2::StringTable;
 use crate::resource::texture::{self, Texture, TexturePair};
 use crate::{Error, Result};
 
-pub use deploy::{AppliedStream, DeployStatus, Deployment};
+pub use deploy::{AppliedStream, DeployStatus, Deployment, SyncProgress};
 pub use diff::{
     ApxDiff, BlockChange, ByteDiff, LogicDiff, SemanticDiff, StringChange, StringTableDiff,
     TextureDiff, ValueChange,

@@ -130,6 +130,8 @@ const KEPT_IN_ENGLISH: &[&str] = &[
     "play.dll_overrides",
     "script.lua",
     "browse.col_id",
+    "mods_app.title",
+    "mods_app.powered_by",
 ];
 
 /// Source files of both programs.
