@@ -7,6 +7,8 @@
 //! `live_object_undo` with `--allow-game`), their state and the journal of
 //! the link (`live_object`, `live_object_edits`), and the moves written
 //! into the workspace (`live_objects_to_workspace`, `--allow-edits`).
+//! Stage 58: the profile of the running game measured by the module
+//! (`live_profile`, read-only).
 
 use std::time::Duration;
 
@@ -744,4 +746,43 @@ mod tests {
         assert_eq!(super::parse_time("23:60"), None);
         assert_eq!(super::hash_of("global_tutorial_payday"), 0x9381_3AB9);
     }
+}
+
+#[derive(Debug, Default, Deserialize, JsonSchema)]
+pub struct LiveProfileParams {
+    /// Empty the module's rings (frame and present times) and read
+    /// counters after this answer, so that the next call measures from
+    /// now.
+    #[serde(default)]
+    pub reset: bool,
+    /// Also walk the game's address space (committed, reserved, free,
+    /// largest free block; up to 2 s).
+    #[serde(default)]
+    pub memory: bool,
+    /// Sample where the main and render threads stand for this many
+    /// milliseconds first (0: no sampling; at most 10 000).
+    #[serde(default)]
+    pub sample_ms: u32,
+}
+
+/// The profile of the running game (stage 58): statistics of the rings and
+/// the first 50 sampled places per thread.
+pub fn live_profile(kit: &Toolkit, p: LiveProfileParams) -> ToolResult<Output> {
+    if p.sample_ms > proto::profile::MAX_SAMPLE_MS {
+        return fail(format!(
+            "sample_ms is at most {}",
+            proto::profile::MAX_SAMPLE_MS
+        ));
+    }
+    let mut c = connect(kit)?;
+    if !c.has_profile() {
+        return fail(format!(
+            "the module in the game speaks protocol {}: the profile needs the module of this toolkit (protocol 7)",
+            c.version()
+        ));
+    }
+    let profile = c.profile(p.reset, p.memory, p.sample_ms)?;
+    Ok(Output::Json(doctor_toolkit::live::profile::to_json(
+        &profile, false,
+    )))
 }

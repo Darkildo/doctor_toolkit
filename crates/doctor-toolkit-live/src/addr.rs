@@ -491,3 +491,56 @@ pub const COLLISION_PART_FLAGS: u32 = 0x28;
 /// collision part's deactivation and activation run.
 pub const COLLISION_REMOVE: u32 = 0x004B_66A0;
 pub const COLLISION_ADD: u32 = 0x004B_6330;
+
+// --- The profile of the game (stage 58) --------------------------------------
+
+/// The game's count of frames (`u32`): `0x0068BAF0`, the start of a frame,
+/// adds 1 to it first and puts it into the frame's command buffer.
+pub const GAME_FRAME: u32 = 0x0112_9A8C;
+/// `call 0x0060D8B0` in `0x0040DF60`, the callback the render thread runs
+/// at the end of a frame (its address stands at `0x0040E068` and
+/// `0x0040E816`): between two readings of the performance counter into
+/// `*0x01223380 + 0xA8` and `+0xB0` it presents the frame. The module
+/// points this call at its own function, which takes the time before and
+/// after (`E8 rel32`, five bytes).
+pub const PRESENT_CALL: u32 = 0x0040_DFA2;
+/// The present: `cdecl (char, int)`, two pushed arguments, the caller pops
+/// them (`add esp, 8`); it runs the game's limiter `0x00608CA0` and
+/// `IDirect3DDevice9::Present`. Also called from `0x00608FD5` and
+/// `0x009CA969` (not measured).
+pub const PRESENT_CALLEE: u32 = 0x0060_D8B0;
+/// Import slot of `ReadFile` (`KERNEL32`).
+pub const IAT_READ_FILE: u32 = 0x00D5_5268;
+/// Every `call [0x00D55268]` (`FF 15`, six bytes) of the code: the read of
+/// `0x00ACEFC0`, of the file class (`0x00ABD7D0`, slot `+0x1C` of its
+/// vtable `0x00D9AFC0`), `0x00ABEC10`, the C library (`0x00BB684D`,
+/// `0x00BB6905`, `0x00BB6B31`) and a profile file (`0x006987C0`). Like the
+/// calls of `CreateFileA` (stage 46) they become `call hook; nop`; the
+/// hook calls what the slot holds then. The only other use of the slot,
+/// the thunk `jmp [0x00D55268]` at `0x00B9608C`, is called by nothing.
+pub const READ_FILE_CALLS: [u32; 7] = [
+    0x00AC_EFE0,
+    0x00AB_D7E8,
+    0x00AB_EC29,
+    0x00BB_684D,
+    0x00BB_6905,
+    0x00BB_6B31,
+    0x0069_8947,
+];
+/// `mov edi, [0x00D55268]` of `0x00697ED0` (a read of a profile file that
+/// calls `edi` afterwards): becomes `mov edi, hook; nop`.
+pub const READ_FILE_LOADS: [u32; 1] = [0x0069_7F12];
+/// Ticks of the simulation per second (`f32`; `0x0040A20C` divides by it).
+pub const SIM_HZ: u32 = 0x0110_AE4C;
+/// Whether the simulation takes fixed steps (byte; set by `0x0067C130`,
+/// read by `0x00409D87`).
+pub const FIXED_STEP: u32 = 0x0110_AE75;
+/// Vertical sync of the renderer (byte; set by `0x0060E680`, read by
+/// `0x0060E690`).
+pub const VSYNC: u32 = 0x00F1_5A39;
+/// The limiter of the windowed mode (byte): `0x00608CA0` waits only when it
+/// is set (`0x00608CAC`).
+pub const WINDOWED_LIMITER: u32 = 0x0120_575A;
+/// Width and height of the back buffer (`u16`, read by `0x00607999`).
+pub const BACK_BUFFER_WIDTH: u32 = 0x0120_58B8;
+pub const BACK_BUFFER_HEIGHT: u32 = 0x0120_58BC;

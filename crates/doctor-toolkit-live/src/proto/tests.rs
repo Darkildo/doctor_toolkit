@@ -150,7 +150,123 @@ fn requests() -> Vec<Request> {
         Request::ObjectForget {
             guid: Some([9; 16]),
         },
+        Request::Profile {
+            reset: false,
+            memory: false,
+            sample_ms: 0,
+        },
+        Request::Profile {
+            reset: true,
+            memory: true,
+            sample_ms: 2_500,
+        },
     ]
+}
+
+/// A profile with every part filled.
+fn full_profile() -> Profile {
+    Profile {
+        uptime_us: 61_000_123,
+        qpc_frequency: 10_000_000,
+        reset_at_us: 30_000_000,
+        main_thread: 0x24,
+        render_thread: 0x3C,
+        present_hooked: true,
+        reads_hooked: true,
+        passes: 3_600,
+        pass_us: vec![16_000, 17_500, 33_000],
+        presents: 3_590,
+        present_interval_us: vec![16_600, 16_700],
+        present_us: vec![900, 15_000],
+        clock: Clock {
+            game_frame: Some(3_500),
+            sim_ms: Some(58_000),
+            sim_hz: Some(30.0),
+            fixed_step: Some(1),
+            vsync: Some(0),
+            windowed_limiter: Some(1),
+            back_buffer: Some([1280, 720]),
+        },
+        main_cpu: Some(CpuTime {
+            user_ms: 40_000,
+            kernel_ms: 2_000,
+        }),
+        render_cpu: Some(CpuTime {
+            user_ms: 10_000,
+            kernel_ms: 9_000,
+        }),
+        process_cpu: None,
+        io: vec![
+            ThreadIo {
+                thread: 0x24,
+                reads: 10,
+                bytes: 1 << 20,
+                total_us: 9_000,
+                max_us: 5_000,
+                slow: 1,
+            },
+            ThreadIo {
+                thread: 0,
+                reads: 1,
+                bytes: 4,
+                total_us: 3,
+                max_us: 3,
+                slow: 0,
+            },
+        ],
+        io_sites: vec![SiteIo {
+            site: 0x00AC_EFE0,
+            reads: 11,
+            bytes: (1 << 20) + 4,
+            total_us: 9_003,
+        }],
+        slow_reads: vec![SlowRead {
+            thread: 0x24,
+            bytes: 262_144,
+            us: 5_000,
+            at_ms: 45_000,
+        }],
+        textures: Some(TextureUse {
+            taken: 900,
+            created: 880,
+            render_targets: 12,
+            cubes: 3,
+            volumes: 1,
+            managed: 860,
+            default_pool: 20,
+            bytes: 200 << 20,
+            default_bytes: 30 << 20,
+            highest: Some(1_020),
+            formats: vec![FormatUse {
+                format: 30,
+                count: 500,
+                bytes: 100 << 20,
+            }],
+        }),
+        memory: Some(MemoryMap {
+            committed: 1_500 << 20,
+            reserved: 300 << 20,
+            free: 2_200 << 20,
+            largest_free: 900 << 20,
+            largest_free_at: 0x8000_0000,
+            committed_high: 200 << 20,
+            regions: 4_321,
+            finished: true,
+            walk_ms: 140,
+            total_virtual: 4 << 30,
+            avail_virtual: 2_200 << 20,
+        }),
+        samples: vec![ThreadSamples {
+            thread: 0x24,
+            samples: 900,
+            failed: 2,
+            dropped: 0,
+            distinct: 300,
+            elapsed_ms: 1_000,
+            top: vec![(0x0060_8D10, 400), (0x7BC5_0000, 100)],
+            callers: vec![(0x0040_DFA7, 90)],
+        }],
+    }
 }
 
 const MATRIX: Matrix = [
@@ -421,6 +537,8 @@ fn responses() -> Vec<(u16, Response)> {
             }]),
         ),
         (kind::OBJECT_EDITS, Response::ObjectEdits(Vec::new())),
+        (kind::PROFILE, Response::Profile(Box::new(full_profile()))),
+        (kind::PROFILE, Response::Profile(Box::default())),
         (
             kind::OBJECT_FORGET,
             Response::Done(Done {
@@ -609,7 +727,7 @@ fn writes_are_marked() {
             false, false, false, false, false, false, false, true, true, true, true, true, false,
             false, false, false, false, false, false, false, false, true, true, true, false, true,
             true, false, true, true, false, false, true, true, false, false, false, false, true,
-            false, false, true, true, true, true, false, false
+            false, false, true, true, true, true, false, false, false, false
         ]
     );
 }
@@ -619,7 +737,7 @@ fn header_layout_is_fixed() {
     let bytes = Request::Status.to_frame(0x0102_0304);
     assert_eq!(
         bytes,
-        [b'D', b'T', b'L', b'V', 6, 0, 2, 0, 4, 3, 2, 1, 0, 0, 0, 0]
+        [b'D', b'T', b'L', b'V', 7, 0, 2, 0, 4, 3, 2, 1, 0, 0, 0, 0]
     );
     // A client of stage 34 sends version 1, and gets its answer in it.
     let old = Request::Status.to_frame_of(1, 0x0102_0304);
@@ -642,8 +760,8 @@ fn header_layout_is_fixed() {
 
 #[test]
 fn versions_and_their_requests() {
-    assert!((1..=6).all(supported));
-    assert!(!supported(0) && !supported(7));
+    assert!((1..=7).all(supported));
+    assert!(!supported(0) && !supported(8));
     assert_eq!(OLDEST_PROTOCOL_VERSION, 1);
     for r in requests() {
         let since = match r {
@@ -672,6 +790,7 @@ fn versions_and_their_requests() {
             | Request::ObjectUndo { .. }
             | Request::ObjectEdits
             | Request::ObjectForget { .. } => 6,
+            Request::Profile { .. } => 7,
             _ => 1,
         };
         assert_eq!(r.since(), since, "{r:?}");
@@ -816,4 +935,47 @@ fn yaw_of_a_pose() {
         forward: [1.0, 0.0, 0.0],
     };
     assert!((pose.yaw() - std::f32::consts::FRAC_PI_2).abs() < 1e-6);
+}
+
+#[test]
+fn profiles_are_well_below_a_megabyte_and_broken_ones_are_errors() {
+    // Every ring full, every thread and the largest sampler answer.
+    let mut p = full_profile();
+    p.pass_us = vec![16_000; crate::profile::RING];
+    p.present_interval_us = vec![16_000; crate::profile::RING];
+    p.present_us = vec![1_000; crate::profile::RING];
+    p.io = vec![ThreadIo::default(); crate::profile::IO_THREADS + 1];
+    p.slow_reads = vec![SlowRead::default(); crate::profile::SLOW_RING];
+    let mut s = p.samples[0].clone();
+    s.top = (0..crate::profile::TOP_EIPS as u32)
+        .map(|i| (i, 1))
+        .collect();
+    p.samples = vec![s.clone(), s];
+    let payload = Response::Profile(Box::new(p.clone())).encode();
+    assert!(payload.len() < 128 * 1024, "{}", payload.len());
+    assert_eq!(
+        Response::decode(kind::PROFILE | REPLY, &payload).unwrap(),
+        Response::Profile(Box::new(p))
+    );
+    // Cut short anywhere.
+    let payload = Response::Profile(Box::new(full_profile())).encode();
+    for cut in [0, 8, 40, payload.len() / 2, payload.len() - 1] {
+        assert!(Response::decode(kind::PROFILE | REPLY, &payload[..cut]).is_err());
+    }
+    assert_eq!(
+        Request::decode(kind::PROFILE, &[1, 0]),
+        Err(DecodeError::Truncated)
+    );
+    assert_eq!(
+        Request::decode(kind::PROFILE, &[2, 0, 0, 0, 0, 0]),
+        Err(DecodeError::BadValue("bool"))
+    );
+    assert!(
+        !Request::Profile {
+            reset: true,
+            memory: true,
+            sample_ms: 1
+        }
+        .writes()
+    );
 }

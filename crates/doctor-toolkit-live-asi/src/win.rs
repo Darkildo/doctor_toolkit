@@ -66,6 +66,77 @@ unsafe extern "system" {
         out: *mut u16,
         out_len: i32,
     ) -> i32;
+    // Stage 58: the profile.
+    pub fn QueryPerformanceCounter(count: *mut i64) -> i32;
+    pub fn QueryPerformanceFrequency(frequency: *mut i64) -> i32;
+    pub fn OpenThread(access: u32, inherit: i32, id: u32) -> Handle;
+    pub fn GetThreadTimes(
+        thread: Handle,
+        creation: *mut u64,
+        exit: *mut u64,
+        kernel: *mut u64,
+        user: *mut u64,
+    ) -> i32;
+    pub fn GetProcessTimes(
+        process: Handle,
+        creation: *mut u64,
+        exit: *mut u64,
+        kernel: *mut u64,
+        user: *mut u64,
+    ) -> i32;
+    pub fn SuspendThread(thread: Handle) -> u32;
+    pub fn ResumeThread(thread: Handle) -> u32;
+    pub fn GetThreadContext(thread: Handle, context: *mut Context) -> i32;
+    pub fn GlobalMemoryStatusEx(status: *mut MemoryStatusEx) -> i32;
+    pub fn Sleep(ms: u32);
+}
+
+pub const MEM_RESERVE: u32 = 0x2000;
+pub const MEM_FREE: u32 = 0x1_0000;
+/// `THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT | THREAD_QUERY_INFORMATION`.
+pub const THREAD_SAMPLE: u32 = 0x0002 | 0x0008 | 0x0040;
+pub const THREAD_QUERY_INFORMATION: u32 = 0x0040;
+/// `CONTEXT_i386 | CONTEXT_CONTROL`: `Ebp`, `Eip`, `SegCs`, `EFlags`,
+/// `Esp`, `SegSs`.
+pub const CONTEXT_CONTROL: u32 = 0x0001_0001;
+
+/// `CONTEXT` of x86 (716 bytes): `ContextFlags` at 0, `Eip` at `0xB8`.
+#[repr(C, align(16))]
+pub struct Context {
+    pub words: [u32; 179],
+}
+
+impl Context {
+    pub const FLAGS: usize = 0;
+    pub const EIP: usize = 0xB8 / 4;
+    pub const ESP: usize = 0xC4 / 4;
+}
+
+#[link(name = "ntdll")]
+unsafe extern "system" {
+    /// `ThreadBasicInformation` (class 0, 28 bytes): `TebBaseAddress` at 4.
+    pub fn NtQueryInformationThread(
+        thread: Handle,
+        class: u32,
+        info: *mut c_void,
+        length: u32,
+        returned: *mut u32,
+    ) -> i32;
+}
+
+/// `MEMORYSTATUSEX`.
+#[repr(C)]
+#[derive(Default)]
+pub struct MemoryStatusEx {
+    pub length: u32,
+    pub memory_load: u32,
+    pub total_phys: u64,
+    pub avail_phys: u64,
+    pub total_page_file: u64,
+    pub avail_page_file: u64,
+    pub total_virtual: u64,
+    pub avail_virtual: u64,
+    pub avail_extended_virtual: u64,
 }
 
 /// `INVALID_HANDLE_VALUE` and `INVALID_FILE_ATTRIBUTES`.

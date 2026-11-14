@@ -25,7 +25,10 @@
 //!   its own — a mod or a workspace without writing into the game (stage
 //!   46);
 //! - [`edit`]: moving, turning, hiding and showing objects while the game
-//!   runs, and the journal of those edits for undo (stage 47).
+//!   runs, and the journal of those edits for undo (stage 47);
+//! - [`profile`]: the pace of the game measured from inside — the main
+//!   loop, the presents, reads of files, CPU time, textures, memory and a
+//!   sampler of its threads (stage 58).
 //!
 //! The crate has no dependencies: the module builds it for
 //! `i686-pc-windows-gnu`, the editor for the host.
@@ -37,6 +40,7 @@ pub mod edit;
 pub mod edition;
 pub mod files;
 pub mod journal;
+pub mod profile;
 pub mod proto;
 pub mod state;
 mod wire;

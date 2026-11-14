@@ -18,7 +18,9 @@
 //! configuration's `redirect` lines, each opened once by the fake game.
 //! Protocol 6 (stage 47): objects with a matrix move, turn, hide and show
 //! and the journal of these edits undoes them, as in the module
-//! ([`FakeEntity`]).
+//! ([`FakeEntity`]). Protocol 7 (stage 58): a profile made up from the
+//! frame count ([`fake_profile`]): a game at about 30 frames a second with
+//! a slow pass now and then, reads of three threads, a few textures.
 
 use std::net::{Ipv4Addr, TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -99,6 +101,8 @@ pub struct FakeWorld {
     pub entities: Vec<FakeEntity>,
     /// The journal of edits.
     pub edits: EditJournal,
+    /// The frame of the last reset of the profile (protocol 7).
+    pub profile_reset: u32,
 }
 
 /// A variable of the fake game: `doctor_fake_flag`, 0 at the start.
@@ -232,6 +236,7 @@ impl Default for FakeWorld {
                 }))
                 .collect(),
             edits: EditJournal::new(),
+            profile_reset: 0,
         }
     }
 }
@@ -1126,6 +1131,17 @@ fn answer(request: Request, config: &Config, version: u16, w: &mut FakeWorld) ->
                 note: format!("forgot {n} edit(s); the game keeps them"),
             })
         }
+        Request::Profile {
+            reset,
+            memory,
+            sample_ms,
+        } => {
+            let p = fake_profile(w, memory, sample_ms);
+            if reset {
+                w.profile_reset = w.frame;
+            }
+            Response::Profile(Box::new(p))
+        }
         Request::Peek { address, len } => {
             if address < 0x0040_0000 {
                 Response::error(
@@ -1140,5 +1156,160 @@ fn answer(request: Request, config: &Config, version: u16, w: &mut FakeWorld) ->
                 )
             }
         }
+    }
+}
+
+/// Thread ids of the fake game: main loop, render, a loader.
+pub const FAKE_THREADS: [u32; 3] = [0x0104, 0x0118, 0x0130];
+
+/// The profile of the fake game (protocol 7): the same for the same frame
+/// count and the same last reset.
+pub fn fake_profile(w: &FakeWorld, memory: bool, sample_ms: u32) -> doctor_toolkit_live::Profile {
+    use doctor_toolkit_live::profile::{
+        Clock, CpuTime, MAX_SAMPLE_MS, MemoryMap, Profile, RING, SiteIo, SlowRead, TEXTURES,
+        TextureUse, ThreadIo, ThreadSamples,
+    };
+    let [main, render, loader] = FAKE_THREADS;
+    let n = (w.frame.saturating_sub(w.profile_reset) as usize).min(RING);
+    // About 30 passes a second, every 50th one slow.
+    let pass_us: Vec<u32> = (0..n)
+        .map(|i| {
+            if i % 50 == 49 {
+                120_000
+            } else {
+                33_000 + (i % 7) as u32 * 100
+            }
+        })
+        .collect();
+    let present_interval_us = pass_us.clone();
+    let present_us = (0..n).map(|i| 2_000 + (i % 5) as u32 * 100).collect();
+    let since = u64::from(w.frame.saturating_sub(w.profile_reset));
+    let mut table = vec![0u8; TEXTURES * TextureUse::ENTRY];
+    let mut texture =
+        |i: usize, state: u8, levels: u8, size: u16, format: u8, flags: u32, pool: u32| {
+            let e = &mut table[i * TextureUse::ENTRY..(i + 1) * TextureUse::ENTRY];
+            e[0] = state;
+            e[1] = levels;
+            e[2..4].copy_from_slice(&size.to_le_bytes());
+            e[4..6].copy_from_slice(&size.to_le_bytes());
+            e[8] = format;
+            e[0xC..0x10].copy_from_slice(&flags.to_le_bytes());
+            e[0x30..0x34].copy_from_slice(&pool.to_le_bytes());
+        };
+    texture(0, 2, 1, 1024, 3, 8, 0);
+    texture(1, 2, 1, 1024, 0x1A, 8, 0);
+    texture(2, 2, 11, 1024, 30, 0, 1);
+    texture(3, 2, 9, 256, 33, 2, 1);
+    texture(4, 1, 1, 64, 3, 0, 1);
+    let sampled = |thread: u32, hot: u32| {
+        let total = sample_ms.min(MAX_SAMPLE_MS);
+        let top: Vec<(u32, u32)> = [
+            (hot, total / 2),
+            (0x0060_8D40, total / 4),
+            (0x7BC5_1234, total - total / 2 - total / 4),
+        ]
+        .into_iter()
+        .filter(|e| e.1 > 0)
+        .collect();
+        ThreadSamples {
+            thread,
+            samples: total,
+            failed: 0,
+            dropped: 0,
+            distinct: top.len() as u32,
+            elapsed_ms: total,
+            callers: top
+                .iter()
+                .filter(|e| !super::proto::profile::in_image(e.0))
+                .map(|&(_, n)| (0x0040_DFA7, n))
+                .collect(),
+            top,
+        }
+    };
+    Profile {
+        uptime_us: u64::from(w.frame) * 33_333,
+        qpc_frequency: 10_000_000,
+        reset_at_us: u64::from(w.profile_reset) * 33_333,
+        main_thread: main,
+        render_thread: render,
+        present_hooked: true,
+        reads_hooked: true,
+        passes: u64::from(w.frame),
+        pass_us,
+        presents: u64::from(w.frame),
+        present_interval_us,
+        present_us,
+        clock: Clock {
+            game_frame: Some(w.frame),
+            sim_ms: Some(w.sim_time_ms),
+            sim_hz: Some(30.0),
+            fixed_step: Some(1),
+            vsync: Some(0),
+            windowed_limiter: Some(1),
+            back_buffer: Some([1280, 720]),
+        },
+        main_cpu: Some(CpuTime {
+            user_ms: w.frame * 20,
+            kernel_ms: w.frame,
+        }),
+        render_cpu: Some(CpuTime {
+            user_ms: w.frame * 5,
+            kernel_ms: w.frame * 3,
+        }),
+        process_cpu: Some(CpuTime {
+            user_ms: w.frame * 30,
+            kernel_ms: w.frame * 5,
+        }),
+        io: vec![
+            ThreadIo {
+                thread: main,
+                reads: 12 * since as u32,
+                bytes: 4_096 * 12 * since,
+                total_us: 50 * 12 * since,
+                max_us: 900,
+                slow: 0,
+            },
+            ThreadIo {
+                thread: loader,
+                reads: 4 * since as u32,
+                bytes: 262_144 * 4 * since,
+                total_us: 6_000 * 4 * since,
+                max_us: 25_000,
+                slow: 2 * since as u32,
+            },
+        ],
+        io_sites: vec![SiteIo {
+            site: doctor_toolkit_live::addr::READ_FILE_CALLS[0],
+            reads: 16 * since as u32,
+            bytes: (4_096 * 12 + 262_144 * 4) * since,
+            total_us: (50 * 12 + 6_000 * 4) * since,
+        }],
+        slow_reads: (0..since.min(3) as u32)
+            .map(|i| SlowRead {
+                thread: loader,
+                bytes: 262_144,
+                us: 25_000 - i * 1_000,
+                at_ms: (w.frame - i) * 33,
+            })
+            .collect(),
+        textures: Some(TextureUse::from_table(&table)),
+        memory: memory.then_some(MemoryMap {
+            committed: 1_400 << 20,
+            reserved: 250 << 20,
+            free: 2_400 << 20,
+            largest_free: 1_100 << 20,
+            largest_free_at: 0x9000_0000,
+            committed_high: 300 << 20,
+            regions: 3_210,
+            finished: true,
+            walk_ms: 120,
+            total_virtual: (4 << 30) - (128 << 10),
+            avail_virtual: 2_400 << 20,
+        }),
+        samples: if sample_ms > 0 {
+            vec![sampled(main, 0x0068_B04B), sampled(render, 0x0060_D8B0)]
+        } else {
+            Vec::new()
+        },
     }
 }

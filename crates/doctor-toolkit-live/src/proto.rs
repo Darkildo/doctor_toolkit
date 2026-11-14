@@ -53,6 +53,11 @@
 //! the module's journal of edits ([`Request::ObjectEdits`],
 //! [`Request::ObjectForget`]).
 //!
+//! Version 7 (stage 58) adds [`Request::Profile`]: the pace of the main
+//! loop and of the presents, the reads of files, the CPU time of the
+//! threads, the textures, the address space and the clock of the game,
+//! and a sampler of where its threads stand ([`crate::profile`]).
+//!
 //! Writes into the game ([`Request::Teleport`], [`Request::Send`],
 //! [`Request::Lua`]) are separate requests: the editor asks before it sends
 //! them, and the module refuses them when its configuration says
@@ -65,6 +70,10 @@ pub use crate::debug::{BreakOn, BreakRule, Control, DebugState, Stop, StopPlace,
 pub use crate::edit::{EditJournal, EditKind, EditValue, Matrix, ObjectEdit, ObjectState};
 pub use crate::files::{FileUse, Files};
 pub use crate::journal::{Event, EventBatch, EventBody, MessageOrigin, OutputSource};
+pub use crate::profile::{
+    Clock, CpuTime, FormatUse, MemoryMap, Profile, SiteIo, SlowRead, Stats, TextureUse, ThreadIo,
+    ThreadSamples,
+};
 pub use crate::state::{
     Checkpoint, CrewSlot, Family, FamilyInfo, Mission, Money, MoneyChange, Rain, StreamAction,
     StreamQueue, StreamRequest, TimeChange, TimeOfDay, Variable, Weather,
@@ -75,7 +84,7 @@ pub use crate::world::{World, WorldFilter, WorldObject};
 /// Magic of every frame.
 pub const MAGIC: [u8; 4] = *b"DTLV";
 /// Version of this protocol: what a client sends first.
-pub const PROTOCOL_VERSION: u16 = 6;
+pub const PROTOCOL_VERSION: u16 = 7;
 /// Oldest version a module still answers.
 pub const OLDEST_PROTOCOL_VERSION: u16 = 1;
 
@@ -367,6 +376,17 @@ pub enum Request {
     /// Version 6: drops the edits of `guid` (all when `None`) from the
     /// journal without undoing them — after they went into a workspace.
     ObjectForget { guid: Option<Guid> },
+    /// Version 7: the profile of the game measured from inside
+    /// ([`crate::profile`]). `reset` empties the rings and the counters of
+    /// reads after the answer is made; `memory` walks the address space
+    /// (up to 2 s); `sample_ms` (at most
+    /// [`crate::profile::MAX_SAMPLE_MS`]) samples where the main and the
+    /// render thread stand first. Reads only.
+    Profile {
+        reset: bool,
+        memory: bool,
+        sample_ms: u32,
+    },
 }
 
 /// Kinds of requests.
@@ -407,6 +427,7 @@ pub mod kind {
     pub const OBJECT_UNDO: u16 = 34;
     pub const OBJECT_EDITS: u16 = 35;
     pub const OBJECT_FORGET: u16 = 36;
+    pub const PROFILE: u16 = 37;
 }
 
 impl Request {
@@ -448,6 +469,7 @@ impl Request {
             Self::ObjectUndo { .. } => kind::OBJECT_UNDO,
             Self::ObjectEdits => kind::OBJECT_EDITS,
             Self::ObjectForget { .. } => kind::OBJECT_FORGET,
+            Self::Profile { .. } => kind::PROFILE,
         }
     }
 
@@ -479,6 +501,7 @@ impl Request {
             | Self::ObjectUndo { .. }
             | Self::ObjectEdits
             | Self::ObjectForget { .. } => 6,
+            Self::Profile { .. } => 7,
             _ => 1,
         }
     }
@@ -614,6 +637,15 @@ impl Request {
                 w.bytes(guid);
                 w.bool(*enabled);
                 w.bool(*logic);
+            }
+            Self::Profile {
+                reset,
+                memory,
+                sample_ms,
+            } => {
+                w.bool(*reset);
+                w.bool(*memory);
+                w.u32(*sample_ms);
             }
             Self::ObjectUndo { guid } | Self::ObjectForget { guid } => match guid {
                 Some(g) => {
@@ -765,6 +797,11 @@ impl Request {
             kind::OBJECT_EDITS => Self::ObjectEdits,
             kind::OBJECT_FORGET => Self::ObjectForget {
                 guid: if r.bool()? { Some(r.guid()?) } else { None },
+            },
+            kind::PROFILE => Self::Profile {
+                reset: r.bool()?,
+                memory: r.bool()?,
+                sample_ms: r.u32()?,
             },
             other => return Err(DecodeError::UnknownKind(other)),
         };
@@ -998,6 +1035,8 @@ pub enum Response {
     ObjectEdit(ObjectEdit),
     /// Version 6: answer to [`Request::ObjectEdits`].
     ObjectEdits(Vec<ObjectEdit>),
+    /// Version 7: answer to [`Request::Profile`].
+    Profile(Box<Profile>),
     Error(Failure),
 }
 
@@ -1122,6 +1161,7 @@ impl Response {
             Self::Object(s) => crate::edit::put_state(&mut w, s),
             Self::ObjectEdit(e) => crate::edit::put_edit(&mut w, e),
             Self::ObjectEdits(list) => crate::edit::put_edits(&mut w, list),
+            Self::Profile(p) => crate::profile::put_profile(&mut w, p),
             Self::Error(e) => {
                 w.u16(e.code as u16);
                 w.str(&e.message);
@@ -1240,6 +1280,7 @@ impl Response {
                     Self::ObjectEdit(crate::edit::get_edit(&mut r)?)
                 }
                 kind::OBJECT_EDITS => Self::ObjectEdits(crate::edit::get_edits(&mut r)?),
+                kind::PROFILE => Self::Profile(Box::new(crate::profile::get_profile(&mut r)?)),
                 other => return Err(DecodeError::UnknownKind(other | REPLY)),
             }
         };

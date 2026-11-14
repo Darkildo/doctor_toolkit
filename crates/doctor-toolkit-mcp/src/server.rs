@@ -30,7 +30,8 @@ objects (object -> messages -> listeners). strings searches localised text, look
 hashes. workspace_status and workspace_diff show edits not yet written into the game. \
 live_status, player and objects_near read the running game over the live link; game_state \
 (time of day, weather, money, crew, checkpoint, stream requests) and variables (the story's \
-variabledictionary variables by name) read its state. \
+variabledictionary variables by name) read its state; live_profile measures it from inside \
+(frame and present times, file reads, CPU, textures, where its threads stand). \
 export writes a resource as files (model, texture, sound, JSON, ...) and media lists and \
 exports the game's movies and streamed sounds, into the folder given with --output-dir. \
 mods shows the mod manager, integrity checks the game files against their originals. \
@@ -586,6 +587,32 @@ impl Server {
     ) -> Result<CallToolResult, ErrorData> {
         self.run("live_object_edits", move |k| {
             tools::live::live_object_edits(k, params.0)
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Measure the running game from inside (the live module, protocol 7): \
+                       main-loop passes per second and frame-time percentiles, present interval \
+                       and duration, CPU time of the main and render threads, file reads by \
+                       thread (slow and large ones), texture table use, the game's clock \
+                       values; with memory=true the address space; with sample_ms where the \
+                       main and render threads stand (top instruction pointers, inside \
+                       godfather2.exe or not). reset=true restarts the counters after the \
+                       answer. Read-only.",
+        annotations(
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = false,
+            open_world_hint = false
+        )
+    )]
+    async fn live_profile(
+        &self,
+        params: Parameters<tools::live::LiveProfileParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.run("live_profile", move |k| {
+            tools::live::live_profile(k, params.0)
         })
         .await
     }

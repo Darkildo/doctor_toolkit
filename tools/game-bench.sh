@@ -81,7 +81,9 @@
 #   MEMORY=1      start the game as a child of tools/bench/gamemem.py, which
 #                 reads its memory (only reads) for find, track and pos
 #   TRACE_FILES=1 log every file the game opens (strace) to OUT/files.trace;
-#                 TRACE_SYSCALLS (default openat) widens it, e.g. openat,pread64
+#                 TRACE_SYSCALLS (default openat) widens it, e.g. openat,pread64;
+#                 TRACE_OPTS adds strace options, e.g. "-ttt -T" (time of each
+#                 call and its duration, for the cost of loading streams)
 #   SESSION_MAX   seconds a `start` session may run (default 3600)
 #   GAME_OPTIONS  the game's own launch options, written to SHADOW/cmd.txt
 #                 for this run (the game ignores its command line and reads
@@ -442,7 +444,9 @@ EOF
     local -a trace=()
     if [[ ${TRACE_FILES:-0} == 1 ]]; then
         # Every file the game opens, to learn which streams a level loads.
-        trace=(strace -f -qq -e "trace=${TRACE_SYSCALLS:-openat}" -e signal=none -o "$out/files.trace")
+        local -a trace_opts=()
+        read -r -a trace_opts <<<"${TRACE_OPTS:-}"
+        trace=(strace -f -qq "${trace_opts[@]}" -e "trace=${TRACE_SYSCALLS:-openat}" -e signal=none -o "$out/files.trace")
     fi
     local -a memory=()
     if [[ ${MEMORY:-0} == 1 ]]; then

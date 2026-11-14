@@ -738,3 +738,74 @@ fn objects_edited_in_the_running_game() {
     assert!(!o.status.success());
     assert!(stderr(&o).contains("protocol 5"), "{}", stderr(&o));
 }
+
+/// `live profile` (stage 58): text, `--json`, `--memory`, `--sample`,
+/// `--reset`; the cap of the sampler; a module of protocol 6.
+#[test]
+fn profile_of_the_game() {
+    let game = fake(false);
+    let logs = tempfile::tempdir().unwrap();
+    let port = game.port.to_string();
+    let cmd = |sub: &[&str]| {
+        let mut args = vec!["live", "profile", "--port", port.as_str(), "--token", "tok"];
+        args.extend_from_slice(sub);
+        run(&args, logs.path())
+    };
+    let o = cmd(&[]);
+    assert!(o.status.success(), "{}", stderr(&o));
+    let text = stdout(&o);
+    for part in [
+        "main loop:",
+        "passes/s",
+        "p99",
+        "present takes",
+        "CPU: main",
+        "reads by thread:",
+        "(main)",
+        "slow or large reads",
+        "textures: 5/4096",
+        "clock: game frame",
+    ] {
+        assert!(text.contains(part), "{part} in {text}");
+    }
+    assert!(
+        !text.contains("memory:") && !text.contains("sampler"),
+        "{text}"
+    );
+
+    let o = cmd(&["--memory", "--sample", "500", "--reset"]);
+    assert!(o.status.success(), "{}", stderr(&o));
+    let text = stdout(&o);
+    assert!(
+        text.contains("memory:") && text.contains("largest free"),
+        "{text}"
+    );
+    assert!(
+        text.contains("sampler, thread 0x0104 (main): 500 samples"),
+        "{text}"
+    );
+    assert!(
+        text.contains("in godfather2.exe (0x00401000–0x00d54fff)"),
+        "{text}"
+    );
+    assert!(text.contains("(outside)"), "{text}");
+    assert!(text.contains("are reset"), "{text}");
+
+    let o = cmd(&["--json", "--sample", "100"]);
+    assert!(o.status.success(), "{}", stderr(&o));
+    let v: serde_json::Value = serde_json::from_str(&stdout(&o)).unwrap();
+    assert!(v["main_fps"].as_f64().unwrap() > 0.0);
+    assert!(v["pass"]["us"].is_array());
+    assert_eq!(v["samples"].as_array().unwrap().len(), 2);
+    assert_eq!(v["textures"]["taken"], 5);
+    assert!(v["memory"].is_null());
+
+    let o = cmd(&["--sample", "20000"]);
+    assert!(!o.status.success());
+    assert!(stderr(&o).contains("at most 10000"), "{}", stderr(&o));
+
+    game.world.lock().unwrap().protocol = 6;
+    let o = cmd(&[]);
+    assert!(!o.status.success());
+    assert!(stderr(&o).contains("protocol 6"), "{}", stderr(&o));
+}

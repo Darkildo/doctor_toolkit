@@ -25,6 +25,10 @@
 //! Stage 47 ([`edit`]) moves, turns, hides and shows SimGroup objects and
 //! keeps a journal of those edits for undo.
 //!
+//! Stage 58 ([`profile`]) measures the game from inside: the passes of the
+//! main loop, the presents of the render thread, the reads of files, CPU
+//! time, textures, memory, and samples where its threads stand.
+//!
 //! Nothing here unwinds into the game: every entry point catches panics.
 //! The module writes no game file; its log is `doctor_live.log` next to it.
 
@@ -35,6 +39,7 @@ mod edit;
 mod files;
 mod game;
 mod journal;
+mod profile;
 mod server;
 mod state;
 mod win;
@@ -60,6 +65,8 @@ static STATE: AtomicU8 = AtomicU8::new(0);
 static JOURNAL: OnceLock<Option<Vec<&'static str>>> = OnceLock::new();
 /// What the file hooks could not hook (stage 46).
 static FILES: OnceLock<Vec<u32>> = OnceLock::new();
+/// What the profile could not patch (stage 58).
+static PROFILE: OnceLock<Vec<u32>> = OnceLock::new();
 static HOOKED: AtomicBool = AtomicBool::new(false);
 static UPDATE_HOOKED: AtomicBool = AtomicBool::new(false);
 /// `fix_input` of the configuration ([`game::fix_input`]).
@@ -306,6 +313,7 @@ fn check_input() {
 /// of its main loop; it records a snapshot, runs queued jobs and then calls
 /// the original function, whose result the loop uses.
 extern "C" fn frame_hook() -> u32 {
+    profile::pass();
     let frame = FRAME.fetch_add(1, Ordering::Relaxed) + 1;
     let _ = std::panic::catch_unwind(|| {
         debug::mark_main_thread();
@@ -341,6 +349,7 @@ extern "thiscall" fn update_hook(this: u32) -> u32 {
 
 /// Checks the build and installs the frame hook.
 fn install() -> Result<(), String> {
+    profile::start_clock();
     let mut mem = win::Mem::default();
     edition::check(&mut |va, buf| mem.bytes(va, buf)).map_err(|e| e.to_string())?;
     let hook = frame_hook as extern "C" fn() -> u32 as usize as u32;
@@ -407,6 +416,13 @@ unsafe extern "system" fn start(_: *mut c_void) -> u32 {
                 log(&format!("files: could not patch {}", list.join(", ")));
             }
         }
+        if let Some(failed) = PROFILE.get() {
+            log(&profile::summary());
+            if !failed.is_empty() {
+                let list: Vec<String> = failed.iter().map(|a| format!("{a:#010x}")).collect();
+                log(&format!("profile: could not patch {}", list.join(", ")));
+            }
+        }
         server::run(config);
     });
     0
@@ -436,6 +452,8 @@ pub unsafe extern "system" fn DllMain(module: *mut c_void, reason: u32, _: *mut 
             // start-up (0x0067BFA0).
             if ok {
                 let _ = FILES.set(files::install(&config));
+                // The profile (stage 58): the present and the reads.
+                let _ = PROFILE.set(profile::install());
             }
             // SAFETY: a thread of the module; it starts once the loader
             // releases its lock.

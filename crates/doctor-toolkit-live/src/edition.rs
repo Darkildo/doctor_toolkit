@@ -1006,6 +1006,107 @@ pub const CHECKS: &[Check] = &[
         what: "CollisionHavok4Part vtable slot +8 (has a body): the module's mark of a collision part (stage 47)",
         bytes: &[0x33, 0xC0, 0x39, 0x41, 0x20, 0x0F, 0x95, 0xC0, 0xC3],
     },
+    Check {
+        address: 0x0040DFA2,
+        what: "present: call 0x0060D8B0 in the render thread's frame callback 0x0040DF60, add esp,8 after (patched: call hook) (stage 58)",
+        bytes: &[0xE8, 0x09, 0xF9, 0x1F, 0x00, 0x83, 0xC4, 0x08],
+    },
+    Check {
+        address: 0x0060D8B0,
+        what: "0x0060D8B0, the present of a frame: start (stage 58)",
+        bytes: &[0x53, 0x56, 0x57, 0x6A, 0x01, 0xE8, 0xD6, 0xBF, 0xFF, 0xFF],
+    },
+    Check {
+        address: 0x0068BAF0,
+        what: "start of a frame 0x0068BAF0: add [0x01129A8C], 1, the game's count of frames (stage 58)",
+        bytes: &[0x83, 0x05, 0x8C, 0x9A, 0x12, 0x01, 0x01],
+    },
+    Check {
+        address: 0x00608CA0,
+        what: "frame limiter 0x00608CA0: waits only when the byte 0x0120575A is set (stage 58)",
+        bytes: &[
+            0x55, 0x8B, 0xEC, 0x83, 0xE4, 0xF8, 0x83, 0xEC, 0x2C, 0x53, 0x33, 0xDB, 0x38, 0x1D,
+            0x5A, 0x57, 0x20, 0x01,
+        ],
+    },
+    Check {
+        address: 0x0060E680,
+        what: "vsync byte 0x00F15A39: its setter 0x0060E680 and getter 0x0060E690 (stage 58)",
+        bytes: &[
+            0x8A, 0x44, 0x24, 0x04, 0xA2, 0x39, 0x5A, 0xF1, 0x00, 0xC3, 0xCC, 0xCC, 0xCC, 0xCC,
+            0xCC, 0xCC, 0xA0, 0x39, 0x5A, 0xF1, 0x00, 0xC3,
+        ],
+    },
+    Check {
+        address: 0x00607999,
+        what: "back buffer size: width 0x012058B8, height 0x012058BC (u16) (stage 58)",
+        bytes: &[
+            0x66, 0x8B, 0x0D, 0xBC, 0x58, 0x20, 0x01, 0xA2, 0x62, 0x57, 0x20, 0x01, 0x66, 0xA1,
+            0xB8, 0x58, 0x20, 0x01,
+        ],
+    },
+    Check {
+        address: 0x0040A20C,
+        what: "simulation: fdiv by the ticks per second 0x0110AE4C (stage 58)",
+        bytes: &[0xD8, 0x35, 0x4C, 0xAE, 0x10, 0x01],
+    },
+    Check {
+        address: 0x0067C130,
+        what: "simulation: setter of the fixed step byte 0x0110AE75 (stage 58)",
+        bytes: &[0x8A, 0x44, 0x24, 0x04, 0xA2, 0x75, 0xAE, 0x10, 0x01, 0xC3],
+    },
+    Check {
+        address: 0x00E4E800,
+        what: "import lookup of the slot 0x00D55268: hint and name at 0x00E4EA76 (stage 58)",
+        bytes: &[0x76, 0xEA, 0xA4, 0x00],
+    },
+    Check {
+        address: 0x00E4EA76,
+        what: "import name ReadFile (stage 58)",
+        bytes: &[
+            0xB5, 0x02, 0x52, 0x65, 0x61, 0x64, 0x46, 0x69, 0x6C, 0x65, 0x00,
+        ],
+    },
+    Check {
+        address: 0x00ACEFE0,
+        what: "ReadFile: the read 0x00ACEFC0 through the import slot 0x00D55268 (patched: call hook; nop) (stage 58)",
+        bytes: &[0xFF, 0x15, 0x68, 0x52, 0xD5, 0x00],
+    },
+    Check {
+        address: 0x00ABD7E8,
+        what: "ReadFile: the file class read 0x00ABD7D0 (vtable 0x00D9AFC0 +0x1C) through the import slot 0x00D55268 (patched: call hook; nop) (stage 58)",
+        bytes: &[0xFF, 0x15, 0x68, 0x52, 0xD5, 0x00],
+    },
+    Check {
+        address: 0x00ABEC29,
+        what: "ReadFile: the read 0x00ABEC10 through the import slot 0x00D55268 (patched: call hook; nop) (stage 58)",
+        bytes: &[0xFF, 0x15, 0x68, 0x52, 0xD5, 0x00],
+    },
+    Check {
+        address: 0x00BB684D,
+        what: "ReadFile: C library through the import slot 0x00D55268 (patched: call hook; nop) (stage 58)",
+        bytes: &[0xFF, 0x15, 0x68, 0x52, 0xD5, 0x00],
+    },
+    Check {
+        address: 0x00BB6905,
+        what: "ReadFile: C library, second call, through the import slot 0x00D55268 (patched: call hook; nop) (stage 58)",
+        bytes: &[0xFF, 0x15, 0x68, 0x52, 0xD5, 0x00],
+    },
+    Check {
+        address: 0x00BB6B31,
+        what: "ReadFile: C library, third call, through the import slot 0x00D55268 (patched: call hook; nop) (stage 58)",
+        bytes: &[0xFF, 0x15, 0x68, 0x52, 0xD5, 0x00],
+    },
+    Check {
+        address: 0x00698947,
+        what: "ReadFile: a profile file 0x006987C0 through the import slot 0x00D55268 (patched: call hook; nop) (stage 58)",
+        bytes: &[0xFF, 0x15, 0x68, 0x52, 0xD5, 0x00],
+    },
+    Check {
+        address: 0x00697F12,
+        what: "ReadFile into EDI: a profile file 0x00697ED0 through the import slot 0x00D55268 (patched: mov edi, hook; nop) (stage 58)",
+        bytes: &[0x8B, 0x3D, 0x68, 0x52, 0xD5, 0x00],
+    },
 ];
 
 #[cfg(test)]

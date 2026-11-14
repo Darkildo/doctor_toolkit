@@ -56,7 +56,7 @@ const EDIT_TOOLS: [&str; 30] = [
 ];
 
 /// Tools of a server without flags (reading, the live link, the editor).
-const READ_TOOLS: usize = 27;
+const READ_TOOLS: usize = 28;
 
 const GAME_TOOLS: [&str; 17] = [
     "apply",
@@ -1222,4 +1222,39 @@ async fn a_mod_is_built_installed_switched_and_removed() {
     let report = c.json("integrity", json!({})).await;
     assert_eq!(report["changed"], 0, "{report}");
     assert_eq!(game_files(&f.game), before, "the game files are untouched");
+}
+
+/// Stage 58: the profile of the running game without flags, from a module
+/// that allows no writes; the cap of the sampler; a module of protocol 6.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_profile_of_the_live_game_is_read_without_flags() {
+    let f = fixture();
+    let module = FakeGame::start(doctor_toolkit::live::Config {
+        port: 0,
+        token: "t".into(),
+        writes: false,
+        ..Default::default()
+    })
+    .unwrap();
+    let mut config = configured(&f, false, false);
+    config.live = Some(module.endpoint("t"));
+    let mut c = start(&config);
+    c.initialize().await;
+    let p = c
+        .json(
+            "live_profile",
+            json!({ "memory": true, "sample_ms": 200, "reset": true }),
+        )
+        .await;
+    assert!(p["main_fps"].as_f64().unwrap() > 0.0, "{p}");
+    assert!(p["pass"]["stats"]["p95_ms"].is_number(), "{p}");
+    assert!(p["pass"].get("us").is_none(), "{p}");
+    assert_eq!(p["samples"][1]["role"], "render", "{p}");
+    assert!(p["memory"]["finished"].as_bool().unwrap(), "{p}");
+    assert_eq!(p["io"][0]["role"], "main", "{p}");
+    let (text, error) = c.call("live_profile", json!({ "sample_ms": 60_000 })).await;
+    assert!(error && text.contains("at most"), "{text}");
+    module.world.lock().unwrap().protocol = 6;
+    let (text, error) = c.call("live_profile", json!({})).await;
+    assert!(error && text.contains("protocol 7"), "{text}");
 }

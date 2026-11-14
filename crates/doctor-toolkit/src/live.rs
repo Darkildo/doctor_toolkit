@@ -11,6 +11,8 @@
 //!   trying the editor without the game;
 //! - [`commit`]: objects moved in the running game written into the
 //!   workspace as SimGroup records (stage 47);
+//! - [`profile`]: the profile of the game measured by the module (stage
+//!   58) as text and JSON;
 //! - [`names`]: names, classes and streams of SimGroup objects by GUID and
 //!   names of messages by hash, from the SimGroups of the game and its
 //!   workspace (stage 49: the journal and every object).
@@ -38,6 +40,7 @@ pub mod commit;
 pub mod fake;
 pub mod loader;
 pub mod names;
+pub mod profile;
 
 /// The live link in the options of Play (`settings.toml`, `play.live`).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -596,6 +599,45 @@ impl Client {
     pub fn object_forget(&mut self, guid: Option<proto::Guid>) -> LinkResult<Done> {
         match self.request(&Request::ObjectForget { guid })? {
             Response::Done(d) => Ok(d),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    /// Whether the module measures the game (protocol 7, stage 58).
+    pub fn has_profile(&self) -> bool {
+        self.version >= 7
+    }
+
+    /// The profile of the game (stage 58): `reset` empties the module's
+    /// rings and counters of reads afterwards, `memory` walks the address
+    /// space (up to 2 s), `sample_ms` samples where the main and render
+    /// threads stand first (at most 10 s; the answer waits for it).
+    pub fn profile(
+        &mut self,
+        reset: bool,
+        memory: bool,
+        sample_ms: u32,
+    ) -> LinkResult<proto::Profile> {
+        let sample_ms = sample_ms.min(proto::profile::MAX_SAMPLE_MS);
+        // The answer comes after the sampler and the walk of the memory:
+        // wait that much longer for it.
+        let before = self.stream.read_timeout().ok().flatten();
+        if let Some(t) = before {
+            let extra = u64::from(sample_ms) + if memory { 2_500 } else { 0 };
+            let _ = self
+                .stream
+                .set_read_timeout(Some(t + Duration::from_millis(extra)));
+        }
+        let answer = self.request(&Request::Profile {
+            reset,
+            memory,
+            sample_ms,
+        });
+        if before.is_some() {
+            let _ = self.stream.set_read_timeout(before);
+        }
+        match answer? {
+            Response::Profile(p) => Ok(*p),
             other => Err(unexpected(other)),
         }
     }

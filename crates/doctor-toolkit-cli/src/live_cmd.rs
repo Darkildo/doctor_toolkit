@@ -142,6 +142,24 @@ pub enum LiveCommand {
     /// (`play` without writing into the game, stage 46) and how often the
     /// game opened each
     Files(LinkArgs),
+    /// Measure the game from inside (stage 58): main-loop and present
+    /// times, CPU of its threads, reads of files, textures, the clock;
+    /// with --memory its address space, with --sample where its threads
+    /// stand. Read-only
+    Profile {
+        /// Empty the module's rings and read counters after this answer
+        #[arg(long)]
+        reset: bool,
+        /// Walk the address space too (up to 2 s)
+        #[arg(long)]
+        memory: bool,
+        /// Sample where the main and render threads stand for MS
+        /// milliseconds first (at most 10 000)
+        #[arg(long, value_name = "MS", default_value_t = 0)]
+        sample: u32,
+        #[command(flatten)]
+        link: LinkArgs,
+    },
     /// The player's money: print it, or --set / --add (a write: needs --yes)
     Money {
         #[arg(long, allow_hyphen_values = true, conflicts_with = "add")]
@@ -781,6 +799,31 @@ fn debug_json(d: &proto::DebugState, names: Option<&LiveNames>) -> serde_json::V
     })
 }
 
+/// `live profile`.
+fn profile(link: &LinkArgs, reset: bool, memory: bool, sample: u32) -> Result<()> {
+    if sample > proto::profile::MAX_SAMPLE_MS {
+        bail!("--sample is at most {} ms", proto::profile::MAX_SAMPLE_MS);
+    }
+    let mut c = link.connect()?;
+    if !c.has_profile() {
+        bail!(
+            "the module speaks protocol {}: it does not measure the game (stage 58 needs protocol 7; install the module of this toolkit)",
+            c.version()
+        );
+    }
+    let p = c.profile(reset, memory, sample)?;
+    if link.json {
+        out!("{}", live::profile::to_json(&p, true));
+    } else {
+        let text = live::profile::to_text(&p);
+        out!("{}", text.trim_end());
+        if reset {
+            out!("(the module's rings and read counters are reset)");
+        }
+    }
+    Ok(())
+}
+
 pub fn confirm(yes: bool, what: &str) -> Result<()> {
     if !yes {
         bail!("{what} changes the running game: add --yes to do it");
@@ -801,6 +844,12 @@ pub fn run(command: LiveCommand) -> Result<()> {
         } => st::time(&link, at.as_deref(), rate, default_rate, yes)?,
         LiveCommand::Weather(link) => st::weather(&link)?,
         LiveCommand::Files(link) => st::files(&link)?,
+        LiveCommand::Profile {
+            reset,
+            memory,
+            sample,
+            link,
+        } => profile(&link, reset, memory, sample)?,
         LiveCommand::Money {
             set,
             add,

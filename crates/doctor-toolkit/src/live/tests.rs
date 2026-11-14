@@ -753,7 +753,7 @@ fn objects_edited_through_the_client_of_protocol_6() {
     use proto::edit::{EditKind, EditValue, moved, rotate_y, with_position};
     let game = FakeGame::start(config("t", true)).unwrap();
     let mut c = Client::connect(&game.endpoint("t"), "test", T).unwrap();
-    assert_eq!(c.version(), 6);
+    assert_eq!(c.version(), proto::PROTOCOL_VERSION);
     assert!(c.has_edits());
     let g = [3u8; 16];
     let s = c.object(g).unwrap();
@@ -822,6 +822,71 @@ fn objects_edited_through_the_client_of_protocol_6() {
     assert!(!c.has_edits());
     assert_eq!(
         c.object(g).unwrap_err().code(),
+        Some(ErrorCode::Unsupported)
+    );
+}
+
+/// Protocol 7 (stage 58): the profile of the fake game — rings, reads,
+/// textures, memory and the sampler on request, reset, the rates between
+/// two profiles, text and JSON; read-only with writes off; a module of
+/// protocol 6 is asked with version 6 and has none.
+#[test]
+fn profile_of_protocol_7() {
+    let game = FakeGame::start(config("t", false)).unwrap();
+    let mut c = Client::connect(&game.endpoint("t"), "test", T).unwrap();
+    assert!(c.has_profile());
+    let a = c.profile(false, false, 0).unwrap();
+    assert!(a.present_hooked && a.reads_hooked);
+    assert!(a.memory.is_none() && a.samples.is_empty());
+    assert!(!a.pass_us.is_empty());
+    let fps = a.main_fps().unwrap();
+    assert!((20.0..35.0).contains(&fps), "{fps}");
+    let t = a.textures.as_ref().unwrap();
+    assert_eq!(
+        (t.taken, t.created, t.render_targets, t.cubes),
+        (5, 4, 2, 1)
+    );
+    assert_eq!(a.role(a.main_thread), Some("main"));
+    // Memory and the sampler when asked; the sampler is capped at 10 s.
+    let b = c.profile(true, true, 20_000).unwrap();
+    assert!(b.memory.unwrap().finished);
+    assert_eq!(b.samples.len(), 2);
+    assert_eq!(b.samples[0].samples, proto::profile::MAX_SAMPLE_MS);
+    assert!(b.samples[0].in_image() > 0);
+    assert!(b.frame_rate(&a).is_some() && b.sim_rate(&a).is_some());
+    // After the reset the rings start again.
+    let after = c.profile(false, false, 0).unwrap();
+    assert!(after.pass_us.len() < b.pass_us.len());
+    assert!(after.reset_at_us > 0);
+    assert_eq!(after.passes, b.passes + 1);
+    let text = profile::to_text(&b);
+    for part in [
+        "main loop:",
+        "presents:",
+        "reads by thread:",
+        "(main)",
+        "textures: 5/4096",
+        "memory:",
+        "clock:",
+        "sampler, thread",
+        "in godfather2.exe",
+    ] {
+        assert!(text.contains(part), "{part} in {text}");
+    }
+    let json = profile::to_json(&b, true);
+    assert_eq!(json["samples"][0]["role"], "main");
+    assert_eq!(
+        json["pass"]["us"].as_array().unwrap().len(),
+        b.pass_us.len()
+    );
+    assert!(json["pass"]["stats"]["p99_ms"].is_number());
+    assert!(profile::to_json(&b, false)["pass"].get("us").is_none());
+
+    game.world.lock().unwrap().protocol = 6;
+    let mut c = Client::connect(&game.endpoint("t"), "test", T).unwrap();
+    assert!(!c.has_profile());
+    assert_eq!(
+        c.profile(false, false, 0).unwrap_err().code(),
         Some(ErrorCode::Unsupported)
     );
 }

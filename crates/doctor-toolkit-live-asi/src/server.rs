@@ -155,6 +155,13 @@ fn answer(request: Request, config: &Config, version: u16) -> Response {
         // The journal of edits of the world (stage 47) is the module's own.
         Request::ObjectEdits => return crate::edit::edits(),
         Request::ObjectForget { guid } => return crate::edit::forget(guid),
+        // The profile (stage 58): counters of the hooks, read here; the
+        // sampler runs on this thread too.
+        Request::Profile {
+            reset,
+            memory,
+            sample_ms,
+        } => return crate::profile::answer(reset, memory, sample_ms),
         _ => {}
     }
     let (tx, rx) = sync_channel(1);
