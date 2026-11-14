@@ -139,6 +139,57 @@ fn dropped_mod_files_install_and_others_are_refused() {
     frame(&ctx, &mut panel, &[]);
 }
 
+/// The picture on the card of mod `id`, as the panel holds it.
+fn picture_of(panel: &ModsPanel, id: &str) -> Option<Option<egui::TextureHandle>> {
+    let m = panel.manager().unwrap().get(id)?;
+    panel.previews.get(&cards::preview_key(m)).cloned()
+}
+
+#[test]
+fn an_update_shows_the_picture_of_the_new_version() {
+    let (_dir, game) = game(false);
+    let temp = tempfile::tempdir().unwrap();
+    let ctx = egui::Context::default();
+    let mut panel = panel(&game, &ctx);
+    // Version 1.0 without a picture, as the card shows it.
+    let first = build(&game, temp.path(), "a", LEVEL, MESH, vec![1; 300]);
+    panel.install_files(&ctx, vec![first]);
+    panel.wait();
+    frame(&ctx, &mut panel, &[]);
+    assert!(
+        matches!(picture_of(&panel, "a"), Some(None)),
+        "no picture yet"
+    );
+    // Version 1.1 of the same mod with a picture, installed over it while
+    // the window stays open (stage 63: the card kept the empty picture).
+    let mut ws = Workspace::create(temp.path().join("ws-a2"), &game).unwrap();
+    let edit = ResourceEdit {
+        index: MESH,
+        data: vec![2; 300],
+        storage: StorageChoice::Keep,
+    };
+    ws.set_resources(&game, "edit", game.find_stream(LEVEL).unwrap(), &[edit])
+        .unwrap();
+    let info = ModInfo {
+        id: "a".into(),
+        name: "Mod a".into(),
+        version: "1.1".into(),
+        author: "tester".into(),
+        description: "A test mod.".into(),
+        url: None,
+    };
+    let png = doctor_toolkit::resource::pixels::encode_png(2, 1, &[255; 8]).unwrap();
+    let preview = doctor_toolkit::mods::Preview::from_image(png).unwrap();
+    let second = temp.path().join("a-1.1.zip");
+    build_from_workspace(&ws, &info, None, Some(&preview), &second).unwrap();
+    panel.install_files(&ctx, vec![second]);
+    panel.wait();
+    frame(&ctx, &mut panel, &[]);
+    let picture = picture_of(&panel, "a").expect("the card of 1.1 was drawn");
+    assert_eq!(picture.expect("the picture of 1.1").size(), [2, 1]);
+    assert_eq!(panel.previews.len(), 1, "the entry of 1.0 is dropped");
+}
+
 #[test]
 fn cards_tell_the_state_of_each_mod() {
     let (_dir, game) = game(false);

@@ -48,6 +48,13 @@ pub struct ModBuildParams {
     pub author: Option<String>,
     #[serde(default)]
     pub description: Option<String>,
+    /// Home page of the mod, `http://` or `https://` [default: the project's].
+    #[serde(default)]
+    pub url: Option<String>,
+    /// Absolute path of a PNG or JPEG picture the mod manager shows on the
+    /// mod's card (at most 4 MiB).
+    #[serde(default)]
+    pub preview: Option<String>,
     /// Only these changes: resource keys or text matching part of them
     /// [default: the project's changes with a project, else all].
     #[serde(default)]
@@ -176,8 +183,20 @@ pub fn mod_build(kit: &Toolkit, p: ModBuildParams) -> ToolResult<Output> {
             .clone()
             .or_else(|| base.as_ref().map(|b| b.description.clone()))
             .unwrap_or_default(),
-        url: base.as_ref().and_then(|b| b.url.clone()),
+        url: p
+            .url
+            .clone()
+            .or_else(|| base.as_ref().and_then(|b| b.url.clone())),
         name,
+    };
+    let preview = match &p.preview {
+        Some(path) => {
+            let path = super::create::input_file(path)?;
+            let data = std::fs::read(&path)
+                .map_err(|e| ToolError(format!("cannot read {}: {e}", path.display())))?;
+            Some(mods::Preview::from_image(data)?)
+        }
+        None => None,
     };
     let keys = if !p.changes.is_empty() {
         Some(match_keys(&ws, &p.changes)?)
@@ -192,12 +211,13 @@ pub fn mod_build(kit: &Toolkit, p: ModBuildParams) -> ToolResult<Output> {
     std::fs::create_dir_all(&dir)
         .map_err(|e| ToolError(format!("cannot make {}: {e}", dir.display())))?;
     let file = dir.join(format!("{}-{}.zip", info.id, sanitize(&info.version)));
-    let report = mods::build_from_workspace(&ws, &info, keys.as_deref(), None, &file)?;
+    let report = mods::build_from_workspace(&ws, &info, keys.as_deref(), preview.as_ref(), &file)?;
     Ok(Output::Json(json!({
         "file": file,
         "id": info.id,
         "name": info.name,
         "version": info.version,
+        "preview": preview.as_ref().map(|p| p.name.clone()),
         "format": 2,
         "resources": report.resources,
         "added_resources": report.added,

@@ -199,7 +199,6 @@ impl ModsPanel {
         let report = manager
             .install_workspace(&game, ws, &info, None)
             .map_err(|e| trf("mods.cannot_install_workspace", &[("error", &e)]))?;
-        self.previews.remove(&report.id);
         self.selected = Some(report.id.clone());
         Ok(trf(
             "mods.installed_workspace",

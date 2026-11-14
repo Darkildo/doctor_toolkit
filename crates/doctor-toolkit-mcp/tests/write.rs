@@ -390,6 +390,36 @@ async fn every_edit_is_one_undoable_operation_and_the_game_is_untouched() {
     assert!(file.starts_with(&f.workspace), "{file:?}");
     assert!(file.is_file());
     assert!(built["resources"].as_u64().unwrap() >= 3, "{built}");
+    assert_eq!(built["preview"], Value::Null, "{built}");
+    // A picture for the mod's card and a home page, as `mods build --preview --url`.
+    let png = doctor_toolkit::resource::pixels::encode_png(1, 1, &[255, 0, 0, 255]).unwrap();
+    let picture = f.workspace.parent().unwrap().join("card.png");
+    std::fs::write(&picture, &png).unwrap();
+    let built = c
+        .json(
+            "mod_build",
+            json!({ "name": "Test edits", "version": "1.1", "url": "https://example.org/mod",
+                    "preview": picture.to_str().unwrap() }),
+        )
+        .await;
+    assert_eq!(built["preview"], "preview.png", "{built}");
+    let mut archive =
+        doctor_toolkit::mods::ModArchive::open(Path::new(built["file"].as_str().unwrap())).unwrap();
+    assert_eq!(archive.manifest().preview.as_deref(), Some("preview.png"));
+    assert_eq!(
+        archive.manifest().url.as_deref(),
+        Some("https://example.org/mod")
+    );
+    assert_eq!(archive.read_preview().unwrap().unwrap(), png);
+    let not_a_picture = f.workspace.parent().unwrap().join("card.gif");
+    std::fs::write(&not_a_picture, b"GIF89a").unwrap();
+    let (text, error) = c
+        .call(
+            "mod_build",
+            json!({ "name": "Test edits", "preview": not_a_picture.to_str().unwrap() }),
+        )
+        .await;
+    assert!(error && text.contains("PNG or JPEG"), "{text}");
     let (text, error) = c.call("project_build", json!({})).await;
     assert!(error && text.contains("--project"), "{text}");
 

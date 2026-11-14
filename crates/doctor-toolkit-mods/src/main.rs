@@ -242,40 +242,49 @@ impl ModsApp {
         ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(callback));
     }
 
+    /// The title, the edition of the game, «Change» and the game folder
+    /// (cut to the width that is left; whole in its tooltip).
+    fn title_and_game(&mut self, ui: &mut egui::Ui) {
+        ui.label(
+            RichText::new(tr("mods_app.title"))
+                .size(17.0)
+                .strong()
+                .color(ui.visuals().strong_text_color()),
+        );
+        doctor_toolkit_mods::theme::separator(ui);
+        match self.panel.game() {
+            Some(game) => {
+                if !self.edition.is_empty() {
+                    ui.label(RichText::new(&self.edition).weak());
+                }
+                if ui
+                    .add_enabled(
+                        !self.panel.is_busy() && self.picker.is_none(),
+                        egui::Button::new(tr("mods_app.change_game")),
+                    )
+                    .on_hover_text(tr("mods_app.change_game_hint"))
+                    .clicked()
+                {
+                    self.picker = Some(GamePicker::new(ui.ctx(), false));
+                }
+                if self.picker.is_some() && ui.button(tr("mods.cancel")).clicked() {
+                    self.picker = None;
+                }
+                let folder = game.root().display().to_string();
+                ui.add(egui::Label::new(RichText::new(&folder).strong()).truncate())
+                    .on_hover_text(folder);
+            }
+            None => {
+                ui.label(RichText::new(tr("mods_app.no_game")).weak());
+            }
+        }
+    }
+
     fn top_bar(&mut self, ui: &mut egui::Ui) {
         ui.add_space(4.0);
         ui.horizontal(|ui| {
-            ui.label(
-                RichText::new(tr("mods_app.title"))
-                    .size(17.0)
-                    .strong()
-                    .color(ui.visuals().strong_text_color()),
-            );
-            doctor_toolkit_mods::theme::separator(ui);
-            match self.panel.game() {
-                Some(game) => {
-                    ui.label(RichText::new(game.root().display().to_string()).strong());
-                    if !self.edition.is_empty() {
-                        ui.label(RichText::new(&self.edition).weak());
-                    }
-                    if ui
-                        .add_enabled(
-                            !self.panel.is_busy() && self.picker.is_none(),
-                            egui::Button::new(tr("mods_app.change_game")),
-                        )
-                        .on_hover_text(tr("mods_app.change_game_hint"))
-                        .clicked()
-                    {
-                        self.picker = Some(GamePicker::new(ui.ctx(), false));
-                    }
-                    if self.picker.is_some() && ui.button(tr("mods.cancel")).clicked() {
-                        self.picker = None;
-                    }
-                }
-                None => {
-                    ui.label(RichText::new(tr("mods_app.no_game")).weak());
-                }
-            }
+            // The right side first, so that a long game folder on the left
+            // is cut to the width that is left instead of running under it.
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if doctor_toolkit_mods::i18n::language_choice(ui, &mut self.language)
                     && let Some(dir) = &self.config
@@ -284,6 +293,10 @@ impl ModsApp {
                     self.error = Some(error.to_string());
                 }
                 powered_by(ui);
+                ui.add_space(8.0);
+                ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                    self.title_and_game(ui);
+                });
             });
         });
         ui.add_space(2.0);

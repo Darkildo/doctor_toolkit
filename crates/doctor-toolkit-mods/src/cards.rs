@@ -42,14 +42,21 @@ struct Card {
     state: ModState,
 }
 
-/// The texture of the picture of mod `m`, read once.
+/// The key of the picture of mod `m` in the cache: an update of the mod
+/// (the same id, installed again) has a new key, so its picture is read
+/// again instead of the old one being shown.
+pub(crate) fn preview_key(m: &InstalledMod) -> String {
+    format!("{}\n{}\n{}", m.id, m.installed, m.manifest.version)
+}
+
+/// The texture of the picture of mod `m`, read once per installation.
 pub(crate) fn preview(
     previews: &mut HashMap<String, Option<egui::TextureHandle>>,
     ctx: &egui::Context,
     m: &InstalledMod,
 ) -> Option<egui::TextureHandle> {
     previews
-        .entry(m.id.clone())
+        .entry(preview_key(m))
         .or_insert_with(|| {
             let data = m.preview()?;
             let (w, h, rgba) = doctor_toolkit::resource::pixels::decode_png(&data).ok()?;

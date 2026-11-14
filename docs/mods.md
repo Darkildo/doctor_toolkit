@@ -493,6 +493,12 @@ cargo run --release -p doctor-toolkit-mods --bin open-mod-manager -- "$GAME"
   словами (`integrity_words`).
 - Тема — общая с редактором (`doctor_toolkit_mods::theme`, редактор
   реэкспортирует её как `app::theme`).
+- Этап 63 (проверка на игре): картинка карточки кэшируется по id, времени
+  установки и версии мода — обновлённый мод показывает свою картинку сразу;
+  в шапке папка игры идёт последней и обрезается по ширине (полная — в
+  подсказке). Выбор файла «Установить мод…» (`rfd`) на Linux идёт через
+  портал `xdg-desktop-portal` шины сеанса: на стенде менеджер запускается
+  через `dbus-run-session` (`game-bench.md` §30).
 
 Python (`docs/python.md`): `ModManager.clashes()`, поля `added` и
 `new_streams` в `mods`, `install()` и `Workspace.build_mod()`.

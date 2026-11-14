@@ -533,7 +533,10 @@ impl ModsPanel {
             self.pending_event = Some(PanelEvent::GameChanged);
         }
         if let Some(manager) = &self.manager {
-            self.previews.retain(|id, _| manager.get(id).is_some());
+            // Pictures of removed mods and of the versions an update replaced.
+            let current: std::collections::HashSet<String> =
+                manager.mods().iter().map(cards::preview_key).collect();
+            self.previews.retain(|key, _| current.contains(key));
             if let Some(id) = &self.selected
                 && manager.get(id).is_none()
             {
