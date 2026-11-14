@@ -18,6 +18,30 @@ struct Globals {
     fog_color: vec4<f32>,
     // x: fog start, y: fog end (metres from the eye), z: fog at the end (0 = none).
     fog: vec4<f32>,
+    game: Game,
+};
+
+// "As in the game" shading (game_look.rs, docs/analysis/renderer.md §10).
+struct Game {
+    inv_view_proj: mat4x4<f32>,
+    // rgb: sun colour in the light buffer (linear), w: wrap (g_diffuseAmbient).
+    sun: vec4<f32>,
+    // x: exposure (2), y: ambient scale, z: fog on, w: sky on.
+    params: vec4<f32>,
+    // Rows of g_SHMatrixR (0-3), G (4-7), B (8-11).
+    ambient: array<vec4<f32>, 12>,
+    // rgb: m_FogColor (linear), w: amount at the start.
+    fog_near: vec4<f32>,
+    // rgb: m_FogEndColor (linear), w: amount at the end.
+    fog_far: vec4<f32>,
+    // x: start, y: 1 / (end - start).
+    fog_range: vec4<f32>,
+    sky_low: vec4<f32>,
+    sky_high: vec4<f32>,
+    glow_low: vec4<f32>,
+    glow_high: vec4<f32>,
+    // x: haze band (rad), y: glow strength, z: glow exponent above the band, w: at the horizon.
+    sky_params: vec4<f32>,
 };
 
 const FLAG_TEXTURES: u32 = 1u;
@@ -26,6 +50,7 @@ const FLAG_VERTEX_COLORS: u32 = 4u;
 const FLAG_ALPHA_TEST: u32 = 8u;
 const FLAG_BONE_WEIGHTS: u32 = 16u;
 const FLAG_SURFACES: u32 = 32u;
+const FLAG_GAME: u32 = 64u;
 
 // Surface models (Material.flags.y); 0 = plain texture × colour.
 const MODEL_BASIC: u32 = 1u;
@@ -40,6 +65,7 @@ const HAS_GLOSS: u32 = 2u;
 const HAS_DETAIL_NORMAL: u32 = 4u;
 const HAS_DETAIL_MASK: u32 = 8u;
 const HAS_DETAIL_GLOSS: u32 = 16u;
+const IS_SKY: u32 = 32u;
 
 struct Material {
     color: vec4<f32>,
@@ -251,6 +277,9 @@ fn fs_mesh(v: VertexOut, @builtin(front_facing) front: bool) -> @location(0) vec
             color = vec4<f32>(color.rgb * v.color.rgb, color.a);
         }
     }
+    if ((globals.params.x & FLAG_GAME) != 0u && has(IS_SKY)) {
+        discard;
+    }
     let blended = material.flags.w != 0u && surface;
     if (blended && color.a < 0.02) {
         discard;
@@ -264,7 +293,31 @@ fn fs_mesh(v: VertexOut, @builtin(front_facing) front: bool) -> @location(0) vec
         color = vec4<f32>(mix(heat, vec3<f32>(1.0, 1.0, 0.3), max(w - 0.8, 0.0) * 5.0), 1.0);
     }
     var lit = color.rgb;
-    if ((globals.params.x & FLAG_LIGHTING) != 0u && surface && (globals.params.x & FLAG_BONE_WEIGHTS) == 0u) {
+    let game = (globals.params.x & FLAG_GAME) != 0u && (globals.params.x & FLAG_BONE_WEIGHTS) == 0u;
+    if (game) {
+        // The game lights the normals as they are: no turning towards the
+        // viewer (world meshes are wound the other way round than characters).
+        var n = select(-geometric, geometric, front);
+        var ao = 1.0;
+        var spec_mask = 0.0;
+        if (surface) {
+            if (has(HAS_NORMAL) || has(HAS_DETAIL_NORMAL)) {
+                n = select(-mapped, mapped, front);
+            }
+            if (material.flags.y == MODEL_TINT_MASK || material.flags.y == MODEL_SKIN) {
+                ao = gloss.g;
+            }
+            spec_mask = gloss.b;
+        }
+        let light = game_light(n, v.world);
+        lit = color.rgb * light.rgb * globals.game.params.x * ao;
+        if (surface) {
+            // The light buffer's alpha is the sun's highlight; the lit pass adds
+            // it with the specular colour and mask.
+            lit = lit + material.spec.rgb * spec_mask * light.a * ao;
+        }
+        lit = game_fog(lit, v.world);
+    } else if ((globals.params.x & FLAG_LIGHTING) != 0u && surface && (globals.params.x & FLAG_BONE_WEIGHTS) == 0u) {
         var n = geometric;
         if (has(HAS_NORMAL) || has(HAS_DETAIL_NORMAL)) {
             n = mapped;
@@ -297,7 +350,7 @@ fn fs_mesh(v: VertexOut, @builtin(front_facing) front: bool) -> @location(0) vec
             + vec3<f32>(head);
         lit = color.rgb * light + specular;
     }
-    if (globals.fog.z > 0.0) {
+    if (globals.fog.z > 0.0 && !game) {
         let distance = length(globals.eye.xyz - v.world);
         let f = clamp((distance - globals.fog.x) / (globals.fog.y - globals.fog.x), 0.0, 1.0);
         lit = mix(lit, globals.fog_color.rgb, f * globals.fog.z);
@@ -310,7 +363,85 @@ fn fs_mesh(v: VertexOut, @builtin(front_facing) front: bool) -> @location(0) vec
     if (blended) {
         alpha = clamp(color.a, 0.0, 1.0);
     }
+    if (game) {
+        // The lit pass ends with pow(x, 1/2.2), not the sRGB curve.
+        return vec4<f32>(pow(clamp(lit, vec3<f32>(0.0), vec3<f32>(1.0)), vec3<f32>(1.0 / 2.2)), alpha);
+    }
     return vec4<f32>(linear_to_srgb(lit), alpha);
+}
+
+// The game's light buffer at a point: the sun, wrapped (saturate(n·l + wrap)),
+// and the ambient light of the three matrices, clamped to 0..1 like the 8-bit
+// buffer; alpha: the sun's highlight.
+fn game_light(n: vec3<f32>, world: vec3<f32>) -> vec4<f32> {
+    let g = globals.game;
+    let l = normalize(globals.light.xyz);
+    let ndl = dot(n, l);
+    let sun = clamp(ndl + g.sun.w, 0.0, 1.0) * g.sun.rgb;
+    let n4 = vec4<f32>(n, 1.0);
+    let r = dot(n4, n.x * g.ambient[0] + n.y * g.ambient[1] + n.z * g.ambient[2] + g.ambient[3]);
+    let gg = dot(n4, n.x * g.ambient[4] + n.y * g.ambient[5] + n.z * g.ambient[6] + g.ambient[7]);
+    let b = dot(n4, n.x * g.ambient[8] + n.y * g.ambient[9] + n.z * g.ambient[10] + g.ambient[11]);
+    let ambient = max(vec3<f32>(r, gg, b), vec3<f32>(0.0)) * g.params.y;
+    let view_dir = normalize(globals.eye.xyz - world);
+    let h = normalize(l + view_dir);
+    var highlight = 0.0;
+    if (ndl > 0.0) {
+        highlight = pow(max(dot(n, h), 0.0), 24.0) * clamp(ndl + g.sun.w, 0.0, 1.0);
+    }
+    return vec4<f32>(min(sun + ambient, vec3<f32>(1.0)), highlight);
+}
+
+// m_FogColor → m_FogEndColor over the fog's range; how much it hides goes from
+// the amount at the start to the amount at the end, none before the start.
+fn game_fog(c: vec3<f32>, world: vec3<f32>) -> vec3<f32> {
+    let g = globals.game;
+    if (g.params.z == 0.0) {
+        return c;
+    }
+    let d = length(world - globals.eye.xyz);
+    let f = clamp((d - g.fog_range.x) * g.fog_range.y, 0.0, 1.0);
+    if (f <= 0.0) {
+        return c;
+    }
+    let colour = mix(g.fog_near.rgb, g.fog_far.rgb, f);
+    let amount = mix(g.fog_near.w, g.fog_far.w, f);
+    return mix(c, colour, amount);
+}
+
+// The sky dome (sky_dome pixel shader): colour by the height above the
+// horizon within the haze band, plus a glow around the sun.
+struct SkyOut {
+    @builtin(position) clip: vec4<f32>,
+    @location(0) ndc: vec2<f32>,
+};
+
+@vertex
+fn vs_sky(@builtin(vertex_index) i: u32) -> SkyOut {
+    let xy = vec2<f32>(f32((i << 1u) & 2u), f32(i & 2u)) * 2.0 - 1.0;
+    var out: SkyOut;
+    out.clip = vec4<f32>(xy, 1.0, 1.0);
+    out.ndc = xy;
+    return out;
+}
+
+@fragment
+fn fs_sky(v: SkyOut) -> @location(0) vec4<f32> {
+    let g = globals.game;
+    // Two points along the pixel's ray (not the far plane: it may be at infinity).
+    let a = g.inv_view_proj * vec4<f32>(v.ndc, 0.5, 1.0);
+    let b = g.inv_view_proj * vec4<f32>(v.ndc, 0.0, 1.0);
+    let dir = normalize(a.xyz / a.w - b.xyz / b.w);
+    let horizontal = length(dir.xz);
+    let elevation = atan2(dir.y, max(horizontal, 1e-5));
+    let h = clamp(elevation / max(g.sky_params.x, 1e-3), 0.0, 1.0);
+    let k = 1.0 - (1.0 - h) * (1.0 - h);
+    let sky = mix(g.sky_low.rgb, g.sky_high.rgb, k);
+    let power = mix(g.sky_params.w, g.sky_params.z, h);
+    let to_sun = normalize(globals.light.xyz);
+    let glow = pow(clamp(dot(dir, to_sun), 0.0, 1.0), max(power, 1e-3)) * g.sky_params.y;
+    let colour = sky + mix(g.glow_low.rgb, g.glow_high.rgb, h) * glow;
+    return vec4<f32>(clamp(colour, vec3<f32>(0.0), vec3<f32>(1.0)), 1.0);
 }
 
 fn linear_to_srgb(c: vec3<f32>) -> vec3<f32> {

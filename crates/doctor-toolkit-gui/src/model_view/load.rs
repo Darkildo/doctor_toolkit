@@ -470,6 +470,7 @@ fn mesh_data(
                 .and_then(|m| m.surface.clone())
                 .filter(|_| source.uv0.is_some())
                 .map(Box::new),
+            sky: false,
         };
         data.push_part(record.name.clone(), vertices, &indices, material);
     }

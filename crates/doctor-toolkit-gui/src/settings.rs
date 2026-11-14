@@ -47,6 +47,8 @@ pub struct Settings {
     pub export_dirs: ExportDirs,
     /// The level editor (stage 54).
     pub level: LevelSettings,
+    /// The 3D views (stage 66).
+    pub view: ViewSettings,
     /// Per game, by the game directory: how to play it, first-run answers.
     pub games: BTreeMap<String, GameSettings>,
 }
@@ -99,6 +101,7 @@ impl Default for Settings {
             external_editors: ExternalEditors::default(),
             export_dirs: ExportDirs::default(),
             level: LevelSettings::default(),
+            view: ViewSettings::default(),
             games: BTreeMap::new(),
         }
     }
@@ -189,6 +192,22 @@ pub struct LevelSettings {
     /// off (the default): as in Unreal Engine — the letters fly only while
     /// the right button is held, Q W E R choose the gizmo.
     pub classic_camera: bool,
+}
+
+/// Settings of the 3D views.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ViewSettings {
+    /// Shade as the game does: its light, sky and fog by the time of day
+    /// (stage 66). Off: the simple shading of earlier versions (weak
+    /// graphics cards, looking at textures as they are).
+    pub game_look: bool,
+}
+
+impl Default for ViewSettings {
+    fn default() -> Self {
+        Self { game_look: true }
+    }
 }
 
 impl Settings {

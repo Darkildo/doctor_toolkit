@@ -80,6 +80,7 @@ pub fn marker_mesh() -> MeshData {
             texture: None,
             color: [1.0; 4],
             surface: None,
+            sky: false,
         };
         if mesh.parts.is_empty() {
             mesh.push_part("marker".into(), vertices, &indices, material);

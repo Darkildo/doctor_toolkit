@@ -193,7 +193,7 @@ fn convert(
     started: Instant,
 ) {
     total.store(meshes.len(), Ordering::Relaxed);
-    let materials: Mutex<HashMap<u32, Option<u32>>> = Mutex::default();
+    let materials: Mutex<HashMap<u32, (Option<u32>, bool)>> = Mutex::default();
     let mut sent_textures: HashSet<u32> = HashSet::new();
     let (mut mesh_count, mut texture_count, mut triangles) = (0, 0, 0);
     for chunk in meshes.chunks(BATCH) {
@@ -264,7 +264,7 @@ fn mesh_data(
     model: &Model,
     source: &LevelSource,
     assets: &LevelAssets,
-    materials: &Mutex<HashMap<u32, Option<u32>>>,
+    materials: &Mutex<HashMap<u32, (Option<u32>, bool)>>,
 ) -> Result<(MeshData, Vec<u32>), String> {
     let mut data = MeshData::default();
     let mut textures = Vec::new();
@@ -293,12 +293,18 @@ fn mesh_data(
             .unwrap_or_else(|e| e.into_inner())
             .get(&record.material_hash)
             .copied();
-        let diffuse = match cached {
+        let (diffuse, sky) = match cached {
             Some(d) => d,
             None => {
-                let d = assets
-                    .material(source, record.material_hash)
-                    .and_then(|m| m.texture(TextureRole::Diffuse));
+                let material = assets.material(source, record.material_hash);
+                let d = (
+                    material
+                        .as_ref()
+                        .and_then(|m| m.texture(TextureRole::Diffuse)),
+                    material
+                        .as_ref()
+                        .is_some_and(|m| m.shaders.iter().any(|s| is_sky(s.0))),
+                );
                 materials
                     .lock()
                     .unwrap_or_else(|e| e.into_inner())
@@ -313,14 +319,17 @@ fn mesh_data(
             textures.push(t);
         }
         // Records with the same texture become one part: one draw call.
-        let group = match groups.iter().position(|(t, ..)| *t == texture) {
+        let group = match groups
+            .iter()
+            .position(|(t, s, ..)| *t == texture && *s == sky)
+        {
             Some(g) => g,
             None => {
-                groups.push((texture, String::new(), Vec::new(), Vec::new()));
+                groups.push((texture, sky, String::new(), Vec::new(), Vec::new()));
                 groups.len() - 1
             }
         };
-        let (_, names, vertices_out, indices_out) = &mut groups[group];
+        let (_, _, names, vertices_out, indices_out) = &mut groups[group];
         if !names.is_empty() {
             names.push('+');
         }
@@ -329,7 +338,7 @@ fn mesh_data(
         vertices_out.extend(out);
         indices_out.extend(indices.iter().map(|i| i + base));
     }
-    for (texture, names, vertices, indices) in groups {
+    for (texture, sky, names, vertices, indices) in groups {
         let material = MaterialData {
             texture: texture.map(texture_key),
             color: if texture.is_some() {
@@ -338,6 +347,7 @@ fn mesh_data(
                 MaterialData::default().color
             },
             surface: None,
+            sky,
         };
         data.push_part(names, vertices, &indices, material);
     }
@@ -345,7 +355,15 @@ fn mesh_data(
 }
 
 /// Records of one texture: the texture, part names, vertices, indices.
-type PartGroup = (Option<u32>, String, Vec<Vertex>, Vec<u32>);
+/// Texture, sky dome, names of the records, vertices, indices.
+type PartGroup = (Option<u32>, bool, String, Vec<Vertex>, Vec<u32>);
+
+/// Whether a material's colour pass is one of the sky's shaders (`sky_dome`,
+/// `sky_clouds`): shading as in the game draws its own sky instead.
+fn is_sky(shader: u32) -> bool {
+    let hash = |name: &str| doctor_toolkit::hash::crc32(name.as_bytes());
+    shader == hash("sky_dome") || shader == hash("sky_clouds")
+}
 
 /// Mip levels of a flat texture from the first one not larger than `limit`
 /// (also the textures of the Content Browser's previews).

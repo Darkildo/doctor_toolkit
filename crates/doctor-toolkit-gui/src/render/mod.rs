@@ -23,16 +23,19 @@
 
 mod batch;
 mod camera;
+mod game_look;
 mod gpu;
 pub mod math;
 mod scene;
 mod timing;
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 #[allow(unused_imports)]
 pub use batch::Batching;
 pub use camera::{OrbitCamera, View};
+pub use game_look::GameLook;
 pub use gpu::{GpuContext, RenderStats, SceneRenderer, Viewport, adapter_rank, optional_features};
 // The whole scene API is public for the level view, even parts the model viewer does not use.
 #[allow(unused_imports)]
@@ -40,6 +43,18 @@ pub use scene::{
     Environment, Instance, LineVertex, MaterialData, MeshData, MeshKey, Pick, Scene, SceneOptions,
     Surface, SurfaceModel, TextureData, TextureKey, Vertex,
 };
+
+static GAME_LOOK: AtomicBool = AtomicBool::new(true);
+
+/// Whether the views shade "as in the game" (Preferences and the level
+/// view's lighting menu; `Settings::view`).
+pub fn game_look() -> bool {
+    GAME_LOOK.load(Ordering::Relaxed)
+}
+
+pub fn set_game_look(on: bool) {
+    GAME_LOOK.store(on, Ordering::Relaxed);
+}
 
 /// The renderer shared by every view of the application.
 #[derive(Clone)]

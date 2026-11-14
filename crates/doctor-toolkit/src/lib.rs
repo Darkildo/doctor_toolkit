@@ -45,6 +45,7 @@ pub mod script;
 #[cfg(any(test, feature = "testing"))]
 pub mod testing;
 pub mod text;
+pub mod time_of_day;
 pub mod toc;
 pub mod tunables;
 pub mod workspace;

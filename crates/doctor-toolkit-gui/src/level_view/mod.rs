@@ -324,6 +324,8 @@ pub struct LevelView {
     camera: FlyCamera,
     viewport: Viewport,
     last_render: Option<RenderKey>,
+    /// Hour of the light, sky and fog when shading as in the game (stage 66).
+    pub hours: f32,
     generation: u64,
     refill: bool,
     stats: RenderStats,
@@ -455,6 +457,7 @@ impl LevelView {
             camera: FlyCamera::default(),
             viewport: Viewport::new(),
             last_render: None,
+            hours: DEFAULT_HOURS,
             generation: 0,
             refill: true,
             stats: RenderStats::default(),
@@ -585,6 +588,17 @@ impl LevelView {
                 }
                 "yaw" => preset.yaw = floats.first().copied(),
                 "pitch" => preset.pitch = floats.first().copied(),
+                "fov" => {
+                    if let Some(deg) = floats.first() {
+                        self.camera.fov_y = deg.to_radians();
+                    }
+                }
+                "time" => {
+                    if let Some(h) = parse_hours(value) {
+                        self.hours = h;
+                    }
+                }
+                "shading" => crate::render::set_game_look(value != "simple"),
                 _ => {}
             }
         }
@@ -1406,6 +1420,19 @@ impl LevelView {
     /// The loaded level.
     pub fn level(&self) -> Option<&Level> {
         self.level.as_deref()
+    }
+
+    /// The light, sky and fog of the level's city at [`LevelView::hours`],
+    /// when shading as in the game.
+    fn game_look(&self) -> Option<crate::render::GameLook> {
+        let input = self.input.as_ref()?;
+        let level = self.level.as_ref()?;
+        let stream = level
+            .streams
+            .iter()
+            .map(|&s| input.game.streams()[s].stream_name())
+            .find(|n| doctor_toolkit::time_of_day::city_of(n).is_some())?;
+        crate::game_light::look(&input.game, &stream, self.hours)
     }
 
     /// The game and the index the view was opened with.
@@ -2307,6 +2334,7 @@ impl LevelView {
             Vec::new()
         };
         let cine_revision = self.cine_scene();
+        self.scene.options.game = self.game_look();
         match self.gpu.clone() {
             Some(gpu) => {
                 let key = RenderKey {
@@ -2450,6 +2478,18 @@ fn live_marks(
 
 /// Edited SimGroups of `groups` and edited or added models and meshes of the
 /// workspace, keyed as the level looks them up.
+/// The game's own hour at the start of a level (`TimeOfDayManager`: 16:00).
+pub const DEFAULT_HOURS: f32 = 16.0;
+
+/// `HH:MM` or hours as a number.
+pub fn parse_hours(value: &str) -> Option<f32> {
+    match value.split_once(':') {
+        Some((h, m)) => Some(h.trim().parse::<f32>().ok()? + m.trim().parse::<f32>().ok()? / 60.0),
+        None => value.trim().parse().ok(),
+    }
+    .filter(|h: &f32| h.is_finite())
+}
+
 pub fn overrides(game: &GameInstance, ws: Option<&Workspace>, groups: &[Location]) -> Overrides {
     let mut out = Overrides::default();
     let Some(ws) = ws else { return out };

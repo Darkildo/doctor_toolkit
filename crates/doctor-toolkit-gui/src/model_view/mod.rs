@@ -521,6 +521,7 @@ impl GpuModelView {
             .filter(|(_, h)| **h)
             .map(|(i, _)| (model_key, i as u32))
             .collect();
+        self.scene.options.game = crate::game_light::studio();
         let view = self.camera.view(rect.aspect_ratio());
         let key = RenderKey {
             camera: self.camera,

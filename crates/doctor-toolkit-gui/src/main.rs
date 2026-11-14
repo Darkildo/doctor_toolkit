@@ -49,6 +49,7 @@ mod collision_view;
 mod cutscene_view;
 mod dialogue_view;
 mod external_view;
+mod game_light;
 mod game_view;
 mod hex;
 mod jobs;

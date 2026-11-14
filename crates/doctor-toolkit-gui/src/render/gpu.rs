@@ -34,6 +34,8 @@ const FLAG_VERTEX_COLORS: u32 = 4;
 const FLAG_ALPHA_TEST: u32 = 8;
 const FLAG_BONE_WEIGHTS: u32 = 16;
 const FLAG_SURFACES: u32 = 32;
+/// "As in the game" shading (`game_look.rs`).
+const FLAG_GAME: u32 = 64;
 
 /// Which textures a surface has (bits of `MaterialUniform::flags.z`).
 const HAS_NORMAL: u32 = 1;
@@ -41,6 +43,8 @@ const HAS_GLOSS: u32 = 2;
 const HAS_DETAIL_NORMAL: u32 = 4;
 const HAS_DETAIL_MASK: u32 = 8;
 const HAS_DETAIL_GLOSS: u32 = 16;
+/// The game's sky dome mesh (`MaterialData::sky`).
+const IS_SKY: u32 = 32;
 /// Texture bindings of a material after the uniform: base, normal, gloss,
 /// detail normal, detail mask, detail gloss (the sampler is binding 2).
 const MATERIAL_TEXTURES: [u32; 6] = [1, 3, 4, 5, 6, 7];
@@ -61,6 +65,7 @@ struct Globals {
     fog_color: [f32; 4],
     /// x: fog start, y: fog end (metres from the eye), z: fog at the end (0 = none).
     fog: [f32; 4],
+    game: super::game_look::GameUniform,
 }
 
 #[repr(C)]
@@ -94,6 +99,9 @@ impl MaterialUniform {
             spec: [0.0, 0.0, 0.0, 16.0],
             params: [0.0; 4],
         };
+        if material.sky {
+            u.flags[2] |= IS_SKY;
+        }
         if let Some(surface) = &material.surface {
             let mut bits = 0;
             for (texture, bit) in [
@@ -108,7 +116,7 @@ impl MaterialUniform {
                 }
             }
             u.flags[1] = surface.model as u32;
-            u.flags[2] = bits;
+            u.flags[2] |= bits;
             u.flags[3] = surface.blend as u32;
             for (o, t) in u.tints.iter_mut().zip(surface.tints) {
                 *o = [t[0], t[1], t[2], 1.0];
@@ -481,6 +489,8 @@ pub struct SceneRenderer {
     wire_pipeline: wgpu::RenderPipeline,
     line_pipeline: wgpu::RenderPipeline,
     overlay_pipeline: wgpu::RenderPipeline,
+    /// The game's sky dome behind the scene (a full-screen triangle).
+    sky_pipeline: wgpu::RenderPipeline,
     meshes: HashMap<MeshKey, GpuMesh>,
     textures: HashMap<TextureKey, GpuTexture>,
     /// Shared vertex and index buffers of the meshes.
@@ -761,6 +771,19 @@ impl SceneRenderer {
             alpha,
             None,
         );
+        let sky_pipeline = pipeline(
+            "sky",
+            &line_layout,
+            "vs_sky",
+            "fs_sky",
+            &[],
+            TriangleList,
+            depth(false, Always),
+            COLOR_FORMAT,
+            sample_count,
+            None,
+            None,
+        );
 
         let anisotropic = context
             .adapter
@@ -834,6 +857,7 @@ impl SceneRenderer {
             wire_pipeline,
             line_pipeline,
             overlay_pipeline,
+            sky_pipeline,
             meshes: HashMap::new(),
             textures: HashMap::new(),
             arena,
@@ -1224,6 +1248,7 @@ impl SceneRenderer {
             (options.alpha_test, FLAG_ALPHA_TEST),
             (options.bone_weights.is_some(), FLAG_BONE_WEIGHTS),
             (options.surfaces, FLAG_SURFACES),
+            (options.game.is_some() && options.lighting, FLAG_GAME),
         ] {
             if on {
                 flags |= flag;
@@ -1257,6 +1282,9 @@ impl SceneRenderer {
                 0.0,
             ];
         }
+        if let Some(game) = options.game.as_ref().filter(|_| options.lighting) {
+            light = math::normalize_or(game.sun, [0.0, 1.0, 0.0]);
+        }
         let globals = Globals {
             view_proj,
             eye: [view.eye[0], view.eye[1], view.eye[2], 1.0],
@@ -1272,6 +1300,10 @@ impl SceneRenderer {
             ambient,
             fog_color,
             fog,
+            game: super::game_look::GameUniform::new(
+                options.game.as_ref().filter(|_| options.lighting),
+                &view_proj,
+            ),
         };
         self.context
             .queue
@@ -1600,6 +1632,10 @@ impl SceneRenderer {
                 multiview_mask: None,
             });
             pass.set_bind_group(0, &self.globals_bind_group, &[]);
+            if scene.options.lighting && scene.options.game.is_some_and(|g| g.sky.is_some()) {
+                pass.set_pipeline(&self.sky_pipeline);
+                pass.draw(0..3, 0..1);
+            }
             let cull = scene.options.backface_culling as usize;
             let (mut calls, parts, triangles) = self.draw_runs(
                 &mut pass,
@@ -1954,6 +1990,57 @@ mod tests {
     /// Renders a cube on the GPU when an adapter exists (lavapipe counts) and
     /// checks the image and both picking paths.
     #[test]
+    fn game_look_draws_the_sky_and_lights_like_the_game() {
+        use doctor_toolkit::time_of_day::{Fog, Sky};
+        let Some(context) = GpuContext::headless() else {
+            eprintln!("no wgpu adapter; GPU test skipped");
+            return;
+        };
+        let mut renderer = SceneRenderer::new(context);
+        renderer.upload_mesh(7, Arc::new(cube()));
+        let mut scene = Scene::single(7);
+        scene.options.background = [0.0, 0.0, 0.0, 1.0];
+        let mut look = super::super::GameLook::studio();
+        look.sky = Some(Sky {
+            low: [1.0, 0.0, 0.0],
+            high: [0.0, 0.0, 1.0],
+            haze: 0.2,
+            ..Sky::default()
+        });
+        scene.options.game = Some(look);
+        let mut camera = OrbitCamera::framing(&cube().bounds());
+        camera.yaw = 0.3;
+        camera.pitch = -0.6; // from below: sky above the cube
+        let size = [64, 48];
+        let view = camera.view(size[0] as f32 / size[1] as f32);
+        let mut viewport = Viewport::new();
+        renderer.render(&mut viewport, size, &scene, &view);
+        let (w, _, pixels) = renderer.read_pixels(&viewport).unwrap();
+        let at = |x: usize, y: usize| &pixels[(y * w as usize + x) * 4..][..3];
+        // The top of the view looks up into the blue above the haze.
+        let top = at(32, 0);
+        assert!(top[2] > 200 && top[0] < 60, "sky above: {top:?}");
+        let centre = at(32, 24);
+        assert!(centre != top, "the cube covers the sky");
+
+        // Fog: everything past its end takes the far colour.
+        look.sky = None;
+        look.fog = Some(Fog {
+            color: [0.0, 1.0, 0.0],
+            far_color: [0.0, 1.0, 0.0],
+            start: 0.0,
+            end: 0.01,
+            near_amount: 1.0,
+            far_amount: 1.0,
+        });
+        scene.options.game = Some(look);
+        renderer.render(&mut viewport, size, &scene, &view);
+        let (_, _, pixels) = renderer.read_pixels(&viewport).unwrap();
+        let c = &pixels[(24 * w as usize + 32) * 4..][..3];
+        assert!(c[1] > 240 && c[0] < 10, "fogged cube: {c:?}");
+    }
+
+    #[test]
     fn renders_and_picks_on_the_gpu() {
         let Some(context) = GpuContext::headless() else {
             eprintln!("no wgpu adapter; GPU test skipped");
@@ -2082,6 +2169,7 @@ mod tests {
             texture: None,
             color: c,
             surface: None,
+            sky: false,
         };
         let materials = [
             plain([0.9, 0.2, 0.2, 1.0]),
@@ -2089,6 +2177,7 @@ mod tests {
                 texture: Some(100),
                 color: [1.0; 4],
                 surface: None,
+                sky: false,
             },
             plain([0.2, 0.9, 0.3, 1.0]),
             MaterialData {
@@ -2098,6 +2187,7 @@ mod tests {
                     blend: true,
                     ..Default::default()
                 })),
+                sky: false,
             },
         ];
         let mut scene = Scene::default();
@@ -2223,6 +2313,7 @@ mod tests {
             texture: None,
             color: [1.0, 0.0, 0.0, 1.0],
             surface: None,
+            sky: false,
         };
         for key in 1..=4 {
             renderer.upload_mesh(key, Arc::new(cubes(2, std::slice::from_ref(&red))));

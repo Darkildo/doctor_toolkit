@@ -292,6 +292,7 @@ impl BrowserApp {
         theme::install(ctx);
         ctx.set_theme(settings.theme.preference());
         ctx.set_zoom_factor(settings.ui_scale);
+        crate::render::set_game_look(settings.view.game_look);
         let (tx, rx) = channel();
         let gpu = crate::render::Gpu::from_creation_context(cc);
         crate::profile::note(format!(
@@ -1004,6 +1005,8 @@ impl eframe::App for BrowserApp {
         }
         self.update_panel_level();
         self.track_details_open();
+        // The views switch the shading too (the level view's lighting menu).
+        self.settings.view.game_look = crate::render::game_look();
         let visuals = ui.visuals().clone();
         let bar = |fill| {
             egui::Frame::new()

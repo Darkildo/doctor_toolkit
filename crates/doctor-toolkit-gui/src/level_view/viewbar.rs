@@ -213,6 +213,31 @@ impl LevelView {
                 }
             }
             ui.separator();
+            let mut game = crate::render::game_look();
+            let shading = ui
+                .horizontal(|ui| {
+                    ui.radio_value(&mut game, true, tr("view.shading_game"))
+                        .changed()
+                        | ui.radio_value(&mut game, false, tr("view.shading_simple"))
+                            .changed()
+                })
+                .inner;
+            if shading {
+                crate::render::set_game_look(game);
+            }
+            if game {
+                ui.add(
+                    egui::Slider::new(&mut self.hours, 0.0..=24.0)
+                        .text(tr("view.time_of_day"))
+                        .custom_formatter(|h, _| {
+                            let m = (h * 60.0).round() as u32 % (24 * 60);
+                            format!("{:02}:{:02}", m / 60, m % 60)
+                        }),
+                )
+                .on_hover_text(tr("view.time_of_day_hint"));
+            }
+            ui.label(RichText::new(tr("view.shading_hint")).weak().small());
+            ui.separator();
             let o = &mut self.scene.options;
             ui.checkbox(&mut o.textures, tr("level.textures"));
             ui.checkbox(&mut o.backface_culling, tr("level.cull"));

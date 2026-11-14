@@ -819,6 +819,15 @@ impl BrowserApp {
                         ui.checkbox(&mut s.level.classic_camera, tr("prefs.classic_camera"))
                             .on_hover_text(tr("prefs.classic_camera_hint"));
                         ui.end_row();
+                        ui.label(tr("prefs.views"));
+                        if ui
+                            .checkbox(&mut s.view.game_look, tr("prefs.game_look"))
+                            .on_hover_text(tr("prefs.game_look_hint"))
+                            .changed()
+                        {
+                            crate::render::set_game_look(s.view.game_look);
+                        }
+                        ui.end_row();
                     });
                 ui.separator();
                 ui.strong(tr("prefs.editors"));

@@ -729,6 +729,7 @@ impl CharacterView {
             .filter(|(_, h)| **h)
             .flat_map(|(m, _)| (0..m.mesh.parts.len() as u32).map(move |p| (m.key, p)))
             .collect();
+        self.scene.options.game = crate::game_light::studio();
         let view = self.camera.view(rect.aspect_ratio());
         let key = RenderKey {
             camera: self.camera,

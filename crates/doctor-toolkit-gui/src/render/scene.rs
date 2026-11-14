@@ -48,6 +48,9 @@ pub struct MaterialData {
     pub color: [f32; 4],
     /// Game-like shading; `None` draws `texture × color`.
     pub surface: Option<Box<Surface>>,
+    /// The game's sky dome: hidden when shading as in the game, which draws
+    /// its own sky.
+    pub sky: bool,
 }
 
 impl Default for MaterialData {
@@ -56,6 +59,7 @@ impl Default for MaterialData {
             texture: None,
             color: [0.75, 0.75, 0.75, 1.0],
             surface: None,
+            sky: false,
         }
     }
 }
@@ -355,6 +359,9 @@ pub struct SceneOptions {
     /// Sun, ambient light and fog of an outdoor scene; `None`: white light
     /// from above the camera.
     pub environment: Option<Environment>,
+    /// Shade as the game does (its light, sky and fog); `None`: the simple
+    /// shading above.
+    pub game: Option<super::GameLook>,
 }
 
 /// Light and air of an outdoor scene (the cut-scene preview's time of day).
@@ -391,6 +398,7 @@ impl Default for SceneOptions {
             frustum_culling: true,
             surfaces: true,
             environment: None,
+            game: None,
         }
     }
 }

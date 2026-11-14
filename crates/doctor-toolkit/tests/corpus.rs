@@ -6793,3 +6793,45 @@ fn camera_keys_change_in_place() {
     assert!(checked > 200, "{checked}");
     failures.assert_empty();
 }
+
+#[test]
+fn every_city_keys_its_light_by_the_time_of_day() {
+    use doctor_toolkit::time_of_day::CityLight;
+    let Some(dir) = game_dir() else { return };
+    let game = GameInstance::open(&dir).unwrap();
+    let sum = |c: [f32; 3]| c[0] + c[1] + c[2];
+    for city in ["cuba", "queens", "miami"] {
+        let light = CityLight::read(&game, city).unwrap();
+        let seq = &light.outdoor;
+        assert!(
+            seq.fog.len() >= 4
+                && seq.sky.len() >= 2
+                && !seq.lighting.is_empty()
+                && !seq.ambient.is_empty(),
+            "{city} outdoors: {} fog, {} sky, {} lighting, {} ambient keys",
+            seq.fog.len(),
+            seq.sky.len(),
+            seq.lighting.len(),
+            seq.ambient.len()
+        );
+        let noon = light.at(12 * 3600);
+        let night = light.at(0);
+        assert!(
+            sum(noon.sky.high) > sum(night.sky.high),
+            "{city}: the day sky is brighter"
+        );
+        assert!(noon.fog.end > noon.fog.start, "{city}: {:?}", noon.fog);
+        let up = noon.ambient.eval([0.0, 1.0, 0.0]);
+        assert!(sum(up) > 0.0, "{city}: ambient light at noon {up:?}");
+    }
+    // Havana a little after noon, as the game shows it (`live peek`, renderer.md §10).
+    let cuba = CityLight::read(&game, "cuba").unwrap();
+    let noon = cuba.at(12 * 3600 + 180);
+    assert!((noon.lighting.shadow - 0.675).abs() < 1e-3);
+    assert!((noon.lighting.wrap - 0.25).abs() < 1e-3);
+    assert!(
+        noon.fog.start > 10.0 && noon.fog.end < 2000.0,
+        "{:?}",
+        noon.fog
+    );
+}

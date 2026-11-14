@@ -167,6 +167,7 @@ type FrameKey = (
     u64,
     bool,
     Option<u32>,
+    bool,
 );
 
 /// The time of day at `t`: the cut-scene's command, else the mission's
@@ -475,6 +476,7 @@ impl Preview {
             world_generation,
             world_shown,
             world_shown.then_some(hours.to_bits()),
+            crate::render::game_look(),
         );
         if self.last == Some(key) {
             return;
@@ -508,10 +510,23 @@ impl Preview {
         };
         self.build(cutscene, t, &view);
         let defaults = crate::render::SceneOptions::default();
+        let game_look = if world_shown {
+            let game = self
+                .shared
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .as_ref()
+                .and_then(|r| r.as_ref().ok())
+                .map(|l| l.game.clone());
+            game.and_then(|g| crate::game_light::look(&g, &cutscene.stream_name, hours))
+        } else {
+            crate::game_light::studio()
+        };
+        self.scene.options.game = game_look;
         if world_shown {
             let (environment, sky) = world::environment(hours);
             self.scene.options.environment = Some(environment);
-            self.scene.options.background = sky;
+            self.scene.options.background = game_look.and_then(|g| g.background()).unwrap_or(sky);
         } else {
             self.scene.options.environment = None;
             self.scene.options.background = defaults.background;

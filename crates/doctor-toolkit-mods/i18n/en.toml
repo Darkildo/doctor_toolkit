@@ -382,6 +382,9 @@ renderer_hint = "Used from the next start. OpenGL has no 3D level view and a sof
 level = "Level view"
 classic_camera = "Camera: as before"
 classic_camera_hint = "Right or middle drag looks round, W A S D Q E always fly, 1 2 3 choose the gizmo. Off: as in Unreal Engine — the letters fly only while the right button is held, Q W E R choose the gizmo."
+views = "Views"
+game_look = "Shading as in the game"
+game_look_hint = "The light, sky and fog of the game by the time of day, and its lit pass (light × 2, gamma 2.2). Off: the simple shading — for weak graphics cards and to see textures as they are."
 editors = "External editors"
 editors_hint = "Commands that open exported files; empty uses the program of the desktop. {file} stands for the file."
 editor_image = "Images"
@@ -2930,6 +2933,11 @@ no_template = "The level has no object with a model to copy: select an object fi
 not_found = "Model {model} is not in the game files"
 
 [view]
+shading_game = "As in the game"
+shading_simple = "Simple"
+shading_hint = "As in the game: the city's light, sky and fog by the time of day. Simple: a white light from above the camera."
+time_of_day = "Time of day"
+time_of_day_hint = "Hour of the light, sky and fog of the city (the game's time-of-day keys)."
 perspective = "Perspective"
 top = "Top"
 front = "Front"
