@@ -101,7 +101,8 @@
 #   BASE_PREFIX   default ~/.local/share/doctor_toolkit/wine-gf2
 #   HOST_DISPLAY  host X display for Xephyr (default $DISPLAY)
 #   SERVER=xvfb   nested server Xvfb (in memory, no host window at all; what
-#                 the editor's game tab prefers) instead of Xephyr
+#                 the editor's game tab prefers) instead of Xephyr; needs no
+#                 host display: run it with DISPLAY unset
 #   VISIBLE=1     show the Xephyr window on the host (debugging only)
 #   DXVK=1        draw with the graphics card: DXVK's 32-bit d3d9.dll (DXVK_DLL,
 #                 default the newest of Lutris) in SHADOW for the run, with
@@ -288,7 +289,8 @@ setup() {
     prefix=${BENCH_PREFIX:-$HOME/.local/share/doctor_toolkit/wine-gf2-bench}
     base=${BASE_PREFIX:-$HOME/.local/share/doctor_toolkit/wine-gf2}
     host=${HOST_DISPLAY:-${DISPLAY:-}}
-    [[ -n $host ]] || die "no host display: set HOST_DISPLAY"
+    # Xvfb needs no host display: the bench then runs without one at all.
+    [[ -n $host || ${SERVER:-xephyr} == xvfb ]] || die "no host display: set HOST_DISPLAY"
     [[ $prefix != "$base" ]] || die "the bench prefix must differ from the base prefix"
     ensure_prefix "$prefix" "$base"
     prefix=$(realpath "$prefix")
@@ -385,7 +387,11 @@ launch() {
     [[ $server == Xvfb ]] || xephyr_args+=(-screen "$size")
     local dfile=$out/.display
     : >"$dfile"
-    DISPLAY=$host "$server" "${xephyr_args[@]}" 3>"$dfile" >"$out/xephyr.log" 2>&1 </dev/null &
+    if [[ $server == Xvfb ]]; then
+        env -u DISPLAY -u WAYLAND_DISPLAY "$server" "${xephyr_args[@]}" 3>"$dfile" >"$out/xephyr.log" 2>&1 </dev/null &
+    else
+        DISPLAY=$host "$server" "${xephyr_args[@]}" 3>"$dfile" >"$out/xephyr.log" 2>&1 </dev/null &
+    fi
     xephyr_pid=$!
     local num=''
     for _ in $(seq 100); do

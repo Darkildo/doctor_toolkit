@@ -71,13 +71,13 @@ metamodel; **сильная** — однозначная закономерно�
 
 | id | класс.атр | значения (ур. 1–4) | доказательство | уверенность |
 |---|---|---|---|---|
-| `weapons.pistol.damage` | Gun.6 | 700, 800, 900, 1200 | растёт с уровнем; магнум 2000–4000, винтовка 2750–5000, автомат 235–440 — порядок по силе оружия; урон дробовика 150–275 при 10 дробинах | probably |
-| `weapons.magnum.damage` | Gun.6 | 2000, 2200, 3000, 4000 | то же | probably |
-| `weapons.tommy_gun.damage` | Gun.6 | 235, 275, 325, 440 | то же | probably |
-| `weapons.shotgun.damage` | Gun.6 | 150, 180, 240, 275 | то же, урон одной дробины | probably |
-| `weapons.rifle.damage` | Gun.6 | 2750, 3300, 4400, 5000 | то же | probably |
-| `weapons.*.clip_size` | Gun.7 | пистолет 8,7,7,10; магнум 6; автомат 40,50,60,75; дробовик 1,2,5,6; винтовка 1,5,5,6 | целое, порядок величин магазинов (револьвер 6, Томпсон 40–75) | probably |
-| `weapons.*.max_ammo` | Gun.8 | пистолет 32,35,42,50; магнум 18,24,30,36; автомат 200,250,300,400; дробовик 8,12,25,30; винтовка 8,20,18,25 | целое, кратно магазину, растёт с уровнем | probably |
+| `weapons.pistol.damage` | Gun.6 | 700, 800, 900, 1200 | растёт с уровнем; магнум 2000–4000, винтовка 2750–5000, автомат 235–440 — порядок по силе оружия; урон дробовика 150–275 при 10 дробинах; **игра**: автомат ур. 1 с 20000 поджёг машину вторым патроном (с 235 — 100 патронов без пожара), `game-bench.md` §31.1 | **проверено** |
+| `weapons.magnum.damage` | Gun.6 | 2000, 2200, 3000, 4000 | то же | сильная (атрибут проверен) |
+| `weapons.tommy_gun.damage` | Gun.6 | 235, 275, 325, 440 | то же | **проверено** |
+| `weapons.shotgun.damage` | Gun.6 | 150, 180, 240, 275 | то же, урон одной дробины | сильная (атрибут проверен) |
+| `weapons.rifle.damage` | Gun.6 | 2750, 3300, 4400, 5000 | то же | сильная (атрибут проверен) |
+| `weapons.*.clip_size` | Gun.7 | пистолет 8,7,7,10; магнум 6; автомат 40,50,60,75; дробовик 1,2,5,6; винтовка 1,5,5,6 | целое, порядок величин магазинов (револьвер 6, Томпсон 40–75); **игра**: 13 у автомата и 3 у пистолета — счётчик «13-39», «3-9» | **проверено** |
+| `weapons.*.max_ammo` | Gun.8 | пистолет 32,35,42,50; магнум 18,24,30,36; автомат 200,250,300,400; дробовик 8,12,25,30; винтовка 8,20,18,25 | целое, кратно магазину, растёт с уровнем; **игра**: при 52 и 12 выданные патроны срезаны до 52 и 12 (без правки выдача — 100 и 16, меньше предела) | **проверено** |
 | `weapons.*.fire_interval` | Gun.15 | пистолет 0.15; магнум 0.6; автомат 0.09,0.08,0.07,0.06; дробовик 0.6; винтовка 0.75,0.675,0.6,0.5 | секунды между выстрелами: у автомата меньше всех и падает с уровнем | probably |
 | `weapons.shotgun.pellets` | Gun.25 | 10 ×4 | 10 у всех вариантов дробовика в корпусе, 1 у всего остального оружия | probably |
 | `weapons.molotov.damage` | ThrowableItem.7 | 2500 | молотов 2500 < динамит 5000 < бомба 7500 | probably |
@@ -134,12 +134,12 @@ metamodel; **сильная** — однозначная закономерно�
 | `player.carry_more_explosives.max_molotovs` | UpgradeData.21 | `Carry More Explosives` | 8 | у всех прочих улучшений 21/22/23 = 4/3/1, у этого 8/6/2; порядок как у ссылок игрока (119 молотов, 120 динамит, 121 бомба) | probably |
 | `player.carry_more_explosives.max_dynamite` | UpgradeData.22 | то же | 6 | то же | probably |
 | `player.carry_more_explosives.max_bombs` | UpgradeData.23 | то же | 2 | то же | probably |
-| `player.health_regen_1.multiplier` | UpgradeData.31 | `Health Regen Level 1` | 1.25 | единственное отличие от 1.0, растёт с уровнем | probably |
+| `player.health_regen_1.multiplier` | UpgradeData.31 | `Health Regen Level 1` | 1.25 | единственное отличие от 1.0, растёт с уровнем; меню навыков игры: «Recover health 25% faster» (атрибут 2 — ключ этой строки `8214343b`) | **проверено** |
 | `player.health_regen_2.multiplier` | UpgradeData.31 | `Health Regen Level 2` | 1.5 | то же | probably |
 | `player.quick_heal.multiplier` | UpgradeData.12 | `Quick Heal` | 0.5 | то же | probably |
-| `player.heart_1.bonus` | UpgradeData.35 | `Heart Level 1` | 10 | 10/20/30 по уровням; проценты — предположение | probably |
-| `player.heart_2.bonus` | UpgradeData.35 | `Heart Level 2` | 20 | то же | probably |
-| `player.heart_3.bonus` | UpgradeData.35 | `Heart Level 3` | 30 | то же | probably |
+| `player.heart_1.bonus` | UpgradeData.35 | `Heart Level 1` | 10 | **секунды жизни после ранения** (навык Survival: «Stay alive longer after being punched or gunned down. Gives a medic more time to make a revival»; атрибут 1 — имя `41330554` «Survival», 2 — описание `6e269595` «Extend survival by {n} seconds»); **игра**: 17 → «Extend survival by 17 seconds» | **проверено** |
+| `player.heart_2.bonus` | UpgradeData.35 | `Heart Level 2` | 20 | то же, секунды | сильная (атрибут проверен) |
+| `player.heart_3.bonus` | UpgradeData.35 | `Heart Level 3` | 30 | то же, секунды | сильная (атрибут проверен) |
 | `player.heavy_hitter_1.multiplier` | UpgradeData.32 | `Heavy Hitter Level 1` | 1.25 | 1.25/1.5 по уровням | probably |
 | `player.heavy_hitter_2.multiplier` | UpgradeData.32 | `Heavy Hitter Level 2` | 1.5 | то же | probably |
 
@@ -268,6 +268,16 @@ metamodel; **сильная** — однозначная закономерно�
   для общего мастера не подходит; `variabledictionary` (26 ресурсов)
   хранит флаги сюжета и обучения (`global_tutorial_*`, `autosave_*`,
   `*_compound`), не параметры. Записей этих источников в списке нет.
-- **Проверка в игре**: ни одна запись не проверена на стенде
-  (`docs/analysis/game-bench.md`). Первые кандидаты — здоровье игрока и
-  урон пистолета ур. 1 (видны сразу), затем копии `Gun` 88–99.
+- **Проверка в игре** (третья волна, `game-bench.md` §31): урон, магазин и
+  запас оружия (`Gun` 6, 7, 8), Heart (`UpgradeData` 35 — секунды, а не
+  проценты здоровья; подпись исправлена) и Health Regen (31) — проверены.
+  Описание навыка в меню игры подставляет значение атрибута в строку,
+  на которую указывает атрибут 2 `UpgradeData` («Extend survival by {n}
+  seconds», «Recover health {n}% faster»): так проверяются и остальные
+  навыки. **Не проверены**: `Family` 8 (сила семьи — ни в одном экране
+  после старта `-stream` не видна; в данных она растёт по ходу сюжета)
+  и `Reduced Law Costs` 19/20 — бонус криминального кольца: у объекта нет
+  ключей строк (атрибуты 1, 2), в списке бонусов колец игры такого имени
+  нет (`Cheaper Guards`, `Double Crime Ring Income`, `Bombed Buildings
+  Rebuild Faster`, …), а кольцо со старта не получить; какой бонус кольца он
+  даёт в игре и что умножает — открыто.

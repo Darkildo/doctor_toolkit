@@ -181,16 +181,18 @@ def spec(g, models):
         objs = [g.by_guid[g.player_ref(i)][0] for i in refs]
         lab = GUN_LABEL[w]
         add("weapons.%s.damage" % w, "weapons", "%s: damage" % lab,
-            "Damage of one bullet%s, probably; the player has 4500 health. "
+            "Damage of one %s (checked in the game: 20000 for the level-1 Tommy gun set a car on fire with the "
+            "second round); the player has 4500 health. "
             "One value for all four upgrade levels; Gun 88, 92 and 96 repeat it, probably as unused copies "
-            "(the multiplayer rifle was rebalanced in attribute 6 only)." % (" (one pellet)" if w == "shotgun" else ""),
+            "(the multiplayer rifle was rebalanced in attribute 6 only)." % ("pellet" if w == "shotgun" else "bullet"),
             "Gun", 6, "float", objs, 1.0, 100000.0)
         add("weapons.%s.clip_size" % w, "weapons", "%s: clip size" % lab,
-            "Rounds per magazine, probably (grows with the upgrade level). One value for all four levels; "
+            "Rounds per magazine (checked in the game: the ammo counter shows it). One value for all four levels; "
             "Gun attributes 90, 94 and 98 repeat it.",
             "Gun", 7, "int", objs, 1, 999)
         add("weapons.%s.max_ammo" % w, "weapons", "%s: ammo carried" % lab,
-            "Most ammunition the player can carry for this gun, probably (grows with the level). "
+            "Most ammunition the player can carry for this gun (checked in the game: a gun given with more ammunition "
+            "is capped at it). "
             "One value for all four levels; Gun attributes 91, 95 and 99 hold a similar number.",
             "Gun", 8, "int", objs, 1, 9999)
         add("weapons.%s.fire_interval" % w, "weapons", "%s: time between shots" % lab,
@@ -249,14 +251,16 @@ def spec(g, models):
             "UpgradeData", attr, "int", g.named("UpgradeData", "UpgradeData", 0, "Carry More Explosives"), 1, 99)
     for lvl in (1, 2):
         add("player.health_regen_%d.multiplier" % lvl, "player", "Health Regen level %d: rate" % lvl,
-            "Health regeneration multiplier of the Health Regen skill, probably (1.25 at level 1, 1.5 at level 2).",
+            "Health regeneration multiplier of the Health Regen skill (1.25 at level 1, 1.5 at level 2): "
+            "the skill menu shows 1.25 as \"Recover health 25% faster\".",
             "UpgradeData", 31, "float", g.named("UpgradeData", "UpgradeData", 0, "Health Regen Level %d" % lvl), 0.0, 10.0)
     add("player.quick_heal.multiplier", "player", "Quick Heal: time multiplier",
         "Multiplier of the Quick Heal skill, probably on the time healing takes (0.5; 1.0 in every other upgrade).",
         "UpgradeData", 12, "float", g.named("UpgradeData", "UpgradeData", 0, "Quick Heal"), 0.0, 10.0)
     for lvl in (1, 2, 3):
-        add("player.heart_%d.bonus" % lvl, "player", "Heart level %d: health bonus" % lvl,
-            "Extra health of the Heart skill, probably in percent (10, 20, 30 at levels 1-3).",
+        add("player.heart_%d.bonus" % lvl, "player", "Heart level %d: survival time" % lvl,
+            "Seconds the player stays alive after being downed, for a medic to revive him (the Survival skill; "
+            "10, 20, 30 at levels 1-3). Checked in the game: the skill menu shows 17 as \"Extend survival by 17 seconds\".",
             "UpgradeData", 35, "float", g.named("UpgradeData", "UpgradeData", 0, "Heart Level %d" % lvl), 0.0, 1000.0)
     for lvl in (1, 2):
         add("player.heavy_hitter_%d.multiplier" % lvl, "player", "Heavy Hitter level %d: damage" % lvl,

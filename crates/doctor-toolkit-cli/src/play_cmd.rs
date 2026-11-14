@@ -172,7 +172,8 @@ pub struct GraphicsArgs {
     #[arg(long, value_name = "N", help_heading = "Graphics")]
     fps: Option<u32>,
     /// Horizontal field of view of the player's camera at 16:9, degrees
-    /// (40–120; the game's is 60); cut-scenes keep theirs
+    /// (40–120; the game's is 60); in-engine cut-scenes widen by the same
+    /// factor (they share the camera manager)
     #[arg(long, value_name = "DEGREES", help_heading = "Graphics")]
     fov: Option<u32>,
     /// FXAA over the finished frame
