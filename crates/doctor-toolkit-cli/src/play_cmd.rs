@@ -152,6 +152,83 @@ pub struct PlayArgs {
     /// when the live module cannot give the game those files
     #[arg(long)]
     no_game_writes: bool,
+    #[command(flatten)]
+    graphics: GraphicsArgs,
+}
+
+/// Graphics of a launch (stage 59): the graphics module `doctor_render.asi`
+/// for the launch, Large Address Aware, the Vulkan driver. Shared with
+/// `render install` and `render config`.
+#[derive(Args, Clone, Default)]
+pub struct GraphicsArgs {
+    /// Put the graphics module into the game for this launch (needs the ASI
+    /// loader) and take it away when the game exits (implies `--wait`). On
+    /// its own it fixes the time of day, makes vsync 60 frames a second
+    /// instead of 30 and lets the game's limiter sleep; the options below
+    /// imply it
+    #[arg(long, help_heading = "Graphics")]
+    render: bool,
+    /// Frame limit of the graphics module, frames a second (10–1000)
+    #[arg(long, value_name = "N", help_heading = "Graphics")]
+    fps: Option<u32>,
+    /// Horizontal field of view of the player's camera at 16:9, degrees
+    /// (40–120; the game's is 60); cut-scenes keep theirs
+    #[arg(long, value_name = "DEGREES", help_heading = "Graphics")]
+    fov: Option<u32>,
+    /// FXAA over the finished frame
+    #[arg(long, help_heading = "Graphics")]
+    fxaa: bool,
+    /// Sharpening over the finished frame, 0–100
+    #[arg(long, value_name = "PERCENT", help_heading = "Graphics")]
+    sharpen: Option<u32>,
+    /// Keep the game's own pacing: no time-of-day fix, vsync at 30, the
+    /// limiter spinning (with --render, to compare)
+    #[arg(long, help_heading = "Graphics")]
+    no_render_fixes: bool,
+    /// Start a copy of the executable with Large Address Aware (4 GB of
+    /// addresses instead of 2) from a mirror of the game folder; the game's
+    /// executable is not written (`wine`, `proton`, `direct`, `command`)
+    #[arg(long, help_heading = "Graphics")]
+    laa: bool,
+    /// With --laa: the graphics module reserves the free addresses below
+    /// 2 GB except this many megabytes, so that the game's memory goes
+    /// above (a test of the game with LAA)
+    #[arg(long, value_name = "MB", help_heading = "Graphics")]
+    low_memory: Option<u32>,
+    /// With --dxvk: the Vulkan driver the game loads (`VK_DRIVER_FILES`):
+    /// `auto` (that of the graphics card), `nvidia`, `radeon`, `intel`, or
+    /// `all`
+    #[arg(long, value_name = "DRIVER", help_heading = "Graphics")]
+    vulkan_driver: Option<String>,
+}
+
+impl GraphicsArgs {
+    /// The options of a launch.
+    pub fn options(&self) -> doctor_toolkit::play::render::GraphicsOptions {
+        let mut o = doctor_toolkit::play::render::GraphicsOptions {
+            module: self.render
+                || self.fps.is_some()
+                || self.fov.is_some()
+                || self.fxaa
+                || self.sharpen.is_some()
+                || self.low_memory.is_some()
+                || self.no_render_fixes,
+            fps: self.fps.unwrap_or(0),
+            fov: self.fov.unwrap_or(0),
+            fxaa: self.fxaa,
+            sharpen: self.sharpen.unwrap_or(0),
+            laa: self.laa,
+            low_memory: self.low_memory.unwrap_or(0),
+            vulkan_driver: self.vulkan_driver.clone().unwrap_or_default(),
+            ..Default::default()
+        };
+        if self.no_render_fixes {
+            o.time_of_day = false;
+            o.vsync_one = false;
+            o.limiter_sleep = false;
+        }
+        o
+    }
 }
 
 fn parse_resolution(text: &str) -> std::result::Result<(u32, u32), String> {
@@ -169,6 +246,7 @@ impl PlayArgs {
             || self.live
             || self.dxvk
             || self.mods
+            || self.graphics.options().module
             || !self.start_options().is_empty())
             && !self.dry_run
             && !self.list_spawns
@@ -339,6 +417,7 @@ pub fn play(args: &PlayArgs) -> Result<()> {
         method = play::auto_method(game.root(), &installs);
     }
     let mut plan = play::plan(&method, game.root())?;
+    let graphics = args.graphics.options();
     let dxvk = if args.dxvk {
         let found =
             dxvk::check(&method, game.root()).map_err(|p| anyhow::anyhow!("--dxvk: {p}"))?;
@@ -366,6 +445,20 @@ pub fn play(args: &PlayArgs) -> Result<()> {
     }
     let staged = choice == Choice::Overlay;
     if args.dry_run {
+        if graphics.module {
+            out!(
+                "would install the graphics module: {}",
+                graphics.config().summary()
+            );
+        }
+        if graphics.laa {
+            match doctor_toolkit::play::render::laa_problem(&method) {
+                None => out!(
+                    "would start a copy of the executable with Large Address Aware from a mirror of the game folder"
+                ),
+                Some(why) => out!("no Large Address Aware: {why}"),
+            }
+        }
         if staged {
             out!(
                 "would give the game {} through the live module, without writing into its folder",
@@ -402,6 +495,9 @@ pub fn play(args: &PlayArgs) -> Result<()> {
     }
     if overlay::remove_stale(game.root())? {
         out!("removed the staged files of an earlier launch");
+    }
+    if doctor_toolkit::play::render::restore_stale(game.root())? {
+        out!("took away the graphics module of an earlier launch");
     }
     let ws_dir = args
         .workspace_dir
@@ -478,9 +574,26 @@ pub fn play(args: &PlayArgs) -> Result<()> {
         Some(found) => Some(dxvk::DxvkInstall::write(game.root(), found)?),
         None => None,
     };
+    // Graphics last: with LAA the mirror links everything put into the
+    // game folder above.
+    let vulkan = dxvk.as_ref().map(|_| dxvk::vulkan32());
+    let graphics_launch = doctor_toolkit::play::render::prepare(
+        &game,
+        &method,
+        &mut plan,
+        &graphics,
+        vulkan.as_ref(),
+    )?;
+    for note in &graphics_launch.notes {
+        out!("{note}");
+    }
+    if graphics_launch.mirror_root().is_some() {
+        out!("command: {}", plan.command_line());
+    }
     let mut session = Session::start(&plan)?;
     out!("started");
     if !(args.wait
+        || !graphics_launch.is_empty()
         || args.revert_after
         || staged_overlay.is_some()
         || cmd_file.is_some()
@@ -507,6 +620,10 @@ pub fn play(args: &PlayArgs) -> Result<()> {
     match &state {
         SessionState::NotStarted(reason) => out!("warning: {reason}"),
         _ => out!("the game has exited"),
+    }
+    // Before the live module: the mirror hands its log back first.
+    for line in graphics_launch.finish(game.root())? {
+        out!("{line}");
     }
     if let Some(file) = cmd_file
         && file.restore()?

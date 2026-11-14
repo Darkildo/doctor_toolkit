@@ -112,6 +112,12 @@ if "$root/tools/build-live-module.sh" "$stage/$name/doctor_live.asi" >/dev/null;
 else
     echo "warning: the live module was not built (see tools/build-live-module.sh)" >&2
 fi
+# The graphics module (stage 59), likewise.
+if "$root/tools/build-render-module.sh" "$stage/$name/doctor_render.asi" >/dev/null; then
+    echo "graphics module: doctor_render.asi"
+else
+    echo "warning: the graphics module was not built (see tools/build-render-module.sh)" >&2
+fi
 # Menu entries and icons: install-desktop.sh at the top finds the programs
 # next to itself and the entries in desktop/; icons/ is for packagers.
 cp tools/install-desktop.sh "$stage/$name/"

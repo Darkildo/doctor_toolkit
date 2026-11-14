@@ -58,6 +58,15 @@ impl std::fmt::Display for Mismatch {
 /// with the bytes of the game's image at a virtual address and says
 /// whether it could.
 pub fn check(read: &mut dyn FnMut(u32, &mut [u8]) -> bool) -> Result<(), Mismatch> {
+    check_with(read, CHECKS)
+}
+
+/// [`check`] with another table of places: the graphics module
+/// ([`crate::render`]) checks its own.
+pub fn check_with(
+    read: &mut dyn FnMut(u32, &mut [u8]) -> bool,
+    checks: &[Check],
+) -> Result<(), Mismatch> {
     let mut dos = [0u8; 0x40];
     if !read(IMAGE_BASE, &mut dos) || &dos[0..2] != b"MZ" {
         return Err(Mismatch::Header("no MZ header".into()));
@@ -80,7 +89,7 @@ pub fn check(read: &mut dyn FnMut(u32, &mut [u8]) -> bool) -> Result<(), Mismatc
         return Err(Mismatch::Header(format!("image size {size:#x}")));
     }
     let mut buf = [0u8; 256];
-    for c in CHECKS {
+    for c in checks {
         let got = &mut buf[..c.bytes.len()];
         if !read(c.address, got) {
             return Err(Mismatch::Unreadable {
@@ -101,18 +110,26 @@ pub fn check(read: &mut dyn FnMut(u32, &mut [u8]) -> bool) -> Result<(), Mismatc
 /// [`check`] on the bytes of an executable file (virtual address = offset in
 /// the file + [`IMAGE_BASE`] in every section of this build).
 pub fn check_file(data: &[u8]) -> Result<(), Mismatch> {
-    check(&mut |va, buf| {
-        let Some(at) = va.checked_sub(IMAGE_BASE).map(|o| o as usize) else {
-            return false;
-        };
-        match data.get(at..at + buf.len()) {
-            Some(src) => {
-                buf.copy_from_slice(src);
-                true
+    check_file_with(data, CHECKS)
+}
+
+/// [`check_with`] on the bytes of an executable file.
+pub fn check_file_with(data: &[u8], checks: &[Check]) -> Result<(), Mismatch> {
+    check_with(
+        &mut |va, buf| {
+            let Some(at) = va.checked_sub(IMAGE_BASE).map(|o| o as usize) else {
+                return false;
+            };
+            match data.get(at..at + buf.len()) {
+                Some(src) => {
+                    buf.copy_from_slice(src);
+                    true
+                }
+                None => false,
             }
-            None => false,
-        }
-    })
+        },
+        checks,
+    )
 }
 
 /// The places checked, generated from the executable

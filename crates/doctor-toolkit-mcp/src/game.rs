@@ -244,6 +244,8 @@ pub struct GameSession {
     /// Files the live module gives the game instead of writing them into
     /// its folder (stage 46), removed when the launch ends.
     pub overlay: Option<doctor_toolkit::play::overlay::Overlay>,
+    /// The graphics module and the LAA mirror of the launch (stage 59).
+    pub graphics: Option<doctor_toolkit::play::render::GraphicsLaunch>,
     /// The workspace was written into the game for this launch and is
     /// taken out again when it ends.
     pub revert_after: bool,
@@ -284,6 +286,7 @@ impl GameSession {
             live: None,
             dxvk: None,
             overlay: None,
+            graphics: None,
             revert_after: false,
             notes: Vec::new(),
             own_processes_only: false,

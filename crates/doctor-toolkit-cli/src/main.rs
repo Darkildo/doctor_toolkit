@@ -22,6 +22,7 @@ mod nav_cmd;
 mod partsdb_cmd;
 mod play_cmd;
 mod project_cmd;
+mod render_cmd;
 mod sbk_cmd;
 mod script_cmd;
 mod sound_cmd;
@@ -484,6 +485,17 @@ enum Command {
     /// waits for the game to exit and puts the original files back.
     Play(play_cmd::PlayArgs),
 
+    /// The graphics module (stage 59): its configuration, keeping it in the
+    /// game for good, its log
+    ///
+    /// `doctor_render.asi` fixes the time of day, makes the game's vsync 60
+    /// frames a second instead of 30, limits frames, widens the field of
+    /// view and draws FXAA and sharpening over the frame. `play --render`
+    /// puts it into the game for one launch. See
+    /// docs/analysis/performance.md §10.
+    #[command(subcommand)]
+    Render(render_cmd::RenderCommand),
+
     /// Live link with the running game: player, camera, objects, teleport,
     /// messages, Lua (stage 34)
     ///
@@ -662,6 +674,7 @@ impl Command {
             Self::Edit(args) => args.is_direct(),
             Self::Rewrite { .. } | Self::Restore { .. } => true,
             Self::Play(args) => args.writes(),
+            Self::Render(command) => command.may_write_game(),
             Self::Live(command) => command.may_write_game(),
             Self::Workspace(command) => matches!(command, W::Apply { .. } | W::Revert { .. }),
             Self::Mods(command) => matches!(command, M::Apply { .. } | M::Unapply { .. }),
@@ -849,6 +862,7 @@ fn run(command: Command) -> Result<()> {
         Command::Mods(command) => mods_cmd::run(command),
         Command::Detect(args) => play_cmd::detect(&args),
         Command::Play(args) => play_cmd::play(&args),
+        Command::Render(command) => render_cmd::run(&command),
         Command::Live(command) => live_cmd::run(command),
         Command::Integrity(args) => mods_cmd::run_integrity(args),
         Command::VideoInfo(args) => video_cmd::info(&args),

@@ -160,6 +160,10 @@ pub struct PlayConfig {
     /// instead of being written ([`overlay`], stage 46).
     #[serde(skip_serializing_if = "overlay::OverlayMode::is_default")]
     pub overlay: overlay::OverlayMode,
+    /// Graphics of the launch: the graphics module, Large Address Aware,
+    /// the Vulkan driver ([`render`], stage 59).
+    #[serde(skip_serializing_if = "render::GraphicsOptions::is_default")]
+    pub graphics: render::GraphicsOptions,
 }
 
 /// The method for a game folder when nothing better is known: the
@@ -798,6 +802,7 @@ impl Session {
 
 pub mod dxvk;
 pub mod overlay;
+pub mod render;
 pub mod start;
 
 #[cfg(test)]

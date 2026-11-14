@@ -112,6 +112,9 @@ struct Launched {
     /// The changes the live module gives the game (stage 46), removed when
     /// the game exits.
     overlay: Option<play::overlay::Overlay>,
+    /// The graphics module and the LAA mirror (stage 59), taken away when
+    /// the game exits.
+    graphics: Option<play::render::GraphicsLaunch>,
 }
 
 /// What opening a game found out about its files.
@@ -683,6 +686,33 @@ impl BrowserApp {
                 None
             }
         };
+        // Graphics last (stage 59): with LAA the mirror links everything put
+        // into the game folder above.
+        let vulkan = dxvk.as_ref().map(|_| {
+            self.play
+                .dxvk_found
+                .get_or_insert_with(|| (play::dxvk::find(), play::dxvk::vulkan32()))
+                .1
+                .clone()
+        });
+        let graphics = match play::render::prepare(
+            &game,
+            &method,
+            &mut plan,
+            &config.graphics,
+            vulkan.as_ref(),
+        ) {
+            Ok(g) => {
+                for note in &g.notes {
+                    self.notify(Level::Info, trf("graphics.note", &[("note", note)]));
+                }
+                Some(g)
+            }
+            Err(error) => {
+                self.notify(Level::Error, trf("play.cannot_start", &[("error", &error)]));
+                return;
+            }
+        };
         self.play.last_exit = None;
         // The spawn points of the game files as they are now (applied).
         self.play.spawns.clear();
@@ -717,6 +747,7 @@ impl BrowserApp {
                     cmd_file,
                     dxvk,
                     overlay,
+                    graphics,
                 });
             }
             Err(error) => self.notify(Level::Error, trf("play.cannot_start", &[("error", &error)])),
@@ -756,6 +787,12 @@ impl BrowserApp {
                     && let Err(error) = install.restore()
                 {
                     doctor_toolkit::report::log(&format!("d3d9.dll not taken away: {error}"));
+                }
+                // Before the live module: the LAA mirror hands its logs back.
+                if let Some(g) = launched.graphics.take()
+                    && let Err(error) = g.finish(&launched.root)
+                {
+                    doctor_toolkit::report::log(&format!("graphics not taken away: {error}"));
                 }
                 self.live_after_exit();
                 if let Some(o) = launched.overlay.take()
@@ -928,12 +965,21 @@ impl BrowserApp {
                 ui.checkbox(&mut config.dxvk, tr("dxvk.enabled"))
                     .on_hover_text(tr("dxvk.enabled_hint"));
                 let check = dxvk_ui(ui, config.dxvk, &check);
+                ui.label(RichText::new(tr("graphics.dxvk_note")).weak().small());
+                ui.separator();
+                graphics_ui(ui, &mut config.graphics, &method, game.root(), config.dxvk);
                 ui.separator();
                 ui.label(tr("play.command"));
                 match play::plan(&method, game.root()) {
                     Ok(mut plan) => {
                         if config.dxvk && check {
                             play::dxvk::apply_env(&mut plan, game.root());
+                        }
+                        if config.graphics.laa
+                            && play::render::laa_problem(&method).is_none()
+                            && let Some(dir) = play::render::laa_dir(game.root())
+                        {
+                            play::render::retarget(&mut plan, game.root(), &dir.join("game"));
                         }
                         ui.add(
                             egui::Label::new(RichText::new(plan.command_line()).monospace()).wrap(),
@@ -1336,6 +1382,77 @@ fn method_editor(ui: &mut egui::Ui, method: &mut LaunchMethod, root: &Path, inst
 }
 
 /// The state of DXVK under its check box; returns whether it can be used.
+/// The section "Graphics" of the Play options (stage 59).
+fn graphics_ui(
+    ui: &mut egui::Ui,
+    g: &mut play::render::GraphicsOptions,
+    method: &LaunchMethod,
+    root: &std::path::Path,
+    dxvk: bool,
+) {
+    ui.strong(tr("graphics.title"));
+    ui.checkbox(&mut g.module, tr("graphics.module"))
+        .on_hover_text(tr("graphics.module_hint"));
+    if g.module {
+        ui.indent("graphics_module", |ui| {
+            if play::render::permanent(root) {
+                ui.label(RichText::new(tr("graphics.permanent")).weak());
+            } else if play::render::module_binary().is_none() {
+                ui.colored_label(doctor_toolkit_mods::WARN, tr("graphics.not_built"));
+            }
+            ui.checkbox(&mut g.time_of_day, tr("graphics.time_of_day"))
+                .on_hover_text(tr("graphics.time_of_day_hint"));
+            ui.checkbox(&mut g.vsync_one, tr("graphics.vsync_one"));
+            ui.checkbox(&mut g.limiter_sleep, tr("graphics.limiter_sleep"));
+            ui.horizontal(|ui| {
+                ui.label(tr("graphics.fps"))
+                    .on_hover_text(tr("graphics.fps_hint"));
+                ui.add(egui::DragValue::new(&mut g.fps).range(0..=1000).speed(1.0));
+            });
+            ui.horizontal(|ui| {
+                ui.label(tr("graphics.fov"))
+                    .on_hover_text(tr("graphics.fov_hint"));
+                ui.add(egui::DragValue::new(&mut g.fov).range(0..=120).speed(1.0));
+            });
+            ui.checkbox(&mut g.fxaa, tr("graphics.fxaa"))
+                .on_hover_text(tr("graphics.post_hint"));
+            ui.horizontal(|ui| {
+                ui.label(tr("graphics.sharpen"))
+                    .on_hover_text(tr("graphics.post_hint"));
+                ui.add(egui::Slider::new(&mut g.sharpen, 0..=100));
+            });
+        });
+    }
+    ui.checkbox(&mut g.laa, tr("graphics.laa"))
+        .on_hover_text(tr("graphics.laa_hint"));
+    if g.laa
+        && let Some(why) = play::render::laa_problem(method)
+    {
+        ui.colored_label(
+            doctor_toolkit_mods::WARN,
+            trf("graphics.laa_problem", &[("reason", &why)]),
+        );
+    }
+    if dxvk {
+        ui.horizontal(|ui| {
+            ui.label(tr("graphics.vulkan_driver"))
+                .on_hover_text(tr("graphics.vulkan_driver_hint"));
+            let name = |v: &str| match v {
+                "" | "all" => tr("graphics.vulkan_all").to_owned(),
+                "auto" => tr("graphics.vulkan_auto").to_owned(),
+                other => other.to_owned(),
+            };
+            egui::ComboBox::from_id_salt("play_vulkan_driver")
+                .selected_text(name(&g.vulkan_driver))
+                .show_ui(ui, |ui| {
+                    for v in ["", "auto", "nvidia", "radeon", "intel"] {
+                        ui.selectable_value(&mut g.vulkan_driver, v.to_owned(), name(v));
+                    }
+                });
+        });
+    }
+}
+
 fn dxvk_ui(ui: &mut egui::Ui, enabled: bool, check: &DxvkCheck) -> bool {
     match check {
         Ok(found) => {

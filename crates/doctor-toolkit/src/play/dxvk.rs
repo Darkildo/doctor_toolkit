@@ -165,6 +165,9 @@ pub struct Vulkan32 {
     /// Drivers of graphics cards with a 32-bit library (ICD file names,
     /// e.g. `nvidia_icd.json`).
     pub drivers: Vec<String>,
+    /// The manifest of each driver of [`Self::drivers`] (same order): what
+    /// `VK_DRIVER_FILES` takes ([`driver_files`]).
+    pub manifests: Vec<PathBuf>,
     /// Only a software driver (llvmpipe) has a 32-bit library.
     pub software_only: bool,
 }
@@ -248,6 +251,8 @@ pub fn vulkan32_in(root: &Path) -> Vulkan32 {
             } else if !seen.contains(&name) {
                 seen.push(name.clone());
                 out.drivers.push(name);
+                out.manifests
+                    .push(Path::new("/").join(file.strip_prefix(root).unwrap_or(&file)));
             }
         }
     }
@@ -393,6 +398,80 @@ pub fn apply_env(plan: &mut LaunchPlan, root: &Path) {
     };
     set(plan, "DXVK_LOG_PATH", root.join(STATE_DIR).into_os_string());
     set(plan, "DXVK_LOG_LEVEL", "warn".into());
+}
+
+/// Card vendors (PCI ids) and the names their Vulkan drivers' manifests
+/// start with, in the order a choice prefers them: a discrete NVIDIA or
+/// AMD card before Intel graphics.
+const VENDORS: &[(&str, &[&str])] = &[
+    ("0x10de", &["nvidia"]),
+    ("0x1002", &["radeon", "amd"]),
+    ("0x8086", &["intel"]),
+];
+
+/// The value of `VK_DRIVER_FILES` for a DXVK launch: the manifest of one
+/// Vulkan driver, so that the 32-bit game maps one driver's libraries
+/// instead of every installed one (`docs/analysis/performance.md` §5:
+/// about 300 MB of the 2 GB of addresses). `choice`: `auto` — the driver of
+/// the graphics card of the computer (`/sys/class/drm`), a name such as
+/// `nvidia`, `radeon`, `intel` — that driver; empty or `all` — none (the
+/// Vulkan loader loads them all).
+pub fn driver_files(vulkan: &Vulkan32, choice: &str) -> Option<OsString> {
+    driver_files_in(vulkan, choice, Path::new("/"))
+}
+
+/// [`driver_files`] with the system under `root` (tests).
+pub fn driver_files_in(vulkan: &Vulkan32, choice: &str, root: &Path) -> Option<OsString> {
+    let choice = choice.trim().to_ascii_lowercase();
+    let find = |prefixes: &[&str]| {
+        vulkan
+            .drivers
+            .iter()
+            .zip(&vulkan.manifests)
+            .find(|(name, _)| {
+                let name = name.to_ascii_lowercase();
+                prefixes.iter().any(|p| name.starts_with(p))
+            })
+            .map(|(_, path)| path.clone().into_os_string())
+    };
+    match choice.as_str() {
+        "" | "all" => None,
+        "auto" => {
+            let mut vendors = Vec::new();
+            if let Ok(cards) = std::fs::read_dir(root.join("sys/class/drm")) {
+                for card in cards.flatten() {
+                    if let Ok(v) = std::fs::read_to_string(card.path().join("device/vendor")) {
+                        vendors.push(v.trim().to_ascii_lowercase());
+                    }
+                }
+            }
+            VENDORS
+                .iter()
+                .filter(|(id, _)| vendors.iter().any(|v| v == id))
+                .find_map(|(_, prefixes)| find(prefixes))
+        }
+        name => find(&[name]),
+    }
+}
+
+/// Adds `VK_DRIVER_FILES` (and the older name `VK_ICD_FILENAMES`) to a
+/// plan, unless the environment names drivers already; returns the value.
+pub fn apply_driver_env(
+    plan: &mut LaunchPlan,
+    vulkan: &Vulkan32,
+    choice: &str,
+) -> Option<OsString> {
+    if std::env::var_os("VK_DRIVER_FILES").is_some()
+        || std::env::var_os("VK_ICD_FILENAMES").is_some()
+    {
+        return None;
+    }
+    let files = driver_files(vulkan, choice)?;
+    plan.env
+        .retain(|(k, _)| k != "VK_DRIVER_FILES" && k != "VK_ICD_FILENAMES");
+    plan.env.push(("VK_DRIVER_FILES".into(), files.clone()));
+    plan.env.push(("VK_ICD_FILENAMES".into(), files.clone()));
+    Some(files)
 }
 
 /// DXVK installed in a game folder for one launch. [`DxvkInstall::restore`]
@@ -596,7 +675,56 @@ mod tests {
         fs::write(lib32.join("libGLX_nvidia.so.0"), elf(1)).unwrap();
         let v = vulkan32_in(root);
         assert_eq!(v.drivers, ["nvidia_icd.json"]);
+        assert_eq!(
+            v.manifests,
+            [Path::new("/usr/share/vulkan/icd.d/nvidia_icd.json")]
+        );
         assert!(v.usable() && !v.software_only);
+    }
+
+    #[test]
+    fn chooses_the_vulkan_driver_of_the_card() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let v = Vulkan32 {
+            loader: Some("/l".into()),
+            drivers: vec![
+                "intel_icd.json".into(),
+                "nvidia_icd.json".into(),
+                "radeon_icd.json".into(),
+            ],
+            manifests: vec![
+                "/icd/intel_icd.json".into(),
+                "/icd/nvidia_icd.json".into(),
+                "/icd/radeon_icd.json".into(),
+            ],
+            software_only: false,
+        };
+        // No card known: the loader decides (all drivers).
+        assert_eq!(driver_files_in(&v, "auto", root), None);
+        assert_eq!(driver_files_in(&v, "", root), None);
+        assert_eq!(driver_files_in(&v, "all", root), None);
+        // Named.
+        assert_eq!(
+            driver_files_in(&v, "radeon", root),
+            Some("/icd/radeon_icd.json".into())
+        );
+        assert_eq!(driver_files_in(&v, "matrox", root), None);
+        // The cards of the computer: NVIDIA first, then AMD, then Intel.
+        for (card, vendor) in [("card0", "0x1002\n"), ("card1", "0x10de\n")] {
+            let d = root.join("sys/class/drm").join(card).join("device");
+            fs::create_dir_all(&d).unwrap();
+            fs::write(d.join("vendor"), vendor).unwrap();
+        }
+        assert_eq!(
+            driver_files_in(&v, "auto", root),
+            Some("/icd/nvidia_icd.json".into())
+        );
+        fs::remove_dir_all(root.join("sys/class/drm/card1")).unwrap();
+        assert_eq!(
+            driver_files_in(&v, "auto", root),
+            Some("/icd/radeon_icd.json".into())
+        );
     }
 
     fn fake_dxvk(dir: &Path) -> Dxvk {
@@ -612,6 +740,7 @@ mod tests {
         Vulkan32 {
             loader: Some("/l".into()),
             drivers: vec!["nvidia_icd.json".into()],
+            manifests: vec!["/usr/share/vulkan/icd.d/nvidia_icd.json".into()],
             software_only: false,
         }
     }

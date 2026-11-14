@@ -48,7 +48,7 @@ cat >"$stage/$name/BUILD-INFO.txt" <<EOF
 doctor_toolkit $version for $os $arch
 commit: $commit
 rustc: $(rustc --version)
-The in-game module of the live link (doctor_live.asi) is a separate file of the release.
+The in-game modules (doctor_live.asi: the live link; doctor_render.asi: graphics) are separate files of the release.
 EOF
 if [[ $os == macos ]]; then
     cat >>"$stage/$name/BUILD-INFO.txt" <<EOF

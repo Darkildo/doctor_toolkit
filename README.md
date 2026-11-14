@@ -53,6 +53,10 @@ original files are never lost.
   lighting up as messages go. Mods and the workspace can be played without
   writing anything into the game folder: the live module hands the game the
   changed files (`doctor_live.asi` comes with the release).
+- **Graphics patch:** the graphics module `doctor_render.asi` fixes the
+  time of day, unlocks the game's 30 fps vsync, limits frames without a busy
+  core, widens the field of view, adds FXAA and sharpening, and "Play" can
+  start the game Large Address Aware — all without writing into the game.
 - **AI assistants:** `doctor-toolkit mcp` lets Claude Code, Claude Desktop or
   any MCP client search the game, read resources as JSON and follow the
   logic of missions; with flags it also edits through the workspace (each

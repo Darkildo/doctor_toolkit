@@ -155,7 +155,10 @@ pub fn object(guid: Guid) -> Response {
 /// Where writes may run: a level frame with the renderer's buffer.
 fn in_frame(m: &mut Mem) -> Result<(), Box<Response>> {
     if game::loop_state(m) != LoopState::Game {
-        return Err(Box::new(Response::error(ErrorCode::NotReady, "not in a level")));
+        return Err(Box::new(Response::error(
+            ErrorCode::NotReady,
+            "not in a level",
+        )));
     }
     if m.ptr(FRAME_COMMANDS).is_none() {
         return Err(Box::new(Response::error(

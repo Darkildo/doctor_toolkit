@@ -28,7 +28,9 @@
 //!   runs, and the journal of those edits for undo (stage 47);
 //! - [`profile`]: the pace of the game measured from inside — the main
 //!   loop, the presents, reads of files, CPU time, textures, memory and a
-//!   sampler of its threads (stage 58).
+//!   sampler of its threads (stage 58);
+//! - [`render`]: the graphics module `doctor_render.asi` — its patches,
+//!   configuration and checks (stage 59).
 //!
 //! The crate has no dependencies: the module builds it for
 //! `i686-pc-windows-gnu`, the editor for the host.
@@ -42,6 +44,7 @@ pub mod files;
 pub mod journal;
 pub mod profile;
 pub mod proto;
+pub mod render;
 pub mod state;
 mod wire;
 pub mod world;

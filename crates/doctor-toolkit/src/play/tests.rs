@@ -332,6 +332,7 @@ fn methods_are_stored_as_tables() {
         live: Default::default(),
         dxvk: false,
         overlay: Default::default(),
+        graphics: Default::default(),
     };
     let json = serde_json::to_string(&config).unwrap();
     assert_eq!(

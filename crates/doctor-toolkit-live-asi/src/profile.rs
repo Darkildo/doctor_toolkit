@@ -19,8 +19,8 @@
 //! and, when asked, walks the address space and samples where the main
 //! and render threads stand.
 
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering::Relaxed};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering::Relaxed};
 use std::time::{Duration, Instant};
 
 use doctor_toolkit_live::addr::{
@@ -30,8 +30,8 @@ use doctor_toolkit_live::addr::{
 };
 use doctor_toolkit_live::profile::{
     Clock, CpuTime, IMAGE_CODE, IO_THREADS, LARGE_READ, MAX_SAMPLE_MS, MemoryMap, Profile, RING,
-    SLOW_READ_US,
-    SLOW_RING, SiteIo, SlowRead, TEXTURES, TOP_EIPS, TextureUse, ThreadIo, ThreadSamples, in_image,
+    SLOW_READ_US, SLOW_RING, SiteIo, SlowRead, TEXTURES, TOP_EIPS, TextureUse, ThreadIo,
+    ThreadSamples, in_image,
 };
 use doctor_toolkit_live::{ErrorCode, Response};
 
@@ -441,15 +441,8 @@ fn thread_cpu(thread: u32) -> Option<CpuTime> {
 fn process_cpu() -> Option<CpuTime> {
     let (mut c, mut e, mut k, mut u) = (0u64, 0u64, 0u64, 0u64);
     // SAFETY: the pseudo handle of this process; fills the four times.
-    let ok = unsafe {
-        win::GetProcessTimes(
-            win::GetCurrentProcess(),
-            &mut c,
-            &mut e,
-            &mut k,
-            &mut u,
-        )
-    };
+    let ok =
+        unsafe { win::GetProcessTimes(win::GetCurrentProcess(), &mut c, &mut e, &mut k, &mut u) };
     (ok != 0).then(|| CpuTime {
         user_ms: ms_of(u),
         kernel_ms: ms_of(k),

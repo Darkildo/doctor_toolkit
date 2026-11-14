@@ -84,6 +84,64 @@ pub struct PlayParams {
     /// Screen size `[width, height]` (default 1280×720).
     #[serde(default)]
     pub size: Option<[u32; 2]>,
+    /// The graphics module for this launch (stage 59): time of day without
+    /// lost seconds, vsync 60 frames a second instead of 30, the game's
+    /// limiter sleeping [default: as the editor's Play options say]. The
+    /// options below imply it.
+    #[serde(default)]
+    pub render: Option<bool>,
+    /// Frame limit of the graphics module, frames a second (10–1000).
+    #[serde(default)]
+    pub fps: Option<u32>,
+    /// Horizontal field of view of the player's camera at 16:9, degrees
+    /// (40–120; the game's is 60).
+    #[serde(default)]
+    pub fov: Option<u32>,
+    /// FXAA over the finished frame.
+    #[serde(default)]
+    pub fxaa: Option<bool>,
+    /// Sharpening over the finished frame, 0–100.
+    #[serde(default)]
+    pub sharpen: Option<u32>,
+    /// Start a copy of the executable with Large Address Aware from a
+    /// mirror of the game folder (the game's executable is not written).
+    #[serde(default)]
+    pub laa: Option<bool>,
+    /// With DXVK: the Vulkan driver the game loads (`auto`, `nvidia`,
+    /// `radeon`, `intel`; empty — all).
+    #[serde(default)]
+    pub vulkan_driver: Option<String>,
+}
+
+impl PlayParams {
+    /// The graphics of this launch over those of the editor.
+    fn graphics(&self, editor: &play::render::GraphicsOptions) -> play::render::GraphicsOptions {
+        let mut g = editor.clone();
+        let implied = self.fps.is_some()
+            || self.fov.is_some()
+            || self.fxaa == Some(true)
+            || self.sharpen.is_some_and(|s| s > 0);
+        g.module = self.render.unwrap_or(g.module) || implied;
+        if let Some(v) = self.fps {
+            g.fps = v;
+        }
+        if let Some(v) = self.fov {
+            g.fov = v;
+        }
+        if let Some(v) = self.fxaa {
+            g.fxaa = v;
+        }
+        if let Some(v) = self.sharpen {
+            g.sharpen = v;
+        }
+        if let Some(v) = self.laa {
+            g.laa = v;
+        }
+        if let Some(v) = &self.vulkan_driver {
+            g.vulkan_driver = v.clone();
+        }
+        g
+    }
 }
 
 #[derive(Debug, Default, Deserialize, JsonSchema)]
@@ -443,7 +501,20 @@ pub fn play(kit: &Toolkit, p: PlayParams) -> ToolResult<Output> {
     if let Some(found) = &dxvk_found {
         cleanup.dxvk = Some(DxvkInstall::write(&root, found)?);
     }
+    // Graphics last: with LAA the mirror links everything put above.
+    let graphics = p.graphics(&editor.graphics);
+    let graphics_launch = match &method {
+        Some(method) if graphics.module || graphics.laa || !graphics.vulkan_driver.is_empty() => {
+            let vulkan = dxvk_found.as_ref().map(|_| dxvk::vulkan32());
+            let g =
+                play::render::prepare(&kit.game, method, &mut plan, &graphics, vulkan.as_ref())?;
+            notes.extend(g.notes.iter().cloned());
+            Some(g)
+        }
+        _ => None,
+    };
     let mut session = GameSession::spawn(&plan, display)?;
+    session.graphics = graphics_launch;
     session.own_processes_only = kit.launch.is_some();
     session.start = options;
     session.cmd_file = cleanup.cmd_file.take();
@@ -619,6 +690,10 @@ pub fn finish(kit: &Toolkit, mut session: GameSession) -> ToolResult<Value> {
         && f.restore()?
     {
         done.push(format!("took away {}", start::CMD_FILE));
+    }
+    // Before the live module: the LAA mirror hands its logs back first.
+    if let Some(g) = session.graphics.take() {
+        done.extend(g.finish(kit.game.root())?);
     }
     if let Some(m) = session.live.take()
         && m.restore()?
