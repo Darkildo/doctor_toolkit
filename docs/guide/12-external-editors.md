@@ -84,7 +84,7 @@ doctor-toolkit edit "$GAME" КЛЮЧ --format lua --no-open --file-dir ./scripts
 пространство. Подробности — `docs/blender.md`.
 
 **Установка.** Edit → Preferences → Get Extensions → ▾ → **Install from
-Disk…** → `doctor_toolkit_blender-0.0.3-linux-x64.zip` из релиза (модуль
+Disk…** → `doctor_toolkit_blender-0.0.4-linux-x64.zip` из релиза (модуль
 тулкита внутри). Если пакет без модуля — укажите в настройках дополнения
 **Module folder** (§2 `docs/blender.md`).
 

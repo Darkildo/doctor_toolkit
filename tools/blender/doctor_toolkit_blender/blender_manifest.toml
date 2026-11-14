@@ -1,7 +1,7 @@
 schema_version = "1.0.0"
 
 id = "doctor_toolkit_blender"
-version = "0.0.3"
+version = "0.0.4"
 name = "doctor_toolkit"
 tagline = "Import and export The Godfather II models through a workspace"
 maintainer = "doctor_toolkit contributors"

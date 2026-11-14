@@ -175,7 +175,7 @@ dependencies = [
 
 [[package]]
 name = "doctor-toolkit"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "binrw",
  "doctor-toolkit-live",
@@ -207,7 +207,7 @@ dependencies = [
 
 [[package]]
 name = "doctor-toolkit-live"
-version = "0.0.3"
+version = "0.0.4"
 
 [[package]]
 name = "either"
