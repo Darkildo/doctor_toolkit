@@ -379,6 +379,21 @@ impl World {
         Some((toi, self.owner(handle)))
     }
 
+    /// The first thing straight below `from` within `max` metres whose
+    /// owner `skip` does not pass over: its distance.
+    pub fn below_except(&self, from: V3, max: f32, skip: &dyn Fn(Owner) -> bool) -> Option<f32> {
+        let predicate = |_: ColliderHandle, c: &Collider| {
+            !self
+                .owners
+                .get(c.user_data as usize)
+                .is_some_and(|o| skip(*o))
+        };
+        let mut queries = self.queries();
+        queries.filter = QueryFilter::default().predicate(&predicate);
+        let ray = Ray::new(v(from), Vector::NEG_Y);
+        queries.cast_ray(&ray, max, true).map(|(_, toi)| toi)
+    }
+
     /// The first collider along the ray from `from` in the direction `dir`
     /// (unit length) within `max` metres: the distance and the normal there.
     pub fn cast(&self, from: V3, dir: V3, max: f32) -> Option<(f32, V3)> {

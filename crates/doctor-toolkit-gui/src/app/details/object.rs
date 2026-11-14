@@ -44,14 +44,17 @@ pub struct ObjectState {
     problem: String,
 }
 
-/// The transform being edited.
+/// The transform being edited: of the object shown, and of the other
+/// selected objects with it (stage 54: one value for all, "—" where they
+/// differ).
 struct Draft {
     level: u64,
-    object: ObjRef,
-    /// The group's revision the stored values are from.
-    revision: u64,
-    stored: Transform,
-    values: Transform,
+    /// The objects edited, the one shown first.
+    objects: Vec<ObjRef>,
+    /// The revisions of their groups the stored values are from.
+    revisions: Vec<u64>,
+    stored: Vec<Transform>,
+    values: Vec<Transform>,
 }
 
 /// A model the chooser offers.
@@ -266,6 +269,34 @@ fn badge(ui: &mut egui::Ui, text: &str, color: Color32) {
 
 // ---------------------------------------------------------------- transform
 
+/// The objects the Transform group edits: `r`, and with it every other
+/// selected object that is placed and not locked (when `r` is selected).
+fn transform_objects(level: &LevelView, r: ObjRef) -> Vec<ObjRef> {
+    let mut objects = vec![r];
+    if level.is_selected(r) {
+        objects.extend(level.selection().into_iter().filter(|&o| {
+            o != r
+                && !level.is_object_locked(o)
+                && level.object(o).is_some_and(|x| x.transform.is_some())
+        }));
+    }
+    objects
+}
+
+/// A transform as the fields show it: no "-0.0".
+fn shown(m: &RowMatrix) -> Transform {
+    let mut t = Transform::from_matrix(m);
+    for v in t
+        .position
+        .iter_mut()
+        .chain(&mut t.rotation)
+        .chain(&mut t.scale)
+    {
+        *v += 0.0;
+    }
+    t
+}
+
 fn transform_ui(
     ui: &mut egui::Ui,
     state: &mut ObjectState,
@@ -275,35 +306,35 @@ fn transform_ui(
     locked: bool,
     out: &mut Vec<LevelAction>,
 ) {
-    let Some(stored_matrix) = level.object(r).and_then(|o| o.transform) else {
+    if level.object(r).and_then(|o| o.transform).is_none() {
         return;
-    };
-    let has_matrix = level.object(r).is_some_and(|o| o.has_matrix);
-    let revision = level.group_revision(r.group);
-    let mut stored = Transform::from_matrix(&stored_matrix);
-    // No "-0.0" in the fields.
-    for v in stored
-        .position
-        .iter_mut()
-        .chain(&mut stored.rotation)
-        .chain(&mut stored.scale)
-    {
-        *v += 0.0;
     }
+    let has_matrix = level.object(r).is_some_and(|o| o.has_matrix);
+    let objects = transform_objects(level, r);
+    let revisions: Vec<u64> = objects
+        .iter()
+        .map(|o| level.group_revision(o.group))
+        .collect();
     let fresh = state
         .transform
         .as_ref()
-        .is_none_or(|d| d.level != id || d.object != r || d.revision != revision);
+        .is_none_or(|d| d.level != id || d.objects != objects || d.revisions != revisions);
     if fresh {
+        let stored: Vec<Transform> = objects
+            .iter()
+            .filter_map(|&o| level.object(o)?.transform)
+            .map(|m| shown(&m))
+            .collect();
         state.transform = Some(Draft {
             level: id,
-            object: r,
-            revision,
+            objects: objects.clone(),
+            revisions,
+            values: stored.clone(),
             stored,
-            values: stored,
         });
     }
     let draft = state.transform.as_mut().expect("set above");
+    let many = draft.objects.len() > 1;
     let mut changed = false;
     let mut release = false;
     ui.add_enabled_ui(!locked, |ui| {
@@ -329,22 +360,10 @@ fn transform_ui(
                     + 4.0;
                 let height = ui.spacing().interact_size.y;
                 let width = ((ui.available_width() - label_width) / 3.0 - 10.0).clamp(44.0, 140.0);
-                for (name, values, speed, decimals, suffix) in [
-                    (
-                        tr("details.location"),
-                        &mut draft.values.position,
-                        0.05,
-                        3,
-                        "",
-                    ),
-                    (
-                        tr("details.rotation"),
-                        &mut draft.values.rotation,
-                        0.5,
-                        2,
-                        "°",
-                    ),
-                    (tr("details.scale"), &mut draft.values.scale, 0.01, 3, ""),
+                for (field, name, speed, decimals, suffix) in [
+                    (0, tr("details.location"), 0.05, 3, ""),
+                    (1, tr("details.rotation"), 0.5, 2, "°"),
+                    (2, tr("details.scale"), 0.01, 3, ""),
                 ] {
                     ui.allocate_ui_with_layout(
                         Vec2::new(label_width, height),
@@ -354,31 +373,77 @@ fn transform_ui(
                             ui.add(egui::Label::new(name).wrap_mode(egui::TextWrapMode::Extend));
                         },
                     );
-                    for (axis, value) in values.iter_mut().enumerate() {
-                        let response = axis_field(ui, axis, value, speed, decimals, suffix, width);
-                        changed |= response.changed();
+                    for axis in 0..3 {
+                        let get = |t: &Transform| match field {
+                            0 => t.position[axis],
+                            1 => t.rotation[axis],
+                            _ => t.scale[axis],
+                        };
+                        let first = get(&draft.values[0]);
+                        let mixed = draft.values.iter().any(|t| (get(t) - first).abs() > 1e-4);
+                        let mut value = first;
+                        let response =
+                            axis_field(ui, axis, &mut value, speed, decimals, suffix, width, mixed);
+                        if response.changed() && value != first {
+                            // A drag moves every object by as much; a typed
+                            // value is given to all.
+                            let shift = response.dragged();
+                            for t in &mut draft.values {
+                                let v = match field {
+                                    0 => &mut t.position[axis],
+                                    1 => &mut t.rotation[axis],
+                                    _ => &mut t.scale[axis],
+                                };
+                                *v = if shift { *v + value - first } else { value };
+                            }
+                            changed = true;
+                        }
                         release |= response.drag_stopped() || response.lost_focus();
                     }
                     ui.end_row();
                 }
             });
     });
+    if many {
+        ui.add(
+            egui::Label::new(
+                RichText::new(trf(
+                    "details.transform_many",
+                    &[("count", &draft.objects.len())],
+                ))
+                .weak()
+                .small(),
+            )
+            .wrap(),
+        );
+    }
     if locked {
         ui.label(RichText::new(tr("details.locked_hint")).weak().small());
     } else if !has_matrix {
         ui.label(RichText::new(tr("logic.no_matrix")).weak().small());
     }
     if changed {
-        let matrix = matrix_of(&stored_matrix, &draft.stored, &draft.values);
-        level.set_preview(Some((r, matrix)));
+        let previews = draft
+            .objects
+            .iter()
+            .zip(&draft.values)
+            .filter_map(|(&o, values)| {
+                let stored = level.object(o)?.transform?;
+                Some((
+                    o,
+                    matrix_of(&stored, &Transform::from_matrix(&stored), values),
+                ))
+            })
+            .collect();
+        level.set_previews(previews);
     }
     let escape = ui.input(|i| i.key_pressed(egui::Key::Escape));
     if escape && draft.values != draft.stored {
-        draft.values = draft.stored;
-        level.set_preview(None);
+        draft.values = draft.stored.clone();
+        level.set_previews(Vec::new());
     } else if release {
-        level.set_preview(None);
-        out.extend(transform_action(level, r, &draft.values));
+        level.set_previews(Vec::new());
+        out.extend(transforms_action(level, &draft.objects, &draft.values));
     }
     ui.horizontal(|ui| {
         if ui
@@ -388,8 +453,8 @@ fn transform_ui(
             )
             .clicked()
         {
-            draft.values = draft.stored;
-            level.set_preview(None);
+            draft.values = draft.stored.clone();
+            level.set_previews(Vec::new());
         }
     });
 }
@@ -425,8 +490,32 @@ pub(super) fn transform_action(
     })
 }
 
+/// The edits that place every object by its values: one, or one
+/// operation for several.
+pub(super) fn transforms_action(
+    level: &LevelView,
+    objects: &[ObjRef],
+    values: &[Transform],
+) -> Option<LevelAction> {
+    let mut actions: Vec<LevelAction> = objects
+        .iter()
+        .zip(values)
+        .filter_map(|(&r, v)| transform_action(level, r, v))
+        .collect();
+    match actions.len() {
+        0 => None,
+        1 => actions.pop(),
+        n => Some(LevelAction::Many {
+            actions,
+            label: trn("view.transformed_label", n as u64, &[]),
+        }),
+    }
+}
+
 /// One value along an axis: the axis's colour as a bar on the left, the
-/// value dragged with the mouse or typed.
+/// value dragged with the mouse or typed; "—" when the objects edited
+/// together differ (`mixed`).
+#[allow(clippy::too_many_arguments)]
 fn axis_field(
     ui: &mut egui::Ui,
     axis: usize,
@@ -435,6 +524,7 @@ fn axis_field(
     decimals: usize,
     suffix: &str,
     width: f32,
+    mixed: bool,
 ) -> egui::Response {
     let (letter, color) = match axis {
         0 => ("X", theme::AXIS_X),
@@ -446,14 +536,14 @@ fn axis_field(
         let height = ui.spacing().interact_size.y;
         let (bar, _) = ui.allocate_exact_size(Vec2::new(3.0, height), Sense::hover());
         ui.painter().rect_filled(bar, 1.0, color);
-        ui.add_sized(
-            [width, height],
-            egui::DragValue::new(value)
-                .speed(speed)
-                .max_decimals(decimals)
-                .suffix(suffix),
-        )
-        .on_hover_text(letter)
+        let mut field = egui::DragValue::new(value)
+            .speed(speed)
+            .max_decimals(decimals)
+            .suffix(if mixed { "" } else { suffix });
+        if mixed {
+            field = field.custom_formatter(|_, _| "—".to_owned());
+        }
+        ui.add_sized([width, height], field).on_hover_text(letter)
     })
     .inner
 }

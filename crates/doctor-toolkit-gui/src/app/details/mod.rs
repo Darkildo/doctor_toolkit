@@ -20,7 +20,7 @@
 mod object;
 mod resource;
 #[cfg(test)]
-mod tests;
+pub(super) mod tests;
 
 use std::collections::HashMap;
 

@@ -472,6 +472,11 @@ fn a_model_dropped_into_the_level_stands_on_the_ground_and_is_undone() {
     assert_eq!(g.model(added), Some(model));
     let m = g.transform(added).unwrap();
     assert_eq!([m[3][0], m[3][1], m[3][2]], at, "on the ground");
+    // The dropped object is selected (stage 54: the gizmo moves it next).
+    let level = &app.levels[&tab];
+    let dropped = level.find(group, 1).expect("in the level");
+    assert_eq!(level.primary(), Some(dropped));
+    assert_eq!(level.selection().len(), 1);
     app.undo();
     let ws = app.workspace.as_ref().unwrap();
     let g = doctor_toolkit::level::edit::current_group(&game, ws, group).unwrap();

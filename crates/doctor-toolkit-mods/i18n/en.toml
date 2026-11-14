@@ -149,6 +149,7 @@ gizmo_scale = "Scale"
 gizmo_local = "Local axes"
 gizmo_snap = "Snap always"
 toggle_zones = "Zones panel"
+toggle_history = "Undo history panel"
 new_details = "Another Details panel"
 
 [pane]
@@ -165,6 +166,7 @@ tasks = "Tasks"
 content = "Content Browser"
 outliner = "Outliner"
 zones = "Zones"
+history = "History"
 
 [tab]
 close = "Close"
@@ -197,6 +199,7 @@ pinned = "pinned"
 locked = "locked"
 hidden = "hidden"
 many_selected = "{count} objects are selected; Details shows the last one clicked."
+transform_many = "Transform of {count} objects: a typed value goes to all of them, a dragged one moves them all; — where they differ."
 focus = "Fly to"
 focus_hint = "Fly the camera to the object (F)"
 transform = "Transform"
@@ -359,6 +362,9 @@ renderer_auto = "Automatic"
 renderer_wgpu = "wgpu"
 renderer_glow = "OpenGL"
 renderer_hint = "Used from the next start. OpenGL has no 3D level view and a software model preview."
+level = "Level view"
+classic_camera = "Camera: as before"
+classic_camera_hint = "Right or middle drag looks round, W A S D Q E always fly, 1 2 3 choose the gizmo. Off: as in Unreal Engine — the letters fly only while the right button is held, Q W E R choose the gizmo."
 editors = "External editors"
 editors_hint = "Commands that open exported files; empty uses the program of the desktop. {file} stands for the file."
 editor_image = "Images"
@@ -1928,10 +1934,12 @@ loading = "Loading…"
 empty = "Nothing is loaded: choose zones in the Zones panel and load them."
 overlay_stats = "{drawn} drawn, {culled} culled · {calls} draw calls · {ms} ms CPU"
 overlay_at = "  at {position}  yaw {yaw}°"
-overlay_keys = "Right drag: look · WASD QE: move (Shift fast) · wheel · Alt+drag: orbit · F: fly to · 1/2/3: move/rotate/scale · Ctrl: snap"
 cannot_open_workspace = "Cannot open the workspace: {error}"
 moved = "Moved object {object}"
 duplicated = "Duplicated object {object} as {copy} ({guid})"
+copied = "Copy of object {object} as {copy} ({guid})"
+moved_many = { one = "Move {n} object", other = "Move {n} objects" }
+
 removed = "Removed object {object}"
 dangling_attributes = { one = "; {n} attribute still refers to its GUID", other = "; {n} attributes still refer to its GUID" }
 added = "Added object {object} ({guid})"
@@ -2700,3 +2708,84 @@ waiting = "Dropped: placed once the collision of the level is built"
 no_ground_placed = "No ground under the pointer: placed 10 m ahead"
 no_template = "The level has no object with a model to copy: select an object first"
 not_found = "Model {model} is not in the game files"
+
+[view]
+perspective = "Perspective"
+top = "Top"
+front = "Front"
+side = "Side"
+projection_hint = "How the view looks at the level: in perspective, or straight from above, the front or the side (orthographic)"
+lit = "Lit"
+unlit = "Unlit"
+wireframe = "Wireframe"
+lighting_hint = "Lighting: lit, unlit, or the edges of the triangles over the scene; textures, back faces, levels of detail"
+show = "Show"
+show_hint = "What the view draws (the same switches as Show in the Zones panel)"
+navigation = "Navigation graphs"
+navigation_hint = "The paths of the AI over the scene; their editing is in the Zones panel"
+grid = "Grid"
+stats = "Stats"
+stats_hint = "Instances drawn and culled, draw calls, time of a frame; the object under the pointer and the selected one"
+speed = "{speed} m/s"
+speed_title = "Camera speed"
+speed_unit = " m/s"
+speed_hint = "Camera speed; the wheel with the right button held changes it too"
+help_hint = "Keys and mouse of the view"
+help_title = "Keys and mouse (as in Unreal Engine)"
+help_title_classic = "Keys and mouse (camera as before)"
+help_ue = """
+Right button + mouse — look round
+Right button + W A S D, Q E — fly (Shift: faster)
+Right button + wheel — camera speed
+Wheel, arrows, Page Up/Down — move
+Middle drag — pan
+Left drag in empty space — forward, back and turn (Select: frame)
+Alt + left drag — orbit the selection
+Alt + right drag — towards the selection and back
+Q W E R — select, move, rotate, scale
+Space — next gizmo mode
+Ctrl — snap (free while snapping is on)
+Alt + drag of the gizmo — move copies
+Click, Ctrl + click, Shift + click — select, toggle, add
+Shift / Ctrl + drag — add to / take from the selection
+F — fly to the selection
+End — put the selection on the ground
+Ctrl+A, Esc — select everything shown, nothing
+Ctrl+D, Del — duplicate, delete
+Right click — context menu"""
+help_classic = """
+Right or middle drag — look round
+W A S D, Q E — fly (Shift: faster, Ctrl: slower)
+Wheel — forward and back
+Alt + left drag — orbit the selection
+1 2 3 — move, rotate, scale
+Ctrl — snap (free while snapping is on)
+Alt + drag of the gizmo — move copies
+Click, Ctrl + click, Shift + click — select, toggle, add
+Left drag (Select), Shift / Ctrl + drag — frame, add, take away
+F — fly to the selection
+End — put the selection on the ground
+Ctrl+A, Esc — select everything shown, nothing
+Ctrl+D, Del — duplicate, delete
+Right click — context menu"""
+help_setting = "Edit → Preferences → Camera: as before"
+drop_to_ground = "Put on the ground"
+show_in_outliner = "Show in the Outliner"
+select_all = "Select all"
+transformed_label = { one = "Transform {n} object", other = "Transform {n} objects" }
+copied_label = { one = "Copy {n} object", other = "Copy {n} objects" }
+dropped_label = { one = "Put {n} object on the ground", other = "Put {n} objects on the ground" }
+select_limit = { one = "{n} object is shown: the first {limit} are selected", other = "{n} objects are shown: the first {limit} are selected" }
+ground_building = "Building the collision of the level…"
+ground_failed = "The collision of the level could not be built (see the Walk section of the Zones panel)"
+ground_none = "Nothing below the selection"
+
+[history]
+start = "Start (no edits)"
+empty = "No edits in the workspace yet."
+hint = "Every edit of the workspace, oldest first. Click one to undo the ones after it, or to redo up to it."
+undone_hint = "Undone: click to redo up to here"
+done_hint = "Click to undo the edits after this one"
+moved = { one = "Went back or forward {n} edit", other = "Went back or forward {n} edits" }
+cannot = "Cannot go there: {error}"
+no_workspace = "No game is open."

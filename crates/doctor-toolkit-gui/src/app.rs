@@ -34,11 +34,14 @@ mod drawer;
 mod edits;
 mod external;
 mod gametab;
+mod history;
 mod layouts;
 mod level;
 mod live;
 mod live_debug;
 mod live_state;
+#[cfg(test)]
+mod view_tests;
 pub use live::LiveMarks;
 mod logic;
 mod menu;
@@ -1473,7 +1476,7 @@ mod tests {
         app.save_settings();
         let text = std::fs::read_to_string(store.layout_path().unwrap()).unwrap();
         assert!(
-            text.contains("\"version\": 3"),
+            text.contains("\"version\": 4"),
             "written in the new version"
         );
         std::fs::remove_dir_all(dir).unwrap();

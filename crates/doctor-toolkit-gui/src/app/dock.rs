@@ -95,6 +95,8 @@ pub enum Pane {
     /// The zones the level in front loads and what its view shows
     /// (stage 53; the left side of the level tab before).
     Zones,
+    /// The operations of the workspace to go back and forth in (stage 54).
+    History,
     /// Where the documents go in a layout; never shown.
     Documents,
 }
@@ -126,6 +128,7 @@ impl Pane {
                 | Self::ContentBrowser
                 | Self::Outliner
                 | Self::Zones
+                | Self::History
                 | Self::DetailsCopy { .. }
                 | Self::ContentExtra { .. }
         )
@@ -788,6 +791,8 @@ impl BrowserApp {
             }
             Pane::Outliner => tr("pane.outliner").to_owned(),
             Pane::Zones => tr("pane.zones").to_owned(),
+            Pane::History => tr("pane.history").to_owned(),
+
             Pane::DetailsCopy { id } => {
                 let mut copies: Vec<u64> = self.inspectors.copies.keys().copied().collect();
                 copies.sort_unstable();

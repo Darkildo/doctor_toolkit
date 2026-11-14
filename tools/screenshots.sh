@@ -45,6 +45,8 @@ shots=(
   "character|gf2/globalfolder/characters/allcharacters|DOCTOR_TOOLKIT_GUI_SELECT=6905 DOCTOR_TOOLKIT_GUI_CHARACTER=window,set=_all,lod=0,yaw=0.5"
   "level|-|DOCTOR_TOOLKIT_GUI_LEVEL=gf2/cuba/local;eye=305,9,395;look=283,2,371 DOCTOR_TOOLKIT_GUI_SHOT_FRAMES=200"
   "level-details|-|DOCTOR_TOOLKIT_GUI_LEVEL=gf2/cuba/local;eye=305,9,395;look=283,2,371;near DOCTOR_TOOLKIT_GUI_SHOT_FRAMES=200"
+  "level-select|-|DOCTOR_TOOLKIT_GUI_LEVEL=gf2/cuba/local;eye=305,9,395;look=283,2,371;nearby=6;grid DOCTOR_TOOLKIT_GUI_SHOT_FRAMES=200"
+  "level-history|-|DOCTOR_TOOLKIT_GUI_LEVEL=gf2/cuba/local;eye=305,9,395;look=283,2,371;near;act=move:0,0,2;act=turn:45;act=duplicate DOCTOR_TOOLKIT_GUI_SHELL=drawer=history DOCTOR_TOOLKIT_GUI_SHOT_FRAMES=200"
   "level-drawer|-|DOCTOR_TOOLKIT_GUI_LEVEL=gf2/cuba/local;eye=305,9,395;look=283,2,371 DOCTOR_TOOLKIT_GUI_SHELL=drawer=content DOCTOR_TOOLKIT_GUI_CONTENT=gf2/globals_global;filter=model;size=104 DOCTOR_TOOLKIT_GUI_SHOT_FRAMES=200"
   "content-browser|-|DOCTOR_TOOLKIT_GUI_SHELL=content DOCTOR_TOOLKIT_GUI_CONTENT=gf2/globals_global;filter=model,texture;size=96;select=beretta DOCTOR_TOOLKIT_GUI_SHOT_FRAMES=90"
   "logic|-|DOCTOR_TOOLKIT_GUI_LOGIC=checkpoint:737 DOCTOR_TOOLKIT_GUI_SHOT_FRAMES=150"

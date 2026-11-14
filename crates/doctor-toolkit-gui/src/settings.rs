@@ -45,6 +45,8 @@ pub struct Settings {
     pub window: Window,
     pub external_editors: ExternalEditors,
     pub export_dirs: ExportDirs,
+    /// The level editor (stage 54).
+    pub level: LevelSettings,
     /// Per game, by the game directory: how to play it, first-run answers.
     pub games: BTreeMap<String, GameSettings>,
 }
@@ -96,6 +98,7 @@ impl Default for Settings {
             window: Window::default(),
             external_editors: ExternalEditors::default(),
             export_dirs: ExportDirs::default(),
+            level: LevelSettings::default(),
             games: BTreeMap::new(),
         }
     }
@@ -175,6 +178,17 @@ pub struct ExportDirs {
     pub pack: Option<PathBuf>,
     /// Images, models and other files imported.
     pub import: Option<PathBuf>,
+}
+
+/// Settings of the level editor.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LevelSettings {
+    /// The camera of the level view as before stage 54: right or middle
+    /// drag looks round, W A S D Q E always fly, 1 2 3 choose the gizmo;
+    /// off (the default): as in Unreal Engine — the letters fly only while
+    /// the right button is held, Q W E R choose the gizmo.
+    pub classic_camera: bool,
 }
 
 impl Settings {

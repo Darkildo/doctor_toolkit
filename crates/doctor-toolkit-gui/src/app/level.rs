@@ -13,8 +13,9 @@ use super::BrowserApp;
 use super::dock::{DockOp, Pane};
 use crate::level_view::LevelAction;
 
-/// What one recorded edit says and selects afterwards.
-type Recorded = (String, Option<(Location, usize)>);
+/// What one recorded edit says and selects afterwards (several objects
+/// after copies of several).
+type Recorded = (String, Vec<(Location, usize)>);
 
 impl BrowserApp {
     /// Records an edit of level tab `tab` in the workspace.
@@ -37,6 +38,13 @@ impl BrowserApp {
             }
             LevelAction::ShowZones => {
                 self.dock_ops.push(DockOp::ShowPanel(Pane::Zones));
+                return;
+            }
+            LevelAction::ShowInOutliner => {
+                if let Some(outline) = self.outliners.get_mut(&tab) {
+                    outline.reveal_selection();
+                }
+                self.dock_ops.push(DockOp::ShowPanel(Pane::Outliner));
                 return;
             }
             LevelAction::OpenResource { group } => {
@@ -82,19 +90,11 @@ impl BrowserApp {
             LevelAction::Many { actions, label } => {
                 // One operation: undone and redone as one.
                 let since = ws.head();
-                let mut last = Ok((String::new(), None));
-                for action in actions {
-                    last = record(&game, &index, ws, action, &is_taken);
-                    if last.is_err() {
-                        break;
-                    }
-                }
+                let recorded = record_many(&game, &index, ws, actions, &is_taken);
                 let squashed = ws.squash(since, &label).map_err(|e| e.to_string());
-                match (last, squashed) {
+                match (recorded, squashed) {
                     (Err(e), _) | (_, Err(e)) => Err(e),
-                    (Ok((_, select)), Ok(_)) => {
-                        Ok((trf("logic.recorded", &[("what", &label)]), select))
-                    }
+                    (Ok(select), Ok(_)) => Ok((trf("logic.recorded", &[("what", &label)]), select)),
                 }
             }
             action => record(&game, &index, ws, action, &is_taken),
@@ -105,7 +105,7 @@ impl BrowserApp {
                     level.clear_selection();
                 }
                 self.status = text;
-                self.after_level_edit(tab, select);
+                self.after_level_edit_selecting(tab, &select);
             }
             Err(error) => {
                 if removing {
@@ -123,6 +123,13 @@ impl BrowserApp {
     /// After a level edit: write it in direct mode, refresh the marks and the
     /// scenes, selecting `select` in the tab that made the edit.
     pub(super) fn after_level_edit(&mut self, tab: u64, select: Option<(Location, usize)>) {
+        let select: Vec<(Location, usize)> = select.into_iter().collect();
+        self.after_level_edit_selecting(tab, &select);
+    }
+
+    /// [`Self::after_level_edit`] selecting several objects (the copies of
+    /// several); the last one is the primary.
+    pub(super) fn after_level_edit_selecting(&mut self, tab: u64, select: &[(Location, usize)]) {
         if self.direct {
             let status = self.status.clone();
             self.apply(false);
@@ -132,8 +139,15 @@ impl BrowserApp {
             for (&id, level) in &mut self.levels {
                 level.refresh(
                     self.workspace.as_ref(),
-                    if id == tab { select } else { None },
+                    if id == tab {
+                        select.last().copied()
+                    } else {
+                        None
+                    },
                 );
+                if id == tab && select.len() > 1 {
+                    level.select_locations(select);
+                }
             }
             self.reload_docs(None);
         }
@@ -162,6 +176,7 @@ impl BrowserApp {
         self.last_level = Some(id);
         let level = self.levels.get_mut(&id).expect("just made");
         level.live = marks;
+        level.set_classic_camera(self.settings.level.classic_camera);
         level.live_edit = self.play.live.edit_info();
         if let Some(action) = level.ui(ui, self.workspace.as_ref()) {
             self.level_action(id, action);
@@ -291,7 +306,7 @@ fn record(
                 } else {
                     tr("logic.no_change").to_owned()
                 };
-                (text, Some((group, object)))
+                (text, vec![(group, object)])
             })
             .map_err(|e| e.to_string()),
         LevelAction::Duplicate { group, object } => {
@@ -302,7 +317,7 @@ fn record(
                             "level.duplicated",
                             &[("object", &object), ("copy", &copy), ("guid", &guid)],
                         ),
-                        Some((group, copy)),
+                        vec![(group, copy)],
                     )
                 })
                 .map_err(|e| e.to_string())
@@ -313,7 +328,7 @@ fn record(
                 if dangling > 0 {
                     text += &trn("level.dangling_attributes", dangling as u64, &[]);
                 }
-                (text, None)
+                (text, Vec::new())
             })
             .map_err(|e| e.to_string()),
         LevelAction::Add {
@@ -350,7 +365,7 @@ fn record(
                 );
             }
             text += tr("level.added_collision_note");
-            (text, Some((group, added.object)))
+            (text, vec![(group, added.object)])
         })
         .map_err(|e| e.to_string()),
         LevelAction::Graph {
@@ -369,7 +384,7 @@ fn record(
             if others > 0 {
                 text += &trf("navgraph.others_renumbered", &[("count", &others)]);
             }
-            (text, None)
+            (text, Vec::new())
         })
         .map_err(|e| e.to_string()),
         LevelAction::Save { group, data, label } => {
@@ -392,16 +407,34 @@ fn record(
                 } else {
                     tr("logic.no_change").to_owned()
                 };
-                (text, None)
+                (text, Vec::new())
             })
         }
-        LevelAction::Many { actions, .. } => {
-            let mut last = Ok((String::new(), None));
-            for action in actions {
-                last = record(game, index, ws, action, is_taken);
-                last.as_ref().map_err(Clone::clone)?;
+        LevelAction::DuplicateTo {
+            group,
+            object,
+            matrix,
+        } => {
+            // The copy where it was put: one operation.
+            let since = ws.head();
+            let (copy, guid) = edit::duplicate(game, ws, group, object, [0.0; 3], is_taken)
+                .map_err(|e| e.to_string())?;
+            let label = trf(
+                "level.copied",
+                &[("object", &object), ("copy", &copy), ("guid", &guid)],
+            );
+            let placed = edit::set_transform(game, ws, group, copy, matrix)
+                .map_err(|e| e.to_string())
+                .and_then(|_| ws.squash(since, &label).map_err(|e| e.to_string()));
+            if let Err(e) = placed {
+                let _ = ws.rollback(since);
+                return Err(e);
             }
-            last
+            Ok((label, vec![(group, copy)]))
+        }
+        LevelAction::Many { actions, .. } => {
+            let select = record_many(game, index, ws, actions, is_taken)?;
+            Ok((String::new(), select))
         }
         LevelAction::StartWizard { .. }
         | LevelAction::ShowLogic { .. }
@@ -410,6 +443,68 @@ fn record(
         | LevelAction::LiveCamera(_)
         | LevelAction::LiveObject(_)
         | LevelAction::OpenResource { .. }
-        | LevelAction::ShowZones => Ok((tr("logic.no_change").to_owned(), None)),
+        | LevelAction::ShowInOutliner
+        | LevelAction::ShowZones => Ok((tr("logic.no_change").to_owned(), Vec::new())),
     }
+}
+
+/// Records several edits (the caller joins them into one operation):
+/// moves of objects of one SimGroup are written together, one write per
+/// SimGroup; returns what to select — every copy made, or the last object.
+fn record_many(
+    game: &GameInstance,
+    index: &ResourceIndex,
+    ws: &mut Workspace,
+    actions: Vec<LevelAction>,
+    is_taken: &dyn Fn(&Guid) -> bool,
+) -> Result<Vec<(Location, usize)>, String> {
+    let moves_only = actions
+        .iter()
+        .all(|a| matches!(a, LevelAction::SetTransform { .. }));
+    if moves_only {
+        let mut groups: Vec<(Location, Vec<(usize, doctor_toolkit::level::RowMatrix)>)> =
+            Vec::new();
+        for action in actions {
+            if let LevelAction::SetTransform {
+                group,
+                object,
+                matrix,
+            } = action
+            {
+                match groups.iter_mut().find(|(g, _)| *g == group) {
+                    Some((_, moves)) => moves.push((object, matrix)),
+                    None => groups.push((group, vec![(object, matrix)])),
+                }
+            }
+        }
+        let mut select = Vec::new();
+        for (group, moves) in groups {
+            let mut g = edit::current_group(game, ws, group).map_err(|e| e.to_string())?;
+            let mut changed = false;
+            for &(object, matrix) in &moves {
+                changed |= g.set_transform(object, matrix).map_err(|e| e.to_string())?;
+                select.push((group, object));
+            }
+            if changed {
+                let label = trn("level.moved_many", moves.len() as u64, &[]);
+                edit::set_group(game, ws, &edit::GroupAt::Game(group), &g, &label)
+                    .map_err(|e| e.to_string())?;
+            }
+        }
+        return Ok(select);
+    }
+    let mut copies = Vec::new();
+    let mut last = Vec::new();
+    for action in actions {
+        let copy = matches!(
+            action,
+            LevelAction::Duplicate { .. } | LevelAction::DuplicateTo { .. }
+        );
+        let (_, select) = record(game, index, ws, action, is_taken)?;
+        if copy {
+            copies.extend(select.iter().copied());
+        }
+        last = select;
+    }
+    Ok(if copies.is_empty() { last } else { copies })
 }

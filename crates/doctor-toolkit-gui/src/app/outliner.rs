@@ -239,6 +239,12 @@ impl Outline {
     }
 
     /// Folds or unfolds a zone or class.
+    /// Unfolds and scrolls to the primary selection again ("Show in the
+    /// Outliner" of the view's context menu).
+    pub fn reveal_selection(&mut self) {
+        self.seen = None;
+    }
+
     pub fn toggle(&mut self, node: Node) {
         if !self.open.remove(&node) {
             self.open.insert(node);

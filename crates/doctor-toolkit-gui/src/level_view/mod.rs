@@ -8,12 +8,17 @@
 //! - **Scene** (the tab): one instance per mesh of every placed object, on
 //!   the shared [`crate::render::SceneRenderer`] with frustum culling and
 //!   LODs by distance; markers for objects without a mesh, trees and AI
-//!   points. Fly camera (right drag look, W A S D Q E, wheel, Alt + drag
-//!   orbit). Click selects (GPU id pass, or a CPU ray on software adapters),
-//!   Ctrl + click adds to the selection or takes away from it.
-//! - **Gizmo**: select, move, rotate or scale along the world's or the
-//!   object's axes; snapping always or with Ctrl (the main toolbar of the
-//!   shell switches them, stage 52).
+//!   points. The camera, keys and mouse as in Unreal Engine ([`camera`],
+//!   [`interact`], stage 54): the right button held looks and flies with
+//!   W A S D Q E, Q W E R choose the gizmo; the camera as before is a
+//!   setting. Click selects (GPU id pass, or a CPU ray on software
+//!   adapters), Ctrl + click adds or takes away, a frame selects what is
+//!   inside; the context menu; a bar over the view ([`viewbar`]) with the
+//!   projection, lighting, what shows, snapping and the camera speed.
+//! - **Gizmo**: select, move (also in a plane), rotate or scale (also
+//!   evenly) along the world's or the object's axes, every selected object
+//!   about their centre; Alt + drag moves copies; snapping always or with
+//!   Ctrl (the main toolbar of the shell switches them, stage 52).
 //! - **Selection, eye and lock**: the selected objects (one is primary: the
 //!   gizmo and Details follow it), objects hidden in the view and objects
 //!   that clicks in the view do not select ([`ObjectSet`]); the shell's
@@ -35,12 +40,18 @@
 //! collision of the loaded zones, gravity, steps; problem marks and A to B.
 
 pub mod camera;
+pub use camera::Projection;
 pub mod drop;
 mod gizmo;
 pub use gizmo::{
     ANGLES as SNAP_ANGLES, Mode as GizmoMode, SCALES as SNAP_SCALES, STEPS as SNAP_STEPS, Snap,
     Space as GizmoSpace,
 };
+mod interact;
+#[cfg(test)]
+pub use interact::ContextItem;
+#[cfg(test)]
+pub use viewbar::Lighting;
 mod live;
 pub use live::{LiveEdit, ObjectAction};
 pub mod loader;
@@ -48,6 +59,7 @@ mod marks;
 pub mod nav;
 mod preview;
 pub mod scene;
+mod viewbar;
 pub mod walk;
 mod zones;
 
@@ -67,7 +79,6 @@ use doctor_toolkit::level::{
 use doctor_toolkit::resource::hkx::TYPE_HKX;
 use doctor_toolkit::resource::logic::TYPE_SIMGROUP as LOGIC_SIMGROUP;
 use doctor_toolkit::resource::simgroup::{Guid, SimGroup};
-use doctor_toolkit::resource::simgroup_edit::Transform;
 use doctor_toolkit::workspace::{ResourceKey, Workspace};
 use doctor_toolkit_mods::i18n::{tr, trf, trn};
 use egui::{Color32, Pos2, Rect, RichText, Sense, Vec2};
@@ -99,6 +110,13 @@ pub enum LevelAction {
     Remove {
         group: Location,
         object: usize,
+    },
+    /// A copy of the object placed by `matrix` (Alt + drag of the gizmo:
+    /// the copy moves, the object stays).
+    DuplicateTo {
+        group: Location,
+        object: usize,
+        matrix: RowMatrix,
     },
     Add {
         group: Location,
@@ -153,6 +171,8 @@ pub enum LevelAction {
     },
     /// Show the shell's Zones panel (the view has nothing loaded).
     ShowZones,
+    /// Show the shell's Outliner and the selected object in it.
+    ShowInOutliner,
     /// Several edits recorded as one operation of the workspace (one undo):
     /// duplicating or removing the objects selected in the Outliner.
     Many {
@@ -192,24 +212,56 @@ struct RenderKey {
     size: [u32; 2],
     generation: u64,
     options: crate::render::SceneOptions,
-    gizmo: (gizmo::Mode, gizmo::Space, Option<usize>),
+    gizmo: (gizmo::Mode, gizmo::Space, Option<gizmo::Handle>),
+    grid: bool,
     collision: Option<(ObjRef, RowMatrix)>,
     nav: u64,
     walk: u64,
 }
 
+/// A drag of the gizmo: every selected object (that is not locked) moves,
+/// turns or scales about the centre of the selection.
 struct Drag {
-    object: ObjRef,
-    /// A node of a navigation graph instead of the object.
+    /// The objects and their transforms when the drag started (none for a
+    /// node of a navigation graph).
+    objects: Vec<(ObjRef, RowMatrix)>,
+    /// Their transforms now.
+    current: Vec<RowMatrix>,
+    /// A node of a navigation graph instead of objects.
     node: Option<nav::NodeRef>,
-    axis: usize,
+    mode: gizmo::Mode,
+    handle: gizmo::Handle,
     /// The gizmo's axes when the drag started.
     axes: [math::Vec3; 3],
     /// The gizmo's size when the drag started (scale works in its units).
     size: f32,
-    start: RowMatrix,
-    start_param: f32,
-    current: RowMatrix,
+    /// The centre of the selection when the drag started.
+    pivot: math::Vec3,
+    /// Where the drag started ([`gizmo::grab`]).
+    start: [f32; 2],
+    change: Option<gizmo::Change>,
+    /// Alt: copies move, the objects stay where they are.
+    copy: bool,
+}
+
+impl Drag {
+    /// Where the gizmo is now.
+    fn origin(&self) -> math::Vec3 {
+        match self.change {
+            Some(gizmo::Change::Move(by)) => math::add(self.pivot, by),
+            _ => self.pivot,
+        }
+    }
+
+    /// The transform of a dragged object now (not for copies: the object
+    /// itself stays).
+    fn transform_of(&self, r: ObjRef) -> Option<RowMatrix> {
+        if self.copy {
+            return None;
+        }
+        let i = self.objects.iter().position(|(o, _)| *o == r)?;
+        self.current.get(i).copied()
+    }
 }
 
 #[derive(Default)]
@@ -217,6 +269,8 @@ struct Preset {
     select: Option<ObjRef>,
     /// Select the object with a model nearest to `look` (for screenshots).
     near: bool,
+    /// Select this many objects with a model nearest to `look`.
+    nearby: usize,
     selected_once: bool,
     spin: Option<Vec<f32>>,
     eye: Option<[f32; 3]>,
@@ -269,8 +323,25 @@ pub struct LevelView {
     gizmo: gizmo::Mode,
     space: gizmo::Space,
     snap: gizmo::Snap,
-    hover_axis: Option<usize>,
+    hover_handle: Option<gizmo::Handle>,
     drag: Option<Drag>,
+    /// A frame drawn with the left button to select what is inside.
+    marquee: Option<interact::Marquee>,
+    /// What the context menu of the view is for.
+    context: Option<interact::Context>,
+    /// End was pressed: the selection goes to the ground once the
+    /// collision is built.
+    drop_pending: bool,
+    /// The camera as before stage 54 (the setting "Camera: as before").
+    classic: bool,
+    /// The bar over the view: projection, lighting, what shows, steps.
+    bar: viewbar::Bar,
+    /// Where the view was drawn last.
+    view_rect: Rect,
+    /// A short message in the view (Ctrl+A over the limit, End).
+    note: Option<(String, Instant)>,
+    /// Height of the grid without a selection: low among the objects.
+    ground_y: f32,
     /// The "Add object" section of Details.
     pub add: AddObject,
     /// Changes whenever the selection does (Details follows the selection
@@ -285,7 +356,7 @@ pub struct LevelView {
     /// The game's version of edited SimGroups, by group (`None`: unreadable).
     originals: HashMap<usize, Option<Arc<SimGroup>>>,
     /// A transform shown while Details drags a value, not recorded yet.
-    preview: Option<(ObjRef, RowMatrix)>,
+    preview: Vec<(ObjRef, RowMatrix)>,
     /// The small picture of a model in Details.
     model_preview: preview::ModelPreview,
     preset: Option<Preset>,
@@ -316,6 +387,8 @@ pub struct LevelView {
     nav: nav::NavLayer,
     /// An edit from the navigation panel, returned by the next `ui`.
     nav_action: Option<LevelAction>,
+    /// Edits for the next frames (one is returned per frame).
+    queue: VecDeque<LevelAction>,
     /// Walking the level (stage 37).
     walk: walk::Walk,
     /// The camera follows the game's (stage 35).
@@ -324,8 +397,8 @@ pub struct LevelView {
     pub live_edit: LiveEdit,
     /// The gizmo moves the object in the running game too.
     live_gizmo: bool,
-    /// A move of the gizmo for the game, returned by the next `ui`.
-    live_pending: Option<LevelAction>,
+    /// Moves of the gizmo for the game, returned by the next `ui`s.
+    live_pending: Vec<LevelAction>,
     /// The object whose state in the game was asked for last.
     live_asked: Option<[u8; 16]>,
 }
@@ -367,15 +440,23 @@ impl LevelView {
             gizmo: gizmo::Mode::Move,
             space: gizmo::Space::World,
             snap: gizmo::Snap::default(),
-            hover_axis: None,
+            hover_handle: None,
             drag: None,
+            marquee: None,
+            context: None,
+            drop_pending: false,
+            classic: false,
+            bar: viewbar::Bar::default(),
+            view_rect: Rect::NOTHING,
+            note: None,
+            ground_y: 0.0,
             add: AddObject::default(),
             selection_serial: 0,
             locked: ObjectSet::default(),
             revision: 0,
             marks: HashMap::new(),
             originals: HashMap::new(),
-            preview: None,
+            preview: Vec::new(),
             model_preview: preview::ModelPreview::default(),
             preset: None,
             autoload: None,
@@ -390,11 +471,12 @@ impl LevelView {
             collisions: HashMap::new(),
             nav: nav::NavLayer::default(),
             nav_action: None,
+            queue: VecDeque::new(),
             walk: walk::Walk::default(),
             live_follow: false,
             live_edit: LiveEdit::default(),
             live_gizmo: false,
-            live_pending: None,
+            live_pending: Vec::new(),
             live_asked: None,
             center: [0.0; 3],
             index_stale: false,
@@ -437,6 +519,11 @@ impl LevelView {
             let floats: Vec<f32> = value.split(',').filter_map(|v| v.parse().ok()).collect();
             match name {
                 "near" => preset.near = true,
+                "nearby" => preset.nearby = value.parse().unwrap_or(0),
+                "grid" => self.bar.grid = true,
+                "stats" => self.bar.stats = true,
+                "top" => self.camera.projection = camera::Projection::Top,
+
                 "select" => {
                     if let Some((g, o)) = value.split_once(':')
                         && let (Ok(group), Ok(object)) = (g.parse(), o.parse())
@@ -538,7 +625,7 @@ impl LevelView {
         self.originals.clear();
         self.filter.hovered = None;
         self.drag = None;
-        self.preview = None;
+        self.preview.clear();
         self.camera_moved = false;
         self.status = trf(
             "level.loading_zones",
@@ -724,6 +811,14 @@ impl LevelView {
             classes.into_iter().map(|(k, (n, c))| (k, n, c)).collect();
         classes.sort_by(|a, b| b.2.cmp(&a.2).then(a.1.cmp(&b.1)));
         self.classes = classes;
+        // Without a selection the grid lies low among the objects (a quarter
+        // of them are lower).
+        let mut heights: Vec<f32> = items.iter().map(|i| i.world[13]).collect();
+        if !heights.is_empty() {
+            let low = heights.len() / 4;
+            heights.select_nth_unstable_by(low, f32::total_cmp);
+            self.ground_y = heights[low];
+        }
         self.items = items;
         self.by_object = by_object;
         self.refill = true;
@@ -801,36 +896,36 @@ impl LevelView {
         if let Some((a, b)) = preset.route.take() {
             self.walk.request_route(a, b);
         }
-        let near = preset
-            .look
-            .filter(|_| std::mem::take(&mut preset.near))
-            .and_then(|at| {
-                let level = self.level.as_ref()?;
-                let mut best: Option<(f32, ObjRef)> = None;
-                for (g, group) in level.groups.iter().enumerate() {
-                    for o in &group.objects {
-                        let (Some(m), Some(_)) = (o.transform, o.model) else {
-                            continue;
-                        };
-                        let d = math::length(math::sub([m[3][0], m[3][1], m[3][2]], at));
-                        if best.is_none_or(|(b, _)| d < b) {
-                            best = Some((
-                                d,
-                                ObjRef {
-                                    group: g,
-                                    object: o.index,
-                                },
-                            ));
-                        }
-                    }
+        // The objects with a model nearest to `look`: one (`near`) or
+        // `nearby=N` of them.
+        let count =
+            std::mem::take(&mut preset.nearby).max(usize::from(std::mem::take(&mut preset.near)));
+        let mut nearest: Vec<(f32, ObjRef)> = Vec::new();
+        if let (Some(at), Some(level), true) = (preset.look, self.level.as_ref(), count > 0) {
+            for (g, group) in level.groups.iter().enumerate() {
+                for o in &group.objects {
+                    let (Some(m), Some(_)) = (o.transform, o.model) else {
+                        continue;
+                    };
+                    let d = math::length(math::sub([m[3][0], m[3][1], m[3][2]], at));
+                    nearest.push((
+                        d,
+                        ObjRef {
+                            group: g,
+                            object: o.index,
+                        },
+                    ));
                 }
-                best.map(|(_, r)| r)
-            });
+            }
+            nearest.sort_by(|a, b| a.0.total_cmp(&b.0));
+            nearest.truncate(count);
+        }
+        let near = nearest.first().map(|(_, r)| *r);
         let select = preset.select.take().or(near);
         preset.selected_once |= select.is_some();
         let has_eye = preset.eye.is_some();
         if let Some(r) = select {
-            self.select(Some(r));
+            self.set_selection(Some(r), nearest.iter().map(|(_, r)| *r).collect());
             if !has_eye {
                 self.focus();
             }
@@ -848,7 +943,10 @@ impl LevelView {
         };
         self.walk.enter(at, level, &self.catalog, &input.parents);
         self.drag = None;
-        self.hover_axis = None;
+        self.hover_handle = None;
+        // Walking looks through the eyes: a perspective view.
+        self.camera
+            .set_projection(camera::Projection::Perspective, 20.0);
     }
 
     /// The next edit of the environment preset, once the level is ready:
@@ -1132,6 +1230,19 @@ impl LevelView {
         self.add.fixed = true;
     }
 
+    /// Selects the objects at these SimGroups and numbers (the copies an
+    /// edit made); the last one is the primary.
+    pub fn select_locations(&mut self, objects: &[(Location, usize)]) {
+        let set: BTreeSet<ObjRef> = objects
+            .iter()
+            .filter_map(|&(group, object)| self.find(group, object))
+            .collect();
+        let primary = objects
+            .last()
+            .and_then(|&(group, object)| self.find(group, object));
+        self.set_selection(primary, set);
+    }
+
     /// GUID of the selected object.
     fn selected_guid(&self) -> Option<[u8; 16]> {
         let r = self.filter.selected?;
@@ -1210,8 +1321,8 @@ impl LevelView {
                 .model
                 .map_or_else(String::new, |m| format!("{m:08x}"));
         }
-        if self.preview.is_some_and(|(r, _)| Some(r) != primary) {
-            self.set_preview(None);
+        if self.preview.iter().any(|(r, _)| !set.contains(r)) {
+            self.set_previews(Vec::new());
         }
         self.filter.selected = primary;
         self.filter.selection = set;
@@ -1412,12 +1523,17 @@ impl LevelView {
 
     // ------------------------------------------------- details' transform
 
-    /// Shows object `r` placed by `matrix` until it is recorded (`None`:
-    /// back to its own transform).
-    pub fn set_preview(&mut self, preview: Option<(ObjRef, RowMatrix)>) {
+    /// Shows objects placed anew until they are recorded (the Transform
+    /// of Details; empty: back to their own transforms).
+    pub fn set_previews(&mut self, preview: Vec<(ObjRef, RowMatrix)>) {
         let old = std::mem::replace(&mut self.preview, preview);
-        for (r, _) in old.iter().chain(preview.iter()) {
-            if let (Some(m), Some(indices)) = (self.object_transform(*r), self.by_object.get(r)) {
+        let changed: Vec<ObjRef> = old
+            .iter()
+            .chain(self.preview.iter())
+            .map(|(r, _)| *r)
+            .collect();
+        for r in changed {
+            if let (Some(m), Some(indices)) = (self.object_transform(r), self.by_object.get(&r)) {
                 scene::move_items(&mut self.items, indices, &m);
             }
         }
@@ -1494,16 +1610,13 @@ impl LevelView {
     /// The world transform of an object as the view shows it (while a drag
     /// or Details changes it, the changed one).
     pub fn object_transform(&self, r: ObjRef) -> Option<RowMatrix> {
-        if let Some(drag) = &self.drag
-            && drag.object == r
-        {
-            return Some(drag.current);
-        }
-        if let Some((p, m)) = self.preview
-            && p == r
-        {
+        if let Some(m) = self.drag.as_ref().and_then(|d| d.transform_of(r)) {
             return Some(m);
         }
+        if let Some((_, m)) = self.preview.iter().find(|(p, _)| *p == r) {
+            return Some(*m);
+        }
+
         self.level
             .as_ref()?
             .groups
@@ -1603,7 +1716,7 @@ impl LevelView {
 
     pub fn set_gizmo_mode(&mut self, mode: GizmoMode) {
         self.gizmo = mode;
-        self.hover_axis = None;
+        self.hover_handle = None;
     }
 
     pub fn gizmo_space(&self) -> GizmoSpace {
@@ -1632,10 +1745,10 @@ impl LevelView {
         self.filter.selected.is_some()
     }
 
-    /// Duplicates the selected object (the edit comes from the next `ui`).
+    /// Duplicates the selected objects (the edit comes from the next `ui`).
     pub fn request_duplicate(&mut self) {
-        if let Some((group, object)) = self.selected_location() {
-            self.nav_action = Some(LevelAction::Duplicate { group, object });
+        if let Some(a) = self.edit_selection(false) {
+            self.queue.push_back(a);
         }
     }
 
@@ -1672,42 +1785,46 @@ impl LevelView {
             streams.dedup();
             self.nav.ensure(&input.game, ws, &streams);
         }
-        let mut action = self.preset_action();
-        if let Some(a) = self.nav_action.take() {
-            action = Some(a);
+        if let Some(a) = self.preset_action() {
+            self.queue.push_back(a);
         }
-        if let Some(a) = self.live_pending.take() {
-            action = Some(a);
-        } else if action.is_none()
+        if let Some(a) = self.nav_action.take() {
+            self.queue.push_back(a);
+        }
+        if !self.live_pending.is_empty() {
+            self.queue.extend(self.live_pending.drain(..));
+        } else if self.queue.is_empty()
             && self.live_edit.reads
             && let Some(g) = self.selected_guid()
             && self.live_asked != Some(g)
         {
             // The selection in the running game: its state there.
             self.live_asked = Some(g);
-            action = Some(LevelAction::LiveObject(ObjectAction::Get(g)));
+            self.queue
+                .push_back(LevelAction::LiveObject(ObjectAction::Get(g)));
         }
         if std::mem::take(&mut self.play_here)
             && let Some(level) = &self.level
         {
-            action = Some(LevelAction::PlayHere {
+            self.queue.push_back(LevelAction::PlayHere {
                 eye: self.camera.eye,
                 streams: level.streams.clone(),
             });
         }
+        if let Some(a) = self.drop_to_ground() {
+            self.queue.push_back(a);
+        }
         egui::CentralPanel::default().show(ui, |ui| {
-            if self.gpu.is_none() {
-                ui.label(RichText::new(tr("level.needs_gpu")).weak());
-                return;
-            }
             if let Some(a) = self.scene_ui(ui) {
-                action = Some(a);
+                self.queue.push_back(a);
             }
         });
+        let action = self.queue.pop_front();
+        if !self.queue.is_empty() {
+            ctx.request_repaint();
+        }
         action
     }
-
-    // ------------------------------------------------------------- scene
 
     fn spin(&mut self, ui: &egui::Ui) {
         let Some(intervals) = self.preset.as_mut().and_then(|p| p.spin.as_mut()) else {
@@ -1766,6 +1883,8 @@ impl LevelView {
         // Game → editor: the camera follows the game's.
         match self.live.and_then(|m| m.game_camera) {
             Some(c) if self.live_follow => {
+                self.camera
+                    .set_projection(camera::Projection::Perspective, 20.0);
                 if live::fly_from_game(&c, &mut self.camera) {
                     self.refill = true;
                     self.camera_moved = true;
@@ -1776,34 +1895,13 @@ impl LevelView {
         }
         let size = ui.available_size().max(Vec2::splat(64.0));
         let (rect, response) = ui.allocate_exact_size(size, Sense::click_and_drag());
+        self.view_rect = rect;
         let ppp = ui.ctx().pixels_per_point();
         let pixels = [
             (rect.width() * ppp).round().max(1.0) as u32,
             (rect.height() * ppp).round().max(1.0) as u32,
         ];
-        let mut action = None;
-        if response.hovered() && !ui.ctx().egui_wants_keyboard_input() {
-            let (f, one, two, three) = ui.input(|i| {
-                (
-                    i.key_pressed(egui::Key::F),
-                    i.key_pressed(egui::Key::Num1),
-                    i.key_pressed(egui::Key::Num2),
-                    i.key_pressed(egui::Key::Num3),
-                )
-            });
-            if f {
-                self.focus_selection();
-            }
-            if one {
-                self.gizmo = gizmo::Mode::Move;
-            }
-            if two {
-                self.gizmo = gizmo::Mode::Rotate;
-            }
-            if three {
-                self.gizmo = gizmo::Mode::Scale;
-            }
-        }
+        let mut action = self.view_keys(ui, &response);
 
         // Gizmo hover and drag.
         let view = self.camera.view(rect.aspect_ratio());
@@ -1815,156 +1913,125 @@ impl LevelView {
                 ]
             })
         };
-        // A locked object has no gizmo: it is not moved by mistake.
-        let selected = self.filter.selected.filter(|&r| !self.is_object_locked(r));
-        let node = self
-            .nav
-            .selected
-            .filter(|_| self.filter.selected.is_none() && self.nav.visible);
-        let gizmo_mode = if node.is_some() {
-            gizmo::Mode::Move
-        } else {
-            self.gizmo
-        };
-        let selected_transform = selected.and_then(|r| self.object_transform(r));
-        let gizmo_at = selected_transform
-            .map(|m| [m[3][0], m[3][1], m[3][2]])
-            .or_else(|| node.and_then(|r| self.nav.position(r)));
-        // The drag keeps the axes it started with.
-        let gizmo_axes = match (&self.drag, selected_transform) {
-            (Some(drag), _) => drag.axes,
-            (None, Some(m)) if node.is_none() => gizmo::axes(gizmo_mode, self.space, &m),
-            _ => gizmo::WORLD,
-        };
-        let pointer = response
-            .hover_pos()
-            .or(ui.input(|i| i.pointer.interact_pos()));
-        if self.walk.active {
-            self.hover_axis = None;
-        } else if let (Some(origin), None) = (gizmo_at, &self.drag) {
-            let size = gizmo::size(&view, origin);
-            self.hover_axis = pointer.filter(|_| response.hovered()).and_then(|p| {
-                gizmo::hit(
-                    gizmo_mode,
-                    origin,
-                    &gizmo_axes,
-                    size,
-                    [p.x, p.y],
-                    &to_screen,
-                )
-            });
-        }
         let ray_at = |p: Pos2| {
             let uv = (p - rect.min) / rect.size();
             view.ray([uv.x, uv.y])
         };
-        let alt = ui.input(|i| i.modifiers.alt);
-        if response.drag_started_by(egui::PointerButton::Primary)
-            && !alt
-            && let (Some(axis), Some(r), Some(origin), Some(p)) =
-                (self.hover_axis, selected, gizmo_at, pointer)
-            && let Some(start) = self.object_transform(r)
-            && let Some(param) = gizmo::parameter(self.gizmo, origin, &gizmo_axes, axis, &ray_at(p))
-        {
-            self.drag = Some(Drag {
-                object: r,
-                node: None,
-                axis,
-                axes: gizmo_axes,
-                size: gizmo::size(&view, origin),
-                start,
-                start_param: param,
-                current: start,
-            });
-        } else if response.drag_started_by(egui::PointerButton::Primary)
-            && !alt
-            && let (Some(axis), Some(n), Some(origin), Some(p)) =
-                (self.hover_axis, node, gizmo_at, pointer)
-            && let Some(param) =
-                gizmo::parameter(gizmo_mode, origin, &gizmo::WORLD, axis, &ray_at(p))
-        {
-            let mut start = doctor_toolkit::level::IDENTITY;
-            start[3] = [origin[0], origin[1], origin[2], 1.0];
-            self.drag = Some(Drag {
-                object: ObjRef {
-                    group: usize::MAX,
-                    object: usize::MAX,
-                },
-                node: Some(n),
-                axis,
-                axes: gizmo::WORLD,
-                size: gizmo::size(&view, origin),
-                start,
-                start_param: param,
-                current: start,
-            });
+        let target = self.gizmo_target();
+        let pointer = response
+            .hover_pos()
+            .or(ui.input(|i| i.pointer.interact_pos()));
+        if self.walk.active || self.marquee.is_some() {
+            self.hover_handle = None;
+        } else if let (Some(t), None) = (&target, &self.drag) {
+            let size = gizmo::size(&view, t.origin);
+            self.hover_handle = pointer
+                .filter(|_| response.hovered())
+                .and_then(|p| gizmo::hit(t.mode, t.origin, &t.axes, size, [p.x, p.y], &to_screen));
         }
+        let (alt, ctrl, shift) =
+            ui.input(|i| (i.modifiers.alt, i.modifiers.command, i.modifiers.shift));
+        if response.drag_started_by(egui::PointerButton::Primary) && !self.walk.active {
+            let press = ui.input(|i| i.pointer.press_origin()).or(pointer);
+            let grabbed = match (self.hover_handle, &target, pointer) {
+                (Some(handle), Some(t), Some(p)) => {
+                    gizmo::grab(t.mode, handle, t.origin, &t.axes, &ray_at(p), [p.x, p.y])
+                        .map(|start| (handle, start))
+                }
+                _ => None,
+            };
+            if let (Some((handle, start)), Some(t)) = (grabbed, &target) {
+                self.drag = Some(Drag {
+                    current: t.objects.iter().map(|(_, m)| *m).collect(),
+                    objects: t.objects.clone(),
+                    node: t.node,
+                    mode: t.mode,
+                    handle,
+                    axes: t.axes,
+                    size: gizmo::size(&view, t.origin),
+                    pivot: t.origin,
+                    start,
+                    change: None,
+                    copy: alt && t.node.is_none(),
+                });
+                self.refill = true;
+            } else if !alt
+                && (self.gizmo == gizmo::Mode::Select
+                    || ctrl
+                    || shift
+                    || self.camera.projection.is_ortho())
+                && let Some(p) = press
+            {
+                self.marquee = Some(interact::Marquee::new(p, ctrl, shift));
+            }
+        }
+        let released = response.drag_stopped() || !ui.input(|i| i.pointer.primary_down());
         let mut moved = false;
         if let Some(drag) = &mut self.drag {
-            let origin = [drag.start[3][0], drag.start[3][1], drag.start[3][2]];
-            let mode = if drag.node.is_some() {
-                gizmo::Mode::Move
-            } else {
-                self.gizmo
-            };
+            // Ctrl snaps, or drags freely while snapping is on.
+            let snap = (ui.input(|i| i.modifiers.ctrl) != self.snap.on).then_some(&self.snap);
             if let Some(p) = pointer
-                && let Some(param) =
-                    gizmo::parameter(mode, origin, &drag.axes, drag.axis, &ray_at(p))
+                && let Some(now) = gizmo::grab(
+                    drag.mode,
+                    drag.handle,
+                    drag.pivot,
+                    &drag.axes,
+                    &ray_at(p),
+                    [p.x, p.y],
+                )
             {
-                let mut delta = param - drag.start_param;
-                match mode {
-                    // Shortest turn between the two angles.
-                    gizmo::Mode::Rotate => {
-                        delta = (delta + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU)
-                            - std::f32::consts::PI;
-                    }
-                    // A drag by the gizmo's length doubles the size.
-                    gizmo::Mode::Scale => delta /= drag.size.max(1e-3),
-                    _ => {}
-                }
-                // Ctrl snaps, or drags freely while snapping is on.
-                if ui.input(|i| i.modifiers.ctrl) != self.snap.on {
-                    delta = gizmo::snap(mode, delta, &self.snap);
-                }
-                let m = gizmo::apply(mode, &drag.start, &drag.axes, drag.axis, delta);
-                if m != drag.current {
-                    drag.current = m;
+                let change = gizmo::change(
+                    drag.mode,
+                    drag.handle,
+                    &drag.axes,
+                    drag.start,
+                    now,
+                    drag.size,
+                    snap,
+                );
+                if change != drag.change {
+                    drag.change = change;
+                    drag.current = drag
+                        .objects
+                        .iter()
+                        .map(|(_, m)| change.map_or(*m, |c| gizmo::apply_change(&c, m, drag.pivot)))
+                        .collect();
                     moved = true;
                 }
             }
-            if response.drag_stopped() || !ui.input(|i| i.pointer.primary_down()) {
+            if released {
                 let drag = self.drag.take().expect("dragging");
-                if let Some(n) = drag.node {
-                    if drag.current != drag.start {
-                        let to = [drag.current[3][0], drag.current[3][1], drag.current[3][2]];
-                        match self.nav.moved(n, to) {
-                            Ok(a) => action = Some(a),
-                            Err(e) => self.status = e,
-                        }
-                    } else {
-                        self.nav.preview = None;
-                    }
-                } else if drag.current != drag.start
-                    && let Some(level) = &self.level
-                {
-                    action = Some(LevelAction::SetTransform {
-                        group: level.groups[drag.object.group].location,
-                        object: drag.object.object,
-                        matrix: drag.current,
-                    });
-                    if self.live_gizmo
-                        && self.live_edit.writes
-                        && let Some(o) = level.groups[drag.object.group]
-                            .objects
-                            .get(drag.object.object)
-                    {
-                        self.live_pending = Some(LevelAction::LiveObject(ObjectAction::Move(
-                            o.guid.0,
-                            live::flat(&drag.current),
-                            true,
-                        )));
-                    }
+                self.refill = true;
+                // The gizmo moves the objects in the running game too
+                // (stage 47; not the copies of Alt + drag).
+                if self.live_gizmo && self.live_edit.writes && !drag.copy {
+                    let moves: Vec<LevelAction> = drag
+                        .objects
+                        .iter()
+                        .zip(&drag.current)
+                        .filter(|((_, start), m)| start != *m)
+                        .filter_map(|((r, _), m)| {
+                            let o = self.object(*r)?;
+                            Some(LevelAction::LiveObject(ObjectAction::Move(
+                                o.guid.0,
+                                live::flat(m),
+                                true,
+                            )))
+                        })
+                        .collect();
+                    self.live_pending.extend(moves);
                 }
+                if let Some(a) = self.finish_drag(drag) {
+                    action = Some(a);
+                }
+            }
+        } else if let Some(m) = &mut self.marquee {
+            if let Some(p) = pointer {
+                m.now = p;
+            }
+            if released {
+                let m = self.marquee.take().expect("drawing");
+                self.select_in(&m, &view, rect);
             }
         } else if let (Some(level), Some(input)) = (&self.level, &self.input)
             && self.walk.update(
@@ -1979,39 +2046,47 @@ impl LevelView {
             self.refill = true;
             self.camera_moved = true;
         } else if !self.walk.active {
-            let pivot = gizmo_at.unwrap_or_else(|| {
-                math::add(self.camera.eye, math::scale(self.camera.forward(), 20.0))
-            });
-            if self.camera.handle_input(ui, &response, pivot) {
+            let pivot = target.as_ref().map_or_else(
+                || math::add(self.camera.eye, math::scale(self.camera.forward(), 20.0)),
+                |t| t.origin,
+            );
+            let controls = camera::Controls {
+                ue: !self.classic,
+                left_moves: self.gizmo != gizmo::Mode::Select,
+            };
+            if self.camera.handle_input(ui, &response, pivot, controls) {
                 self.refill = true;
                 self.camera_moved = true;
             }
         }
-        if moved
-            && let Some(drag) = &self.drag
-            && let Some(n) = drag.node
-        {
-            let m = drag.current;
-            self.nav.preview = Some((n, [m[3][0], m[3][1], m[3][2]]));
-            self.nav.generation += 1;
-        } else if moved
-            && let Some(drag) = &self.drag
-            && let Some(indices) = self.by_object.get(&drag.object)
-        {
-            scene::move_items(&mut self.items, indices, &drag.current);
+        if moved && let Some(drag) = &self.drag {
+            if let Some(n) = drag.node {
+                self.nav.preview = Some((n, drag.origin()));
+                self.nav.generation += 1;
+            } else if !drag.copy {
+                for ((r, _), m) in drag.objects.iter().zip(&drag.current) {
+                    if let Some(indices) = self.by_object.get(r) {
+                        scene::move_items(&mut self.items, indices, m);
+                    }
+                }
+            }
             self.refill = true;
         }
 
-        let gpu = self.gpu.clone()?;
         let view = self.camera.view(rect.aspect_ratio());
         // Hover picking on GPUs; software adapters pick on click only.
-        let software = gpu.lock().is_software();
+        let software = self.gpu.as_ref().is_none_or(|gpu| gpu.lock().is_software());
         let mut hovered = self.filter.hovered;
         match response.hover_pos() {
-            Some(pos) if !software && self.drag.is_none() && !response.dragged() => {
+            Some(pos)
+                if !software
+                    && self.drag.is_none()
+                    && self.marquee.is_none()
+                    && !response.dragged() =>
+            {
                 if self.last_pick != Some(pos) {
                     self.last_pick = Some(pos);
-                    hovered = self.pick(&gpu, &view, rect, pos, ppp);
+                    hovered = self.pick_at(&view, rect, pos, ppp);
                 }
             }
             _ => {
@@ -2025,7 +2100,12 @@ impl LevelView {
             self.filter.hovered = hovered;
             self.refill = true;
         }
-        let node_click = if response.clicked() && self.hover_axis.is_none() {
+        let picked_at = |this: &mut Self, pos: Option<Pos2>| match pos {
+            Some(pos) if software => this.pick_at(&view, rect, pos, ppp),
+            Some(_) => this.filter.hovered,
+            None => None,
+        };
+        let node_click = if response.clicked() && self.hover_handle.is_none() {
             response
                 .interact_pointer_pos()
                 .and_then(|p| self.nav.pick(&to_screen, [p.x, p.y], nav::PICK_RADIUS))
@@ -2033,7 +2113,7 @@ impl LevelView {
             None
         };
         if let Some(n) = node_click {
-            if ui.input(|i| i.modifiers.shift) && self.nav.selected.is_some() {
+            if shift && self.nav.selected.is_some() {
                 match self.nav.link_to(n) {
                     Some(Ok(a)) => action = Some(a),
                     Some(Err(e)) => self.status = e,
@@ -2043,14 +2123,10 @@ impl LevelView {
                 self.select(None);
                 self.nav.select(Some(n));
             }
-        } else if response.clicked() && self.hover_axis.is_none() {
+        } else if response.clicked() && self.hover_handle.is_none() {
             self.nav.select(None);
-            let picked = match response.interact_pointer_pos() {
-                Some(pos) if software => self.pick(&gpu, &view, rect, pos, ppp),
-                Some(_) => self.filter.hovered,
-                None => None,
-            };
-            if ui.input(|i| i.modifiers.command) {
+            let picked = picked_at(self, response.interact_pointer_pos());
+            if ctrl {
                 // Ctrl + click: add to the selection or take away from it.
                 if let Some(r) = picked {
                     let mut set = self.selection();
@@ -2062,6 +2138,13 @@ impl LevelView {
                     };
                     self.set_selection(primary, set);
                 }
+            } else if shift {
+                // Shift + click: add to the selection.
+                if let Some(r) = picked {
+                    let mut set = self.selection();
+                    set.insert(r);
+                    self.set_selection(Some(r), set);
+                }
             } else {
                 self.select(picked);
             }
@@ -2069,46 +2152,43 @@ impl LevelView {
         if response.double_clicked() {
             self.focus();
         }
+        // The right button without a drag: the context menu, for the object
+        // under the pointer.
+        if response.secondary_clicked() {
+            let picked = picked_at(self, response.interact_pointer_pos());
+            self.open_context(picked);
+        }
+        let mut menu = None;
+        response.context_menu(|ui| menu = self.context_ui(ui));
+        if let Some(a) = menu {
+            action = Some(a);
+        }
 
         if self.refill {
             self.refill = false;
+            let eye = self.camera.lod_eye();
             self.filter.min_angle = if self.hide_tiny {
                 TINY_PIXELS * self.camera.fov_y / pixels[1].max(1) as f32
             } else {
                 0.0
             };
             let spheres = &self.spheres;
-            self.visible = scene::fill(
-                &mut self.scene,
-                &self.items,
-                self.camera.eye,
-                &self.filter,
-                &|key| spheres.get(&key).copied(),
-            );
+            self.visible = scene::fill(&mut self.scene, &self.items, eye, &self.filter, &|key| {
+                spheres.get(&key).copied()
+            });
+            self.add_ghosts();
             self.generation += 1;
         }
         // Gizmo lines.
         self.scene.overlay_lines.clear();
-        if let Some(r) = self.filter.selected
-            && !self.is_object_locked(r)
-            && let Some(m) = self.object_transform(r)
-        {
-            let origin = [m[3][0], m[3][1], m[3][2]];
-            let axis = self.drag.as_ref().map(|d| d.axis).or(self.hover_axis);
-            let axes = self
-                .drag
-                .as_ref()
-                .map_or_else(|| gizmo::axes(self.gizmo, self.space, &m), |d| d.axes);
-            self.scene.overlay_lines =
-                gizmo::lines(self.gizmo, origin, &axes, gizmo::size(&view, origin), axis);
-        } else if let Some(origin) = gizmo_at.filter(|_| node.is_some()) {
-            let axis = self.drag.as_ref().map(|d| d.axis).or(self.hover_axis);
+        if let Some(t) = self.gizmo_target() {
+            let handle = self.drag.as_ref().map(|d| d.handle).or(self.hover_handle);
             self.scene.overlay_lines = gizmo::lines(
-                gizmo::Mode::Move,
-                origin,
-                &gizmo::WORLD,
-                gizmo::size(&view, origin),
-                axis,
+                t.mode,
+                t.origin,
+                &t.axes,
+                gizmo::size(&view, t.origin),
+                handle,
             );
         }
         self.scene.overlay_lines.extend(self.nav.lines());
@@ -2141,34 +2221,57 @@ impl LevelView {
                 }
             }
         }
-        let key = RenderKey {
-            camera: self.camera,
-            size: pixels,
-            generation: self.generation,
-            options: self.scene.options,
-            gizmo: (self.gizmo, self.space, self.hover_axis),
-            collision,
-            nav: self.nav.generation,
-            walk: self.walk.revision,
+        self.scene.lines = if self.bar.grid {
+            self.grid_lines()
+        } else {
+            Vec::new()
         };
-        if self.last_render.as_ref() != Some(&key) {
-            let mut renderer = gpu.lock();
-            renderer.render(&mut self.viewport, pixels, &self.scene, &view);
-            self.stats = renderer.stats;
-            self.last_render = Some(key);
+        match self.gpu.clone() {
+            Some(gpu) => {
+                let key = RenderKey {
+                    camera: self.camera,
+                    size: pixels,
+                    generation: self.generation,
+                    options: self.scene.options,
+                    gizmo: (self.gizmo, self.space, self.hover_handle),
+                    grid: self.bar.grid,
+                    collision,
+                    nav: self.nav.generation,
+                    walk: self.walk.revision,
+                };
+                if self.last_render.as_ref() != Some(&key) {
+                    let mut renderer = gpu.lock();
+                    renderer.render(&mut self.viewport, pixels, &self.scene, &view);
+                    self.stats = renderer.stats;
+                    self.last_render = Some(key);
+                }
+                if let Some(id) = self.viewport.texture_id() {
+                    ui.painter().image(
+                        id,
+                        rect,
+                        Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
+                        Color32::WHITE,
+                    );
+                }
+            }
+            None => {
+                // No 3D without a GPU: the view still selects and edits.
+                ui.painter()
+                    .rect_filled(rect, 0.0, Color32::from_rgb(38, 40, 44));
+                ui.painter().text(
+                    rect.center(),
+                    egui::Align2::CENTER_CENTER,
+                    tr("level.needs_gpu"),
+                    egui::FontId::proportional(14.0),
+                    Color32::GRAY,
+                );
+            }
         }
-        if let Some(id) = self.viewport.texture_id() {
-            ui.painter().image(
-                id,
-                rect,
-                Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
-                Color32::WHITE,
-            );
-        }
-        self.overlay_text(ui, rect);
+        self.hud(ui, rect);
         if let Some(a) = self.drop_ui(ui, &response, rect, &view) {
             action = Some(a);
         }
+        self.bar_ui(ui, rect);
         if let Some(marks) = self.live {
             live_marks(ui, rect, &to_screen, &marks);
             if let Some(a) = live::bar(ui, rect, &marks, &mut self.live_follow, &self.camera) {
@@ -2176,6 +2279,12 @@ impl LevelView {
             }
         }
         action
+    }
+
+    /// The object at a point of the view (GPU id pass, or a ray on the CPU).
+    fn pick_at(&mut self, view: &View, rect: Rect, pos: Pos2, ppp: f32) -> Option<ObjRef> {
+        let gpu = self.gpu.clone()?;
+        self.pick(&gpu, view, rect, pos, ppp)
     }
 
     fn pick(&mut self, gpu: &Gpu, view: &View, rect: Rect, pos: Pos2, ppp: f32) -> Option<ObjRef> {
@@ -2201,61 +2310,6 @@ impl LevelView {
         // Locked objects (the Outliner's lock) are not picked.
         item.object
             .filter(|&r| !self.locked.contains(r, item.class))
-    }
-
-    fn overlay_text(&self, ui: &egui::Ui, rect: Rect) {
-        let mut text = trf(
-            "level.overlay_stats",
-            &[
-                ("drawn", &self.stats.instances),
-                ("culled", &self.stats.culled),
-                ("calls", &self.stats.draw_calls),
-                (
-                    "ms",
-                    &format!("{:.2}", self.stats.cpu_time.as_secs_f64() * 1000.0),
-                ),
-            ],
-        );
-        if let Some(level) = &self.level {
-            for r in [self.filter.hovered, self.filter.selected]
-                .into_iter()
-                .flatten()
-            {
-                let o = &level.groups[r.group].objects[r.object];
-                let mut line = format!("\n{} {}", o.class_name.unwrap_or("?"), o.name);
-                if let Some(m) = self.object_transform(r) {
-                    let t = Transform::from_matrix(&m);
-                    line += &trf(
-                        "level.overlay_at",
-                        &[
-                            (
-                                "position",
-                                &format!(
-                                    "{:.2} {:.2} {:.2}",
-                                    t.position[0], t.position[1], t.position[2]
-                                ),
-                            ),
-                            ("yaw", &format!("{:.1}", t.rotation[1])),
-                        ],
-                    );
-                }
-                text += &line;
-            }
-        }
-        text += "\n";
-        match &self.level {
-            Some(level) if self.walk.active => text += &self.walk.hud(level),
-            _ => text += tr("level.overlay_keys"),
-        }
-        let painter = ui.painter_at(rect);
-        let galley = painter.layout_no_wrap(text, egui::FontId::monospace(11.0), Color32::WHITE);
-        let at = rect.left_top() + Vec2::splat(6.0);
-        painter.rect_filled(
-            Rect::from_min_size(at, galley.size()).expand(4.0),
-            3.0,
-            Color32::from_black_alpha(150),
-        );
-        painter.galley(at, galley, Color32::WHITE);
     }
 }
 

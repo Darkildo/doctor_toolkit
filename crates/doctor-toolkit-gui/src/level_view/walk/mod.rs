@@ -235,6 +235,45 @@ impl Walk {
         self.cache.clear();
     }
 
+    /// Whether the collision of `level` is built and current.
+    pub fn ready_for(&self, level: &Level) -> bool {
+        !self.stale
+            && self
+                .built
+                .as_ref()
+                .is_some_and(|b| b.key == Arc::as_ptr(&level.source) as usize)
+    }
+
+    /// Builds the collision of `level` around `centre` when it is not
+    /// built (stage 54: End puts objects on the ground). Progress comes
+    /// with [`Self::poll_build`].
+    pub fn prepare(&mut self, level: &Level, catalog: &Catalog, parents: &Parents, centre: V3) {
+        if !self.ready_for(level) && self.job.is_none() {
+            self.start_build(level, catalog, parents, centre);
+        }
+    }
+
+    /// Whether the collision is being built.
+    pub fn building(&self) -> bool {
+        self.job.is_some()
+    }
+
+    /// Takes a finished build (also while not walking).
+    pub fn poll_build(&mut self) {
+        self.poll();
+    }
+
+    /// The height of the ground below `from` (within 2 km), passing over
+    /// the colliders of the level objects `skip` names; `None` without a
+    /// built world or ground.
+    pub fn ground_below(&self, from: V3, skip: &dyn Fn((usize, usize)) -> bool) -> Option<f32> {
+        let world = &self.built.as_ref()?.world;
+        let pass = |o: physics::Owner| o.layer == 0 && skip(o.object);
+        world
+            .below_except(from, 2000.0, &pass)
+            .map(|toi| from[1] - toi)
+    }
+
     fn start_build(&mut self, level: &Level, catalog: &Catalog, parents: &Parents, centre: V3) {
         let (tx, rx) = channel();
         let source = level.source.clone();

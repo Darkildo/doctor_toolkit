@@ -50,6 +50,7 @@ impl BrowserApp {
             Pane::ContentBrowser => self.content_pane(ui, 0),
             Pane::ContentExtra { id } => self.content_pane(ui, *id),
             Pane::Outliner => self.outliner_pane(ui),
+            Pane::History => self.history_pane(ui),
             Pane::Documents => {}
         }
     }

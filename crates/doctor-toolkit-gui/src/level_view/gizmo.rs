@@ -1,8 +1,12 @@
 //! Move, rotate and scale gizmo: three axes (move, scale) or three rings
-//! (rotate) drawn as overlay lines at the selected object, hit-tested on
-//! the screen and dragged along the axis or around it. The axes are the
+//! (rotate) drawn as overlay lines at the selection, hit-tested on the
+//! screen and dragged along the axis or around it. The axes are the
 //! world's or the object's own (stage 52); snapping rounds the drag to a
 //! step, always when it is switched on and with Ctrl otherwise.
+//!
+//! Stage 54: squares between two axes move in their plane, a box at the
+//! centre scales evenly, and one drag changes every selected object about
+//! the centre of the selection (the pivot).
 
 use doctor_toolkit::level::RowMatrix;
 
@@ -17,6 +21,18 @@ pub enum Mode {
     Rotate,
     /// Scale along an axis of the object.
     Scale,
+}
+
+impl Mode {
+    /// The next of Move → Rotate → Scale → Move (the space bar; Select
+    /// goes to Move).
+    pub fn next(self) -> Self {
+        match self {
+            Self::Select | Self::Scale => Self::Move,
+            Self::Move => Self::Rotate,
+            Self::Rotate => Self::Scale,
+        }
+    }
 }
 
 /// The axes the gizmo works along.
@@ -66,13 +82,54 @@ const COLORS: [[u8; 4]; 3] = [
     crate::app::theme::AXIS_Z.to_array(),
 ];
 const HOVER: [u8; 4] = [255, 230, 60, 255];
+const CENTRE: [u8; 4] = [220, 220, 220, 255];
 const RING_SEGMENTS: usize = 48;
 /// Pointer distance in points within which an axis or ring is hit.
 pub const HIT_DISTANCE: f32 = 9.0;
+/// The plane squares span this part of the gizmo's size along both axes.
+const PLANE: (f32, f32) = (0.25, 0.45);
+/// Half the side of the box of even scaling, as a part of the gizmo's size.
+const UNIFORM_BOX: f32 = 0.07;
+/// Pointer travel in points that doubles the size when scaling evenly.
+const UNIFORM_POINTS: f32 = 100.0;
 
-/// Size of the gizmo at `origin` for a constant size on the screen.
+/// The part of the gizmo under the pointer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Handle {
+    /// Along (move, scale) or around (rotate) one axis.
+    Axis(usize),
+    /// In the plane of the two axes other than this one (move).
+    Plane(usize),
+    /// Every axis at once (scale).
+    Uniform,
+}
+
+/// What one drag of the gizmo does to every selected object.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Change {
+    /// Move by this vector.
+    Move(Vec3),
+    /// Turn about the unit `axis` through the pivot.
+    Rotate { axis: Vec3, angle: f32 },
+    /// Stretch by `factor` along the object's own axis `axis` (and the
+    /// offsets from the pivot along `dir`), or along every axis (`None`).
+    Scale {
+        axis: Option<(usize, Vec3)>,
+        factor: f32,
+    },
+}
+
+/// Size of the gizmo at `origin` for a constant size on the screen
+/// (perspective and orthographic views alike).
 pub fn size(view: &View, origin: Vec3) -> f32 {
-    math::length(math::sub(origin, view.eye)).max(0.5) * 0.15
+    let clip = math::mul_vec4(
+        &view.view_projection(),
+        [origin[0], origin[1], origin[2], 1.0],
+    );
+    let w = clip[3].max(0.5);
+    // `projection[5]` is the vertical scale: 1 / tan(fov / 2), or one over
+    // the half-height of an orthographic view.
+    w / view.projection[5].abs().max(1e-6) * 0.26
 }
 
 /// The axes of `space` for an object with the transform `m`: its rows,
@@ -108,43 +165,70 @@ fn ring_point(origin: Vec3, axes: &[Vec3; 3], axis: usize, radius: f32, angle: f
     )
 }
 
+/// The corners of the square of plane `normal`.
+fn plane_square(origin: Vec3, axes: &[Vec3; 3], normal: usize, size: f32) -> [Vec3; 4] {
+    let (u, v) = plane(axes, normal);
+    let at = |a: f32, b: f32| {
+        math::add(
+            origin,
+            math::add(math::scale(u, a * size), math::scale(v, b * size)),
+        )
+    };
+    let (near, far) = PLANE;
+    [at(near, near), at(far, near), at(far, far), at(near, far)]
+}
+
+fn push_loop(out: &mut Vec<LineVertex>, points: &[Vec3], color: [u8; 4]) {
+    for i in 0..points.len() {
+        out.push(LineVertex::new(points[i], color));
+        out.push(LineVertex::new(points[(i + 1) % points.len()], color));
+    }
+}
+
 /// Overlay lines of the gizmo.
 pub fn lines(
     mode: Mode,
     origin: Vec3,
     axes: &[Vec3; 3],
     size: f32,
-    hovered: Option<usize>,
+    hovered: Option<Handle>,
 ) -> Vec<LineVertex> {
     let mut out = Vec::new();
     for axis in 0..3 {
-        let color = if hovered == Some(axis) {
-            HOVER
-        } else {
-            COLORS[axis]
+        let color = |handle| {
+            if hovered == Some(handle) {
+                HOVER
+            } else {
+                COLORS[axis]
+            }
         };
         let dir = axes[axis];
         let (u, v) = plane(axes, axis);
         match mode {
             Mode::Select => {}
             Mode::Move => {
+                let color_axis = color(Handle::Axis(axis));
                 let tip = math::add(origin, math::scale(dir, size));
-                out.push(LineVertex::new(origin, color));
-                out.push(LineVertex::new(tip, color));
+                out.push(LineVertex::new(origin, color_axis));
+                out.push(LineVertex::new(tip, color_axis));
                 // A small arrow head.
                 let back = math::add(origin, math::scale(dir, size * 0.85));
                 for side in [-1.0, 1.0] {
-                    out.push(LineVertex::new(tip, color));
+                    out.push(LineVertex::new(tip, color_axis));
                     out.push(LineVertex::new(
                         math::add(back, math::scale(u, side * size * 0.06)),
-                        color,
+                        color_axis,
                     ));
                 }
+                // The square of the plane this axis is normal to.
+                let square = plane_square(origin, axes, axis, size);
+                push_loop(&mut out, &square, color(Handle::Plane(axis)));
             }
             Mode::Scale => {
+                let color_axis = color(Handle::Axis(axis));
                 let tip = math::add(origin, math::scale(dir, size));
-                out.push(LineVertex::new(origin, color));
-                out.push(LineVertex::new(tip, color));
+                out.push(LineVertex::new(origin, color_axis));
+                out.push(LineVertex::new(tip, color_axis));
                 // A small square at the end.
                 let h = size * 0.05;
                 let corner = |a: f32, b: f32| {
@@ -156,23 +240,47 @@ pub fn lines(
                     corner(1.0, 1.0),
                     corner(-1.0, 1.0),
                 ];
-                for i in 0..4 {
-                    out.push(LineVertex::new(square[i], color));
-                    out.push(LineVertex::new(square[(i + 1) % 4], color));
-                }
+                push_loop(&mut out, &square, color_axis);
             }
             Mode::Rotate => {
+                let color_axis = color(Handle::Axis(axis));
                 for i in 0..RING_SEGMENTS {
                     let a = i as f32 / RING_SEGMENTS as f32 * std::f32::consts::TAU;
                     let b = (i + 1) as f32 / RING_SEGMENTS as f32 * std::f32::consts::TAU;
                     out.push(LineVertex::new(
                         ring_point(origin, axes, axis, size, a),
-                        color,
+                        color_axis,
                     ));
                     out.push(LineVertex::new(
                         ring_point(origin, axes, axis, size, b),
-                        color,
+                        color_axis,
                     ));
+                }
+            }
+        }
+    }
+    if mode == Mode::Scale {
+        // The box of even scaling: its twelve edges.
+        let color = if hovered == Some(Handle::Uniform) {
+            HOVER
+        } else {
+            CENTRE
+        };
+        let h = size * UNIFORM_BOX;
+        let corner = |i: usize| {
+            let mut p = origin;
+            for (axis, dir) in axes.iter().enumerate() {
+                let sign = if i >> axis & 1 == 0 { -h } else { h };
+                p = math::add(p, math::scale(*dir, sign));
+            }
+            p
+        };
+        for i in 0..8usize {
+            for axis in 0..3 {
+                let j = i | 1 << axis;
+                if j != i {
+                    out.push(LineVertex::new(corner(i), color));
+                    out.push(LineVertex::new(corner(j), color));
                 }
             }
         }
@@ -193,7 +301,27 @@ fn segment_distance(p: [f32; 2], a: [f32; 2], b: [f32; 2]) -> f32 {
     (d[0] * d[0] + d[1] * d[1]).sqrt()
 }
 
-/// The axis under the pointer: `screen` maps a world point to screen points.
+/// Whether `p` is inside the convex polygon `points` (either winding).
+fn inside(p: [f32; 2], points: &[[f32; 2]]) -> bool {
+    let mut sign = 0.0f32;
+    for i in 0..points.len() {
+        let a = points[i];
+        let b = points[(i + 1) % points.len()];
+        let cross = (b[0] - a[0]) * (p[1] - a[1]) - (b[1] - a[1]) * (p[0] - a[0]);
+        if cross.abs() < 1e-6 {
+            continue;
+        }
+        if sign == 0.0 {
+            sign = cross.signum();
+        } else if cross.signum() != sign {
+            return false;
+        }
+    }
+    sign != 0.0
+}
+
+/// The part of the gizmo under the pointer: `screen` maps a world point to
+/// screen points.
 pub fn hit(
     mode: Mode,
     origin: Vec3,
@@ -201,7 +329,26 @@ pub fn hit(
     size: f32,
     pointer: [f32; 2],
     screen: &dyn Fn(Vec3) -> Option<[f32; 2]>,
-) -> Option<usize> {
+) -> Option<Handle> {
+    if mode == Mode::Select {
+        return None;
+    }
+    if mode == Mode::Scale
+        && let Some(o) = screen(origin)
+    {
+        // The box at the centre: as large as it shows, at least a hit's size.
+        let edge = screen(math::add(
+            origin,
+            math::scale(axes[0], size * UNIFORM_BOX * 1.5),
+        ));
+        let radius = edge.map_or(0.0, |e| {
+            ((e[0] - o[0]).powi(2) + (e[1] - o[1]).powi(2)).sqrt()
+        });
+        let d = ((pointer[0] - o[0]).powi(2) + (pointer[1] - o[1]).powi(2)).sqrt();
+        if d < radius.max(HIT_DISTANCE) {
+            return Some(Handle::Uniform);
+        }
+    }
     let mut best: Option<(usize, f32)> = None;
     for (axis, &dir) in axes.iter().enumerate() {
         let points: Vec<Vec3> = match mode {
@@ -226,7 +373,21 @@ pub fn hit(
             }
         }
     }
-    best.map(|(axis, _)| axis)
+    if let Some((axis, _)) = best {
+        return Some(Handle::Axis(axis));
+    }
+    if mode == Mode::Move {
+        for normal in 0..3 {
+            let square: Option<Vec<[f32; 2]>> = plane_square(origin, axes, normal, size)
+                .iter()
+                .map(|&p| screen(p))
+                .collect();
+            if square.is_some_and(|s| inside(pointer, &s)) {
+                return Some(Handle::Plane(normal));
+            }
+        }
+    }
+    None
 }
 
 /// The drag parameter under a ray: the position along the axis (move,
@@ -269,12 +430,131 @@ pub fn parameter(
     }
 }
 
+/// Where a drag of `handle` is: the axis parameter (see [`parameter`]), the
+/// two coordinates in a plane, or the pointer itself (points, y up) for
+/// even scaling.
+pub fn grab(
+    mode: Mode,
+    handle: Handle,
+    origin: Vec3,
+    axes: &[Vec3; 3],
+    ray: &Ray,
+    pointer: [f32; 2],
+) -> Option<[f32; 2]> {
+    match handle {
+        Handle::Axis(axis) => parameter(mode, origin, axes, axis, ray).map(|t| [t, 0.0]),
+        Handle::Plane(normal) => {
+            let n = axes[normal];
+            let along = math::dot(ray.dir, n);
+            if along.abs() < 1e-4 {
+                return None;
+            }
+            let t = math::dot(math::sub(origin, ray.origin), n) / along;
+            if t <= 0.0 {
+                return None;
+            }
+            let d = math::sub(ray.at(t), origin);
+            let (u, v) = plane(axes, normal);
+            Some([math::dot(d, u), math::dot(d, v)])
+        }
+        Handle::Uniform => Some([pointer[0], -pointer[1]]),
+    }
+}
+
+/// The change a drag from `start` to `now` (values of [`grab`]) makes;
+/// `snap` rounds it to the steps.
+pub fn change(
+    mode: Mode,
+    handle: Handle,
+    axes: &[Vec3; 3],
+    start: [f32; 2],
+    now: [f32; 2],
+    size: f32,
+    snap: Option<&Snap>,
+) -> Option<Change> {
+    let rounded = |mode: Mode, amount: f32| match snap {
+        Some(s) => self::snap(mode, amount, s),
+        None => amount,
+    };
+    let d = [now[0] - start[0], now[1] - start[1]];
+    Some(match (mode, handle) {
+        (Mode::Select, _) => return None,
+        (Mode::Move, Handle::Axis(axis)) => {
+            Change::Move(math::scale(axes[axis], rounded(mode, d[0])))
+        }
+        (Mode::Move, Handle::Plane(normal)) => {
+            let (u, v) = plane(axes, normal);
+            Change::Move(math::add(
+                math::scale(u, rounded(mode, d[0])),
+                math::scale(v, rounded(mode, d[1])),
+            ))
+        }
+        (Mode::Rotate, Handle::Axis(axis)) => {
+            // Shortest turn between the two angles.
+            let delta = (d[0] + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU)
+                - std::f32::consts::PI;
+            Change::Rotate {
+                axis: axes[axis],
+                angle: rounded(mode, delta),
+            }
+        }
+        (Mode::Scale, Handle::Axis(axis)) => Change::Scale {
+            axis: Some((axis, axes[axis])),
+            // A drag by the gizmo's length doubles the size.
+            factor: (1.0 + rounded(mode, d[0] / size.max(1e-3))).max(0.01),
+        },
+        (Mode::Scale, Handle::Uniform) => Change::Scale {
+            axis: None,
+            factor: (1.0 + rounded(mode, (d[0] + d[1]) / UNIFORM_POINTS)).max(0.01),
+        },
+        _ => return None,
+    })
+}
+
 /// Rotates `v` about the unit axis `axis` by `angle` radians.
 fn rotate(v: Vec3, axis: Vec3, angle: f32) -> Vec3 {
     let (s, c) = angle.sin_cos();
     let cross = math::cross(axis, v);
     let along = math::scale(axis, math::dot(axis, v) * (1.0 - c));
     math::add(math::add(math::scale(v, c), math::scale(cross, s)), along)
+}
+
+/// `start` changed by `change` about `pivot`: an object at the pivot keeps
+/// its place when turned or scaled; others turn round it or move away.
+pub fn apply_change(change: &Change, start: &RowMatrix, pivot: Vec3) -> RowMatrix {
+    let mut m = *start;
+    let position = [m[3][0], m[3][1], m[3][2]];
+    let offset = math::sub(position, pivot);
+    let place = |m: &mut RowMatrix, p: Vec3| m[3][..3].copy_from_slice(&p);
+    match *change {
+        Change::Move(by) => place(&mut m, math::add(position, by)),
+        Change::Rotate { axis, angle } => {
+            for row in m.iter_mut().take(3) {
+                let r = rotate([row[0], row[1], row[2]], axis, angle);
+                row[..3].copy_from_slice(&r);
+            }
+            place(&mut m, math::add(pivot, rotate(offset, axis, angle)));
+        }
+        Change::Scale {
+            axis: Some((row, dir)),
+            factor,
+        } => {
+            for value in m[row].iter_mut().take(3) {
+                *value *= factor;
+            }
+            let along = math::scale(dir, math::dot(offset, dir) * (factor - 1.0));
+            place(&mut m, math::add(position, along));
+        }
+        Change::Scale { axis: None, factor } => {
+            for row in m.iter_mut().take(3) {
+                for value in row.iter_mut().take(3) {
+                    *value *= factor;
+                }
+            }
+            place(&mut m, math::add(pivot, math::scale(offset, factor)));
+        }
+    }
+    m
 }
 
 /// `start` moved by `amount` along the axis (move), turned by `amount`
@@ -287,29 +567,20 @@ pub fn apply(
     axis: usize,
     amount: f32,
 ) -> RowMatrix {
-    let mut m = *start;
     let dir = axes[axis];
-    match mode {
-        Mode::Select => {}
-        Mode::Move => {
-            for (k, d) in dir.iter().enumerate() {
-                m[3][k] += d * amount;
-            }
-        }
-        Mode::Rotate => {
-            for row in m.iter_mut().take(3) {
-                let r = rotate([row[0], row[1], row[2]], dir, amount);
-                row[..3].copy_from_slice(&r);
-            }
-        }
-        Mode::Scale => {
-            let factor = (1.0 + amount).max(0.01);
-            for value in m[axis].iter_mut().take(3) {
-                *value *= factor;
-            }
-        }
-    }
-    m
+    let change = match mode {
+        Mode::Select => return *start,
+        Mode::Move => Change::Move(math::scale(dir, amount)),
+        Mode::Rotate => Change::Rotate {
+            axis: dir,
+            angle: amount,
+        },
+        Mode::Scale => Change::Scale {
+            axis: Some((axis, dir)),
+            factor: (1.0 + amount).max(0.01),
+        },
+    };
+    apply_change(&change, start, [start[3][0], start[3][1], start[3][2]])
 }
 
 /// Rounds a drag amount to the step of the mode.
@@ -422,22 +693,109 @@ mod tests {
     }
 
     #[test]
-    fn hits_axes_on_the_screen() {
+    fn hits_axes_planes_and_the_centre_on_the_screen() {
         // An orthographic-like mapping: x, y of the world are the screen.
         let screen = |p: Vec3| Some([p[0] * 100.0, -p[1] * 100.0]);
         let origin = [0.0; 3];
         let hit_at = |mode, p| hit(mode, origin, &WORLD, 1.0, p, &screen);
-        assert_eq!(hit_at(Mode::Move, [50.0, 3.0]), Some(0));
-        assert_eq!(hit_at(Mode::Move, [2.0, -60.0]), Some(1));
-        assert_eq!(hit_at(Mode::Move, [60.0, -60.0]), None);
-        assert_eq!(hit_at(Mode::Scale, [50.0, 3.0]), Some(0));
+        assert_eq!(hit_at(Mode::Move, [50.0, 3.0]), Some(Handle::Axis(0)));
+        assert_eq!(hit_at(Mode::Move, [2.0, -60.0]), Some(Handle::Axis(1)));
+        assert_eq!(hit_at(Mode::Move, [80.0, -80.0]), None);
+        // Between X and Y: the square of the plane normal to Z.
+        assert_eq!(hit_at(Mode::Move, [35.0, -35.0]), Some(Handle::Plane(2)));
+        assert_eq!(hit_at(Mode::Scale, [50.0, 3.0]), Some(Handle::Axis(0)));
+        assert_eq!(hit_at(Mode::Scale, [3.0, -2.0]), Some(Handle::Uniform));
         assert_eq!(hit_at(Mode::Select, [50.0, 3.0]), None);
-        assert_eq!(lines(Mode::Move, origin, &WORLD, 1.0, None).len(), 18);
-        assert_eq!(lines(Mode::Scale, origin, &WORLD, 1.0, None).len(), 30);
+        assert_eq!(lines(Mode::Move, origin, &WORLD, 1.0, None).len(), 18 + 24);
+        assert_eq!(lines(Mode::Scale, origin, &WORLD, 1.0, None).len(), 30 + 24);
         assert!(lines(Mode::Select, origin, &WORLD, 1.0, None).is_empty());
         assert_eq!(
-            lines(Mode::Rotate, origin, &WORLD, 1.0, Some(1)).len(),
+            lines(Mode::Rotate, origin, &WORLD, 1.0, Some(Handle::Axis(1))).len(),
             3 * RING_SEGMENTS * 2
         );
+        assert_eq!(Mode::Select.next(), Mode::Move);
+        assert_eq!(Mode::Move.next(), Mode::Rotate);
+        assert_eq!(Mode::Scale.next(), Mode::Move);
+    }
+
+    #[test]
+    fn planes_move_in_two_axes_and_groups_turn_about_the_pivot() {
+        // A ray down onto the ground plane (normal Y) at x = 2, z = -3.
+        let ray = |x: f32, z: f32| Ray {
+            origin: [x, 10.0, z],
+            dir: [0.0, -1.0, 0.0],
+        };
+        let at = [0.0; 3];
+        let start = grab(
+            Mode::Move,
+            Handle::Plane(1),
+            at,
+            &WORLD,
+            &ray(0.0, 0.0),
+            [0.0; 2],
+        )
+        .unwrap();
+        let now = grab(
+            Mode::Move,
+            Handle::Plane(1),
+            at,
+            &WORLD,
+            &ray(2.2, -3.1),
+            [0.0; 2],
+        )
+        .unwrap();
+        let free = change(Mode::Move, Handle::Plane(1), &WORLD, start, now, 1.0, None).unwrap();
+        let Change::Move(by) = free else {
+            panic!("{free:?}")
+        };
+        assert!((by[0] - 2.2).abs() < 1e-5 && by[1].abs() < 1e-6 && (by[2] + 3.1).abs() < 1e-5);
+        let snapped = Snap::default();
+        let Some(Change::Move(by)) = change(
+            Mode::Move,
+            Handle::Plane(1),
+            &WORLD,
+            start,
+            now,
+            1.0,
+            Some(&snapped),
+        ) else {
+            panic!()
+        };
+        assert_eq!(by, [2.0, 0.0, -3.0]);
+        // Two objects 4 m apart turned 90° about Y through the middle swap
+        // sides; their rows turn too.
+        let mut a = IDENTITY;
+        a[3] = [-2.0, 0.0, 0.0, 1.0];
+        let mut b = IDENTITY;
+        b[3] = [2.0, 0.0, 0.0, 1.0];
+        let turn = Change::Rotate {
+            axis: [0.0, 1.0, 0.0],
+            angle: std::f32::consts::PI,
+        };
+        let a2 = apply_change(&turn, &a, [0.0; 3]);
+        let b2 = apply_change(&turn, &b, [0.0; 3]);
+        assert!((a2[3][0] - 2.0).abs() < 1e-5 && (b2[3][0] + 2.0).abs() < 1e-5);
+        assert!((a2[0][0] + 1.0).abs() < 1e-5);
+        // Even scaling about the middle doubles the rows and the offsets.
+        let double = Change::Scale {
+            axis: None,
+            factor: 2.0,
+        };
+        let b3 = apply_change(&double, &b, [0.0; 3]);
+        assert_eq!(b3[3][..3], [4.0, 0.0, 0.0]);
+        assert_eq!(b3[1][..3], [0.0, 2.0, 0.0]);
+        // The centre box: the pointer up and right enlarges.
+        let Some(Change::Scale { axis: None, factor }) = change(
+            Mode::Scale,
+            Handle::Uniform,
+            &WORLD,
+            [0.0, 0.0],
+            [50.0, 50.0],
+            1.0,
+            None,
+        ) else {
+            panic!()
+        };
+        assert!((factor - 2.0).abs() < 1e-5, "{factor}");
     }
 }

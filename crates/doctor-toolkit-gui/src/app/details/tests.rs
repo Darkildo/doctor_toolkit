@@ -21,13 +21,13 @@ use super::Focus;
 use crate::level_view::{Mark, Node, ObjRef};
 use crate::settings::{Settings, Store};
 
-struct Fixture {
-    dir: PathBuf,
-    ctx: egui::Context,
-    app: BrowserApp,
+pub(crate) struct Fixture {
+    pub dir: PathBuf,
+    pub ctx: egui::Context,
+    pub app: BrowserApp,
     /// The level tab.
-    id: u64,
-    group: Location,
+    pub id: u64,
+    pub group: Location,
 }
 
 impl Drop for Fixture {
@@ -36,7 +36,7 @@ impl Drop for Fixture {
     }
 }
 
-fn frame(ctx: &egui::Context, app: &mut BrowserApp) {
+pub(crate) fn frame(ctx: &egui::Context, app: &mut BrowserApp) {
     use eframe::App as _;
     let input = egui::RawInput {
         screen_rect: Some(egui::Rect::from_min_size(
@@ -81,7 +81,7 @@ fn placed_group() -> SimGroup {
 
 /// An editor without a window, the level editor open with the zone of the
 /// miniature game loaded.
-fn fixture(name: &str) -> Fixture {
+pub(crate) fn fixture(name: &str) -> Fixture {
     let dir = std::env::temp_dir().join(format!("dt-panels-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
@@ -145,7 +145,7 @@ fn fixture(name: &str) -> Fixture {
     }
 }
 
-fn r(object: usize) -> ObjRef {
+pub(crate) fn r(object: usize) -> ObjRef {
     ObjRef { group: 0, object }
 }
 
@@ -326,4 +326,43 @@ fn panels_draw_in_the_level_layout_with_a_copy_of_details() {
     let pinned = f.app.shown(&f.app.inspectors.copies[&copy], None);
     assert!(matches!(main, super::Shown::Object(_, o) if o == r(2)));
     assert!(matches!(pinned, super::Shown::Object(_, o) if o == r(0)));
+}
+
+#[test]
+fn transform_of_several_objects_is_one_operation() {
+    let mut f = fixture("transform-many");
+    let id = f.id;
+    let before = f.app.workspace.as_ref().unwrap().head();
+    let level = f.app.levels.get_mut(&id).unwrap();
+    level.set_selection(Some(r(0)), [r(0), r(2)].into());
+    let objects = [r(0), r(2)];
+    // The X of both differ (0 and 20): a typed Y goes to both, a drag of X
+    // moves both by as much.
+    let mut values: Vec<Transform> = objects
+        .iter()
+        .map(|&o| Transform::from_matrix(&level.object(o).unwrap().transform.unwrap()))
+        .collect();
+    assert!(super::object::transforms_action(level, &objects, &values).is_none());
+    for v in &mut values {
+        v.position[1] = 5.0;
+        v.position[0] += 1.5;
+    }
+    let action = super::object::transforms_action(level, &objects, &values).unwrap();
+    assert!(matches!(
+        action,
+        crate::level_view::LevelAction::Many { ref actions, .. } if actions.len() == 2
+    ));
+    f.app.level_action(id, action);
+    assert_eq!(f.app.workspace.as_ref().unwrap().head(), before + 1);
+    let level = &f.app.levels[&id];
+    let at = |o| level.object(r(o)).unwrap().transform.unwrap()[3];
+    assert_eq!((at(0)[0], at(0)[1]), (1.5, 5.0));
+    assert_eq!((at(2)[0], at(2)[1]), (21.5, 5.0));
+    assert_eq!(at(1)[1], 0.0, "not selected: not moved");
+    // Details draws the group with both objects.
+    frame(&f.ctx, &mut f.app);
+    f.app.pending.push(Command::Undo);
+    frame(&f.ctx, &mut f.app);
+    let level = &f.app.levels[&id];
+    assert_eq!(level.object(r(2)).unwrap().transform.unwrap()[3][0], 20.0);
 }

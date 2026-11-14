@@ -13,8 +13,9 @@
 //! as it is goes into the layout file.
 //!
 //! The file (`layout.json`) is versioned; versions 1 (the dock alone, up to
-//! stage 51) and 2 (stage 52, with the object panel `ObjectDetails` and the
-//! zones in the Outliner) are read and migrated: see [`parse`].
+//! stage 51), 2 (stage 52, with the object panel `ObjectDetails` and the
+//! zones in the Outliner) and 3 (stage 53, without the History panel) are
+//! read and migrated: see [`parse`].
 
 use std::collections::BTreeMap;
 
@@ -27,7 +28,7 @@ use super::dock::{self, DockOp, Pane};
 use super::{BrowserApp, Command};
 
 /// Version of the layout file written now.
-pub const LAYOUT_VERSION: u32 = 3;
+pub const LAYOUT_VERSION: u32 = 4;
 
 /// A kind of screen, by the document in front: each remembers its layout.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -264,7 +265,12 @@ fn level_arrangement() -> Arrangement {
     set_shares(&mut tiles, root, &[(center, 0.75), (right, 0.25)]);
     Arrangement {
         tree: Tree::new(egui::Id::unique("dock"), root, tiles),
-        drawers: vec![Pane::ContentBrowser, Pane::Log, Pane::Changes],
+        drawers: vec![
+            Pane::ContentBrowser,
+            Pane::Log,
+            Pane::Changes,
+            Pane::History,
+        ],
     }
 }
 
@@ -440,7 +446,7 @@ pub fn parse(text: &str) -> Option<Loaded> {
                 layouts: Layouts::default(),
             }
         }
-        2 | LAYOUT_VERSION => {
+        2 | 3 | LAYOUT_VERSION => {
             let file: FileV2 = serde_json::from_str(text).ok()?;
             Loaded {
                 tree: file.tree,
@@ -460,6 +466,18 @@ pub fn parse(text: &str) -> Option<Loaded> {
         for remembered in loaded.layouts.screens.values_mut() {
             migrate(
                 &mut remembered.arrangement.tree,
+                &mut remembered.arrangement.drawers,
+            );
+        }
+    }
+    if version.version < 4 {
+        add_history(&loaded.tree, &mut loaded.drawers);
+        for named in &mut loaded.layouts.user {
+            add_history(&named.arrangement.tree, &mut named.arrangement.drawers);
+        }
+        for remembered in loaded.layouts.screens.values_mut() {
+            add_history(
+                &remembered.arrangement.tree,
                 &mut remembered.arrangement.drawers,
             );
         }
@@ -557,6 +575,15 @@ fn migrate(tree: &mut Tree<Pane>, drawers: &mut Vec<Pane>) {
         }
     }
     tree.simplify(&SIMPLIFY);
+}
+
+/// Version 3 → 4: a layout of the level (with the Outliner) gets the
+/// History panel as a drawer, as the Level Editor has it.
+fn add_history(tree: &Tree<Pane>, drawers: &mut Vec<Pane>) {
+    let has = |pane: &Pane| dock::find(tree, |p| p == pane).is_some() || drawers.contains(pane);
+    if has(&Pane::Outliner) && !has(&Pane::History) {
+        drawers.push(Pane::History);
+    }
 }
 
 /// The layout file.
@@ -904,7 +931,12 @@ mod tests {
         );
         assert_eq!(
             drawers,
-            [Pane::ContentBrowser, Pane::Log, Pane::Changes],
+            [
+                Pane::ContentBrowser,
+                Pane::Log,
+                Pane::Changes,
+                Pane::History
+            ],
             "the bottom panels are drawers"
         );
         for pane in [Pane::Outliner, Pane::Zones, Pane::Details, Pane::Files] {
@@ -1027,7 +1059,7 @@ mod tests {
         assert!(!loaded.layouts.remember);
         assert_eq!(loaded.layouts.user[0].name, "Wide");
         assert!(parse("{").is_none());
-        assert!(parse(&json.replace("\"version\": 3", "\"version\": 999")).is_none());
+        assert!(parse(&json.replace("\"version\": 4", "\"version\": 999")).is_none());
     }
 
     #[test]
@@ -1085,7 +1117,7 @@ mod tests {
     /// A stage 52 file: `ObjectDetails` for the first Details.
     fn as_stage_52(json: &str) -> String {
         json.replacen("\"Details\"", "\"ObjectDetails\"", 1)
-            .replace("\"version\": 3", "\"version\": 2")
+            .replace("\"version\": 4", "\"version\": 2")
     }
 
     #[test]
@@ -1116,10 +1148,15 @@ mod tests {
             assert!(dock::is_shown(tree, outliner));
             assert!(dock::find(tree, |p| p.id() == Some(1)).is_some());
         }
-        assert_eq!(loaded.drawers, [Pane::ContentBrowser]);
-        // Saved again it is version 3, and reads the same.
+        assert_eq!(loaded.drawers, [Pane::ContentBrowser, Pane::History]);
+        assert_eq!(
+            loaded.layouts.user[0].arrangement.drawers,
+            [Pane::Log, Pane::History]
+        );
+        // Saved again it is version 4, and reads the same.
         let again = to_json(&loaded.tree, 1, &loaded.drawers, &loaded.layouts);
-        assert!(again.contains("\"version\": 3") && !again.contains("ObjectDetails"));
+        assert!(again.contains("\"version\": 4") && !again.contains("ObjectDetails"));
+
         assert_eq!(panes(&parse(&again).unwrap().tree), panes(&loaded.tree));
 
         // The object panel as a drawer: one Details drawer, none in the tree.
@@ -1135,6 +1172,41 @@ mod tests {
         assert!(dock::find(&loaded.tree, |p| *p == Pane::Details).is_none());
         // No Outliner: no Zones is added.
         assert!(dock::find(&loaded.tree, |p| *p == Pane::Zones).is_none());
+    }
+
+    #[test]
+    fn version_three_files_get_the_history_drawer() {
+        // The Level Editor of stage 53 and a layout without a level.
+        let (tree, _) = arrange(&Builtin::Level.arrangement(), vec![Pane::Level { id: 1 }]);
+        let mut layouts = Layouts::default();
+        layouts.save("Files only", Builtin::Resources.arrangement());
+        let stage_53 = [Pane::ContentBrowser, Pane::Log, Pane::Changes];
+        let json =
+            to_json(&tree, 1, &stage_53, &layouts).replace("\"version\": 4", "\"version\": 3");
+        let loaded = parse(&json).expect("a stage 53 file reads");
+        assert_eq!(
+            loaded.drawers,
+            [
+                Pane::ContentBrowser,
+                Pane::Log,
+                Pane::Changes,
+                Pane::History
+            ]
+        );
+        assert_eq!(panes(&loaded.tree), panes(&tree));
+        // Without an Outliner nothing is added.
+        assert_eq!(
+            loaded.layouts.user[0].arrangement.drawers,
+            [Pane::ContentBrowser]
+        );
+        // History docked already: no drawer.
+        let mut docked = tree.clone();
+        dock::show_panel(&mut docked, Pane::History, None);
+        let json = to_json(&docked, 1, &stage_53, &Layouts::default())
+            .replace("\"version\": 4", "\"version\": 3");
+        let loaded = parse(&json).unwrap();
+        assert_eq!(loaded.drawers, stage_53);
+        assert!(dock::find(&loaded.tree, |p| *p == Pane::History).is_some());
     }
 
     #[test]

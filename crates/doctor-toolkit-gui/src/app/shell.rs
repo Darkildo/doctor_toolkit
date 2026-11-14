@@ -228,7 +228,7 @@ pub struct Windows {
 }
 
 /// `DOCTOR_TOOLKIT_GUI_SHELL=<window>[,…]`: opens shell windows for screenshots;
-/// `layout=level|resources|<name>` applies a layout, `drawer=content|log|changes`
+/// `layout=level|resources|<name>` applies a layout, `drawer=content|log|changes|history`
 /// opens a drawer, `layouts` the window of the user's layouts, `content` a
 /// Content Browser docked among the documents.
 pub fn apply_capture_preset(app: &mut BrowserApp) {
@@ -269,6 +269,7 @@ pub fn apply_capture_preset(app: &mut BrowserApp) {
                 let pane = match value {
                     "log" => Pane::Log,
                     "changes" => Pane::Changes,
+                    "history" => Pane::History,
                     _ => Pane::ContentBrowser,
                 };
                 app.drawers.add(pane.clone());
@@ -809,6 +810,10 @@ impl BrowserApp {
                         })
                         .response
                         .on_hover_text(tr("prefs.renderer_hint"));
+                        ui.end_row();
+                        ui.label(tr("prefs.level"));
+                        ui.checkbox(&mut s.level.classic_camera, tr("prefs.classic_camera"))
+                            .on_hover_text(tr("prefs.classic_camera_hint"));
                         ui.end_row();
                     });
                 ui.separator();
