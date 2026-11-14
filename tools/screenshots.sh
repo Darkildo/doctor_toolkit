@@ -44,6 +44,7 @@ shots=(
   "model|gf2/globalfolder/characters/allcharacters|DOCTOR_TOOLKIT_GUI_SELECT=5288 DOCTOR_TOOLKIT_GUI_MODEL=window,yaw=0.6,pitch=0.15 DOCTOR_TOOLKIT_GUI_SHOT_FRAMES=150"
   "character|gf2/globalfolder/characters/allcharacters|DOCTOR_TOOLKIT_GUI_SELECT=6905 DOCTOR_TOOLKIT_GUI_CHARACTER=window,set=_all,lod=0,yaw=0.5"
   "level|-|DOCTOR_TOOLKIT_GUI_LEVEL=gf2/cuba/local;eye=305,9,395;look=283,2,371 DOCTOR_TOOLKIT_GUI_SHOT_FRAMES=200"
+  "level-details|-|DOCTOR_TOOLKIT_GUI_LEVEL=gf2/cuba/local;eye=305,9,395;look=283,2,371;near DOCTOR_TOOLKIT_GUI_SHOT_FRAMES=200"
   "level-drawer|-|DOCTOR_TOOLKIT_GUI_LEVEL=gf2/cuba/local;eye=305,9,395;look=283,2,371 DOCTOR_TOOLKIT_GUI_SHELL=drawer=content DOCTOR_TOOLKIT_GUI_SHOT_FRAMES=200"
   "logic|-|DOCTOR_TOOLKIT_GUI_LOGIC=checkpoint:737 DOCTOR_TOOLKIT_GUI_SHOT_FRAMES=150"
   "logic-run|-|DOCTOR_TOOLKIT_GUI_LOGIC=checkpoint:737;run=load,send:cp_737_loaded,send:cp_737_was_started,wait:5,enter:#19;until=12 DOCTOR_TOOLKIT_GUI_SHOT_FRAMES=200"

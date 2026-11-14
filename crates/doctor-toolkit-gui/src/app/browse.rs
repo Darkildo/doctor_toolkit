@@ -1,5 +1,5 @@
 //! The browsing tabs and panels: the file list, stream tabs, tables of
-//! contents, all resources, search tabs, the Details panel and resource tabs.
+//! contents, all resources, search tabs and resource tabs.
 
 use egui::{Align, Color32, RichText, Sense};
 use egui_extras::{Column, TableBuilder};
@@ -16,7 +16,7 @@ use crate::nav::{Location, NavAction, Search};
 use crate::views::ViewContext;
 
 /// What the user did in a resource view.
-enum DocAction {
+pub(super) enum DocAction {
     Nav(NavAction),
     View(crate::views::ViewAction),
     /// Open the resource in its own tab.
@@ -32,7 +32,9 @@ impl BrowserApp {
         match pane {
             Pane::Welcome => self.welcome_ui(ui),
             Pane::Files => self.file_list(ui),
-            Pane::Details => self.details_ui(ui),
+            Pane::Details => self.details_pane(ui, None),
+            Pane::DetailsCopy { id } => self.details_pane(ui, Some(*id)),
+            Pane::Zones => self.zones_pane(ui),
             Pane::Changes => self.changes_pane(ui),
             Pane::Log => self.log_ui(ui),
             Pane::Index => self.index_view(ui),
@@ -47,7 +49,6 @@ impl BrowserApp {
             Pane::Logic { id, scope } => self.logic_pane(ui, *id, scope),
             Pane::ContentBrowser => self.content_pane(ui),
             Pane::Outliner => self.outliner_pane(ui),
-            Pane::ObjectDetails => self.object_details_pane(ui),
             Pane::Documents => {}
         }
     }
@@ -656,27 +657,7 @@ impl BrowserApp {
         }
     }
 
-    // ---------------------------------------------------- details and tabs
-
-    fn details_ui(&mut self, ui: &mut egui::Ui) {
-        let Some(mut doc) = self.details.take() else {
-            ui.label(RichText::new(tr("details.select")).weak());
-            return;
-        };
-        let action = egui::ScrollArea::vertical()
-            .id_salt("details scroll")
-            .auto_shrink(false)
-            .show(ui, |ui| self.doc_ui(ui, &mut doc, false))
-            .inner;
-        // An action may load the doc again: put it back first.
-        if self.details.is_none() {
-            self.details = Some(doc);
-        }
-        if let Some(action) = action {
-            let loc = self.details.as_ref().map(|d| d.loc);
-            self.doc_action(loc, action);
-        }
-    }
+    // ------------------------------------------------------- resource tabs
 
     fn resource_pane(&mut self, ui: &mut egui::Ui, id: u64, key: &str) {
         if !self.docs.contains_key(&id) {
@@ -713,7 +694,7 @@ impl BrowserApp {
         Some(Location { stream, resource })
     }
 
-    fn doc_action(&mut self, loc: Option<Location>, action: DocAction) {
+    pub(super) fn doc_action(&mut self, loc: Option<Location>, action: DocAction) {
         match action {
             DocAction::Nav(action) => self.nav_action(action),
             DocAction::View(action) => {
@@ -750,7 +731,7 @@ impl BrowserApp {
     }
 
     /// Header, references and views of a resource.
-    fn doc_ui(
+    pub(super) fn doc_ui(
         &mut self,
         ui: &mut egui::Ui,
         doc: &mut ResourceDoc,

@@ -229,6 +229,37 @@ pub enum LodMode {
     Finest,
 }
 
+/// Objects of a level picked by zone, by class in a zone or one by one: the
+/// objects hidden by the Outliner's eye, or locked by its lock (stage 53).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ObjectSet {
+    /// Every object of these SimGroups (by index in the level).
+    pub groups: HashSet<usize>,
+    /// Objects of a class in a SimGroup.
+    pub classes: HashSet<(usize, u32)>,
+    pub objects: HashSet<ObjRef>,
+}
+
+impl ObjectSet {
+    pub fn is_empty(&self) -> bool {
+        self.groups.is_empty() && self.classes.is_empty() && self.objects.is_empty()
+    }
+
+    /// Whether object `r` of class `class` is in the set, by any of the three.
+    pub fn contains(&self, r: ObjRef, class: u32) -> bool {
+        !self.is_empty()
+            && (self.groups.contains(&r.group)
+                || self.classes.contains(&(r.group, class))
+                || self.objects.contains(&r))
+    }
+
+    pub fn clear(&mut self) {
+        self.groups.clear();
+        self.classes.clear();
+        self.objects.clear();
+    }
+}
+
 /// What a frame shows.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Filter {
@@ -238,7 +269,12 @@ pub struct Filter {
     pub trees: bool,
     pub points: bool,
     pub hidden_classes: HashSet<u32>,
+    /// Objects hidden in the view (the Outliner's eye).
+    pub hidden: ObjectSet,
+    /// The primary selected object: the gizmo and Details follow it.
     pub selected: Option<ObjRef>,
+    /// Every selected object, the primary one too (all highlighted).
+    pub selection: HashSet<ObjRef>,
     pub hovered: Option<ObjRef>,
     /// Instances smaller than this angle (radians) on the screen are skipped.
     pub min_angle: f32,
@@ -253,7 +289,9 @@ impl Default for Filter {
             trees: true,
             points: false,
             hidden_classes: HashSet::new(),
+            hidden: ObjectSet::default(),
             selected: None,
+            selection: HashSet::new(),
             hovered: None,
             min_angle: 0.0,
         }
@@ -288,6 +326,11 @@ pub fn fill(
         if !shown || filter.hidden_classes.contains(&item.class) {
             continue;
         }
+        if let Some(r) = item.object
+            && filter.hidden.contains(r, item.class)
+        {
+            continue;
+        }
         if let Some([near, far]) = item.lod {
             match filter.lod {
                 LodMode::Distance => {
@@ -304,9 +347,11 @@ pub fn fill(
                 }
             }
         }
-        let is_object = |r: Option<ObjRef>| item.object.is_some() && item.object == r;
+        let selected = item
+            .object
+            .is_some_and(|r| filter.selected == Some(r) || filter.selection.contains(&r));
         if filter.min_angle > 0.0
-            && !is_object(filter.selected)
+            && !selected
             && let Some((centre, radius)) = sphere(item.mesh)
         {
             let at = math::transform_point(&item.world, centre);
@@ -317,7 +362,7 @@ pub fn fill(
             }
         }
         let mut tint = item.tint;
-        let highlight = if item.object.is_some() && item.object == filter.selected {
+        let highlight = if selected {
             Some(SELECTED_TINT)
         } else if item.object.is_some() && item.object == filter.hovered {
             Some(HOVERED_TINT)
@@ -373,6 +418,38 @@ mod tests {
             lod,
             tint: [1.0; 4],
         }
+    }
+
+    #[test]
+    fn hidden_objects_are_left_out_and_every_selected_one_is_lit() {
+        let items = vec![
+            item(ItemKind::Marker, 0.0, None, 0),
+            item(ItemKind::Marker, 1.0, None, 1),
+            item(ItemKind::Marker, 2.0, None, 2),
+        ];
+        let mut scene = Scene::default();
+        let mut filter = Filter::default();
+        let r = |object| ObjRef { group: 0, object };
+        filter.hidden.objects.insert(r(1));
+        assert_eq!(
+            fill(&mut scene, &items, [0.0; 3], &filter, &|_| None),
+            [0, 2]
+        );
+        filter.hidden.clear();
+        filter.hidden.classes.insert((0, 7));
+        assert!(fill(&mut scene, &items, [0.0; 3], &filter, &|_| None).is_empty());
+        filter.hidden.clear();
+        filter.hidden.groups.insert(1);
+        assert_eq!(
+            fill(&mut scene, &items, [0.0; 3], &filter, &|_| None).len(),
+            3
+        );
+        filter.selected = Some(r(0));
+        filter.selection = [r(0), r(2)].into();
+        fill(&mut scene, &items, [0.0; 3], &filter, &|_| None);
+        assert_eq!(scene.instances[0].tint, SELECTED_TINT);
+        assert_ne!(scene.instances[1].tint, SELECTED_TINT);
+        assert_eq!(scene.instances[2].tint, SELECTED_TINT);
     }
 
     #[test]

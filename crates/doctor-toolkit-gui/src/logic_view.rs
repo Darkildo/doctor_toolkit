@@ -122,25 +122,24 @@ impl LogicView {
         }
     }
 
-    /// Selects SimGroup object `index` and scrolls the list to it.
-    pub fn select_object(&mut self, index: usize) {
-        if let Kind_::Sim(view) = &mut self.kind
-            && index < view.rows.len()
-        {
-            if !view.visible.contains(&index) {
-                view.filter.clear();
-                view.refilter();
+    /// The attribute packets of SimGroup object `index` alone, every value
+    /// an edit field (Details' Advanced group, stage 53). Returns the object
+    /// a GUID link points to, when clicked, and an edit.
+    pub fn object_attributes(
+        &mut self,
+        ui: &mut egui::Ui,
+        index: usize,
+    ) -> (Option<usize>, Option<LogicAction>) {
+        match &mut self.kind {
+            Kind_::Sim(view) if index < view.rows.len() => {
+                view.select(Some(index));
+                view.packets_ui(ui, index)
             }
-            view.select(Some(index));
-            view.scroll_to_selected = true;
-        }
-    }
-
-    /// The selected SimGroup object.
-    pub fn selected_object(&self) -> Option<usize> {
-        match &self.kind {
-            Kind_::Sim(view) => view.selected,
-            _ => None,
+            Kind_::Error(error) => {
+                ui.colored_label(Color32::RED, error.as_str());
+                (None, None)
+            }
+            _ => (None, None),
         }
     }
 
@@ -506,7 +505,7 @@ impl SimView {
         index: usize,
     ) -> (Option<usize>, Option<LogicAction>) {
         let object = self.group.objects[index].clone();
-        let mut jump = None;
+        let jump = None;
         let mut action = None;
         ui.horizontal(|ui| {
             ui.strong(trf(
@@ -568,6 +567,20 @@ impl SimView {
                 .collect();
             ui.label(trf("logic.components", &[("names", &names.join(", "))]));
         }
+        let (target, edit) = self.packets_ui(ui, index);
+        (jump.or(target), action.or(edit))
+    }
+
+    /// The attribute packets of one object, every value an edit field;
+    /// returns the object a GUID link jumped to and an edit.
+    fn packets_ui(
+        &mut self,
+        ui: &mut egui::Ui,
+        index: usize,
+    ) -> (Option<usize>, Option<LogicAction>) {
+        let object = self.group.objects[index].clone();
+        let mut jump = None;
+        let mut action = None;
         ui.checkbox(&mut self.show_unset, tr("logic.show_unset"))
             .on_hover_text(tr("logic.show_unset_hint"));
         for (slot, &p) in object.packets.iter().enumerate() {

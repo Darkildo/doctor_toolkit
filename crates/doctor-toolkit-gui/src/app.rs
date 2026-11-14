@@ -25,6 +25,8 @@ mod bridge;
 mod browse;
 mod commands;
 mod content;
+mod details;
+mod dnd;
 mod dock;
 mod docs;
 mod drawer;
@@ -41,6 +43,7 @@ mod logic;
 mod menu;
 mod model_import;
 mod mods;
+mod outliner;
 mod palette;
 mod play;
 mod project;
@@ -154,11 +157,18 @@ pub struct BrowserApp {
     /// Panels shown as drawers over the bottom of the window.
     drawers: drawer::Drawers,
     content: content::ContentState,
-    /// The level tab drawn last, and the one the Outliner and Details
-    /// panels show with whether they are shown (stage 52).
+    /// The level tab drawn last, and the level the Outliner, Zones and
+    /// Details panels show (stage 53).
     last_level: Option<u64>,
-    host_level: Option<u64>,
-    level_hosts: (bool, bool),
+    panel_level: Option<u64>,
+    /// The Outliner of each level view.
+    outliners: HashMap<u64, outliner::Outline>,
+    /// The Details panels.
+    inspectors: details::Inspectors,
+    /// What was selected last (Details follows it), and the selection of
+    /// each level view as Details saw it.
+    inspect: details::Focus,
+    selection_seen: HashMap<u64, u64>,
     /// The tab shown alone, in place of the whole dock.
     maximized: Option<egui_tiles::TileId>,
     /// The document tab used last; new documents open next to it.
@@ -281,8 +291,11 @@ impl BrowserApp {
             drawers,
             content: content::ContentState::default(),
             last_level: None,
-            host_level: None,
-            level_hosts: (false, false),
+            panel_level: None,
+            outliners: HashMap::new(),
+            inspectors: details::Inspectors::default(),
+            inspect: details::Focus::default(),
+            selection_seen: HashMap::new(),
             maximized: None,
             active_doc: None,
             live_panes: HashSet::new(),
@@ -909,7 +922,7 @@ impl eframe::App for BrowserApp {
             self.nav_action(action);
         }
         self.shortcuts(&ctx);
-        self.host_level_panels();
+        self.update_panel_level();
         let visuals = ui.visuals().clone();
         let bar = |fill| {
             egui::Frame::new()
@@ -1378,7 +1391,8 @@ mod tests {
             .push(DockOp::ApplyLayout(LayoutId::Builtin(Builtin::Level)));
         frame(&ctx, &mut app, Vec::new());
         assert_eq!(app.checked(Command::ToggleOutliner), Some(true));
-        assert_eq!(app.checked(Command::ToggleObjectDetails), Some(true));
+        assert_eq!(app.checked(Command::ToggleDetails), Some(true));
+        assert!(in_tree(&app, &Pane::Zones), "behind the Outliner");
         assert!(!in_tree(&app, &Pane::Log) && app.drawers.contains(&Pane::Log));
         assert_eq!(app.checked(Command::ToggleLog), Some(false));
         assert!(in_tree(&app, &Pane::Welcome), "documents stay");
@@ -1453,7 +1467,7 @@ mod tests {
         app.save_settings();
         let text = std::fs::read_to_string(store.layout_path().unwrap()).unwrap();
         assert!(
-            text.contains("\"version\": 2"),
+            text.contains("\"version\": 3"),
             "written in the new version"
         );
         std::fs::remove_dir_all(dir).unwrap();
@@ -1523,7 +1537,11 @@ mod tests {
         assert_eq!(app.layouts.screen, Screen::Level);
         assert_eq!(app.layouts.current, LayoutId::Builtin(Builtin::Level));
         assert!(app.maximized.is_none(), "the layout, not a maximized tab");
-        assert_eq!(app.host_level, Some(id), "Outliner and Details show it");
+        assert_eq!(
+            app.panel_level,
+            Some(id),
+            "Outliner, Zones and Details show it"
+        );
         for (command, mode) in [
             (Command::GizmoRotate, GizmoMode::Rotate),
             (Command::GizmoScale, GizmoMode::Scale),
@@ -1556,7 +1574,7 @@ mod tests {
         assert_eq!(app.layouts.screen, Screen::Level);
         assert!(in_tree(&app, &Pane::Outliner));
         assert_eq!(app.checked(Command::ToggleOutliner), Some(false));
-        assert_eq!(app.checked(Command::ToggleObjectDetails), Some(true));
+        assert_eq!(app.checked(Command::ToggleZones), Some(true));
         assert!(app.live(id), "the documents stay open");
 
         // Without remembering, the layout stays as it is.

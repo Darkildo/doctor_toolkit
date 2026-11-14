@@ -13,7 +13,7 @@ First supported game: **The Godfather II (PC)**.
 ![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20Windows%20%7C%20macOS-lightgrey)
 [![Discord](https://img.shields.io/badge/Discord-join%20the%20community-5865F2?logo=discord&logoColor=white)](https://discord.gg/MatbKKdFR)
 
-<img src="docs/images/level.png" alt="The level editor: Havana in 3D with the main toolbar, the Outliner and the object panel" width="900">
+<img src="docs/images/level-details.png" alt="The level editor: Havana in 3D, a selected object with its gizmo, the Outliner and Details with transform and model" width="900">
 
 </div>
 
@@ -669,7 +669,7 @@ cargo run --release -p doctor-toolkit-gui -- "$GAME" gf2/frontend   # open a str
   (Ctrl+Space) and **Output Log** buttons, the live link, the last edit to
   undo and the game edition. Streams, resources, searches and levels open as
   tabs; **Files**, **Details**, **Changes**, **Log**, **Outliner**,
-  **Object** and the **Content Browser** are panels that can be hidden
+  **Zones** and the **Content Browser** are panels that can be hidden
   (Ctrl+1…6), dragged into other groups, split, or made a drawer that slides
   up over the window. Two layouts come built in, **Level Editor** (the view
   large, Outliner over Details on the right, drawers below) and
@@ -730,18 +730,27 @@ cargo run --release -p doctor-toolkit-gui -- "$GAME" gf2/frontend   # open a str
 - **Write to game at once** (under **Apply to game ▾**) applies every
   change immediately (direct mode).
 - **Tools → Level editor** (Ctrl+L) opens the level editor in a tab, in the
-  Level Editor layout. Check zones in the Outliner (a district's
+  Level Editor layout; the tab is the view, the panels around it do the
+  rest. Check zones in the **Zones** panel (a district's
   `high` directory is a good start) and **Load**; the scene fills in while
   meshes convert in the background. Right-drag looks around, W A S D / Q E
   move (Shift faster), the wheel moves forward, Alt-drag orbits the selection,
-  `F` or a double-click flies to it. Click selects an object; its SimGroup
-  editor opens on the right. The gizmo moves (`1`), rotates (`2`) or scales
+  `F` or a double-click flies to it. Click selects an object (Ctrl+click
+  adds more). The **Outliner** lists the objects by zone and class, with
+  search by name, class or GUID, Ctrl/Shift multiple selection, an eye that
+  hides and a lock that keeps clicks in the view from selecting, "new" and
+  "edited" marks and a context menu (fly to, duplicate, delete, show logic,
+  open the SimGroup, copy the GUID). **Details** shows what was selected
+  last, an object or a resource: Transform with X/Y/Z fields dragged by the
+  mouse, Model with a picture and a model chooser, Logic, Collision and
+  Advanced (every attribute); **Pin** keeps it on one object and
+  View → Another Details panel opens a second one. The gizmo moves (`1`), rotates (`2`) or scales
   (`3`) along the world's or the object's axes (toolbar), and snaps to
   steps (0.5 m / 15° / ×0.25 by default) always or with Ctrl. **Duplicate**, **Remove** and
   **Add object** (a copy of the selected object with another metamodel, or a
   clone of one in this zone) record their edit in the workspace; undo works
-  as everywhere. Filters hide markers, trees, AI points and object classes;
-  search finds objects by name, class or GUID. New objects have the
+  as everywhere. Filters hide markers, trees, AI points and object classes.
+  New objects have the
   collision of their model; a clone can get its own ("Own collision"), and
   "Collision" draws the collision of the selected object. Details in
   `docs/levels.md` (Russian).

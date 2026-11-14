@@ -1,23 +1,30 @@
 //! The level editor: a 3D scene of the placed objects of chosen zones.
 //!
-//! - **Browser** (left): zones of every level (streams with SimGroups) with
-//!   check boxes; the chosen ones load together with their ancestors as scope.
-//! - **Scene** (centre): one instance per mesh of every placed object, on the
-//!   shared [`crate::render::SceneRenderer`] with frustum culling and LODs by
-//!   distance; markers for objects without a mesh, trees and AI points.
-//!   Fly camera (right drag look, W A S D Q E, wheel, Alt + drag orbit).
-//!   Click selects (GPU id pass, or a CPU ray on software adapters).
+//! The tab is the view alone (stage 53); the shell's panels edit the rest:
+//!
+//! - **Zones** ([`zones`], the shell's Zones panel): zones of every level
+//!   (streams with SimGroups) with check boxes — the chosen ones load
+//!   together with their ancestors as scope — and what the view shows.
+//! - **Scene** (the tab): one instance per mesh of every placed object, on
+//!   the shared [`crate::render::SceneRenderer`] with frustum culling and
+//!   LODs by distance; markers for objects without a mesh, trees and AI
+//!   points. Fly camera (right drag look, W A S D Q E, wheel, Alt + drag
+//!   orbit). Click selects (GPU id pass, or a CPU ray on software adapters),
+//!   Ctrl + click adds to the selection or takes away from it.
 //! - **Gizmo**: select, move, rotate or scale along the world's or the
 //!   object's axes; snapping always or with Ctrl (the main toolbar of the
 //!   shell switches them, stage 52).
-//! - **Object** (right): the SimGroup object browser and editor
-//!   ([`LogicView`]) with the selected object; duplicate, remove, add.
+//! - **Selection, eye and lock**: the selected objects (one is primary: the
+//!   gizmo and Details follow it), objects hidden in the view and objects
+//!   that clicks in the view do not select ([`ObjectSet`]); the shell's
+//!   Outliner and Details edit them through the methods of [`LevelView`].
 //!
 //! Edits are returned as [`LevelAction`]s and recorded in the workspace by
 //! the app, which then calls [`LevelView::refresh`].
 //!
 //! `DOCTOR_TOOLKIT_GUI_LEVEL=<zone>[+<zone>…][;option…]` opens the view and
 //! loads the zones once the game is indexed; options: `select=<group>:<object>`,
+//! `near` (select the object with a model nearest to `look`),
 //! `rotate`, `finest`, `points`, `eye=<x>,<y>,<z>`, `look=<x>,<y>,<z>`,
 //! `yaw=<rad>`, `pitch=<rad>`, `act=<edit>` (see [`LevelView::preset_action`]),
 //! `nav[=<graph>:<node>]` (show navigation graphs, select a node),
@@ -35,13 +42,18 @@ pub use gizmo::{
 };
 mod live;
 pub mod loader;
+mod marks;
 pub mod nav;
+mod preview;
 pub mod scene;
 pub mod walk;
+mod zones;
+
+pub use marks::Mark;
+pub use scene::{ObjRef, ObjectSet};
 
 use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use std::sync::Arc;
-use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
 use doctor_toolkit::game::{GameInstance, ResourceIndex};
@@ -51,18 +63,18 @@ use doctor_toolkit::level::{
     RowMatrix, TYPE_MESH, TYPE_MESH_VOLATILE, TYPE_METAMODEL, TYPE_SIMGROUP,
 };
 use doctor_toolkit::resource::hkx::TYPE_HKX;
-use doctor_toolkit::resource::hkx::collision::CollisionKind;
 use doctor_toolkit::resource::logic::TYPE_SIMGROUP as LOGIC_SIMGROUP;
+use doctor_toolkit::resource::simgroup::{Guid, SimGroup};
 use doctor_toolkit::resource::simgroup_edit::Transform;
 use doctor_toolkit::workspace::{ResourceKey, Workspace};
 use doctor_toolkit_mods::i18n::{tr, trf, trn};
 use egui::{Color32, Pos2, Rect, RichText, Sense, Vec2};
 
-use crate::logic_view::{LogicAction, LogicView};
+use crate::logic_view::LogicView;
 use crate::render::{Gpu, MeshData, RenderStats, Scene, View, Viewport, math};
 use camera::FlyCamera;
 use loader::{Batch, LoadInput, LoadJob, Msg};
-use scene::{Filter, Item, LodMode, MARKER_KEY, ObjRef};
+use scene::{Filter, Item, LodMode, MARKER_KEY};
 
 /// Largest texture side uploaded for levels.
 const TEXTURE_LIMIT: u32 = 512;
@@ -130,6 +142,42 @@ pub enum LevelAction {
         renumbered: Option<Vec<Option<u16>>>,
         label: String,
     },
+    /// Open the SimGroup resource in a tab of its own.
+    OpenResource {
+        group: Location,
+    },
+    /// Show the shell's Zones panel (the view has nothing loaded).
+    ShowZones,
+    /// Several edits recorded as one operation of the workspace (one undo):
+    /// duplicating or removing the objects selected in the Outliner.
+    Many {
+        actions: Vec<LevelAction>,
+        label: String,
+    },
+}
+
+/// The "Add object" section of Details: a model and how to place it.
+#[derive(Debug, Clone, Default)]
+pub struct AddObject {
+    /// Metamodel id, hexadecimal as typed.
+    pub model: String,
+    /// Clone the model into the zone.
+    pub clone: bool,
+    /// Give the clone its own collision built from its meshes.
+    pub collision: bool,
+    /// A wizard chose the model to add: selecting an object keeps it.
+    pub fixed: bool,
+    /// Open the section once (the toolbar's "Add an object with a model…").
+    pub open: bool,
+}
+
+/// A node of the Outliner's tree: a zone (stream), a class in a zone, or
+/// one object.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Node {
+    Zone(usize),
+    Class(usize, u32),
+    Object(ObjRef),
 }
 
 /// Everything that changes the image.
@@ -162,6 +210,8 @@ struct Drag {
 #[derive(Default)]
 struct Preset {
     select: Option<ObjRef>,
+    /// Select the object with a model nearest to `look` (for screenshots).
+    near: bool,
     selected_once: bool,
     spin: Option<Vec<f32>>,
     eye: Option<[f32; 3]>,
@@ -210,27 +260,29 @@ pub struct LevelView {
     refill: bool,
     stats: RenderStats,
     last_pick: Option<Pos2>,
-    search: String,
-    results: Vec<ObjRef>,
-    logic: Option<(usize, u64, LogicView)>,
     group_generation: Vec<u64>,
     gizmo: gizmo::Mode,
     space: gizmo::Space,
     snap: gizmo::Snap,
-    /// The zone browser and the object details are shown by panels of the
-    /// shell, not by the tab (stage 52; stage 53 replaces them).
-    hosted: (bool, bool),
-    /// Open the "Add object" section once.
-    open_add: bool,
     hover_axis: Option<usize>,
     drag: Option<Drag>,
-    add_model: String,
-    add_clone: bool,
-    /// Give the clone its own collision built from its meshes.
-    add_collision: bool,
-    /// A wizard chose the model to add: selecting an object keeps it.
-    add_fixed: bool,
-    confirm_remove: bool,
+    /// The "Add object" section of Details.
+    pub add: AddObject,
+    /// Changes whenever the selection does (Details follows the selection
+    /// made last, in a level or in a list of resources).
+    selection_serial: u64,
+    /// Objects a click in the view does not select (the Outliner's lock).
+    locked: ObjectSet,
+    /// Changes whenever the objects of the level do (load, edits).
+    revision: u64,
+    /// Objects the workspace added or changed.
+    marks: HashMap<ObjRef, Mark>,
+    /// The game's version of edited SimGroups, by group (`None`: unreadable).
+    originals: HashMap<usize, Option<Arc<SimGroup>>>,
+    /// A transform shown while Details drags a value, not recorded yet.
+    preview: Option<(ObjRef, RowMatrix)>,
+    /// The small picture of a model in Details.
+    model_preview: preview::ModelPreview,
     preset: Option<Preset>,
     /// Zones to load once the game is ready (from the environment).
     autoload: Option<Vec<String>>,
@@ -298,22 +350,20 @@ impl LevelView {
             refill: true,
             stats: RenderStats::default(),
             last_pick: None,
-            search: String::new(),
-            results: Vec::new(),
-            logic: None,
             group_generation: Vec::new(),
             gizmo: gizmo::Mode::Move,
             space: gizmo::Space::World,
             snap: gizmo::Snap::default(),
-            hosted: (false, false),
-            open_add: false,
             hover_axis: None,
             drag: None,
-            add_model: String::new(),
-            add_clone: false,
-            add_collision: false,
-            add_fixed: false,
-            confirm_remove: false,
+            add: AddObject::default(),
+            selection_serial: 0,
+            locked: ObjectSet::default(),
+            revision: 0,
+            marks: HashMap::new(),
+            originals: HashMap::new(),
+            preview: None,
+            model_preview: preview::ModelPreview::default(),
             preset: None,
             autoload: None,
             pending_autoload: false,
@@ -369,6 +419,7 @@ impl LevelView {
             let (name, value) = item.split_once('=').unwrap_or((item, ""));
             let floats: Vec<f32> = value.split(',').filter_map(|v| v.parse().ok()).collect();
             match name {
+                "near" => preset.near = true,
                 "select" => {
                     if let Some((g, o)) = value.split_once(':')
                         && let (Ok(group), Ok(object)) = (g.parse(), o.parse())
@@ -416,7 +467,7 @@ impl LevelView {
         self.level = None;
         self.items.clear();
         self.scene.instances.clear();
-        self.logic = None;
+        self.clear_selection();
         self.catalog = Arc::new(Catalog::new(&game, &index));
         let parents = game.stream_parents().unwrap_or_default();
         self.input = Some(LoadInput {
@@ -459,14 +510,18 @@ impl LevelView {
         self.by_object.clear();
         self.scene.instances.clear();
         self.visible.clear();
-        self.logic = None;
         self.pending.clear();
         self.uploaded.clear();
         self.spheres.clear();
         self.failed.clear();
-        self.filter.selected = None;
+        self.clear_selection();
+        self.filter.hidden.clear();
+        self.locked.clear();
+        self.marks.clear();
+        self.originals.clear();
         self.filter.hovered = None;
         self.drag = None;
+        self.preview = None;
         self.camera_moved = false;
         self.status = trf(
             "level.loading_zones",
@@ -655,6 +710,37 @@ impl LevelView {
         self.items = items;
         self.by_object = by_object;
         self.refill = true;
+        self.revision += 1;
+        self.update_marks();
+    }
+
+    /// The "new" and "edited" marks of the SimGroups the workspace changed.
+    fn update_marks(&mut self) {
+        let Some(level) = &self.level else { return };
+        self.marks.clear();
+        for (g, group) in level.groups.iter().enumerate() {
+            if !level.source.overrides.groups.contains_key(&group.location) {
+                continue;
+            }
+            let original = self
+                .originals
+                .entry(g)
+                .or_insert_with(|| {
+                    let stream = level.source.stream(group.location.stream).ok()?;
+                    let data = stream.resource_data(group.location.resource).ok()?;
+                    SimGroup::parse(&data).ok().map(Arc::new)
+                })
+                .clone();
+            let Some(original) = original else { continue };
+            for (object, mark) in marks::group_marks(&original, &group.group)
+                .into_iter()
+                .enumerate()
+            {
+                if let Some(mark) = mark {
+                    self.marks.insert(ObjRef { group: g, object }, mark);
+                }
+            }
+        }
     }
 
     fn frame_all(&mut self) {
@@ -698,7 +784,32 @@ impl LevelView {
         if let Some((a, b)) = preset.route.take() {
             self.walk.request_route(a, b);
         }
-        let select = preset.select.take();
+        let near = preset
+            .look
+            .filter(|_| std::mem::take(&mut preset.near))
+            .and_then(|at| {
+                let level = self.level.as_ref()?;
+                let mut best: Option<(f32, ObjRef)> = None;
+                for (g, group) in level.groups.iter().enumerate() {
+                    for o in &group.objects {
+                        let (Some(m), Some(_)) = (o.transform, o.model) else {
+                            continue;
+                        };
+                        let d = math::length(math::sub([m[3][0], m[3][1], m[3][2]], at));
+                        if best.is_none_or(|(b, _)| d < b) {
+                            best = Some((
+                                d,
+                                ObjRef {
+                                    group: g,
+                                    object: o.index,
+                                },
+                            ));
+                        }
+                    }
+                }
+                best.map(|(_, r)| r)
+            });
+        let select = preset.select.take().or(near);
         preset.selected_once |= select.is_some();
         let has_eye = preset.eye.is_some();
         if let Some(r) = select {
@@ -824,10 +935,35 @@ impl LevelView {
                 }
             };
             if data != level.groups[g].group.encode() {
+                let before: Vec<Guid> = level.groups[g].objects.iter().map(|o| o.guid).collect();
                 if let Err(error) = level.set_group(g, &data) {
                     self.status = trf("level.cannot_read_group", &[("error", &error)]);
                     continue;
                 }
+                // Objects keep their selection, eye and lock by GUID (a
+                // removed object moves the ones after it up).
+                let after: HashMap<Guid, usize> = level.groups[g]
+                    .objects
+                    .iter()
+                    .map(|o| (o.guid, o.index))
+                    .collect();
+                let moved = |r: ObjRef| -> Option<ObjRef> {
+                    if r.group != g {
+                        return Some(r);
+                    }
+                    let guid = before.get(r.object)?;
+                    Some(ObjRef {
+                        group: g,
+                        object: *after.get(guid)?,
+                    })
+                };
+                let remap = |set: &mut HashSet<ObjRef>| {
+                    *set = set.iter().filter_map(|&r| moved(r)).collect();
+                };
+                remap(&mut self.filter.hidden.objects);
+                remap(&mut self.locked.objects);
+                remap(&mut self.filter.selection);
+                self.filter.selected = self.filter.selected.and_then(moved);
                 self.group_generation[g] += 1;
                 changed = true;
             }
@@ -866,13 +1002,24 @@ impl LevelView {
                 .and_then(|l| l.groups.iter().position(|g| g.location == location))
         {
             self.select(Some(ObjRef { group, object }));
-        } else if let Some(r) = self.filter.selected {
-            // Keep the selection if the object is still there.
-            let exists = self
-                .level
-                .as_ref()
-                .is_some_and(|l| r.object < l.groups[r.group].objects.len());
-            self.select(exists.then_some(r));
+        } else {
+            // Keep the selected objects that are still there.
+            let exists = |r: &ObjRef| {
+                self.level.as_ref().is_some_and(|l| {
+                    l.groups
+                        .get(r.group)
+                        .is_some_and(|g| r.object < g.objects.len())
+                })
+            };
+            let set: BTreeSet<ObjRef> = self
+                .filter
+                .selection
+                .iter()
+                .copied()
+                .filter(exists)
+                .collect();
+            let primary = self.filter.selected.filter(exists);
+            self.set_selection(primary, set);
         }
         self.generation += 1;
     }
@@ -926,11 +1073,16 @@ impl LevelView {
         let loaded = self.level.as_ref().map(|l| l.streams.clone());
         let camera = self.camera;
         let selected = self.filter.selected;
+        // The same zones load again: the objects keep their numbers.
+        let hidden = self.filter.hidden.clone();
+        let locked = self.locked.clone();
         if let Some(streams) = loaded {
             self.chosen = streams.into_iter().collect();
             let ctx = self.ctx.clone();
             self.start_load(&ctx, ws);
             self.keep_view = Some((camera, selected));
+            self.filter.hidden = hidden;
+            self.locked = locked;
         }
     }
 
@@ -957,76 +1109,338 @@ impl LevelView {
     /// Fills in the "Add object" panel for a wizard: the metamodel `model`,
     /// cloned into the zone (with its own collision) or used as it is.
     pub fn prefill_add(&mut self, model: u32, clone: bool, collision: bool) {
-        self.add_model = format!("{model:08x}");
-        self.add_clone = clone;
-        self.add_collision = clone && collision;
-        self.add_fixed = true;
+        self.add.model = format!("{model:08x}");
+        self.add.clone = clone;
+        self.add.collision = clone && collision;
+        self.add.fixed = true;
     }
 
-    /// Clears the selection (after the selected object was removed).
+    /// Clears the selection (after the selected objects were removed).
     pub fn clear_selection(&mut self) {
-        self.filter.selected = None;
-        self.logic = None;
-        self.refill = true;
+        self.set_selection(None, BTreeSet::new());
     }
 
     // ---------------------------------------------------------- selection
 
+    /// Selects one object (or nothing).
     fn select(&mut self, r: Option<ObjRef>) {
-        if r.is_some() {
+        self.set_selection(r, r.into_iter().collect());
+    }
+
+    /// Selects `set`, with `primary` (in the set, or added to it) the one the
+    /// gizmo and Details follow.
+    pub fn set_selection(&mut self, primary: Option<ObjRef>, mut set: BTreeSet<ObjRef>) {
+        let primary = primary.or_else(|| set.iter().next_back().copied());
+        set.extend(primary);
+        if primary.is_some() {
             self.nav.select(None);
         }
-        if self.filter.selected != r {
-            self.confirm_remove = false;
-            if let Some(r) = r
-                && let Some(level) = &self.level
-            {
-                let object = &level.groups[r.group].objects[r.object];
-                if !self.add_fixed {
-                    self.add_model = object
-                        .model
-                        .map_or_else(String::new, |m| format!("{m:08x}"));
+        let set: HashSet<ObjRef> = set.into_iter().collect();
+        if self.filter.selected == primary && self.filter.selection == set {
+            return;
+        }
+        if self.filter.selected != primary
+            && let Some(r) = primary
+            && let Some(object) = self.object(r)
+            && !self.add.fixed
+        {
+            self.add.model = object
+                .model
+                .map_or_else(String::new, |m| format!("{m:08x}"));
+        }
+        if self.preview.is_some_and(|(r, _)| Some(r) != primary) {
+            self.set_preview(None);
+        }
+        self.filter.selected = primary;
+        self.filter.selection = set;
+        self.selection_serial += 1;
+        self.refill = true;
+    }
+
+    /// The primary selected object.
+    pub fn primary(&self) -> Option<ObjRef> {
+        self.filter.selected
+    }
+
+    /// Every selected object, in order.
+    pub fn selection(&self) -> BTreeSet<ObjRef> {
+        self.filter.selection.iter().copied().collect()
+    }
+
+    pub fn is_selected(&self, r: ObjRef) -> bool {
+        self.filter.selection.contains(&r)
+    }
+
+    /// Changes whenever the selection does.
+    pub fn selection_serial(&self) -> u64 {
+        self.selection_serial
+    }
+
+    /// Changes whenever the objects of the level do.
+    pub fn revision(&self) -> u64 {
+        self.revision
+    }
+
+    /// Changes whenever SimGroup `group` does.
+    pub fn group_revision(&self, group: usize) -> u64 {
+        self.group_generation.get(group).copied().unwrap_or(0)
+    }
+
+    /// The loaded level.
+    pub fn level(&self) -> Option<&Level> {
+        self.level.as_deref()
+    }
+
+    /// The game and the index the view was opened with.
+    pub fn game(&self) -> Option<(&Arc<GameInstance>, &Arc<ResourceIndex>)> {
+        self.input.as_ref().map(|i| (&i.game, &i.index))
+    }
+
+    /// The parents of every stream (for what a zone can reach).
+    pub fn stream_parents(&self) -> Option<&std::collections::HashMap<String, Vec<String>>> {
+        self.input.as_ref().map(|i| &*i.parents)
+    }
+
+    /// One object of the level.
+    pub fn object(&self, r: ObjRef) -> Option<&doctor_toolkit::level::LevelObject> {
+        self.level
+            .as_ref()?
+            .groups
+            .get(r.group)?
+            .objects
+            .get(r.object)
+    }
+
+    /// The SimGroup and number of an object (as edits name it).
+    pub fn location_of(&self, r: ObjRef) -> Option<(Location, usize)> {
+        let group = self.level.as_ref()?.groups.get(r.group)?;
+        (r.object < group.objects.len()).then_some((group.location, r.object))
+    }
+
+    /// The object at a SimGroup and number.
+    pub fn find(&self, group: Location, object: usize) -> Option<ObjRef> {
+        let level = self.level.as_ref()?;
+        let g = level.groups.iter().position(|x| x.location == group)?;
+        (object < level.groups[g].objects.len()).then_some(ObjRef { group: g, object })
+    }
+
+    /// Whether the workspace added or changed an object.
+    pub fn mark(&self, r: ObjRef) -> Option<Mark> {
+        self.marks.get(&r).copied()
+    }
+
+    /// The SimGroup editor of a group (its attributes, with the game's
+    /// version to compare when the workspace changed it).
+    pub fn logic_view(&self, group: usize) -> Option<LogicView> {
+        let level = self.level.as_ref()?;
+        let g = level.groups.get(group)?;
+        let data = g.group.encode();
+        let original = self
+            .originals
+            .get(&group)
+            .cloned()
+            .flatten()
+            .map(|o| o.encode())
+            .filter(|o| *o != data);
+        Some(LogicView::from_data(LOGIC_SIMGROUP, Ok(data), original))
+    }
+
+    // ----------------------------------------------------- eye and lock
+
+    /// SimGroups (by index) of a zone.
+    fn zone_groups(&self, stream: usize) -> Vec<usize> {
+        self.level.as_ref().map_or_else(Vec::new, |l| {
+            (0..l.groups.len())
+                .filter(|&g| l.groups[g].location.stream == stream)
+                .collect()
+        })
+    }
+
+    fn node_in(&self, set: &ObjectSet, node: Node) -> bool {
+        match node {
+            Node::Zone(stream) => {
+                let groups = self.zone_groups(stream);
+                !groups.is_empty() && groups.iter().all(|g| set.groups.contains(g))
+            }
+            Node::Class(stream, class) => {
+                let groups = self.zone_groups(stream);
+                !groups.is_empty() && groups.iter().all(|&g| set.classes.contains(&(g, class)))
+            }
+            Node::Object(r) => set.objects.contains(&r),
+        }
+    }
+
+    fn set_node(set: &mut ObjectSet, groups: Vec<usize>, node: Node, on: bool) {
+        match node {
+            Node::Zone(_) => {
+                for g in groups {
+                    if on {
+                        set.groups.insert(g);
+                    } else {
+                        set.groups.remove(&g);
+                    }
+                }
+            }
+            Node::Class(_, class) => {
+                for g in groups {
+                    if on {
+                        set.classes.insert((g, class));
+                    } else {
+                        set.classes.remove(&(g, class));
+                    }
+                }
+            }
+            Node::Object(r) => {
+                if on {
+                    set.objects.insert(r);
+                } else {
+                    set.objects.remove(&r);
                 }
             }
         }
-        self.filter.selected = r;
+    }
+
+    fn groups_of(&self, node: Node) -> Vec<usize> {
+        match node {
+            Node::Zone(stream) | Node::Class(stream, _) => self.zone_groups(stream),
+            Node::Object(r) => vec![r.group],
+        }
+    }
+
+    /// Whether a node itself is hidden in the view (its eye is closed).
+    pub fn is_hidden(&self, node: Node) -> bool {
+        self.node_in(&self.filter.hidden, node)
+    }
+
+    /// Whether an object is hidden by its own eye, its class's or its zone's.
+    pub fn is_object_hidden(&self, r: ObjRef) -> bool {
+        self.object(r)
+            .is_some_and(|o| self.filter.hidden.contains(r, o.class))
+    }
+
+    pub fn set_hidden(&mut self, node: Node, hidden: bool) {
+        let groups = self.groups_of(node);
+        Self::set_node(&mut self.filter.hidden, groups, node, hidden);
         self.refill = true;
-        if let Some(r) = r {
-            self.sync_logic(r);
+        self.generation += 1;
+    }
+
+    /// Shows every object again.
+    pub fn show_all(&mut self) {
+        self.filter.hidden.clear();
+        self.refill = true;
+    }
+
+    /// Whether a node itself is locked (clicks in the view pass it by).
+    pub fn is_locked(&self, node: Node) -> bool {
+        self.node_in(&self.locked, node)
+    }
+
+    /// Whether an object is locked by its own lock, its class's or its zone's.
+    pub fn is_object_locked(&self, r: ObjRef) -> bool {
+        self.object(r)
+            .is_some_and(|o| self.locked.contains(r, o.class))
+    }
+
+    pub fn set_locked(&mut self, node: Node, locked: bool) {
+        let groups = self.groups_of(node);
+        Self::set_node(&mut self.locked, groups, node, locked);
+        self.generation += 1;
+    }
+
+    // ------------------------------------------------- details' transform
+
+    /// Shows object `r` placed by `matrix` until it is recorded (`None`:
+    /// back to its own transform).
+    pub fn set_preview(&mut self, preview: Option<(ObjRef, RowMatrix)>) {
+        let old = std::mem::replace(&mut self.preview, preview);
+        for (r, _) in old.iter().chain(preview.iter()) {
+            if let (Some(m), Some(indices)) = (self.object_transform(*r), self.by_object.get(r)) {
+                scene::move_items(&mut self.items, indices, &m);
+            }
+        }
+        self.refill = true;
+    }
+
+    /// Whether the view shows the Havok collision of the selected object.
+    pub fn shows_collision(&self) -> bool {
+        self.show_collision
+    }
+
+    pub fn set_show_collision(&mut self, on: bool) {
+        self.show_collision = on;
+    }
+
+    /// Ten metres in front of the camera: where "Add in front" places.
+    pub fn in_front(&self) -> [f32; 3] {
+        math::add(self.camera.eye, math::scale(self.camera.forward(), 10.0))
+    }
+
+    /// Flies the camera to object `r` (and selects it when it is not).
+    pub fn focus_on(&mut self, r: ObjRef) {
+        if !self.is_selected(r) {
+            self.select(Some(r));
+        }
+        let primary = self.filter.selected;
+        self.filter.selected = Some(r);
+        self.focus();
+        self.filter.selected = primary;
+    }
+
+    /// Duplicates (or removes) every selected object: one edit, or one
+    /// operation of several (removed from the last, so the numbers of the
+    /// ones still to remove stay right).
+    pub fn edit_selection(&self, remove: bool) -> Option<LevelAction> {
+        let mut objects: Vec<ObjRef> = self.selection().into_iter().collect();
+        if remove {
+            objects.reverse();
+        }
+        let mut actions: Vec<LevelAction> = objects
+            .into_iter()
+            .filter_map(|r| self.location_of(r))
+            .map(|(group, object)| {
+                if remove {
+                    LevelAction::Remove { group, object }
+                } else {
+                    LevelAction::Duplicate { group, object }
+                }
+            })
+            .collect();
+        match actions.len() {
+            0 => None,
+            1 => actions.pop(),
+            n => Some(LevelAction::Many {
+                actions,
+                label: if remove {
+                    trn("outliner.removed_label", n as u64, &[])
+                } else {
+                    trn("outliner.duplicated_label", n as u64, &[])
+                },
+            }),
         }
     }
 
-    /// The object editor shows the selected object's SimGroup.
-    fn sync_logic(&mut self, r: ObjRef) {
-        let Some(level) = &self.level else { return };
-        let generation = self.group_generation.get(r.group).copied().unwrap_or(0);
-        let current = self.logic.as_ref().is_some_and(|(g, generation_shown, _)| {
-            *g == r.group && *generation_shown == generation
-        });
-        if !current {
-            let group = &level.groups[r.group];
-            let data = group.group.encode();
-            let original = level
-                .source
-                .stream(group.location.stream)
-                .ok()
-                .and_then(|s| s.resource_data(group.location.resource).ok())
-                .filter(|o| *o != data);
-            let view = LogicView::from_data(LOGIC_SIMGROUP, Ok(data), original);
-            self.logic = Some((r.group, generation, view));
-        }
-        if let Some((_, _, view)) = &mut self.logic
-            && view.selected_object() != Some(r.object)
-        {
-            view.select_object(r.object);
+    /// Flies the camera to the selected objects, or to everything.
+    pub fn focus_selection(&mut self) {
+        if self.filter.selected.is_some() {
+            self.focus();
+        } else {
+            self.frame_all();
         }
     }
 
-    fn object_transform(&self, r: ObjRef) -> Option<RowMatrix> {
+    /// The world transform of an object as the view shows it (while a drag
+    /// or Details changes it, the changed one).
+    pub fn object_transform(&self, r: ObjRef) -> Option<RowMatrix> {
         if let Some(drag) = &self.drag
             && drag.object == r
         {
             return Some(drag.current);
+        }
+        if let Some((p, m)) = self.preview
+            && p == r
+        {
+            return Some(m);
         }
         self.level
             .as_ref()?
@@ -1072,26 +1486,39 @@ impl LevelView {
         lines
     }
 
-    /// Flies the camera to the selected object.
+    /// Flies the camera to the primary selected object, or to every selected
+    /// object when the primary one is among them.
     fn focus(&mut self) {
-        let Some(r) = self.filter.selected else {
+        let Some(primary) = self.filter.selected else {
             return;
         };
-        let Some(m) = self.object_transform(r) else {
-            return;
-        };
+        let mut objects: Vec<ObjRef> = vec![primary];
+        if self.filter.selection.contains(&primary) {
+            objects.extend(self.filter.selection.iter().filter(|&&r| r != primary));
+        }
         let mut bounds = math::Aabb::EMPTY;
-        if let (Some(indices), Some(gpu)) = (self.by_object.get(&r), &self.gpu) {
-            let renderer = gpu.lock();
-            for &i in indices {
-                let item = &self.items[i];
-                if let Some(mesh) = renderer.mesh_data(item.mesh) {
-                    bounds.union(&mesh.bounds().transformed(&item.world));
+        let mut origins = math::Aabb::EMPTY;
+        let renderer = self.gpu.as_ref().map(|gpu| gpu.lock());
+        for r in objects {
+            let Some(m) = self.object_transform(r) else {
+                continue;
+            };
+            origins.add_point([m[3][0], m[3][1], m[3][2]]);
+            if let (Some(indices), Some(renderer)) = (self.by_object.get(&r), &renderer) {
+                for &i in indices {
+                    let item = &self.items[i];
+                    if let Some(mesh) = renderer.mesh_data(item.mesh) {
+                        bounds.union(&mesh.bounds().transformed(&item.world));
+                    }
                 }
             }
         }
+        drop(renderer);
+        if origins.is_empty() {
+            return;
+        }
         let (center, radius) = if bounds.is_empty() {
-            ([m[3][0], m[3][1], m[3][2]], 2.0)
+            (origins.center(), (origins.radius() + 2.0).clamp(2.0, 400.0))
         } else {
             (bounds.center(), bounds.radius().clamp(1.0, 400.0))
         };
@@ -1101,8 +1528,6 @@ impl LevelView {
 
     // ---------------------------------------------------------------- ui
 
-    /// The whole view: browser on the left, details on the right, scene in
-    /// the middle. Returns an edit to record.
     /// Follow the camera of the running game (stage 35).
     pub fn follow_game(&mut self, on: bool) {
         self.live_follow = on;
@@ -1152,9 +1577,9 @@ impl LevelView {
         }
     }
 
-    /// Opens the "Add object" section of the object details.
+    /// Opens the "Add object" section of Details.
     pub fn request_add(&mut self) {
-        self.open_add = true;
+        self.add.open = true;
     }
 
     /// Starts the game at the camera, as "Play from here".
@@ -1162,40 +1587,16 @@ impl LevelView {
         self.play_here = true;
     }
 
-    /// The shell shows the zone browser (`browser`) or the object details
-    /// (`details`) in panels of its own: the tab leaves them out.
-    pub fn set_hosted(&mut self, browser: bool, details: bool) {
-        self.hosted = (browser, details);
+    /// Loading, if a load is going on: meshes converted and in all.
+    pub fn progress(&self) -> Option<(usize, usize)> {
+        let job = self.job.as_ref()?;
+        Some((
+            job.done.load(std::sync::atomic::Ordering::Relaxed),
+            job.total.load(std::sync::atomic::Ordering::Relaxed),
+        ))
     }
 
-    /// The zone browser for a panel of the shell.
-    pub fn browser_panel(&mut self, ui: &mut egui::Ui, ws: Option<&Workspace>) {
-        ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
-        let load = egui::ScrollArea::vertical()
-            .id_salt("level-browser-scroll")
-            .auto_shrink(false)
-            .show(ui, |ui| self.browser(ui))
-            .inner;
-        if load {
-            let ctx = ui.ctx().clone();
-            self.start_load(&ctx, ws);
-        }
-    }
-
-    /// The object details for a panel of the shell; `None` before zones are
-    /// loaded.
-    pub fn details_panel(&mut self, ui: &mut egui::Ui) -> Option<Option<LevelAction>> {
-        self.level.as_ref()?;
-        ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
-        Some(
-            egui::ScrollArea::vertical()
-                .id_salt("level-details-scroll")
-                .auto_shrink(false)
-                .show(ui, |ui| self.details(ui))
-                .inner,
-        )
-    }
-
+    /// The view: the scene of the loaded zones. Returns an edit to record.
     pub fn ui(&mut self, ui: &mut egui::Ui, ws: Option<&Workspace>) -> Option<LevelAction> {
         let ctx = ui.ctx().clone();
         if std::mem::take(&mut self.pending_autoload) {
@@ -1221,24 +1622,6 @@ impl LevelView {
                 streams: level.streams.clone(),
             });
         }
-        if !self.hosted.0 {
-            egui::Panel::left("level-browser")
-                .resizable(true)
-                .default_size(260.0)
-                .max_size(420.0)
-                .show(ui, |ui| self.browser_panel(ui, ws));
-        }
-        if self.level.is_some() && !self.hosted.1 {
-            egui::Panel::right("level-details")
-                .resizable(true)
-                .default_size(380.0)
-                .max_size(640.0)
-                .show(ui, |ui| {
-                    if let Some(Some(a)) = self.details_panel(ui) {
-                        action = Some(a);
-                    }
-                });
-        }
         egui::CentralPanel::default().show(ui, |ui| {
             if self.gpu.is_none() {
                 ui.label(RichText::new(tr("level.needs_gpu")).weak());
@@ -1248,605 +1631,6 @@ impl LevelView {
                 action = Some(a);
             }
         });
-        action
-    }
-
-    /// Zone list; returns whether to load the chosen zones.
-    fn browser(&mut self, ui: &mut egui::Ui) -> bool {
-        let mut load = false;
-        ui.horizontal(|ui| {
-            let busy = self.job.is_some();
-            let text = trf(
-                "level.load_zones",
-                &[("zones", &trn("count.zones", self.chosen.len() as u64, &[]))],
-            );
-            if ui
-                .add_enabled(!self.chosen.is_empty() && !busy, egui::Button::new(text))
-                .on_hover_text(tr("level.load_zones_hint"))
-                .clicked()
-            {
-                load = true;
-            }
-            if ui.button(tr("level.clear")).clicked() {
-                self.chosen.clear();
-            }
-        });
-        if self.level.is_some()
-            && ui
-                .button(tr("gametab.play_here"))
-                .on_hover_text(tr("gametab.play_here_hint"))
-                .clicked()
-        {
-            self.play_here = true;
-        }
-        if let Some(job) = &self.job {
-            let total = job.total.load(Ordering::Relaxed).max(1);
-            let done = job.done.load(Ordering::Relaxed);
-            ui.add(egui::ProgressBar::new(done as f32 / total as f32).text(trf(
-                "level.meshes_progress",
-                &[("done", &done), ("total", &total)],
-            )));
-        }
-        if !self.status.is_empty() {
-            ui.label(RichText::new(&self.status).weak());
-        }
-        ui.add(
-            egui::TextEdit::singleline(&mut self.zone_filter)
-                .hint_text(tr("level.filter_zones"))
-                .desired_width(ui.available_width()),
-        );
-        ui.separator();
-        let filter = self.zone_filter.to_ascii_lowercase();
-        let catalog = self.catalog.clone();
-        egui::ScrollArea::vertical()
-            .id_salt("level-zones")
-            .max_height(ui.available_height() * if self.level.is_some() { 0.4 } else { 1.0 })
-            .show(ui, |ui| {
-                for level in catalog.levels() {
-                    let zones: Vec<_> = catalog
-                        .under(level)
-                        .filter(|z| filter.is_empty() || z.name.contains(&filter))
-                        .collect();
-                    if zones.is_empty() {
-                        continue;
-                    }
-                    let chosen = zones
-                        .iter()
-                        .filter(|z| self.chosen.contains(&z.stream))
-                        .count();
-                    let header = match chosen {
-                        0 => format!("{level} ({})", zones.len()),
-                        n => trf(
-                            "level.zones_header_on",
-                            &[("level", &level), ("count", &zones.len()), ("on", &n)],
-                        ),
-                    };
-                    egui::CollapsingHeader::new(header)
-                        .id_salt(("level", level))
-                        .default_open(!filter.is_empty())
-                        .show(ui, |ui| {
-                            let mut dirs: Vec<&str> = zones.iter().map(|z| z.dir()).collect();
-                            dirs.dedup();
-                            for dir in dirs {
-                                let in_dir: Vec<_> =
-                                    zones.iter().filter(|z| z.dir() == dir).collect();
-                                let all = in_dir.iter().all(|z| self.chosen.contains(&z.stream));
-                                let mut check = all;
-                                let label = format!("{dir}/ ({})", in_dir.len());
-                                ui.horizontal(|ui| {
-                                    if ui.checkbox(&mut check, "").changed() {
-                                        for z in &in_dir {
-                                            if check {
-                                                self.chosen.insert(z.stream);
-                                            } else {
-                                                self.chosen.remove(&z.stream);
-                                            }
-                                        }
-                                    }
-                                    egui::CollapsingHeader::new(label)
-                                        .id_salt(("dir", dir))
-                                        .show(ui, |ui| {
-                                            for z in &in_dir {
-                                                let mut on = self.chosen.contains(&z.stream);
-                                                let name =
-                                                    z.name.rsplit('/').next().unwrap_or(&z.name);
-                                                let text = trf(
-                                                    "level.zone_entry",
-                                                    &[
-                                                        ("name", &name),
-                                                        (
-                                                            "meshes",
-                                                            &trn(
-                                                                "count.meshes",
-                                                                z.meshes as u64,
-                                                                &[],
-                                                            ),
-                                                        ),
-                                                        (
-                                                            "mb",
-                                                            &format!("{:.1}", z.bytes as f64 / 1e6),
-                                                        ),
-                                                    ],
-                                                );
-                                                if ui.checkbox(&mut on, text).changed() {
-                                                    if on {
-                                                        self.chosen.insert(z.stream);
-                                                    } else {
-                                                        self.chosen.remove(&z.stream);
-                                                    }
-                                                }
-                                            }
-                                        });
-                                });
-                            }
-                        });
-                }
-            });
-        if self.level.is_some() {
-            ui.separator();
-            self.filters(ui);
-            ui.separator();
-            let selected = self.filter.selected.and_then(|r| self.object_transform(r));
-            match self.walk.panel(ui, &self.camera, selected.is_some()) {
-                Some(walk::PanelAction::EnterAtCamera) => self.enter_walk(self.camera.eye),
-                Some(walk::PanelAction::EnterAtSelected) => {
-                    if let Some(m) = selected {
-                        // Beside the object, on what is below.
-                        self.enter_walk([m[3][0] + 1.5, m[3][1] + 2.0, m[3][2]]);
-                    }
-                }
-                None => {}
-            }
-        }
-        load
-    }
-
-    fn filters(&mut self, ui: &mut egui::Ui) {
-        let before = self.filter.clone();
-        ui.horizontal_wrapped(|ui| {
-            ui.checkbox(&mut self.filter.meshes, tr("level.models"));
-            ui.checkbox(&mut self.filter.markers, tr("level.markers"))
-                .on_hover_text(tr("level.markers_hint"));
-            ui.checkbox(&mut self.filter.trees, tr("level.trees"))
-                .on_hover_text(tr("level.trees_hint"));
-            ui.checkbox(&mut self.filter.points, tr("level.ai_points"))
-                .on_hover_text(tr("level.ai_points_hint"));
-        });
-        ui.horizontal(|ui| {
-            ui.label("LOD");
-            ui.selectable_value(
-                &mut self.filter.lod,
-                LodMode::Distance,
-                tr("level.lod_distance"),
-            );
-            ui.selectable_value(
-                &mut self.filter.lod,
-                LodMode::Finest,
-                tr("level.lod_finest"),
-            );
-            if ui
-                .checkbox(&mut self.hide_tiny, tr("level.skip_tiny"))
-                .on_hover_text(tr("level.skip_tiny_hint"))
-                .changed()
-            {
-                self.refill = true;
-            }
-        });
-        ui.horizontal(|ui| {
-            ui.checkbox(&mut self.scene.options.textures, tr("level.textures"));
-            ui.checkbox(&mut self.scene.options.lighting, tr("level.lighting"));
-            ui.checkbox(&mut self.scene.options.backface_culling, tr("level.cull"));
-            ui.checkbox(&mut self.scene.options.wireframe, tr("level.wireframe"));
-            ui.checkbox(&mut self.show_collision, tr("level.collision"))
-                .on_hover_text(tr("level.collision_hint"));
-        });
-        ui.horizontal(|ui| {
-            ui.label(tr("level.search"));
-            if ui
-                .add(
-                    egui::TextEdit::singleline(&mut self.search)
-                        .hint_text(tr("level.search_hint"))
-                        .desired_width(ui.available_width()),
-                )
-                .changed()
-            {
-                self.run_search();
-            }
-        });
-        let mut clicked = None;
-        if !self.results.is_empty() {
-            egui::ScrollArea::vertical()
-                .id_salt("level-search")
-                .max_height(160.0)
-                .show(ui, |ui| {
-                    let Some(level) = &self.level else { return };
-                    for &r in &self.results {
-                        let o = &level.groups[r.group].objects[r.object];
-                        let text = format!(
-                            "{}:{} {} {}",
-                            r.group,
-                            r.object,
-                            o.class_name.unwrap_or("?"),
-                            o.name
-                        );
-                        if ui
-                            .selectable_label(self.filter.selected == Some(r), text)
-                            .clicked()
-                        {
-                            clicked = Some(r);
-                        }
-                    }
-                });
-        }
-        if let Some(r) = clicked {
-            self.select(Some(r));
-            self.focus();
-        }
-        egui::CollapsingHeader::new(trf("level.classes", &[("count", &self.classes.len())]))
-            .id_salt("level-classes")
-            .show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    if ui.small_button(tr("level.show_all")).clicked() {
-                        self.filter.hidden_classes.clear();
-                    }
-                    if ui.small_button(tr("level.hide_all")).clicked() {
-                        self.filter.hidden_classes = self.classes.iter().map(|c| c.0).collect();
-                    }
-                });
-                egui::ScrollArea::vertical()
-                    .id_salt("level-class-list")
-                    .max_height(260.0)
-                    .show(ui, |ui| {
-                        for (class, name, count) in &self.classes {
-                            let mut on = !self.filter.hidden_classes.contains(class);
-                            if ui.checkbox(&mut on, format!("{name} ({count})")).changed() {
-                                if on {
-                                    self.filter.hidden_classes.remove(class);
-                                } else {
-                                    self.filter.hidden_classes.insert(*class);
-                                }
-                            }
-                        }
-                    });
-            });
-        if self.filter != before {
-            self.refill = true;
-        }
-        egui::CollapsingHeader::new(tr("navgraph.title"))
-            .id_salt("level-navgraph")
-            .default_open(self.nav.visible)
-            .show(ui, |ui| {
-                let object_at = self
-                    .filter
-                    .selected
-                    .and_then(|r| self.object_transform(r))
-                    .map(|m| [m[3][0], m[3][1], m[3][2]]);
-                let target = math::add(self.camera.eye, math::scale(self.camera.forward(), 10.0));
-                match self.nav.panel(ui, object_at, target) {
-                    Some(Ok(a)) => self.nav_action = Some(a),
-                    Some(Err(e)) => self.status = e,
-                    None => {}
-                }
-                if self.nav.selected.is_some() && self.filter.selected.is_some() {
-                    self.filter.selected = None;
-                    self.logic = None;
-                    self.refill = true;
-                }
-            });
-    }
-
-    fn run_search(&mut self) {
-        self.results.clear();
-        let needle = self.search.trim().to_lowercase();
-        let Some(level) = &self.level else { return };
-        if needle.is_empty() {
-            return;
-        }
-        for (g, group) in level.groups.iter().enumerate() {
-            for o in &group.objects {
-                let class = o.class_name.unwrap_or_default().to_lowercase();
-                if o.name.to_lowercase().contains(&needle)
-                    || class.contains(&needle)
-                    || o.guid.to_string().contains(&needle)
-                {
-                    self.results.push(ObjRef {
-                        group: g,
-                        object: o.index,
-                    });
-                    if self.results.len() >= 500 {
-                        return;
-                    }
-                }
-            }
-        }
-    }
-
-    /// The right panel: the selected object, edit buttons, the object editor.
-    fn details(&mut self, ui: &mut egui::Ui) -> Option<LevelAction> {
-        let c = self.coverage;
-        ui.label(
-            RichText::new(trf(
-                "level.coverage",
-                &[
-                    ("zones", &trn("count.zones", c.streams as u64, &[])),
-                    ("scope", &c.scope_streams),
-                    ("objects", &trn("count.objects", c.objects as u64, &[])),
-                    ("placed", &c.placed),
-                    ("with_model", &c.with_model),
-                    ("drawn", &c.rendered),
-                    (
-                        "instances",
-                        &trn("count.instances", c.instances as u64, &[]),
-                    ),
-                    ("meshes", &trn("count.meshes", c.meshes as u64, &[])),
-                    ("missing", &c.meshes_missing),
-                ],
-            ))
-            .small(),
-        );
-        if !self.info.is_empty() {
-            ui.label(RichText::new(&self.info).weak().small());
-        }
-        if !self.failed.is_empty() {
-            ui.label(
-                RichText::new(trf(
-                    "level.meshes_failed",
-                    &[
-                        (
-                            "meshes",
-                            &trn("count.meshes", self.failed.len() as u64, &[]),
-                        ),
-                        ("first", &format!("{:08x}", self.failed[0].0)),
-                        ("error", &self.failed[0].1),
-                    ],
-                ))
-                .color(Color32::from_rgb(230, 120, 80))
-                .small(),
-            );
-        }
-        ui.separator();
-        let r = self.filter.selected?;
-        let (location, object, has_transform, model) = {
-            let level = self.level.as_ref()?;
-            let group = level.groups.get(r.group)?;
-            let o = group.objects.get(r.object)?;
-            (group.location, o.clone(), o.transform.is_some(), o.model)
-        };
-        let input = self.input.as_ref()?;
-        let (game, parents) = (input.game.clone(), input.parents.clone());
-        let stream_name = game.streams()[location.stream].stream_name();
-        ui.horizontal_wrapped(|ui| {
-            ui.strong(format!(
-                "{} {}",
-                object.class_name.unwrap_or("?"),
-                object.name
-            ));
-            ui.label(
-                RichText::new(trf(
-                    "level.object_place",
-                    &[
-                        ("stream", &stream_name),
-                        ("resource", &location.resource),
-                        ("object", &r.object),
-                    ],
-                ))
-                .weak(),
-            );
-        });
-        let mut action = None;
-        ui.horizontal(|ui| {
-            ui.label(tr("level.gizmo"));
-            ui.selectable_value(&mut self.gizmo, gizmo::Mode::Move, tr("level.gizmo_move"));
-            ui.selectable_value(
-                &mut self.gizmo,
-                gizmo::Mode::Rotate,
-                tr("level.gizmo_rotate"),
-            );
-            ui.selectable_value(&mut self.gizmo, gizmo::Mode::Scale, tr("level.gizmo_scale"));
-            if ui.button(tr("level.fly_to")).clicked() {
-                self.focus();
-            }
-            if ui
-                .button(tr("logic.open_from_level"))
-                .on_hover_text(tr("logic.open_from_level_hint"))
-                .clicked()
-            {
-                action = Some(LevelAction::ShowLogic {
-                    group: location,
-                    object: r.object,
-                });
-            }
-        });
-        ui.horizontal(|ui| {
-            if ui
-                .button(tr("level.duplicate"))
-                .on_hover_text(tr("level.duplicate_hint"))
-                .clicked()
-            {
-                action = Some(LevelAction::Duplicate {
-                    group: location,
-                    object: r.object,
-                });
-            }
-            let text = if self.confirm_remove {
-                tr("level.remove_confirm")
-            } else {
-                tr("level.remove")
-            };
-            if ui.button(text).clicked() {
-                if self.confirm_remove {
-                    action = Some(LevelAction::Remove {
-                        group: location,
-                        object: r.object,
-                    });
-                    self.confirm_remove = false;
-                } else {
-                    self.confirm_remove = true;
-                }
-            }
-        });
-        if let Some(m) = model
-            && ui
-                .button(tr("level.retexture"))
-                .on_hover_text(tr("level.retexture_hint"))
-                .clicked()
-        {
-            action = Some(LevelAction::StartWizard {
-                task: "retexture",
-                model: Some(m),
-            });
-        }
-        let open_add = std::mem::take(&mut self.open_add);
-        egui::CollapsingHeader::new(tr("level.add_object"))
-            .id_salt("level-add")
-            .default_open(self.add_fixed)
-            .open(open_add.then_some(true))
-            .show(ui, |ui| {
-                ui.label(RichText::new(tr("level.add_object_hint")).weak().small());
-                ui.horizontal(|ui| {
-                    ui.label(tr("level.metamodel_id"));
-                    ui.add(egui::TextEdit::singleline(&mut self.add_model).desired_width(90.0));
-                    ui.checkbox(&mut self.add_clone, tr("level.clone"))
-                        .on_hover_text(tr("level.clone_hint"));
-                    ui.add_enabled(
-                        self.add_clone,
-                        egui::Checkbox::new(&mut self.add_collision, tr("level.own_collision")),
-                    )
-                    .on_hover_text(tr("level.own_collision_hint"));
-                });
-                let id = u32::from_str_radix(self.add_model.trim(), 16).ok();
-                let level = self.level.as_ref();
-                let found = id.and_then(|id| level?.source.find(TYPE_METAMODEL, id));
-                let ancestors = doctor_toolkit::game::ancestors(&parents, &stream_name);
-                let reachable = found.is_some_and(|f| {
-                    let s = game.streams()[f.stream()].stream_name();
-                    f.stream() == location.stream || ancestors.contains(&s)
-                });
-                let note = match (id, found) {
-                    (None, _) => tr("level.note_type_id").to_owned(),
-                    (Some(_), None) => tr("level.note_not_found").to_owned(),
-                    (Some(_), Some(f)) if self.add_clone => match f {
-                        Found::Game(..) => tr("level.note_clone_here").to_owned(),
-                        Found::Override(..) => tr("level.note_clone_game_only").to_owned(),
-                    },
-                    (Some(_), Some(_)) if reachable => tr("level.note_reachable").to_owned(),
-                    (Some(_), Some(f)) => trf(
-                        "level.note_unreachable",
-                        &[("stream", &game.streams()[f.stream()].stream_name())],
-                    ),
-                };
-                ui.label(RichText::new(note).small());
-                if !self.add_fixed
-                    && ui
-                        .small_button(tr("level.place_wizard"))
-                        .on_hover_text(tr("level.place_wizard_hint"))
-                        .clicked()
-                {
-                    action = Some(LevelAction::StartWizard {
-                        task: "place",
-                        model: id,
-                    });
-                }
-                let can_add = matches!(
-                    (found, self.add_clone),
-                    (Some(Found::Game(..)), true) | (Some(_), false)
-                );
-                if ui
-                    .add_enabled(
-                        can_add && has_transform,
-                        egui::Button::new(tr("level.add_in_front")),
-                    )
-                    .clicked()
-                    && let (Some(id), Some(f)) = (id, found)
-                {
-                    let model = match (self.add_clone, f) {
-                        (true, Found::Game(at, _)) if self.add_collision => {
-                            ModelChoice::CloneWithCollision(at, CollisionKind::Mesh, None)
-                        }
-                        (true, Found::Game(at, _)) => ModelChoice::Clone(at),
-                        _ => ModelChoice::Existing(id),
-                    };
-                    let p = math::add(self.camera.eye, math::scale(self.camera.forward(), 10.0));
-                    action = Some(LevelAction::Add {
-                        group: location,
-                        template: (location, r.object),
-                        model,
-                        position: p,
-                    });
-                }
-            });
-        if model.is_some() {
-            let level = self.level.as_ref()?;
-            let m = &level.models[&model?];
-            ui.label(
-                RichText::new(trf(
-                    "level.model_info",
-                    &[
-                        ("model", &format!("{:08x}", model?)),
-                        (
-                            "meshes",
-                            &trn("count.meshes", m.desc.pieces.len() as u64, &[]),
-                        ),
-                        ("trees", &trn("count.trees", m.desc.trees.len() as u64, &[])),
-                        (
-                            "nested",
-                            &trn(
-                                "count.nested_metamodels",
-                                m.desc.metamodels.saturating_sub(1) as u64,
-                                &[],
-                            ),
-                        ),
-                        (
-                            "where",
-                            &match m.found {
-                                None => tr("level.model_not_found").to_owned(),
-                                Some(f) => trf(
-                                    "level.model_in",
-                                    &[("stream", &game.streams()[f.stream()].stream_name())],
-                                ),
-                            },
-                        ),
-                    ],
-                ))
-                .small(),
-            );
-        }
-        ui.separator();
-        let mut reselect = None;
-        if let Some((group, _, view)) = &mut self.logic {
-            let mut status = String::new();
-            match view.show(ui, &mut status) {
-                Some(LogicAction::Save { data, label }) => {
-                    action = Some(LevelAction::Save {
-                        group: location,
-                        data,
-                        label,
-                    });
-                }
-                Some(LogicAction::OpenGraph { object }) => {
-                    action = Some(LevelAction::ShowLogic {
-                        group: location,
-                        object: object.unwrap_or(r.object),
-                    });
-                }
-                None => {}
-            }
-            if !status.is_empty() {
-                self.status = status;
-            }
-            // A click in the object list selects in the scene.
-            if let Some(o) = view.selected_object()
-                && o != r.object
-            {
-                reselect = Some(ObjRef {
-                    group: *group,
-                    object: o,
-                });
-            }
-        }
-        if reselect.is_some() {
-            self.select(reselect);
-        }
         action
     }
 
@@ -1890,17 +1674,20 @@ impl LevelView {
 
     fn scene_ui(&mut self, ui: &mut egui::Ui) -> Option<LevelAction> {
         if self.level.is_none() {
-            ui.centered_and_justified(|ui| {
-                ui.label(
-                    RichText::new(if self.job.is_some() {
-                        tr("level.loading")
-                    } else {
-                        tr("level.empty")
-                    })
-                    .weak(),
-                );
+            let mut zones = false;
+            ui.vertical_centered(|ui| {
+                ui.add_space((ui.available_height() / 2.0 - 30.0).max(8.0));
+                if self.job.is_some() {
+                    ui.label(RichText::new(tr("level.loading")).weak());
+                } else {
+                    ui.label(RichText::new(tr("level.empty")).weak());
+                    zones = ui
+                        .button(tr("level.choose_zones_button"))
+                        .on_hover_text(tr("level.choose_zones_hint"))
+                        .clicked();
+                }
             });
-            return None;
+            return zones.then_some(LevelAction::ShowZones);
         }
         self.spin(ui);
         // Game → editor: the camera follows the game's.
@@ -1932,11 +1719,7 @@ impl LevelView {
                 )
             });
             if f {
-                if self.filter.selected.is_some() {
-                    self.focus();
-                } else {
-                    self.frame_all();
-                }
+                self.focus_selection();
             }
             if one {
                 self.gizmo = gizmo::Mode::Move;
@@ -1959,11 +1742,12 @@ impl LevelView {
                 ]
             })
         };
-        let selected = self.filter.selected;
+        // A locked object has no gizmo: it is not moved by mistake.
+        let selected = self.filter.selected.filter(|&r| !self.is_object_locked(r));
         let node = self
             .nav
             .selected
-            .filter(|_| selected.is_none() && self.nav.visible);
+            .filter(|_| self.filter.selected.is_none() && self.nav.visible);
         let gizmo_mode = if node.is_some() {
             gizmo::Mode::Move
         } else {
@@ -2181,7 +1965,21 @@ impl LevelView {
                 Some(_) => self.filter.hovered,
                 None => None,
             };
-            self.select(picked);
+            if ui.input(|i| i.modifiers.command) {
+                // Ctrl + click: add to the selection or take away from it.
+                if let Some(r) = picked {
+                    let mut set = self.selection();
+                    let primary = if set.remove(&r) {
+                        self.filter.selected.filter(|&p| p != r)
+                    } else {
+                        set.insert(r);
+                        Some(r)
+                    };
+                    self.set_selection(primary, set);
+                }
+            } else {
+                self.select(picked);
+            }
         }
         if response.double_clicked() {
             self.focus();
@@ -2207,6 +2005,7 @@ impl LevelView {
         // Gizmo lines.
         self.scene.overlay_lines.clear();
         if let Some(r) = self.filter.selected
+            && !self.is_object_locked(r)
             && let Some(m) = self.object_transform(r)
         {
             let origin = [m[3][0], m[3][1], m[3][2]];
@@ -2310,7 +2109,10 @@ impl LevelView {
             renderer.pick(&mut self.viewport, &self.scene, view, pixel)
         }?;
         let item = self.visible.get(pick.instance as usize)?;
-        self.items.get(*item)?.object
+        let item = self.items.get(*item)?;
+        // Locked objects (the Outliner's lock) are not picked.
+        item.object
+            .filter(|&r| !self.locked.contains(r, item.class))
     }
 
     fn overlay_text(&self, ui: &egui::Ui, rect: Rect) {

@@ -296,10 +296,11 @@ impl BrowserApp {
                 let docked = self
                     .dock
                     .as_ref()
-                    .is_some_and(|t| dock::find(t, |p| *p == Pane::ObjectDetails).is_some());
-                if docked || self.drawers.contains(&Pane::ObjectDetails) {
-                    self.dock_ops.push(DockOp::ShowPanel(Pane::ObjectDetails));
+                    .is_some_and(|t| dock::find(t, |p| *p == Pane::Details).is_some());
+                if docked || self.drawers.contains(&Pane::Details) {
+                    self.dock_ops.push(DockOp::ShowPanel(Pane::Details));
                 }
+                self.inspect = super::details::Focus::Level(id);
             }
             _ => {}
         }

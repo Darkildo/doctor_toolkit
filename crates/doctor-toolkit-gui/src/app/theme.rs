@@ -182,6 +182,42 @@ pub enum Icon {
     Undo,
     Log,
     Link,
+    /// Shown in the view (the Outliner's eye).
+    Eye,
+    /// Hidden in the view.
+    EyeClosed,
+    /// Locked: clicks in the view do not select it.
+    Lock,
+    Unlock,
+    /// A Details panel kept on what it shows.
+    Pin,
+}
+
+impl Icon {
+    /// Every icon, for the tests.
+    #[cfg(test)]
+    pub const ALL: [Icon; 20] = [
+        Icon::Save,
+        Icon::Select,
+        Icon::Move,
+        Icon::Rotate,
+        Icon::Scale,
+        Icon::World,
+        Icon::Local,
+        Icon::Snap,
+        Icon::Object,
+        Icon::Play,
+        Icon::Apply,
+        Icon::Folder,
+        Icon::Undo,
+        Icon::Log,
+        Icon::Link,
+        Icon::Eye,
+        Icon::EyeClosed,
+        Icon::Lock,
+        Icon::Unlock,
+        Icon::Pin,
+    ];
 }
 
 /// Draws `icon` into `rect` (designed on a 16×16 grid).
@@ -324,6 +360,47 @@ pub fn paint_icon(painter: &egui::Painter, rect: Rect, icon: Icon, color: Color3
             painter.circle_stroke(p(5.5, 10.5), 3.0 * s, stroke);
             painter.circle_stroke(p(10.5, 5.5), 3.0 * s, stroke);
             line(&[(7.0, 9.0), (9.0, 7.0)]);
+        }
+        Icon::Eye | Icon::EyeClosed => {
+            let lid = |dir: f32| -> Vec<(f32, f32)> {
+                (0..=12)
+                    .map(|i| {
+                        let t = i as f32 / 12.0 * std::f32::consts::PI;
+                        (8.0 - 6.5 * t.cos(), 8.0 + dir * 4.0 * t.sin())
+                    })
+                    .collect()
+            };
+            line(&lid(-1.0));
+            line(&lid(1.0));
+            if icon == Icon::Eye {
+                painter.circle_filled(p(8.0, 8.0), 2.2 * s, color);
+            } else {
+                line(&[(2.5, 13.5), (13.5, 2.5)]);
+            }
+        }
+        Icon::Lock | Icon::Unlock => {
+            closed(&[(3.5, 7.5), (12.5, 7.5), (12.5, 14.0), (3.5, 14.0)]);
+            let right = if icon == Icon::Lock { 11.0 } else { 14.5 };
+            let left = if icon == Icon::Lock { 5.0 } else { 8.5 };
+            let mut arc = vec![(left, 7.5)];
+            arc.extend((0..=8).map(|i| {
+                let a = std::f32::consts::PI + i as f32 / 8.0 * std::f32::consts::PI;
+                let (cx, r) = ((left + right) / 2.0, (right - left) / 2.0);
+                (cx + r * a.cos(), 5.0 + 3.0 * a.sin())
+            }));
+            arc.push((right, if icon == Icon::Lock { 7.5 } else { 5.5 }));
+            line(&arc);
+        }
+        Icon::Pin => {
+            closed(&[
+                (5.5, 2.0),
+                (10.5, 2.0),
+                (10.0, 7.5),
+                (12.5, 10.0),
+                (3.5, 10.0),
+                (6.0, 7.5),
+            ]);
+            line(&[(8.0, 10.0), (8.0, 14.5)]);
         }
     }
 }
@@ -524,23 +601,7 @@ mod tests {
         let ctx = egui::Context::default();
         let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
             let rect = Rect::from_min_size(pos2(10.0, 10.0), Vec2::splat(16.0));
-            for icon in [
-                Icon::Save,
-                Icon::Select,
-                Icon::Move,
-                Icon::Rotate,
-                Icon::Scale,
-                Icon::World,
-                Icon::Local,
-                Icon::Snap,
-                Icon::Object,
-                Icon::Play,
-                Icon::Apply,
-                Icon::Folder,
-                Icon::Undo,
-                Icon::Log,
-                Icon::Link,
-            ] {
+            for icon in Icon::ALL {
                 let painter = ui.painter().with_clip_rect(rect);
                 paint_icon(&painter, rect, icon, Color32::WHITE);
             }

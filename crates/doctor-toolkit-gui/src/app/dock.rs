@@ -33,8 +33,16 @@ pub enum Pane {
     Welcome,
     /// Streams and tables of contents of the game.
     Files,
-    /// The resource selected in a list.
+    /// The inspector of what was selected last: an object of a level or a
+    /// resource of a list (stage 53). Layouts of stage 52 had a separate
+    /// object panel, `ObjectDetails`: it reads as this one.
+    #[serde(alias = "ObjectDetails")]
     Details,
+    /// Another Details panel (View → Another Details panel), which can be
+    /// pinned to an object while the first one follows the selection.
+    DetailsCopy {
+        id: u64,
+    },
     /// Workspace changes.
     Changes,
     /// Messages, warnings and errors.
@@ -77,13 +85,12 @@ pub enum Pane {
     /// The assets of the game (stage 52 shows the streams; stage 55 the
     /// assets with previews). A drawer by default.
     ContentBrowser,
-    /// The zones and objects of the level in front (stage 52 shows the
-    /// level tab's zone browser; stage 53 the outliner).
+    /// The objects of the level in front: zones → classes → objects
+    /// (stage 53).
     Outliner,
-    /// The selected object of the level in front (stage 52 shows the level
-    /// tab's object panel; stage 53 the inspector). [`Pane::Details`] stays
-    /// the panel of the selected resource.
-    ObjectDetails,
+    /// The zones the level in front loads and what its view shows
+    /// (stage 53; the left side of the level tab before).
+    Zones,
     /// Where the documents go in a layout; never shown.
     Documents,
 }
@@ -96,7 +103,8 @@ impl Pane {
             | Self::Resource { id, .. }
             | Self::Search { id, .. }
             | Self::Level { id }
-            | Self::Wizard { id, .. } => Some(*id),
+            | Self::Wizard { id, .. }
+            | Self::DetailsCopy { id } => Some(*id),
             Self::Logic { id, .. } => Some(*id),
             _ => None,
         }
@@ -112,7 +120,8 @@ impl Pane {
                 | Self::Log
                 | Self::ContentBrowser
                 | Self::Outliner
-                | Self::ObjectDetails
+                | Self::Zones
+                | Self::DetailsCopy { .. }
         )
     }
 
@@ -365,6 +374,8 @@ impl Behavior<Pane> for DockBehavior<'_> {
 
     fn on_tab_close(&mut self, tiles: &mut Tiles<Pane>, tile_id: TileId) -> bool {
         match tiles.get(tile_id) {
+            // Another Details panel goes for good.
+            Some(Tile::Pane(Pane::DetailsCopy { .. })) => true,
             Some(Tile::Pane(p)) if p.is_panel() => {
                 tiles.set_visible(tile_id, false);
                 false
@@ -549,6 +560,12 @@ impl BrowserApp {
         self.levels
             .retain(|id, _| ids.contains(id) || wizard_levels.contains(id));
         self.logics.retain(|id, _| ids.contains(id));
+        self.inspectors.copies.retain(|id, _| ids.contains(id));
+        let levels = &self.levels;
+        self.inspectors
+            .embedded
+            .retain(|id, _| levels.contains_key(id));
+        self.outliners.retain(|id, _| levels.contains_key(id));
         if self.live_panes != ids {
             self.live_panes = ids;
             self.prune_files();
@@ -757,7 +774,13 @@ impl BrowserApp {
             Pane::Game => tr("gametab.title").to_owned(),
             Pane::ContentBrowser => tr("pane.content").to_owned(),
             Pane::Outliner => tr("pane.outliner").to_owned(),
-            Pane::ObjectDetails => tr("pane.object").to_owned(),
+            Pane::Zones => tr("pane.zones").to_owned(),
+            Pane::DetailsCopy { id } => {
+                let mut copies: Vec<u64> = self.inspectors.copies.keys().copied().collect();
+                copies.sort_unstable();
+                let n = copies.iter().position(|c| c == id).unwrap_or(0) + 2;
+                format!("{} {n}", tr("pane.details"))
+            }
             Pane::Documents => String::new(),
             Pane::Wizard { kind, .. } => kind.title().to_owned(),
             Pane::Logic { id, .. } => self
@@ -788,6 +811,9 @@ pub fn dock_below(tree: &mut Tree<Pane>, pane: Pane) -> TileId {
 /// Removes a tab; a tool panel is hidden instead.
 fn close(tree: &mut Tree<Pane>, tile: TileId) {
     match tree.tiles.get(tile) {
+        Some(Tile::Pane(Pane::DetailsCopy { .. })) => {
+            tree.remove_recursively(tile);
+        }
         Some(Tile::Pane(p)) if p.is_panel() => tree.tiles.set_visible(tile, false),
         Some(Tile::Pane(_)) => {
             tree.remove_recursively(tile);

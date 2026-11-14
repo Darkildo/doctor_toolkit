@@ -260,6 +260,11 @@ impl Wizards {
             .filter_map(|w| place::level_of(&w.state))
             .collect()
     }
+
+    /// The level view of the wizard tab `tab`, if it has one.
+    pub fn level_of_tab(&self, tab: u64) -> Option<u64> {
+        place::level_of(&self.tabs.get(&tab)?.state)
+    }
 }
 
 impl BrowserApp {

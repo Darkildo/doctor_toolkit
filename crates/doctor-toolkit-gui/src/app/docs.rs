@@ -226,6 +226,7 @@ impl BrowserApp {
         let loc = Location { stream, resource };
         let previous = self.details.take();
         self.details = Some(self.load_doc(loc, previous));
+        self.inspect = super::details::Focus::Resource;
     }
 
     /// Opens resource `loc` in a tab of its own.

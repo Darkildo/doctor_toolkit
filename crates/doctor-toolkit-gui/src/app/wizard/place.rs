@@ -186,7 +186,7 @@ impl Place {
         if placed > 0 {
             ui.label(RichText::new(trn("wizard.place.placed_n", placed as u64, &[])).strong());
         }
-        app.level_pane(ui, self.level);
+        app.level_with_panels(ui, self.level);
     }
 
     /// Edits recorded in the level view since the model was ready.

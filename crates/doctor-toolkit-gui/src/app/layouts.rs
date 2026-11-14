@@ -12,8 +12,9 @@
 //! panel can still be dragged, split, closed or made a drawer, and the dock
 //! as it is goes into the layout file.
 //!
-//! The file (`layout.json`) is versioned; version 1 (the dock alone, up to
-//! stage 51) is read and migrated.
+//! The file (`layout.json`) is versioned; versions 1 (the dock alone, up to
+//! stage 51) and 2 (stage 52, with the object panel `ObjectDetails` and the
+//! zones in the Outliner) are read and migrated: see [`parse`].
 
 use std::collections::BTreeMap;
 
@@ -26,7 +27,7 @@ use super::dock::{self, DockOp, Pane};
 use super::{BrowserApp, Command};
 
 /// Version of the layout file written now.
-pub const LAYOUT_VERSION: u32 = 2;
+pub const LAYOUT_VERSION: u32 = 3;
 
 /// A kind of screen, by the document in front: each remembers its layout.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -245,21 +246,20 @@ fn set_shares(tiles: &mut Tiles<Pane>, container: TileId, shares: &[(TileId, f32
 }
 
 /// "Level Editor": the documents (the level view) large in the middle,
-/// Outliner (with Files) over the object Details (with the resource
-/// Details) on the right; the Content Browser, the Log and Changes are
-/// drawers.
+/// Outliner (with Zones and Files behind it) over Details on the right; the
+/// Content Browser, the Log and Changes are drawers.
 fn level_arrangement() -> Arrangement {
     let mut tiles = Tiles::default();
     let docs = tiles.insert_pane(Pane::Documents);
     let center = tiles.insert_tab_tile(vec![docs]);
     let outliner = tiles.insert_pane(Pane::Outliner);
+    let zones = tiles.insert_pane(Pane::Zones);
     let files = tiles.insert_pane(Pane::Files);
-    let top = tiles.insert_tab_tile(vec![outliner, files]);
-    let object = tiles.insert_pane(Pane::ObjectDetails);
+    let top = tiles.insert_tab_tile(vec![outliner, zones, files]);
     let details = tiles.insert_pane(Pane::Details);
-    let bottom = tiles.insert_tab_tile(vec![object, details]);
+    let bottom = tiles.insert_tab_tile(vec![details]);
     let right = tiles.insert_vertical_tile(vec![top, bottom]);
-    set_shares(&mut tiles, right, &[(top, 0.38), (bottom, 0.62)]);
+    set_shares(&mut tiles, right, &[(top, 0.42), (bottom, 0.58)]);
     let root = tiles.insert_horizontal_tile(vec![center, right]);
     set_shares(&mut tiles, root, &[(center, 0.75), (right, 0.25)]);
     Arrangement {
@@ -420,6 +420,14 @@ struct FileV2 {
 }
 
 /// Reads a layout file; `None` when it is broken or of an unknown version.
+///
+/// Version 2 (stage 52) had the object panel `ObjectDetails` next to the
+/// resource panel `Details`, and the zones in the Outliner. Both panels now
+/// read as the one Details ([`Pane::Details`] takes the old name too): the
+/// second of them goes, wherever it was, in the dock, the drawers, the
+/// user's layouts and the remembered ones. And where an Outliner has no
+/// Zones panel anywhere, Zones joins it as a tab behind it, so that zones
+/// can still be loaded.
 pub fn parse(text: &str) -> Option<Loaded> {
     let version: Version = serde_json::from_str(text).ok()?;
     let mut loaded = match version.version {
@@ -432,7 +440,7 @@ pub fn parse(text: &str) -> Option<Loaded> {
                 layouts: Layouts::default(),
             }
         }
-        LAYOUT_VERSION => {
+        2 | LAYOUT_VERSION => {
             let file: FileV2 = serde_json::from_str(text).ok()?;
             Loaded {
                 tree: file.tree,
@@ -444,9 +452,26 @@ pub fn parse(text: &str) -> Option<Loaded> {
         _ => return None,
     };
     loaded.tree.root()?;
+    if version.version < 3 {
+        migrate(&mut loaded.tree, &mut loaded.drawers);
+        for named in &mut loaded.layouts.user {
+            migrate(&mut named.arrangement.tree, &mut named.arrangement.drawers);
+        }
+        for remembered in loaded.layouts.screens.values_mut() {
+            migrate(
+                &mut remembered.arrangement.tree,
+                &mut remembered.arrangement.drawers,
+            );
+        }
+    }
     // A pane is a drawer or in the tree, never both; placeholders never show.
     loaded.drawers.retain(|p| p.is_panel());
-    loaded.drawers.dedup();
+    let mut seen = Vec::new();
+    loaded.drawers.retain(|p| {
+        let first = !seen.contains(p);
+        seen.push(p.clone());
+        first
+    });
     let drop: Vec<TileId> = loaded
         .tree
         .tiles
@@ -472,6 +497,66 @@ pub fn parse(text: &str) -> Option<Loaded> {
         .unwrap_or(0);
     loaded.next_pane = loaded.next_pane.max(max_id);
     Some(loaded)
+}
+
+/// Version 2 → 3: one Details where there were two, Zones next to the
+/// Outliner.
+fn migrate(tree: &mut Tree<Pane>, drawers: &mut Vec<Pane>) {
+    let details: Vec<TileId> = tree
+        .tiles
+        .iter()
+        .filter_map(|(&id, tile)| match tile {
+            Tile::Pane(Pane::Details) => Some(id),
+            _ => None,
+        })
+        .collect();
+    if drawers.contains(&Pane::Details) {
+        // A drawer: no tile of it stays (`parse` removes them).
+        let mut first = true;
+        drawers.retain(|p| *p != Pane::Details || std::mem::take(&mut first));
+    } else if details.len() > 1 {
+        let shown = tree.active_tiles();
+        let keep = details
+            .iter()
+            .copied()
+            .find(|t| shown.contains(t))
+            .unwrap_or(details[0]);
+        for t in details.into_iter().filter(|&t| t != keep) {
+            tree.remove_recursively(t);
+        }
+    }
+    let has_zones =
+        dock::find(tree, |p| *p == Pane::Zones).is_some() || drawers.contains(&Pane::Zones);
+    if !has_zones {
+        if let Some(outliner) = dock::find(tree, |p| *p == Pane::Outliner) {
+            let zones = tree.tiles.insert_pane(Pane::Zones);
+            match tree.tiles.parent_of(outliner) {
+                Some(parent)
+                    if matches!(
+                        tree.tiles.get(parent),
+                        Some(Tile::Container(Container::Tabs(_)))
+                    ) =>
+                {
+                    if let Some(Tile::Container(Container::Tabs(tabs))) = tree.tiles.get_mut(parent)
+                    {
+                        let active = tabs.active;
+                        tabs.add_child(zones);
+                        tabs.active = active;
+                    }
+                }
+                _ => {
+                    let tabs = tree.tiles.insert_tab_tile(vec![zones]);
+                    if let Some(root) = tree.root() {
+                        let column = tree.tiles.insert_vertical_tile(vec![root, tabs]);
+                        tree.root = Some(column);
+                    }
+                }
+            }
+        } else if drawers.contains(&Pane::Outliner) {
+            drawers.push(Pane::Zones);
+        }
+    }
+    tree.simplify(&SIMPLIFY);
 }
 
 /// The layout file.
@@ -822,12 +907,7 @@ mod tests {
             [Pane::ContentBrowser, Pane::Log, Pane::Changes],
             "the bottom panels are drawers"
         );
-        for pane in [
-            Pane::Outliner,
-            Pane::ObjectDetails,
-            Pane::Details,
-            Pane::Files,
-        ] {
+        for pane in [Pane::Outliner, Pane::Zones, Pane::Details, Pane::Files] {
             assert!(dock::find(&tree, |p| *p == pane).is_some(), "{pane:?}");
         }
         assert!(dock::find(&tree, |p| *p == Pane::Documents).is_none());
@@ -947,7 +1027,7 @@ mod tests {
         assert!(!loaded.layouts.remember);
         assert_eq!(loaded.layouts.user[0].name, "Wide");
         assert!(parse("{").is_none());
-        assert!(parse(&json.replace("\"version\": 2", "\"version\": 999")).is_none());
+        assert!(parse(&json.replace("\"version\": 3", "\"version\": 999")).is_none());
     }
 
     #[test]
@@ -982,6 +1062,79 @@ mod tests {
         let loaded = parse(&both.to_string()).unwrap();
         assert!(dock::find(&loaded.tree, |p| *p == Pane::Log).is_none());
         assert_eq!(loaded.drawers, [Pane::Log]);
+    }
+
+    /// The "Level Editor" of stage 52: Outliner (zones inside) and Files
+    /// over the object panel and the resource Details.
+    fn stage_52_level_tree() -> Tree<Pane> {
+        let mut tiles = Tiles::default();
+        let level = tiles.insert_pane(Pane::Level { id: 1 });
+        let center = tiles.insert_tab_tile(vec![level]);
+        let outliner = tiles.insert_pane(Pane::Outliner);
+        let files = tiles.insert_pane(Pane::Files);
+        let top = tiles.insert_tab_tile(vec![outliner, files]);
+        // Written as "ObjectDetails" below.
+        let object = tiles.insert_pane(Pane::Details);
+        let details = tiles.insert_pane(Pane::Details);
+        let bottom = tiles.insert_tab_tile(vec![object, details]);
+        let right = tiles.insert_vertical_tile(vec![top, bottom]);
+        let root = tiles.insert_horizontal_tile(vec![center, right]);
+        Tree::new(egui::Id::unique("old"), root, tiles)
+    }
+
+    /// A stage 52 file: `ObjectDetails` for the first Details.
+    fn as_stage_52(json: &str) -> String {
+        json.replacen("\"Details\"", "\"ObjectDetails\"", 1)
+            .replace("\"version\": 3", "\"version\": 2")
+    }
+
+    #[test]
+    fn version_two_files_get_one_details_and_zones() {
+        let tree = stage_52_level_tree();
+        let mut layouts = Layouts::default();
+        layouts.save(
+            "Mine",
+            Arrangement {
+                tree: stage_52_level_tree(),
+                drawers: vec![Pane::Log],
+            },
+        );
+        let json = as_stage_52(&to_json(&tree, 1, &[Pane::ContentBrowser], &layouts));
+        assert!(json.contains("ObjectDetails") && json.contains("\"version\": 2"));
+        let loaded = parse(&json).expect("a stage 52 file reads");
+        for tree in [&loaded.tree, &loaded.layouts.user[0].arrangement.tree] {
+            let all = panes(tree);
+            assert_eq!(
+                all.iter().filter(|p| **p == Pane::Details).count(),
+                1,
+                "one Details: {all:?}"
+            );
+            // Zones joins the Outliner's tabs; the Outliner stays in front.
+            let outliner = dock::find(tree, |p| *p == Pane::Outliner).unwrap();
+            let zones = dock::find(tree, |p| *p == Pane::Zones).expect("Zones");
+            assert_eq!(tree.tiles.parent_of(outliner), tree.tiles.parent_of(zones));
+            assert!(dock::is_shown(tree, outliner));
+            assert!(dock::find(tree, |p| p.id() == Some(1)).is_some());
+        }
+        assert_eq!(loaded.drawers, [Pane::ContentBrowser]);
+        // Saved again it is version 3, and reads the same.
+        let again = to_json(&loaded.tree, 1, &loaded.drawers, &loaded.layouts);
+        assert!(again.contains("\"version\": 3") && !again.contains("ObjectDetails"));
+        assert_eq!(panes(&parse(&again).unwrap().tree), panes(&loaded.tree));
+
+        // The object panel as a drawer: one Details drawer, none in the tree.
+        let json = as_stage_52(&to_json(
+            &dock::default_tree(Vec::new()),
+            0,
+            &[Pane::Details],
+            &Layouts::default(),
+        ))
+        .replacen("\"Details\"", "\"ObjectDetails\"", 1);
+        let loaded = parse(&json).unwrap();
+        assert_eq!(loaded.drawers, [Pane::Details]);
+        assert!(dock::find(&loaded.tree, |p| *p == Pane::Details).is_none());
+        // No Outliner: no Zones is added.
+        assert!(dock::find(&loaded.tree, |p| *p == Pane::Zones).is_none());
     }
 
     #[test]
