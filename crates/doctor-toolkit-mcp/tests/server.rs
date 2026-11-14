@@ -16,7 +16,7 @@ use doctor_toolkit::project::{self, CreateOptions};
 use doctor_toolkit::testing::{self, LEVEL, SIMGROUP, TEXT};
 use doctor_toolkit::workspace::Workspace;
 
-const TOOLS: [&str; 20] = [
+const TOOLS: [&str; 25] = [
     "game_info",
     "list_streams",
     "search",
@@ -29,6 +29,11 @@ const TOOLS: [&str; 20] = [
     "workspace_status",
     "workspace_diff",
     "project_status",
+    "check_refs",
+    "export",
+    "media",
+    "mods",
+    "integrity",
     "live_status",
     "player",
     "objects_near",
@@ -119,8 +124,10 @@ async fn the_handshake_lists_read_only_tools_and_resources() {
     }
     assert_eq!(names.len(), TOOLS.len());
     for t in &tools {
-        // Showing something in the editor changes only what it shows.
-        let shows = ["editor_open", "editor_show_object"].contains(&t["name"].as_str().unwrap());
+        // Showing something in the editor changes only what it shows; the
+        // export tools write files into the output folder.
+        let shows = ["editor_open", "editor_show_object", "export", "media"]
+            .contains(&t["name"].as_str().unwrap());
         assert_eq!(t["annotations"]["readOnlyHint"], !shows, "{t}");
         assert_eq!(t["annotations"]["destructiveHint"], false, "{t}");
         assert_eq!(t["inputSchema"]["type"], "object", "{t}");

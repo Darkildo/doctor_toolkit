@@ -11,9 +11,9 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use doctor_toolkit::game::StreamFile;
-use doctor_toolkit::level::edit::{self as level_edit, ModelChoice};
+use doctor_toolkit::level::Location;
+use doctor_toolkit::level::edit::{self as level_edit, GroupAt, ModelChoice};
 use doctor_toolkit::level::navgraph::{GraphRef, save_graph};
-use doctor_toolkit::level::{Location, TYPE_SIMGROUP};
 use doctor_toolkit::resource::graph::{Graph, Neighbourhood, TYPE_GRAPH};
 use doctor_toolkit::resource::lh2::StringTable;
 use doctor_toolkit::resource::names::sim_classes;
@@ -24,7 +24,7 @@ use doctor_toolkit::text::{self, NewString, TableRef};
 use doctor_toolkit::workspace::{ResourceEdit, ResourceKey, StorageChoice, Workspace};
 
 use super::workspace::detail_lines;
-use super::{Output, hex, parse_hash, parse_object_id};
+use super::{Output, hex, parse_hash};
 use crate::state::{ToolError, ToolResult, Toolkit, fail};
 
 // ------------------------------------------------------------ parameters
@@ -52,7 +52,8 @@ pub struct SetAttributeParams {
 
 #[derive(Debug, Default, Deserialize, JsonSchema)]
 pub struct MoveObjectParams {
-    /// The object: `<stream>#<resource>:<object>`.
+    /// The object: `<stream>#<resource>:<object>` (`<SimGroup key>:<object>`
+    /// in a SimGroup the workspace added).
     pub object: String,
     /// New position `[x, y, z]` (Y is up).
     #[serde(default)]
@@ -80,7 +81,8 @@ pub struct DuplicateObjectParams {
 
 #[derive(Debug, Default, Deserialize, JsonSchema)]
 pub struct AddObjectParams {
-    /// The SimGroup to add to: `<stream>#<resource>`.
+    /// The SimGroup to add to: `<stream>#<resource>`, or the key of a
+    /// SimGroup the workspace added (`add_simgroup` prints it).
     pub group: String,
     /// The template object (any SimGroup): `<stream>#<resource>:<object>`.
     pub template: String,
@@ -235,7 +237,12 @@ pub struct UndoParams {}
 
 /// The answer of a writing tool: what was done, the operation and the
 /// diff of the resources it changed.
-fn finish(ws: &mut Workspace, since: usize, label: &str, done: Value) -> ToolResult<Output> {
+pub(crate) fn finish(
+    ws: &mut Workspace,
+    since: usize,
+    label: &str,
+    done: Value,
+) -> ToolResult<Output> {
     if ws.head() > since + 1 {
         ws.squash(since, label)?;
     }
@@ -296,29 +303,59 @@ fn parse_group(kit: &Toolkit, text: &str) -> ToolResult<Location> {
     })
 }
 
-/// An object id, which must name an object.
-fn object(kit: &Toolkit, text: &str) -> ToolResult<(Location, usize)> {
-    parse_object_id(kit, text)?.ok_or_else(|| {
+/// An object id, which must name an object: `<stream>#<resource>:<object>`
+/// of a game SimGroup, or `<key>:<object>` of a SimGroup the workspace added.
+pub(crate) fn object(kit: &Toolkit, ws: &Workspace, text: &str) -> ToolResult<(GroupAt, usize)> {
+    let bad = || {
         ToolError(format!(
-            "`{text}`: give an object as `<stream>#<resource>:<object>` (as `level_objects` prints it)"
+            "`{text}`: give an object as `<stream>#<resource>:<object>` (as `level_objects` \
+             prints it), or `<SimGroup key>:<object>` in a SimGroup the workspace added"
         ))
-    })
+    };
+    let (group, object) = text.trim().rsplit_once(':').ok_or_else(bad)?;
+    let object = object
+        .parse()
+        .map_err(|_| ToolError(format!("`{object}` is not an object number")))?;
+    Ok((group_ref(kit, ws, group)?, object))
+}
+
+/// A SimGroup: `<stream>#<resource>` of a game stream, or a resource key
+/// (`stream:simgroup:ids`), which also names SimGroups the workspace added
+/// and that are not in the game files yet (`add_simgroup`).
+pub(crate) fn group_ref(kit: &Toolkit, ws: &Workspace, text: &str) -> ToolResult<GroupAt> {
+    let text = text.trim();
+    if text.contains('#') {
+        return Ok(GroupAt::Game(parse_group(kit, text)?));
+    }
+    let key: ResourceKey = text.parse().map_err(|_| {
+        ToolError(format!(
+            "`{text}`: give a SimGroup as `<stream>#<resource>` (as `level_objects` prints \
+             it) or as its resource key"
+        ))
+    })?;
+    if ws.change(&key).is_some_and(|c| c.is_added()) {
+        return Ok(GroupAt::Added(key));
+    }
+    let stream = kit.stream(&key.stream)?;
+    let file = kit.game.open_stream(stream)?;
+    let resource = key
+        .find_in(file.layout())
+        .ok_or_else(|| ToolError(format!("no resource {key} in the game or the workspace")))?;
+    Ok(GroupAt::Game(Location { stream, resource }))
 }
 
 /// The SimGroup at `at` as the workspace has it, checked to be one.
-fn group(kit: &Toolkit, ws: &Workspace, at: Location) -> ToolResult<SimGroup> {
-    let header = kit
-        .game
-        .open_stream(at.stream)?
-        .layout()
-        .resources
-        .get(at.resource)
-        .map(|r| r.header)
-        .ok_or_else(|| ToolError(format!("no resource {} in that stream", at.resource)))?;
-    if header.type_id != TYPE_SIMGROUP {
-        return fail(format!("resource {} is not a SimGroup", at.resource));
+pub(crate) fn group(kit: &Toolkit, ws: &Workspace, at: &GroupAt) -> ToolResult<SimGroup> {
+    level_edit::group_stream(&kit.game, ws, at)?;
+    Ok(level_edit::current_group_at(&kit.game, ws, at)?)
+}
+
+/// An object id as the tools print it.
+pub(crate) fn object_text(kit: &Toolkit, at: &GroupAt, object: usize) -> String {
+    match at {
+        GroupAt::Game(l) => super::object_id(kit, *l, object),
+        GroupAt::Added(key) => format!("{key}:{object}"),
     }
-    Ok(level_edit::current_group(&kit.game, ws, at)?)
 }
 
 fn class_label(g: &SimGroup, o: usize) -> String {
@@ -381,6 +418,14 @@ fn check_models(
     }
 }
 
+/// `<stream>#<resource>` or the key of an added SimGroup.
+fn group_label(kit: &Toolkit, at: &GroupAt) -> String {
+    match at {
+        GroupAt::Game(l) => format!("{}#{}", stream_name(kit, l.stream), l.resource),
+        GroupAt::Added(key) => key.to_string(),
+    }
+}
+
 fn stream_name(kit: &Toolkit, stream: usize) -> String {
     kit.game.streams()[stream].stream_name()
 }
@@ -391,14 +436,14 @@ pub fn set_attribute(kit: &Toolkit, p: SetAttributeParams) -> ToolResult<Output>
     if p.values.is_empty() && p.model.is_none() {
         return fail("give `values` (\"Class.attribute\": \"value\") or `model`");
     }
-    let (at, o) = object(kit, &p.object)?;
     let mut access = kit.write_workspace(&format!(
         "set_attribute: {} of {}",
         p.values.keys().cloned().collect::<Vec<_>>().join(", "),
         p.object
     ))?;
     let ws = &mut access.ws;
-    let mut g = group(kit, ws, at)?;
+    let (at, o) = object(kit, ws, &p.object)?;
+    let mut g = group(kit, ws, &at)?;
     let original = g.clone();
     let object = g
         .objects
@@ -485,13 +530,12 @@ pub fn set_attribute(kit: &Toolkit, p: SetAttributeParams) -> ToolResult<Output>
     }
     check_models(kit, ws, &original, &g, p.force.unwrap_or(false))?;
     let label = format!(
-        "Edit object {o} ({}) in {}#{}",
+        "Edit object {o} ({}) in {}",
         class_label(&g, o),
-        stream_name(kit, at.stream),
-        at.resource
+        group_label(kit, &at)
     );
     let since = ws.head();
-    ws.set_resource(&kit.game, at.stream, at.resource, g.encode(), &label)?;
+    level_edit::set_group(&kit.game, ws, &at, &g, &label)?;
     finish(
         ws,
         since,
@@ -507,10 +551,10 @@ pub fn move_object(kit: &Toolkit, p: MoveObjectParams) -> ToolResult<Output> {
     if p.position.is_some() && p.offset.is_some() {
         return fail("give `position` or `offset`, not both");
     }
-    let (at, o) = object(kit, &p.object)?;
     let mut access = kit.write_workspace(&format!("move_object: {}", p.object))?;
     let ws = &mut access.ws;
-    let g = group(kit, ws, at)?;
+    let (at, o) = object(kit, ws, &p.object)?;
+    let g = group(kit, ws, &at)?;
     let object = g
         .objects
         .get(o)
@@ -541,7 +585,7 @@ pub fn move_object(kit: &Toolkit, p: MoveObjectParams) -> ToolResult<Output> {
         }
     }
     let since = ws.head();
-    level_edit::set_transform(&kit.game, ws, at, o, m)?;
+    level_edit::set_transform_at(&kit.game, ws, &at, o, m)?;
     let label = ws
         .operations()
         .get(ws.head().wrapping_sub(1))
@@ -560,16 +604,16 @@ pub fn move_object(kit: &Toolkit, p: MoveObjectParams) -> ToolResult<Output> {
 }
 
 pub fn duplicate_object(kit: &Toolkit, p: DuplicateObjectParams) -> ToolResult<Output> {
-    let (at, o) = object(kit, &p.object)?;
     let taken = kit.object_guids();
     let mut access = kit.write_workspace(&format!("duplicate_object: {}", p.object))?;
     let ws = &mut access.ws;
-    group(kit, ws, at)?;
+    let (at, o) = object(kit, ws, &p.object)?;
+    group(kit, ws, &at)?;
     let since = ws.head();
-    let (copy, guid) = level_edit::duplicate(
+    let (copy, guid) = level_edit::duplicate_at(
         &kit.game,
         ws,
-        at,
+        &at,
         o,
         p.offset.unwrap_or_default(),
         &|g: &Guid| taken.contains(g),
@@ -581,15 +625,13 @@ pub fn duplicate_object(kit: &Toolkit, p: DuplicateObjectParams) -> ToolResult<O
         &label,
         json!({
             "object": p.object,
-            "copy": super::object_id(kit, at, copy),
+            "copy": object_text(kit, &at, copy),
             "guid": guid.to_string(),
         }),
     )
 }
 
 pub fn add_object(kit: &Toolkit, p: AddObjectParams) -> ToolResult<Output> {
-    let at = parse_group(kit, &p.group)?;
-    let (template_group, template) = object(kit, &p.template)?;
     let model = match (&p.model, &p.clone_model) {
         (Some(_), Some(_)) => return fail("give `model` or `clone_model`, not both"),
         (Some(id), None) => ModelChoice::Existing(parse_hex(id)?),
@@ -618,14 +660,16 @@ pub fn add_object(kit: &Toolkit, p: AddObjectParams) -> ToolResult<Output> {
         p.template, p.group
     ))?;
     let ws = &mut access.ws;
-    group(kit, ws, at)?;
+    let at = group_ref(kit, ws, &p.group)?;
+    let (template_group, template) = object(kit, ws, &p.template)?;
+    group(kit, ws, &at)?;
     let since = ws.head();
-    let added = level_edit::add(
+    let added = level_edit::add_at(
         &kit.game,
         kit.resources(),
         ws,
-        at,
-        (template_group, template),
+        &at,
+        (&template_group, template),
         model,
         p.position,
         &|g: &Guid| taken.contains(g),
@@ -638,7 +682,7 @@ pub fn add_object(kit: &Toolkit, p: AddObjectParams) -> ToolResult<Output> {
         since,
         &label,
         json!({
-            "object": super::object_id(kit, at, added.object),
+            "object": object_text(kit, &at, added.object),
             "guid": added.guid.to_string(),
             "model": added.model.map(hex),
             "cloned": added.cloned.iter().map(ToString::to_string).collect::<Vec<_>>(),
@@ -652,13 +696,13 @@ pub fn add_object(kit: &Toolkit, p: AddObjectParams) -> ToolResult<Output> {
 }
 
 pub fn remove_object(kit: &Toolkit, p: RemoveObjectParams) -> ToolResult<Output> {
-    let (at, o) = object(kit, &p.object)?;
     let mut access = kit.write_workspace(&format!("remove_object: {}", p.object))?;
     let ws = &mut access.ws;
-    let g = group(kit, ws, at)?;
+    let (at, o) = object(kit, ws, &p.object)?;
+    let g = group(kit, ws, &at)?;
     let class = class_label(&g, o);
     let since = ws.head();
-    let dangling = level_edit::remove(&kit.game, ws, at, o)?;
+    let dangling = level_edit::remove_at(&kit.game, ws, &at, o)?;
     let label = ws.operations()[ws.head() - 1].label.clone();
     finish(
         ws,

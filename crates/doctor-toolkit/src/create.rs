@@ -865,6 +865,110 @@ pub fn new_stream_guid(seed: &str, used_hashes: &HashSet<u32>) -> [u8; 16] {
     .0
 }
 
+/// A stream for [`crate::workspace::Workspace::add_stream`] as `add-stream`
+/// makes it: `name` depending on `parent`, a parented stream of it when
+/// `with_parent`, listed in the tables of contents `tocs` (relative paths,
+/// optionally `toc=parent` with another parent there; every table that
+/// lists the parent when empty), with GUID `guid` (32 hexadecimal digits;
+/// derived from the name with an unused hash when `None`).
+pub fn new_stream(
+    game: &GameInstance,
+    ws: &crate::workspace::Workspace,
+    name: &str,
+    parent: &str,
+    with_parent: bool,
+    tocs: &[String],
+    guid: Option<&str>,
+) -> Result<crate::workspace::NewStream> {
+    use crate::workspace::key::normalize_stream;
+    let name = normalize_stream(name);
+    let parent = normalize_stream(parent);
+    let mut list = Vec::new();
+    let mut toc_parents = BTreeMap::new();
+    for spec in tocs {
+        match spec.split_once('=') {
+            Some((toc, p)) => {
+                list.push(toc.to_owned());
+                toc_parents.insert(toc.to_owned(), normalize_stream(p));
+            }
+            None => list.push(spec.clone()),
+        }
+    }
+    if list.is_empty() {
+        for (index, toc) in game.tocs().iter().enumerate() {
+            if game.load_toc(index)?.find_file(&parent).is_some() {
+                list.push(toc.rel_path.clone());
+            }
+        }
+    }
+    let guid: [u8; 16] = match guid {
+        Some(text) => parse_guid(text)?,
+        None => {
+            let mut used = game.toc_hashes()?;
+            used.extend(ws.new_streams().map(|s| s.hash));
+            new_stream_guid(&name, &used)
+        }
+    };
+    Ok(crate::workspace::NewStream {
+        name,
+        guid: guid.iter().map(|b| format!("{b:02x}")).collect(),
+        hash: crate::toc::guid_hash(&guid),
+        parent,
+        with_parent,
+        tocs: list,
+        toc_parents,
+        label: String::new(),
+    })
+}
+
+/// 32 hexadecimal digits as 16 bytes.
+pub fn parse_guid(text: &str) -> Result<[u8; 16]> {
+    let text = text.trim();
+    let bad = || Error::InvalidArgument(format!("`{text}`: a GUID is 32 hexadecimal digits"));
+    if text.len() != 32 || !text.is_ascii() {
+        return Err(bad());
+    }
+    let mut out = [0u8; 16];
+    for (i, b) in out.iter_mut().enumerate() {
+        *b = u8::from_str_radix(&text[2 * i..2 * i + 2], 16).map_err(|_| bad())?;
+    }
+    Ok(out)
+}
+
+/// A resource type: a tag such as `lh2` or a hexadecimal id.
+pub fn parse_type(text: &str) -> Result<u32> {
+    if let Some(id) = crate::resource::names::type_tags().resolve(text) {
+        return Ok(id);
+    }
+    u32::from_str_radix(text.trim().trim_start_matches("0x"), 16)
+        .map_err(|_| Error::InvalidArgument(format!("unknown resource type `{text}`")))
+}
+
+/// Resource ids: one hexadecimal id (repeated four times) or four separated by dots.
+pub fn parse_ids(text: &str) -> Result<[u32; 4]> {
+    let parts: Vec<u32> = text
+        .split('.')
+        .map(|p| u32::from_str_radix(p.trim().trim_start_matches("0x"), 16))
+        .collect::<std::result::Result<_, _>>()
+        .map_err(|_| Error::InvalidArgument(format!("bad ids `{text}`")))?;
+    match parts.as_slice() {
+        [id] => Ok([*id; 4]),
+        [a, b, c, d] => Ok([*a, *b, *c, *d]),
+        _ => Err(Error::InvalidArgument(
+            "ids are one or four hexadecimal numbers separated by dots".into(),
+        )),
+    }
+}
+
+/// A memory policy: its name or a hexadecimal hash.
+pub fn parse_mem_policy(text: &str) -> Result<u32> {
+    if let Some(hash) = crate::resource::names::mem_policies().resolve(text) {
+        return Ok(hash);
+    }
+    u32::from_str_radix(text.trim().trim_start_matches("0x"), 16)
+        .map_err(|_| Error::InvalidArgument(format!("unknown memory policy `{text}`")))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

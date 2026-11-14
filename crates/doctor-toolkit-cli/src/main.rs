@@ -1710,7 +1710,6 @@ fn apx_export(game_dir: &Path, output: &Path, png: bool) -> Result<()> {
 
 fn text_export(game_dir: &Path, output: &Path) -> Result<()> {
     use doctor_toolkit::resource::lh2::StringTable;
-    use serde_json::{Map, Value, json};
 
     let game = GameInstance::open(game_dir)?;
     let mut written = 0;
@@ -1722,35 +1721,12 @@ fn text_export(game_dir: &Path, output: &Path) -> Result<()> {
             }
             let table = StringTable::parse(&stream.resource_data(index)?)
                 .with_context(|| format!("{} resource {index}", file.rel_path))?;
-            let columns: Vec<String> = if table.languages.is_empty() && table.strings.len() == 1 {
-                vec!["text".to_owned()]
-            } else if table.languages.is_empty() {
-                (0..table.strings.len())
-                    .map(|i| format!("text{i}"))
-                    .collect()
-            } else {
-                table.languages.clone()
-            };
-            let entries: Vec<Value> = table
-                .hashes
-                .iter()
-                .enumerate()
-                .map(|(entry, hash)| {
-                    let mut object = Map::new();
-                    object.insert("hash".into(), json!(format!("{hash:08x}")));
-                    for (lang, column) in columns.iter().enumerate() {
-                        object.insert(column.clone(), json!(table.strings[lang][entry]));
-                    }
-                    Value::Object(object)
-                })
-                .collect();
-            let document = json!({
-                "stream": file.rel_path,
-                "resource": index,
-                "id": format!("{:08x}", resource.header.ids[3]),
-                "languages": columns,
-                "entries": entries,
-            });
+            let document = doctor_toolkit::text::export_json(
+                &table,
+                &file.rel_path,
+                index,
+                resource.header.ids[3],
+            );
             let dir = output.join(file.rel_path.trim_end_matches(".str"));
             fs::create_dir_all(&dir)?;
             let path = dir.join(format!(
@@ -1789,12 +1765,6 @@ fn text_import(game_dir: &Path, files: &[PathBuf], mode: &EditMode) -> Result<()
             .as_u64()
             .context("`resource` must be a number")? as usize;
         let id = field("id")?.as_str().context("`id` must be a string")?;
-        let columns: Vec<&str> = field("languages")?
-            .as_array()
-            .context("`languages` must be a list")?
-            .iter()
-            .map(|v| v.as_str().context("language codes must be strings"))
-            .collect::<Result<_>>()?;
 
         let stream_index = game
             .find_stream(stream_name)
@@ -1820,31 +1790,8 @@ fn text_import(game_dir: &Path, files: &[PathBuf], mode: &EditMode) -> Result<()
         let mut table = StringTable::parse(&data)?;
         drop(stream);
 
-        let mut changed = 0;
-        for entry in field("entries")?
-            .as_array()
-            .context("`entries` must be a list")?
-        {
-            let hash = entry
-                .get("hash")
-                .and_then(Value::as_str)
-                .context("entry without `hash`")?;
-            let hash =
-                u32::from_str_radix(hash, 16).with_context(|| format!("bad hash `{hash}`"))?;
-            let row = table.find(hash).with_context(|| {
-                format!("hash {hash:08x} is not in the table; adding entries is not supported")
-            })?;
-            for (lang, column) in columns.iter().enumerate() {
-                let value = entry
-                    .get(*column)
-                    .and_then(Value::as_str)
-                    .with_context(|| format!("entry {hash:08x} has no `{column}`"))?;
-                if table.strings[lang][row] != value {
-                    table.strings[lang][row] = value.to_owned();
-                    changed += 1;
-                }
-            }
-        }
+        let changed = doctor_toolkit::text::import_json(&mut table, &document)
+            .with_context(|| path.display().to_string())?;
         if changed == 0 {
             out!("{}: no changes", path.display());
             continue;

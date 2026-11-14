@@ -21,7 +21,7 @@ use doctor_toolkit::workspace::{Workspace, WorkspaceLock};
 use doctor_toolkit_mcp::Config;
 use doctor_toolkit_mcp::game::XServer;
 
-const EDIT_TOOLS: [&str; 16] = [
+const EDIT_TOOLS: [&str; 29] = [
     "set_attribute",
     "move_object",
     "duplicate_object",
@@ -37,14 +37,27 @@ const EDIT_TOOLS: [&str; 16] = [
     "project_build",
     "mod_build",
     "validate",
+    "add_stream",
+    "remove_stream",
+    "add_simgroup",
+    "add_resource",
+    "clone_resource",
+    "import_model",
+    "import_texture",
+    "collision_build",
+    "import_file",
+    "import_sound",
+    "import_video",
+    "edit_subtitle",
+    "logic_connect",
     // Not an edit tool: listed to check the count below.
     "workspace_diff",
 ];
 
 /// Tools of a server without flags (reading, the live link, the editor).
-const READ_TOOLS: usize = 20;
+const READ_TOOLS: usize = 25;
 
-const GAME_TOOLS: [&str; 13] = [
+const GAME_TOOLS: [&str; 14] = [
     "apply",
     "unapply",
     "play",
@@ -58,6 +71,7 @@ const GAME_TOOLS: [&str; 13] = [
     "set_variable",
     "stream_load",
     "stream_unload",
+    "mods_manage",
 ];
 
 struct Fixture {
@@ -170,7 +184,7 @@ async fn the_flags_turn_the_writing_tools_on() {
         let name = t["name"].as_str().unwrap();
         let read_only = ["scripts", "validate"].contains(&name)
             || !EDIT_TOOLS.contains(&name)
-                && !["editor_open", "editor_show_object"].contains(&name)
+                && !["editor_open", "editor_show_object", "export", "media"].contains(&name)
             || name == "workspace_diff";
         assert_eq!(t["annotations"]["readOnlyHint"], read_only, "{t}");
         assert_eq!(t["annotations"]["openWorldHint"], false, "{t}");
@@ -191,7 +205,14 @@ async fn the_flags_turn_the_writing_tools_on() {
         .filter(|t| t["annotations"]["destructiveHint"] == json!(true))
         .map(|t| t["name"].as_str().unwrap().to_owned())
         .collect();
-    for t in ["apply", "unapply", "stop", "send_message", "lua"] {
+    for t in [
+        "apply",
+        "unapply",
+        "stop",
+        "send_message",
+        "lua",
+        "mods_manage",
+    ] {
         assert!(destructive.iter().any(|d| d == t), "{t}: {destructive:?}");
     }
 }
@@ -810,4 +831,284 @@ async fn the_world_and_state_of_the_live_game() {
         .await;
     assert_eq!(s["request"]["done"], true, "{s}");
     assert_eq!(module.world.lock().unwrap().money.cash, 1500.0);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_new_area_is_made_in_a_new_stream_without_touching_the_game() {
+    let f = fixture();
+    let before = game_files(&f.game);
+    let files = tempfile::tempdir().unwrap();
+    let glb = files.path().join("crate.glb");
+    std::fs::write(&glb, testing::triangle_glb(0.0, "brick_wall", false)).unwrap();
+    let raw = files.path().join("blob.bin");
+    std::fs::write(&raw, b"raw data of a resource").unwrap();
+    let mut c = start(&configured(&f, true, false));
+    c.initialize().await;
+
+    // A stream, listed where its parent is.
+    let made = c
+        .json(
+            "add_stream",
+            json!({ "name": "gf2/doctor/area", "parent": LEVEL }),
+        )
+        .await;
+    assert_eq!(made["done"]["stream"], "gf2/doctor/area", "{made}");
+    assert_eq!(made["done"]["tocs"], json!(["gf2/level.toc"]), "{made}");
+    let (text, error) = c
+        .call(
+            "add_stream",
+            json!({ "name": "gf2/doctor/area", "parent": LEVEL }),
+        )
+        .await;
+    assert!(error && text.contains("already exists"), "{text}");
+
+    // A SimGroup in it, an object copied from the level placed in it.
+    let group = c
+        .json("add_simgroup", json!({ "stream": "gf2/doctor/area" }))
+        .await;
+    let key = group["done"]["simgroup"].as_str().unwrap().to_owned();
+    assert!(key.starts_with("gf2/doctor/area:simgroup:"), "{group}");
+    let added = c
+        .json(
+            "add_object",
+            json!({ "group": key, "template": "gf2/level#4:0", "position": [4.0, 1.0, -2.0] }),
+        )
+        .await;
+    let object = added["done"]["object"].as_str().unwrap().to_owned();
+    assert_eq!(object, format!("{key}:0"), "{added}");
+    c.json(
+        "move_object",
+        json!({ "object": object, "offset": [1.0, 0.0, 0.0] }),
+    )
+    .await;
+    let listed = c
+        .json("level_objects", json!({ "stream": "gf2/doctor/area" }))
+        .await;
+    assert_eq!(listed["total"], 1, "{listed}");
+    assert_eq!(listed["objects"][0]["object"], object, "{listed}");
+    assert_eq!(listed["objects"][0]["position"], json!([5.0, 1.0, -2.0]));
+    let copy = c
+        .json(
+            "add_simgroup",
+            json!({ "stream": "gf2/doctor/area", "copy_of": "gf2/level#4" }),
+        )
+        .await;
+    assert_eq!(copy["done"]["objects"], 3, "{copy}");
+
+    // A model imported as a new set into the new stream; a texture cloned
+    // there; a raw resource added; references of the level checked.
+    let model = c
+        .json(
+            "import_model",
+            json!({
+                "file": glb.to_str().unwrap(),
+                "template": "gf2/level#3",
+                "name": "doctor_crate",
+                "stream": "gf2/doctor/area",
+            }),
+        )
+        .await;
+    let added_keys = model["done"]["summary"]["added"].to_string();
+    assert!(added_keys.contains("gf2/doctor/area:mesh:"), "{model}");
+    let cloned = c
+        .json(
+            "clone_resource",
+            json!({ "stream": LEVEL, "indices": [0], "to": "gf2/doctor/area" }),
+        )
+        .await;
+    assert_eq!(
+        cloned["done"]["clones"].as_array().unwrap().len(),
+        2,
+        "{cloned}"
+    );
+    c.json(
+        "add_resource",
+        json!({ "stream": "gf2/doctor/area", "type": "0x0badf00d", "file": raw.to_str().unwrap() }),
+    )
+    .await;
+    let (text, error) = c
+        .call(
+            "add_resource",
+            json!({ "stream": "gf2/nowhere", "type": "lh2", "file": raw.to_str().unwrap() }),
+        )
+        .await;
+    assert!(error && text.contains("no stream"), "{text}");
+    let refs = c.json("check_refs", json!({ "streams": ["gf2"] })).await;
+    assert_eq!(refs["streams_checked"], 4, "{refs}");
+
+    // The workspace says it all; the mod has the new stream.
+    let checked = c.json("validate", json!({})).await;
+    assert_eq!(checked["ok"], true, "{checked}");
+    let status = c.json("workspace_status", json!({})).await;
+    assert!(status.to_string().contains("gf2/doctor/area"), "{status}");
+    let built = c.json("mod_build", json!({ "name": "Doctor area" })).await;
+    assert_eq!(built["new_streams"], 1, "{built}");
+
+    // Removing the stream takes its resources; undo brings them back.
+    let removed = c
+        .json("remove_stream", json!({ "name": "gf2/doctor/area" }))
+        .await;
+    assert!(
+        removed["done"]["resources_removed"].as_u64().unwrap() >= 5,
+        "{removed}"
+    );
+    let (text, error) = c
+        .call("level_objects", json!({ "stream": "gf2/doctor/area" }))
+        .await;
+    assert!(error, "{text}");
+    c.json("undo", json!({})).await;
+    let listed = c
+        .json("level_objects", json!({ "stream": "gf2/doctor/area" }))
+        .await;
+    assert_eq!(listed["total"], 4, "{listed}");
+    assert_eq!(game_files(&f.game), before, "the game files are untouched");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn exported_files_come_back_with_import_file_and_logic_is_wired() {
+    let f = fixture();
+    let before = game_files(&f.game);
+    let out = tempfile::tempdir().unwrap();
+    let mut config = configured(&f, true, false);
+    config.output_dir = Some(out.path().to_path_buf());
+    let mut c = start(&config);
+    c.initialize().await;
+    let ops = |dir: &Path| Workspace::open_read_only(dir).unwrap().head();
+
+    // A string table: export, change a text, import.
+    let exported = c
+        .json("export", json!({ "resource": format!("{LEVEL}#5") }))
+        .await;
+    let file = exported["files"][0].as_str().unwrap().to_owned();
+    let text = std::fs::read_to_string(&file).unwrap();
+    assert!(text.contains("Hello"), "{text}");
+    std::fs::write(&file, text.replace("Hello", "Bonjour")).unwrap();
+    let head = ops(&f.workspace);
+    let imported = c
+        .json(
+            "import_file",
+            json!({ "resource": format!("{LEVEL}#5"), "file": file }),
+        )
+        .await;
+    assert_eq!(imported["changed"], true, "{imported}");
+    assert!(imported.to_string().contains("Bonjour"), "{imported}");
+    assert_eq!(ops(&f.workspace), head + 1);
+    let again = c
+        .json(
+            "import_file",
+            json!({ "resource": format!("{LEVEL}#5"), "file": file }),
+        )
+        .await;
+    assert_eq!(again["changed"], false, "{again}");
+
+    // A navigation graph: a node moved in its JSON.
+    let graph = format!("{NAV}#0");
+    let exported = c.json("export", json!({ "resource": graph })).await;
+    let file = exported["files"][0].as_str().unwrap().to_owned();
+    let mut doc: Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+    let node = doc["nodes"][2].clone();
+    assert!(node.is_object(), "{doc}");
+    let moved = node.to_string().replacen("20.0", "21.5", 1);
+    doc["nodes"][2] = serde_json::from_str(&moved).unwrap();
+    std::fs::write(&file, doc.to_string()).unwrap();
+    let imported = c
+        .json("import_file", json!({ "resource": graph, "file": file }))
+        .await;
+    assert_eq!(imported["changed"], true, "{imported}");
+    // Not a type import_file reads; raw is taken as it is.
+    let (text, error) = c
+        .call(
+            "import_file",
+            json!({ "resource": format!("{LEVEL}#2"), "file": file }),
+        )
+        .await;
+    assert!(error && text.contains("raw"), "{text}");
+
+    // Logic: the trigger's sending pin wired to the spawner's listening pin
+    // too, then the wire taken away.
+    let spawner = c
+        .json(
+            "logic_graph",
+            json!({ "object": "gf2/level#4:2", "depth": 1 }),
+        )
+        .await;
+    let listen = spawner["start"]["pins"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["kind"] == "in")
+        .unwrap_or_else(|| panic!("{spawner}"))["pin"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let to = format!("gf2/level#4:2:{listen}");
+    let (answer, error) = c
+        .call(
+            "logic_connect",
+            json!({ "from": "gf2/level#4:0:nope", "to": to }),
+        )
+        .await;
+    assert!(error && answer.contains("has no pin"), "{answer}");
+    let head = ops(&f.workspace);
+    let wired = c
+        .json(
+            "logic_connect",
+            json!({ "from": "gf2/level#4:0:send", "to": to }),
+        )
+        .await;
+    assert_eq!(wired["changed"], true, "{wired}");
+    assert_eq!(ops(&f.workspace), head + 1);
+    let unwired = c
+        .json(
+            "logic_connect",
+            json!({ "from": "gf2/level#4:0:send", "to": to, "disconnect": true }),
+        )
+        .await;
+    assert_eq!(unwired["changed"], true, "{unwired}");
+    c.json("undo", json!({})).await;
+    assert_eq!(game_files(&f.game), before, "the game files are untouched");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_mod_is_built_installed_switched_and_removed() {
+    let f = fixture();
+    let before = game_files(&f.game);
+    let mut c = start(&configured(&f, true, true));
+    c.initialize().await;
+    let built = c.json("mod_build", json!({ "name": "Doctor logic" })).await;
+    let file = built["file"].as_str().unwrap().to_owned();
+    let empty = c.json("mods", json!({})).await;
+    assert_eq!(empty["mods"], json!([]), "{empty}");
+    let installed = c
+        .json(
+            "mods_manage",
+            json!({ "action": "install", "files": [file] }),
+        )
+        .await;
+    assert_eq!(installed["mods"][0]["id"], "doctor-logic", "{installed}");
+    assert_eq!(installed["mods"][0]["enabled"], true, "{installed}");
+    assert_eq!(installed["game_up_to_date"], false, "{installed}");
+    let status = c.json("mods", json!({ "action": "status" })).await;
+    assert!(status["resources"].as_u64().unwrap() >= 1, "{status}");
+    let checked = c.json("mods", json!({ "action": "check" })).await;
+    assert_eq!(checked["ok"], true, "{checked}");
+    let off = c
+        .json(
+            "mods_manage",
+            json!({ "action": "disable", "ids": ["doctor-logic"] }),
+        )
+        .await;
+    assert_eq!(off["mods"][0]["enabled"], false, "{off}");
+    let gone = c
+        .json(
+            "mods_manage",
+            json!({ "action": "uninstall", "ids": ["doctor-logic"] }),
+        )
+        .await;
+    assert_eq!(gone["mods"], json!([]), "{gone}");
+    let (text, error) = c.call("mods_manage", json!({ "action": "explode" })).await;
+    assert!(error && text.contains("install"), "{text}");
+    let report = c.json("integrity", json!({})).await;
+    assert_eq!(report["changed"], 0, "{report}");
+    assert_eq!(game_files(&f.game), before, "the game files are untouched");
 }

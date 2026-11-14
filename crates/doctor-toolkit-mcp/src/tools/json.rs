@@ -52,9 +52,22 @@ fn to_value<T: Serialize>(value: doctor_toolkit::Result<T>) -> ToolResult<Value>
 }
 
 /// The view of one resource: JSON, or Lua source.
-enum View {
+pub(crate) enum View {
     Json(Value),
     Source(String),
+}
+
+/// The view of a resource of the game files (`at`: stream and index) or
+/// one the workspace added (`None`).
+pub(crate) fn view(
+    kit: &Toolkit,
+    ws: Option<&Workspace>,
+    at: Option<(usize, usize)>,
+    type_id: u32,
+    data: &[u8],
+) -> ToolResult<View> {
+    let (stream, resource) = at.unwrap_or((usize::MAX, usize::MAX));
+    decode(kit, ws, stream, resource, type_id, data)
 }
 
 fn decode(

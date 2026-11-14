@@ -55,6 +55,9 @@ pub struct Config {
     pub x_server: Option<XServer>,
     /// The editor's bridge socket [default: `doctor_toolkit::bridge::socket_path`].
     pub bridge: Option<PathBuf>,
+    /// The folder export tools write files into (`--output-dir`); without
+    /// it they refuse.
+    pub output_dir: Option<PathBuf>,
 }
 
 impl Config {
@@ -73,6 +76,7 @@ impl Config {
             launch: None,
             x_server: None,
             bridge: doctor_toolkit::bridge::socket_path(),
+            output_dir: None,
         }
     }
 }
@@ -146,6 +150,7 @@ pub struct Toolkit {
     pub launch: Option<LaunchPlan>,
     pub x_server: Option<XServer>,
     pub bridge: Option<PathBuf>,
+    pub output_dir: Option<PathBuf>,
     /// Held by a writing tool for its whole call: one write at a time.
     writer: Mutex<()>,
     /// The game started by `play`.
@@ -184,6 +189,7 @@ impl Toolkit {
             launch: config.launch.clone(),
             x_server: config.x_server.clone(),
             bridge: config.bridge.clone(),
+            output_dir: config.output_dir.clone(),
             writer: Mutex::new(()),
             session: Mutex::new(None),
             guids: OnceLock::new(),
@@ -362,6 +368,34 @@ impl Toolkit {
             .get_or_init(|| Catalog::build(&self.game, &|_, _| {}).map_err(|e| e.to_string()))
             .as_ref()
             .map_err(|e| ToolError(format!("cannot read the dialogues: {e}")))
+    }
+
+    /// Where an export tool writes `name` (a relative path such as
+    /// `textures/brick.png`): inside the output folder given at start
+    /// (`--output-dir`), its folders made. Refused without that folder and
+    /// for names that would leave it.
+    pub fn output_path(&self, name: &str) -> ToolResult<PathBuf> {
+        let Some(dir) = &self.output_dir else {
+            return fail(
+                "this server has no output folder: start it with --output-dir DIR \
+                 (`doctor-toolkit mcp GAME --output-dir DIR`) to export files",
+            );
+        };
+        let rel = Path::new(name.trim());
+        let clean = rel
+            .components()
+            .all(|c| matches!(c, std::path::Component::Normal(_)));
+        if name.trim().is_empty() || !clean {
+            return fail(format!(
+                "`{name}`: an output name is a relative path without `..`"
+            ));
+        }
+        let path = dir.join(rel);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| ToolError(format!("cannot make {}: {e}", parent.display())))?;
+        }
+        Ok(path)
     }
 
     /// The stream called `name`; only streams of the game are found, so no

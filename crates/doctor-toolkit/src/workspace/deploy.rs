@@ -581,7 +581,7 @@ impl Deployment {
                 change.key
             )));
         }
-        additions.sort_by_key(|c| c.added.as_ref().map_or(0, |a| a.order));
+        super::file_order(&mut additions);
         let mut resources: Vec<(ResourceHeader, Vec<u8>, Storage)> = Vec::new();
         for change in &additions {
             let data = payload(change)?;

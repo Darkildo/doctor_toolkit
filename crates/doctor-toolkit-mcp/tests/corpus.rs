@@ -459,3 +459,118 @@ async fn edits_on_the_game_go_into_a_temporary_workspace() {
     );
     assert_eq!(before, stat_all(&dir), "the game folder changed");
 }
+
+/// Stage 57 on the real game: a new level area made only through the
+/// server, in an empty temporary workspace — a stream next to the airport
+/// gates of Havana, a SimGroup in it, a wall imported from glTF with box
+/// collision on a template of the zone, an object showing it; `validate`
+/// finds no error and the mod holds the new stream. The game folder is not
+/// touched.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_new_area_is_made_through_the_server() {
+    let Some(dir) = game_dir() else {
+        return;
+    };
+    const ZONE: &str = "gf2/cuba/local/yuri/medium/zone4";
+    let before = stat_all(&dir);
+    let started = Instant::now();
+    let temp = tempfile::tempdir().unwrap();
+    let wall = temp.path().join("wall.glb");
+    std::fs::write(
+        &wall,
+        doctor_toolkit::testing::box_glb([6.0, 3.0, 0.4], "doctor_wall"),
+    )
+    .unwrap();
+    let out = temp.path().join("out");
+    let mut config = doctor_toolkit_mcp::Config::new(&dir);
+    config.bridge = None;
+    config.workspace = Some(temp.path().join("workspace"));
+    config.output_dir = Some(out.clone());
+    config.allow_edits = true;
+    let kit = doctor_toolkit_mcp::open(&config).unwrap();
+    let mut c = Client::start(kit);
+    c.initialize().await;
+
+    let stream = c
+        .json(
+            "add_stream",
+            json!({ "name": "gf2/doctor/area57", "parent": ZONE }),
+        )
+        .await;
+    assert!(
+        !stream["done"]["tocs"].as_array().unwrap().is_empty(),
+        "{stream}"
+    );
+    let group = c
+        .json("add_simgroup", json!({ "stream": "gf2/doctor/area57" }))
+        .await;
+    let key = group["done"]["simgroup"].as_str().unwrap().to_owned();
+    let model = c
+        .json(
+            "import_model",
+            json!({
+                "file": wall,
+                "template": format!("{ZONE}:metamodel:a6379114"),
+                "name": "doctor_wall",
+                "stream": "gf2/doctor/area57",
+                "collision": "box",
+            }),
+        )
+        .await;
+    let summary = &model["done"]["summary"];
+    assert!(summary["collision"].is_object(), "{model}");
+    assert!(
+        summary["warnings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|w| !w.as_str().unwrap().contains("not loaded before")),
+        "{model}"
+    );
+    let id = model["done"]["model"].as_str().unwrap().to_owned();
+    // A Destructible of the zone as the template, 6 m from the gates.
+    let placed = c
+        .json(
+            "add_object",
+            json!({
+                "group": key,
+                "template": format!("{ZONE}#118:4"),
+                "model": id,
+                "position": [283.9, 0.0, 377.8],
+            }),
+        )
+        .await;
+    assert_eq!(placed["done"]["model"], id, "{placed}");
+    let listed = c
+        .json("level_objects", json!({ "stream": "gf2/doctor/area57" }))
+        .await;
+    assert_eq!(listed["total"], 1, "{listed}");
+    assert_eq!(listed["objects"][0]["model"], id, "{listed}");
+
+    let checked = c.json("validate", json!({})).await;
+    assert_eq!(checked["ok"], true, "{checked}");
+    assert!(
+        checked["checked_changes"].as_u64().unwrap() >= 6,
+        "{checked}"
+    );
+    let built = c.json("mod_build", json!({ "name": "Doctor area" })).await;
+    assert_eq!(built["new_streams"], 1, "{built}");
+    assert!(built["added_resources"].as_u64().unwrap() >= 6, "{built}");
+    // The new model exports as a model file.
+    let exported = c
+        .json(
+            "export",
+            json!({ "resource": format!("gf2/doctor/area57:metamodel:{id}") }),
+        )
+        .await;
+    assert!(
+        !exported["files"].as_array().unwrap().is_empty(),
+        "{exported}"
+    );
+    eprintln!(
+        "a new area through the server in {:.1} s: model {id}, mod {}",
+        started.elapsed().as_secs_f64(),
+        built["file"]
+    );
+    assert_eq!(before, stat_all(&dir), "the game folder changed");
+}

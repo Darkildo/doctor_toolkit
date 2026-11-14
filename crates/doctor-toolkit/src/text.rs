@@ -276,6 +276,104 @@ pub fn retarget_apx(
     Ok(changed)
 }
 
+/// The column names `text-export` writes for a table: its language codes,
+/// else `text` (one column) or `text0`, `text1`, ...
+pub fn json_columns(table: &StringTable) -> Vec<String> {
+    if table.languages.is_empty() && table.strings.len() == 1 {
+        vec!["text".to_owned()]
+    } else if table.languages.is_empty() {
+        (0..table.strings.len())
+            .map(|i| format!("text{i}"))
+            .collect()
+    } else {
+        table.languages.clone()
+    }
+}
+
+/// A string table as the editable JSON of `text-export`: where it is
+/// (`stream`, `resource` index, `id`), the column names and the entries by
+/// hash. [`import_json`] reads it back.
+pub fn export_json(
+    table: &StringTable,
+    stream: &str,
+    resource: usize,
+    id: u32,
+) -> serde_json::Value {
+    use serde_json::{Map, Value, json};
+    let columns = json_columns(table);
+    let entries: Vec<Value> = table
+        .hashes
+        .iter()
+        .enumerate()
+        .map(|(entry, hash)| {
+            let mut object = Map::new();
+            object.insert("hash".into(), json!(format!("{hash:08x}")));
+            for (lang, column) in columns.iter().enumerate() {
+                object.insert(column.clone(), json!(table.strings[lang][entry]));
+            }
+            Value::Object(object)
+        })
+        .collect();
+    json!({
+        "stream": stream,
+        "resource": resource,
+        "id": format!("{id:08x}"),
+        "languages": columns,
+        "entries": entries,
+    })
+}
+
+/// Takes the texts of a `text-export` document into `table` (entries by
+/// hash; adding entries is not supported). Returns how many strings changed.
+pub fn import_json(table: &mut StringTable, document: &serde_json::Value) -> Result<usize> {
+    let bad = Error::InvalidArgument;
+    let columns: Vec<&str> = document
+        .get("languages")
+        .and_then(|v| v.as_array())
+        .ok_or_else(|| bad("missing `languages` list".into()))?
+        .iter()
+        .map(|v| {
+            v.as_str()
+                .ok_or_else(|| bad("language codes must be strings".into()))
+        })
+        .collect::<Result<_>>()?;
+    if columns.len() != table.strings.len() {
+        return Err(bad(format!(
+            "{} language column(s) in the file, {} in the table",
+            columns.len(),
+            table.strings.len()
+        )));
+    }
+    let mut changed = 0;
+    for entry in document
+        .get("entries")
+        .and_then(|v| v.as_array())
+        .ok_or_else(|| bad("missing `entries` list".into()))?
+    {
+        let hash = entry
+            .get("hash")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| bad("entry without `hash`".into()))?;
+        let hash = u32::from_str_radix(hash, 16).map_err(|_| bad(format!("bad hash `{hash}`")))?;
+        let row = table.find(hash).ok_or_else(|| {
+            bad(format!(
+                "hash {hash:08x} is not in the table; adding entries is not supported"
+            ))
+        })?;
+        for (lang, column) in columns.iter().enumerate() {
+            let value = entry
+                .get(*column)
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| bad(format!("entry {hash:08x} has no `{column}`")))?;
+            if table.strings[lang][row] != value {
+                table.strings[lang][row] = value.to_owned();
+                changed += 1;
+            }
+        }
+    }
+    Ok(changed)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

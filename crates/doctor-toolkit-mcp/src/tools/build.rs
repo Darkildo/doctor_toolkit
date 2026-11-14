@@ -349,6 +349,13 @@ pub fn validate(kit: &Toolkit, p: ValidateParams) -> ToolResult<Output> {
             .add(&header, data.as_deref());
     }
     let mut checker = ReferenceChecker::new(&kit.game)?;
+    let game_textures: std::collections::HashSet<u32> = kit
+        .resources()
+        .entries
+        .iter()
+        .filter(|e| e.header.type_id == doctor_toolkit::resource::texture::TYPE_TG4H)
+        .map(|e| e.header.ids[3])
+        .collect();
     let parents = kit.game.stream_parents().unwrap_or_default();
     let mut checked = 0usize;
     for change in ws.changes() {
@@ -374,10 +381,16 @@ pub fn validate(kit: &Toolkit, p: ValidateParams) -> ToolResult<Output> {
         for problem in check_data(kit, &ws, key, &data, original.as_deref()) {
             errors.push(json!({ "key": key.to_string(), "what": problem }));
         }
-        // References resolve in the stream or a stream loaded before it.
-        let Some(stream) = kit.game.find_stream(&key.stream) else {
-            continue; // a new stream: its references are its author's business
-        };
+        // References resolve in the stream or a stream loaded before it: a
+        // stream the workspace creates is loaded after its parents.
+        let scope = ws.load_scope(&parents, &key.stream);
+        let game_streams: Vec<usize> = scope
+            .iter()
+            .filter_map(|s| kit.game.find_stream(s))
+            .collect();
+        if game_streams.is_empty() {
+            continue;
+        }
         let Ok(targets) = create::references(key.type_id, &data) else {
             continue;
         };
@@ -388,13 +401,16 @@ pub fn validate(kit: &Toolkit, p: ValidateParams) -> ToolResult<Output> {
             .filter(|o| !o.is_empty())
             .and_then(|o| create::references(key.type_id, o).ok())
             .unwrap_or_default();
-        let mut scope = vec![key.stream.clone()];
-        scope.extend(doctor_toolkit::game::ancestors(&parents, &key.stream));
         for t in targets.into_iter().filter(|t| !had.contains(t)) {
             let by_workspace = scope
                 .iter()
                 .any(|s| added.get(s).is_some_and(|p| p.provides(&t)));
-            if by_workspace || checker.provides(stream, &t).unwrap_or(true) {
+            let by_game = game_streams
+                .iter()
+                .any(|&s| checker.provides(s, &t).unwrap_or(true));
+            // Textures of no stream are the engine's own: the game has them.
+            let by_engine = matches!(t, Target::Texture(h) if !game_textures.contains(&h));
+            if by_workspace || by_game || by_engine {
                 continue;
             }
             errors.push(json!({

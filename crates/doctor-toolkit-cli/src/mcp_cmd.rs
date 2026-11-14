@@ -34,6 +34,10 @@ pub struct McpArgs {
     /// over the live link: apply, play, stop, screenshot, teleport, …
     #[arg(long)]
     pub allow_game: bool,
+    /// Folder the export tools write files into (models, textures, sounds,
+    /// frames, …); without it they refuse
+    #[arg(long, value_name = "DIR")]
+    pub output_dir: Option<PathBuf>,
 }
 
 /// Serves the game until the client closes stdin. Messages for people go to
@@ -45,6 +49,11 @@ pub fn run(args: McpArgs) -> Result<()> {
     config.max_chars = args.max_response_chars;
     config.allow_edits = args.allow_edits;
     config.allow_game = args.allow_game;
+    if let Some(dir) = &args.output_dir {
+        std::fs::create_dir_all(dir)
+            .map_err(|e| anyhow!("cannot make the output folder {}: {e}", dir.display()))?;
+        config.output_dir = Some(dir.canonicalize()?);
+    }
     if args.no_cache {
         config.index_cache = None;
     }

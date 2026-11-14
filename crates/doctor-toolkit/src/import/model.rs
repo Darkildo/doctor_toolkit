@@ -110,6 +110,8 @@ pub struct ImportPlan {
     pub label: String,
     edits: Vec<(usize, Vec<ResourceEdit>)>,
     additions: Vec<NewResourceEdit>,
+    /// The stream of the target.
+    stream: String,
 }
 
 impl ImportPlan {
@@ -678,7 +680,104 @@ pub fn plan(
             vec![(stream, edits)]
         },
         additions: new_edits,
+        stream: target.stream_name,
     })
+}
+
+impl ImportPlan {
+    /// Puts the new model set of a plan made with a new name into stream
+    /// `into` instead of the target's: another game stream or one the
+    /// workspace creates. The target is only the template then; materials
+    /// and textures the new set shares with it stay in the target's stream,
+    /// which must be loaded before `into` (a warning says when it is not).
+    pub fn put_into(
+        &mut self,
+        game: &GameInstance,
+        workspace: &Workspace,
+        into: &str,
+    ) -> Result<()> {
+        let into = crate::workspace::key::normalize_stream(into);
+        let from = self.stream.clone();
+        if into == from {
+            return Ok(());
+        }
+        if self.summary.mode != "new" {
+            return Err(Error::InvalidArgument(
+                "a model goes into another stream only as a new model set (a name for it)".into(),
+            ));
+        }
+        if !self.summary.retargeted.is_empty() {
+            return Err(Error::InvalidArgument(
+            "retargeting works in the template's stream; place objects with the new model instead"
+                .into(),
+        ));
+        }
+        let before = match game.find_stream(&into) {
+            // Before the first SimGroup of the original stream: targets first.
+            Some(index) => {
+                let path = game.original_path(&game.streams()[index]);
+                let data = std::fs::read(&path).map_err(|e| Error::io(&path, e))?;
+                StreamLayout::parse(&data)?
+                    .resources
+                    .iter()
+                    .find(|r| r.header.type_id == crate::level::TYPE_SIMGROUP)
+                    .map(|r| ResourceKey::new(&into, &r.header))
+            }
+            None if workspace.new_stream(&into).is_some() => {
+                // A new stream holds its resources in the order they were added:
+                // textures, materials, meshes, collision, then models.
+                let rank = |t: u32| match t {
+                    TYPE_TG4H | TYPE_TG4D => 0,
+                    TYPE_MATERIAL => 1,
+                    TYPE_MESH | TYPE_MESH_VOLATILE => 2,
+                    TYPE_METAMODEL => 4,
+                    _ => 3,
+                };
+                self.additions.sort_by_key(|e| rank(e.header.type_id));
+                None
+            }
+            None => {
+                return Err(Error::InvalidArgument(format!(
+                    "stream {into} is neither in the game nor new"
+                )));
+            }
+        };
+        for e in self.additions.iter_mut() {
+            e.stream = into.clone();
+            e.before = before.clone();
+        }
+        for m in &mut self.summary.meshes {
+            if let Ok(mut key) = m.parse::<ResourceKey>() {
+                key.stream = into.clone();
+                *m = key.to_string();
+            }
+        }
+        let parents = game.stream_parents().unwrap_or_default();
+        if !workspace.load_scope(&parents, &into).contains(&from) {
+            self.summary.warnings.push(format!(
+                "{from} (the template's stream) is not loaded before {into}: materials and \
+             textures the new model shares with the template may be missing in the game; \
+             take a template from {into}'s parent chain, or check with validate"
+            ));
+        }
+        self.summary.added = self
+            .additions
+            .iter()
+            .map(|e| {
+                ResourceKey {
+                    stream: e.stream.clone(),
+                    type_id: e.header.type_id,
+                    ids: e.header.ids,
+                }
+                .to_string()
+            })
+            .collect();
+        self.label = self
+            .label
+            .replace(&format!(" into {from}"), &format!(" into {into}"));
+        self.stream = into;
+        Ok(())
+    }
 }
 
 fn new_edit(stream: &str, resource: &NewResource, before: Option<ResourceKey>) -> NewResourceEdit {

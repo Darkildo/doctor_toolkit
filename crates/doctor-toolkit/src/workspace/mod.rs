@@ -200,6 +200,21 @@ impl NewStream {
     }
 }
 
+/// Sorts the resources of a new stream into the order of its file: in the
+/// order they were added, SimGroups last. The game's streams hold the
+/// targets of references (textures, materials, meshes, collision, models)
+/// before the SimGroups that place them (`docs/analysis/new-resources.md`
+/// §2), so an object added before its model was imported still comes after
+/// it.
+pub fn file_order(changes: &mut [&Change]) {
+    changes.sort_by_key(|c| {
+        (
+            c.key.type_id == crate::level::TYPE_SIMGROUP,
+            c.added.as_ref().map_or(0, |a| a.order),
+        )
+    });
+}
+
 /// The change of one new stream made by an operation.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StreamEdit {
@@ -743,6 +758,51 @@ impl Workspace {
 
     pub fn new_stream(&self, name: &str) -> Option<&NewStream> {
         self.new_streams.get(&key::normalize_stream(name))
+    }
+
+    /// Stream `name` and the streams loaded before it (its ancestors in the
+    /// tables of contents; for a stream the workspace creates, its parents
+    /// and their ancestors), given the parents of the game's streams
+    /// ([`GameInstance::stream_parents`]).
+    pub fn load_scope(
+        &self,
+        parents: &std::collections::HashMap<String, Vec<String>>,
+        name: &str,
+    ) -> Vec<String> {
+        let name = key::normalize_stream(name);
+        let mut out = vec![name.clone()];
+        let roots: Vec<String> = match self.new_stream(&name) {
+            Some(s) => std::iter::once(&s.parent)
+                .chain(s.toc_parents.values())
+                .cloned()
+                .collect(),
+            None => vec![name],
+        };
+        for root in roots {
+            if !out.contains(&root) {
+                out.push(root.clone());
+            }
+            for a in crate::game::ancestors(parents, &root) {
+                if !out.contains(&a) {
+                    out.push(a);
+                }
+            }
+        }
+        out
+    }
+
+    /// The resources of the new stream `name` in the order its file holds
+    /// them ([`file_order`]); their positions are the resource indices of
+    /// the stream once written.
+    pub fn new_stream_resources(&self, name: &str) -> Vec<&Change> {
+        let name = key::normalize_stream(name);
+        let mut list: Vec<&Change> = self
+            .state
+            .values()
+            .filter(|c| c.key.stream == name && c.is_added())
+            .collect();
+        file_order(&mut list);
+        list
     }
 
     /// Number of changed resources.

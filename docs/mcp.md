@@ -1,6 +1,6 @@
 # MCP: игра для ИИ-клиента
 
-Этапы 50 и 51: сервер [Model Context Protocol](https://modelcontextprotocol.io),
+Этапы 50, 51 и 57: сервер [Model Context Protocol](https://modelcontextprotocol.io),
 через который ИИ-клиент (Claude Code, Claude Desktop, любой клиент MCP)
 работает с игрой средствами тулкита: ищет ресурсы, смотрит их содержимое в
 JSON, идёт по графу логики, перечисляет объекты уровня, читает рабочее
@@ -9,12 +9,16 @@ JSON, идёт по графу логики, перечисляет объект
 запись (этап 51):
 
 - `--allow-edits` — правки **только в рабочем пространстве** (объекты
-  SimGroup, строки, скрипты-графы, навигационные графы), каждая — одна
-  операция с отменой и сравнением в ответе; сборка проекта и мода,
-  проверка правок;
+  SimGroup, строки, скрипты-графы, навигационные графы; этап 57 — новые
+  потоки, SimGroup, ресурсы, импорт моделей, текстур, звука, видео, файлов
+  выгрузки и связи логики), каждая — одна операция с отменой и сравнением
+  в ответе; сборка проекта и мода, проверка правок;
 - `--allow-game` — запись рабочего пространства в файлы игры и откат,
   запуск игры на собственном X-сервере (на рабочем столе ничего не
-  появляется), снимок кадра, действия в запущенной игре через живую связь.
+  появляется), снимок кадра, действия в запущенной игре через живую связь,
+  менеджер модов;
+- `--output-dir DIR` (этап 57) — папка, куда инструменты выгрузки
+  (`export`, `media`) пишут файлы; без неё они отказывают.
 
 Код: `crates/doctor-toolkit-mcp/` (библиотека сервера),
 `crates/doctor-toolkit-cli/src/mcp_cmd.rs` (подкоманда). Настройка клиентов —
@@ -24,7 +28,7 @@ JSON, идёт по графу логики, перечисляет объект
 
 ```sh
 doctor-toolkit mcp ИГРА [--workspace DIR] [--project DIR] [--no-cache] [--max-response-chars N]
-                        [--allow-edits] [--allow-game]
+                        [--allow-edits] [--allow-game] [--output-dir DIR]
 ```
 
 | Флаг | Что делает |
@@ -35,7 +39,8 @@ doctor-toolkit mcp ИГРА [--workspace DIR] [--project DIR] [--no-cache] [--ma
 | `--no-cache` | строить индекс игры в памяти, не трогая кэш `~/.cache/doctor-toolkit/` |
 | `--max-response-chars N` | предел одного ответа инструмента, символов (по умолчанию 40 000, не меньше 4 000) |
 | `--allow-edits` | инструменты записи в рабочее пространство, сборки и проверки (§3.2) |
-| `--allow-game` | запись в файлы игры, запуск и остановка игры, снимок кадра, запись в запущенную игру (§3.3) |
+| `--allow-game` | запись в файлы игры, запуск и остановка игры, снимок кадра, запись в запущенную игру, менеджер модов (§3.3) |
+| `--output-dir DIR` | папка для файлов `export` и `media` (создаётся); без неё они отвечают ошибкой с этим флагом |
 
 Без флагов сервер такой же, как на этапе 50, плюс чтение живой связи и
 моста с редактором (они ничего не меняют в данных). Флаги независимы:
@@ -85,9 +90,11 @@ GF2 ждёт 0,5 с (индекс из кэша), без кэша — постр
 Имена, параметры и описания — по-английски, их читает модель. У
 инструментов чтения аннотации `readOnlyHint: true`, `destructiveHint:
 false`, `idempotentHint: true`, `openWorldHint: false`; у записи
-`readOnlyHint: false`, `destructiveHint: true` — у `remove_object`, `apply`,
-`unapply`, `stop`, `send_message`, `lua`, `set_money`, `set_variable`,
-`stream_unload`.
+`readOnlyHint: false`, `destructiveHint: true` — у `remove_object`,
+`remove_stream`, `apply`, `unapply`, `stop`, `send_message`, `lua`,
+`set_money`, `set_variable`, `stream_unload`, `mods_manage`. `export` и
+`media` есть без флагов, но пишут файлы в папку вывода: у них
+`readOnlyHint: false`, `destructiveHint: false`.
 
 ### 3.1 Чтение (всегда)
 
@@ -105,6 +112,11 @@ false`, `idempotentHint: true`, `openWorldHint: false`; у записи
 | `workspace_status` | `offset`, `limit` (100, ≤ 500) | изменения с состоянием (`pending`, `applied`, `conflict`), новые потоки, файлы, потоки и их состояние, 20 последних операций, что отменит undo и вернёт redo |
 | `workspace_diff` | `filter`, `offset`, `limit` (20, ≤ 100) | по изменению: размеры и смысловое сравнение (строки, значения SimGroup и metamodel, текстуры, блоки `apx`), до 40 строк на изменение |
 | `project_status` | `all`, `offset`, `limit` (100, ≤ 500) | записи проекта и их состояние (`unchanged`, `built`, `modified`, `out of sync`, `missing`), неизвестные файлы, предупреждения |
+| `check_refs` | `streams` (имена или префиксы, ≤ 400 потоков), `limit` (100, ≤ 1000) | ссылки ресурсов игры, которые не находятся в потоке и загружаемых до него (`check-refs`); правки и новые потоки проверяет `validate` |
+| `export` | `resource` (ключ, `<поток>#<номер>` или запрос; ключ ресурса, добавленного рабочим пространством, тоже), `format`, `name`, `original` | файлы в папке вывода (§3.4) |
+| `media` | `kind` (`movies` или `sounds`), `name`, `filter`, `wav`, `frames`, `key_frames`, `original`, `offset`, `limit` | ролики `.vp6` и потоковые звуки и речь архивов `.viv`: список; с `name` — сведения (кадры, частота, звук; субтитры речи) и выгрузка звука в WAV и кадров в PNG (§3.4) |
+| `mods` | `action`: `list`, `status`, `conflicts`, `check` | менеджер модов: установленные моды по порядку загрузки, что из них уже в игре, ресурсы нескольких модов, подходят ли моды игре (`mods list/status/conflicts/check`) |
+| `integrity` | `full` | файлы игры против оригиналов (`integrity`): исходные, записанные менеджером модов или рабочим пространством, изменённые другой программой или старым тулкитом, непроверяемые |
 
 | `live_status` | — | живая связь: есть ли модуль, цикл игры, загружен ли уровень, время игры, загруженные потоки, разрешает ли модуль запись; игра, запущенная `play` (состояние, дисплей, старт) |
 | `player` | — | игрок: положение, оси, курс в градусах; камера |
@@ -174,7 +186,102 @@ unchanged`. Ошибка ничего не записывает.
 | `validate` | `filter` | проверки: каждый изменённый ресурс читается своим разборщиком (SimGroup, `lh2`, граф, metamodel, Lua, диалог); объекты SimGroup могут показать свои модели (`level::compat::check_edit`, иначе игра падает); `problems()` графов; ссылки, **добавленные правкой**, находятся в потоке или в загруженных до него (с учётом ресурсов, добавленных рабочим пространством); конфликты с файлами игры, потоки, изменённые вне рабочего пространства; проект — что не собрано, пропавшие файлы. `ok`, `errors`, `warnings`; только чтение |
 
 Объект называется так, как его печатают `level_objects` и `logic_graph`:
-`<поток>#<ресурс>:<объект>`; группа — `<поток>#<ресурс>`.
+`<поток>#<ресурс>:<объект>`; группа — `<поток>#<ресурс>`. SimGroup,
+которую добавило рабочее пространство и которой ещё нет в файлах игры
+(`add_simgroup`, в новом потоке или в потоке игры), называется своим
+ключом (`gf2/doctor/area:simgroup:5a1f0c22`), её объекты — `<ключ>:<n>`;
+так их печатают `add_simgroup`, `add_object` и `level_objects`, и так их
+принимают `add_object` (`group` и `template`), `move_object`,
+`set_attribute`, `duplicate_object`, `remove_object`.
+
+**Новые уровни (этап 57).** Те же соглашения: одна операция с отменой и
+сравнением, в игру ничего до `apply`. Файлы читаются по абсолютному пути,
+который даёт клиент.
+
+| Инструмент | Параметры | Что делает (как в CLI) |
+|---|---|---|
+| `add_stream` | `name`, `parent`, `with_parent`, `tocs` (`toc[=родитель]`), `guid` | новый поток (`add-stream`, ядро `create::new_stream`): GUID с незанятым хэшем, записи во всех оглавлениях, где есть родитель; по умолчанию загружается по запросу (`StreamSet` или `stream_load`), `with_parent` — дочерний (`new-resources.md` §3.1) |
+| `remove_stream` | `name` | удалить поток рабочего пространства со всеми его ресурсами (`remove-stream`) |
+| `add_simgroup` | `stream`, `copy_of` (группа), `objects` | новая SimGroup в потоке (новом или игры): пустая или с копиями объектов другой группы под новыми GUID; атрибуты-GUID и связи между копиями переводятся на копии (`level::edit::add_group`); в ответе ключ |
+| `add_resource` | `stream`, `type`, `file`, `ids`, `before`, `policy`, `alignment`, `compress` | ресурс из файла сырых данных под новыми незанятыми ids (`add-resource`) |
+| `clone_resource` | `stream`, `indices`, `to`, `seed`, `rewrite_references`, `retarget` | клоны ресурсов под новыми ids в тот же или другой поток, ссылки между клонами — на клоны, `retarget` переводит ресурсы потока на клоны (`clone-resource`) |
+| `import_model` | `file` (glTF/GLB, OBJ, FBX, USD), `template` (metamodel или меш), `name`, `stream`, `collision` (`mesh`, `hull`, `box`), `format`, `retarget`, `dry_run` | `model-import`: без `name` заменяет меши образца, с `name` — новый набор (metamodel, меши, материалы, импортированные текстуры), со `stream` — в другом потоке (`ImportPlan::put_into`; общие с образцом материалы и текстуры остаются в его потоке, поэтому образец берётся из цепочки родителей — иначе предупреждение), с `collision` — своя коллизия из геометрии; в ответе id новой metamodel для `add_object` |
+| `import_texture` | `texture` (ключ `tg4h`/`tg4d` или запрос), `file` (PNG, DDS) | `texture-import` |
+| `collision_build` | `metamodel`, `kind`, `from` (файл модели), `dry_run` | `collision-build`: новая `hkx` из меша metamodel или файла |
+
+В новом потоке ресурсы пишутся в порядке добавления, но SimGroup — после
+всех остальных (`workspace::file_order`): как в потоках игры, цели ссылок
+(текстуры, материалы, меши, коллизия, модели) идут раньше групп, которые
+их ставят, даже если объект добавлен до импорта модели. `validate`
+проверяет ссылки ресурсов новых потоков по их родителям
+(`Workspace::load_scope`); раньше новые потоки пропускались.
+
+Порядок для новой зоны: `add_stream` (родитель — поток уровня, например
+`gf2/cuba`) → `add_simgroup` → `import_model` с `name`, `stream` и
+`collision` (образец — metamodel с частью коллизии из потока-родителя или
+его предков) → `add_object` (`group` — ключ группы, `template` — объект
+нужного класса, `model` — id из ответа) → `validate` → `play` и
+`stream_load` нового потока, или `mod_build`.
+
+**Импорт файлов и связи логики (этап 57).**
+
+| Инструмент | Параметры | Что делает (как в CLI) |
+|---|---|---|
+| `import_file` | `resource`, `file`, `raw` | файл в ресурс по его типу: `lh2` — JSON `export` (`text-import`, ядро `text::import_json`), SimGroup, metamodel, variabledictionary, partsdb — JSON `export` (`logic-import`), навигационный граф — его JSON (`graph-import`, ссылки соседних графов следуют), диалог — его JSON (`dialogue-import`), Lua — исходник `.lua`, скомпилированный под игру с именем куска оригинала (`lua-import`), или `.luac`; `raw` — любые данные как есть (`replace`). Ресурсы, добавленные рабочим пространством, тоже |
+| `import_sound` | `target` (`<ключ sbk>#<номер>` или файл архива), `file` | `sound-import`: звук приводится к каналам, частоте и петле заменяемого |
+| `import_video` | `movie`, `video`, `audio`, `no_audio`, `quantizer` | `video-import` в рабочее пространство (файл игры, не ресурс) |
+| `edit_subtitle` | `entry` (речь архива), `texts` (`{"en": "…"}`) | `subtitle --set` |
+| `logic_connect` | `from`, `to` (`<поток>#<ресурс>:<объект>:<пин>`), `disconnect` | `logic-connect`: соединить пины (атрибуты сообщений, новое имя сообщения при нужде) или разъединить |
+
+### 3.4 Выгрузка (папка вывода)
+
+`export` и `media` пишут файлы только внутрь папки `--output-dir`
+(`Toolkit::output_path`: имя — относительный путь без `..`, папки
+создаются); без неё — ошибка с советом. Ответ — пути записанных файлов.
+Игра и рабочее пространство не меняются; читается версия рабочего
+пространства, если не `original`.
+
+| Тип ресурса | `format` | Что пишет `export` |
+|---|---|---|
+| `tg4h`, `tg4d` | `png` (по умолчанию; каждый слой), `dds` | текстура (`textures`) |
+| `mesh` | `glb` (по умолчанию), `gltf`, `obj`, `fbx`, `usd`, `usda` | модель с материалами и текстурами (`models`) |
+| `metamodel` | то же; `json` | каждый меш модели из её потока отдельным файлом; JSON `logic-export` |
+| `hkx` | `obj` (по умолчанию), `glb` | треугольники тел в пространстве модели и JSON пакета (`collision-export`) |
+| `sbk` | `wav` (по умолчанию), `json` | по файлу на звук банка, номера — для `import_sound` (`audio --wav`) |
+| `lua` | `lua` (по умолчанию), `luac` | декомпилированный исходник Lua 5.0 (`lua-decompile`) или байт-код (`lua-export`) |
+| `ffn` | `png` (по умолчанию) | атлас шрифта и JSON глифов (`fonts`) |
+| `lh2` | `json` | таблица строк в виде `text-export` (обратно — `import_file`) |
+| `graph` | `json` | граф в виде `graph-export` |
+| SimGroup, variabledictionary, partsdb | `json` | `logic-export` с полями `stream`, `resource`, `type`, `id` |
+| остальные с видом `resource_json` (`dlg`, `trinity_seq_master`, `tob`, `rcb`, `bnk`, `chv`, `smb`, `material`, …) | `json` | тот же JSON |
+| любой | `raw` | данные как хранятся (`extract`); тип без другой выгрузки получает их по умолчанию |
+
+`media`: без `name` — список роликов (`video-info` папки) или звуков
+архивов (`viv-list`); с `name` — сведения о ролике (`video-info`) или
+звуке (каналы, частота, длина, субтитры речи), `wav` — звук в WAV
+(`video-export --audio`, `audio`), `frames`/`key_frames` — кадры в PNG
+встроенным декодером VP6 (`video-export --frame/--key-frames`, ключевых —
+не больше 200). Импортированные ролики и звуки рабочего пространства
+видны, пока не задан `original`.
+
+### 3.5 Команды CLI без инструмента
+
+Сверка `enum Command` и подкоманд (этап 57). Не перенесены сознательно:
+
+| Команды | Почему нет |
+|---|---|
+| `info`, `list`, `extract`, `toc`, `validate`, `types`, `dump` | низкоуровневый просмотр файлов: `list_streams`, `search`, `resource_info`, `resource_json`, `export raw` дают то же по ресурсам; проверка разбора всей игры — работа корпусного теста |
+| `repack`, `rewrite`, `replace --no-toc`, `restore` | запись в файлы игры мимо рабочего пространства, без отмены: противоречит устройству сервера (`apply`/`unapply` пишут игру из рабочего пространства); `replace` через рабочее пространство — `import_file raw` |
+| `edit`, `simgroup-set`, `level add/duplicate/remove`, `logic-import`, `text-add`, `graph-edit`, `script-*` | уже есть: `set_attribute`, `move_object`, `add_object`, `duplicate_object`, `remove_object`, `import_file`, `add_string`, `graph_edit`, `edit_script`, `scripts` |
+| `nav *`, `messages`, `logic-graph`, `logic-missions`, `level list/info/objects`, `dialogues`, `dialogue`, `sbk-info`, `cutscene list/show`, `anim list/events`, `partsdb list/show`, `skeletons`, `lua-list` | просмотр покрыт `search`, `resource_info`, `lookup_hash`, `logic_graph` (`scope: mission:`), `level_objects`, `resource_json` (диалоги, кадры роликов, банки анимаций и звуков, partsdb, риги); схема пинов — ресурс `doctor-toolkit://schema/logic_schema.toml`; листинг опкодов Lua — инструмент отладки компилятора |
+| `textures`, `models`, `audio`, `fonts`, `apx-export`, `text-export`, `logic-export`, `lua-export`, `collision-export`, `graph-export`, `dialogue-export`, `video-export`, `video-info`, `viv-list` | выгрузка всей игры разом в CLI; в MCP — по ресурсу `export` и `media` (ответ не должен расти без предела) |
+| `model-info` | `import_model` с `dry_run` показывает, как модель будет прочитана |
+| `anim export/import/graph/node-types/encode-test`, `cutscene export/import/move/clip/subtitle/gltf`, `partsdb add-part/allow/character`, `apx-import`, `apx-text-refs`, `sbk-edit`, `sound-add`, `sound-encode` | специальные правки со многими параметрами (персонаж и скелет для анимации, кадры ролика, части персонажа, банки звука): остаются в CLI и редакторе; ИИ-клиент может выгрузить JSON (`export`) и вернуть его `import_file` для partsdb и SimGroup |
+| `logic-run` | симуляция логики без игры — проверка, которая в MCP заменяется живой игрой (`play`, `send_message`) |
+| `workspace *`, `project new/pull` | статус, сравнение, отмена, применение — `workspace_status`, `workspace_diff`, `undo`, `redo`, `apply`, `unapply`; создание и забор проекта — разовая настройка человеком |
+| `mods build/install-workspace/info/export/import-old` | `mod_build` + `mods_manage install`; сведения о файле мода и перенос старых патчей — разовые действия |
+| `live peek/break/continue/pause/freecam/texture/log/find/files/camera/streams/install/uninstall/fake` | отладка игры и установка модуля (этапы 35, 47): `play` ставит модуль сам; правка мира вживую — отдельный этап |
+| `detect`, `play`, `mcp` | `play` сервера; `detect` и сам `mcp` — запуск, не работа с игрой |
 
 ### 3.3 Игра (`--allow-game`)
 
@@ -193,6 +300,7 @@ unchanged`. Ошибка ничего не записывает.
 | `set_variable` | `name` (имя или `0x`-хэш), `value` | переменная сюжета, как `VariableOperator`: следящие срабатывают сразу; новое значение |
 | `stream_load` | `name` (`gf2/cuba/…`) | загрузить поток, как `LoadStream`, и дождаться (до 20 с); пока предыдущий запрос не выполнен — отказ |
 | `stream_unload` | `name`, `force` | выгрузить поток, загруженный связью (`force` — и игровой) |
+| `mods_manage` | `action` (`install`, `uninstall`, `enable`, `disable`, `move`, `apply`, `unapply`), `files`, `ids`, `position`, `disabled`, `force` | менеджер модов (`mods install/uninstall/enable/disable/move/apply/unapply`); `apply`/`unapply` отказывают, пока игра идёт; моды доходят до игры и без `apply` — `play` с `mods: true` |
 
 **`play`.** Способ запуска — из настроек «Играть» редактора для этой игры
 (`settings.toml`, `games.<папка>.play.method`), иначе найденный
@@ -281,9 +389,14 @@ unchanged`. Ошибка ничего не записывает.
   каждый файл игры, рабочего пространства и проекта (размер, время, хэш
   содержимого) до и после серии вызовов всех инструментов; корпусный тест —
   размеры и время всех файлов игры.
-- **Пути.** Ни один инструмент не принимает путь к файлу (и запись тоже:
-  мод — в `mods/` рабочего пространства, граф скрипта — в `scripts/`). Потоки ищутся
-  только среди потоков игры (`find_stream`), имена с `..` отклоняются;
+- **Пути.** Запись — только в заданные при запуске папки: мод — в
+  `mods/` рабочего пространства, граф скрипта — в `scripts/`, выгрузка —
+  в `--output-dir` (имя — относительный путь без `..`). Путь к файлу
+  принимают только инструменты импорта `--allow-edits` и `mods_manage`
+  (`--allow-game`): они **читают** этот файл (модель, текстуру, звук,
+  ролик, JSON, мод). Потоки ищутся
+  только среди потоков игры (`find_stream`) и новых потоков рабочего
+  пространства, имена с `..` отклоняются;
   ресурсы — только из фиксированного списка URI, путь в URI ничего не
   открывает. Читаются только файлы игры, рабочего пространства и проекта,
   заданные при запуске.
@@ -341,9 +454,11 @@ Windows) — ошибка с именем держателя. Режим «Пр�
 
 | Тест | Что проверяет |
 |---|---|
-| `crates/doctor-toolkit-mcp/tests/server.rs` | на поддельной игре (`doctor_toolkit::testing`) с рабочим пространством (новая логика, правка строки) и проектом: `initialize`, `tools/list` (20 инструментов без флагов, аннотации, схемы), `resources/list` и `read`, отказ на URI с путём и на неизвестный инструмент; каждый инструмент, страницы `search` и `resource_json` (склейка страниц равна целому), `pointer`, `original`, граф логики на 2 шага, обход вверх по имени объекта, `level_objects` рядом с точкой; имена потоков с `..`; неизменность файлов; ограда и предел ответа; игра без рабочего пространства и проекта |
+| `crates/doctor-toolkit-mcp/tests/server.rs` | на поддельной игре (`doctor_toolkit::testing`) с рабочим пространством (новая логика, правка строки) и проектом: `initialize`, `tools/list` (25 инструментов без флагов, аннотации, схемы), `resources/list` и `read`, отказ на URI с путём и на неизвестный инструмент; каждый инструмент, страницы `search` и `resource_json` (склейка страниц равна целому), `pointer`, `original`, граф логики на 2 шага, обход вверх по имени объекта, `level_objects` рядом с точкой; имена потоков с `..`; неизменность файлов; ограда и предел ответа; игра без рабочего пространства и проекта |
 | `crates/doctor-toolkit-cli/tests/mcp.rs` | `doctor-toolkit mcp` дочерним процессом по stdio: в stdout только JSON-RPC, папка игры не тронута |
 | `crates/doctor-toolkit-mcp/tests/write.rs` | этап 51 на поддельной игре (с навигационным графом и шаблоном `LuaAudioScript`, `testing::write_extra_streams`): флаги включают и прячут инструменты, аннотации; каждый инструмент записи — одна операция, сравнение в ответе, `undo` возвращает прежнее сравнение, `redo` — правку; ошибки ничего не пишут (в том числе имя потока с `..`); `validate`, `mod_build` (файл внутри рабочего пространства), `project_build` без проекта; файлы игры не изменились; блокировка редактора; 12 параллельных правок с трёх клиентов; `apply`/`unapply` и `play` → живая связь (поддельный модуль: игрок, объекты, телепорт, сообщение всем и одному, Lua) → `stop` (файлы игры как до `play`, `cmd.txt` убран), отключение клиента останавливает игру — с подставной игрой и подставным X-сервером; запись в живую игру без флага и с модулем без записи; мир и состояние (этап 48: `game_state`, `variables` без флага, запись без флага — отказ; `set_time`, `set_money`, `set_variable`, `stream_load`/`stream_unload` с `--allow-game`, неверное время, чужой поток); снимок с настоящего Xvfb (если установлен) — `image/png` |
+| `crates/doctor-toolkit-mcp/tests/write.rs`, этап 57 | новая зона на поддельной игре: `add_stream` (повтор — ошибка), `add_simgroup`, `add_object` с образцом из уровня, `move_object` и `level_objects` по ключу группы, копия группы, `import_model` новым набором в новый поток, `clone_resource` и `add_resource` в него, `check_refs`, `validate` без ошибок, `mod_build` с новым потоком, `remove_stream` и `undo`; выгрузка `lh2` и графа, правка и `import_file` (повтор — без изменений), отказ для типа без импорта, `logic_connect` и разъединение; мод: `mod_build` → `mods_manage install/disable/uninstall`, `mods`, `integrity`; файлы игры не изменились |
+| `crates/doctor-toolkit-mcp/tests/export.rs` | `export` без папки вывода — ошибка с флагом; текстура в PNG, меш в GLB, таблица строк, SimGroup, граф, `raw`; имя с `..` и формат не того типа — ошибки; `media` |
 | `crates/doctor-toolkit-mcp/tests/bridge.rs` | подставной редактор на сокете: выбор, показ ресурса и объекта, запись с разрешением (редактор отдал и забрал блокировку, операция в рабочем пространстве) и с отказом (ничего не записано), без редактора — понятная ошибка |
 | `crates/doctor-toolkit-mcp/tests/corpus.rs` | на настоящей игре (`EARS_GF2_DIR`): поиск, SimGroup в JSON страницами и по `pointer`, диалог, Lua, материал, сообщение движка и граф от его слушателя на 2 шага, сводка миссии, объекты Бониты и рядом с точкой, хэш, рабочее пространство, ресурсы; файлы игры не изменились. Второй тест — все правки на **копии** рабочего пространства во временной папке (рабочее пространство в папке игры не трогается): перенос, копия и удаление объекта Бониты, атрибут MultiManager `gf2/globals_global`, строка «Fredo» в одной таблице и колонке, новая строка во всех таблицах языков, узел навигационного графа Бониты, скрипт-граф в `gf2/globals_global`, `validate` (0 ошибок), мод, отмена всего; файлы игры не изменились (17 с) |
 | `doctor_toolkit::workspace::lock`, `doctor_toolkit::bridge` | блокировка (держатель назван, второй дескриптор того же процесса тоже отклоняется, файл остаётся) и обмен по сокету |

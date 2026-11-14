@@ -609,3 +609,96 @@ fn breaking_objects_need_models_with_destructible_states() {
     group.objects[0].packets.pop();
     assert_eq!(compat::model_problem(&group, 0, &plain), None);
 }
+
+#[test]
+fn a_new_stream_gets_a_simgroup_with_objects_and_a_cloned_model() {
+    use super::edit::{self, GroupAt, ModelChoice};
+    let (dir, game) = zone_game();
+    let index = game.build_index(|_| {}).0;
+    let zone = game.find_stream("gf2/zone").unwrap();
+    let group = Location {
+        stream: zone,
+        resource: 1,
+    };
+    let mm_at = Location {
+        stream: zone,
+        resource: 0,
+    };
+    let mut ws =
+        crate::workspace::Workspace::for_game(&game, Some(&dir.path().join("ws"))).unwrap();
+    let none = |_: &Guid| false;
+    let stream =
+        crate::create::new_stream(&game, &ws, "gf2/doctor/area", "gf2/zone", false, &[], None)
+            .unwrap();
+    assert_eq!(stream.tocs, ["gf2/zone.toc"]);
+    ws.add_stream(&game, stream).unwrap();
+
+    // Not a stream of the game nor of the workspace.
+    assert!(edit::add_group(&game, &index, &mut ws, "gf2/nowhere", None, &none).is_err());
+    let empty = edit::add_group(&game, &index, &mut ws, "gf2/doctor/area", None, &none).unwrap();
+    assert_eq!(empty.objects, 0);
+    let at = GroupAt::Added(empty.key.clone());
+    assert!(
+        edit::current_group_at(&game, &ws, &at)
+            .unwrap()
+            .objects
+            .is_empty()
+    );
+
+    // An object copied from the zone, showing a clone of the zone's model:
+    // the clone goes into the new stream.
+    let added = edit::add_at(
+        &game,
+        &index,
+        &mut ws,
+        &at,
+        (&GroupAt::Game(group), 0),
+        ModelChoice::Clone(mm_at),
+        None,
+        &none,
+        true,
+    )
+    .unwrap();
+    assert_eq!(added.object, 0);
+    assert!(added.cloned.iter().all(|k| k.stream == "gf2/doctor/area"));
+    let (copy, _) = edit::duplicate_at(&game, &mut ws, &at, 0, [1.0, 0.0, 0.0], &none).unwrap();
+    assert_eq!(copy, 1);
+    assert_eq!(edit::remove_at(&game, &mut ws, &at, 1).unwrap(), 0);
+    let g = edit::current_group_at(&game, &ws, &at).unwrap();
+    assert_eq!(g.objects.len(), 1);
+    assert_eq!(g.model(&g.objects[0]), added.model);
+
+    // A copy of the zone's group: new GUIDs.
+    let copied = edit::add_group(
+        &game,
+        &index,
+        &mut ws,
+        "gf2/doctor/area",
+        Some((&GroupAt::Game(group), None)),
+        &none,
+    )
+    .unwrap();
+    assert_eq!(copied.objects, 1);
+    assert_ne!(copied.guids[0].0, copied.guids[0].1);
+
+    // The file holds the model before the SimGroups made earlier.
+    let order: Vec<u32> = ws
+        .new_stream_resources("gf2/doctor/area")
+        .iter()
+        .map(|c| c.key.type_id)
+        .collect();
+    assert_eq!(order.first(), Some(&TYPE_METAMODEL));
+    assert_eq!(order[order.len() - 2..], [TYPE_SIMGROUP, TYPE_SIMGROUP]);
+    ws.apply(&game, Default::default()).unwrap();
+    let written = std::fs::read(dir.path().join("gf2/doctor/area.str")).unwrap();
+    let layout = crate::container::ustream::StreamLayout::parse(&written).unwrap();
+    let types: Vec<u32> = layout.resources.iter().map(|r| r.header.type_id).collect();
+    assert_eq!(types, order);
+
+    // Undo takes back the copied group, then the removal.
+    ws.undo().unwrap();
+    assert_eq!(
+        ws.new_stream_resources("gf2/doctor/area").len(),
+        order.len() - 1
+    );
+}

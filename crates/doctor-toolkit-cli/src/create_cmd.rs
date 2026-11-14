@@ -11,9 +11,9 @@ use clap::Args;
 use doctor_toolkit::container::ustream::{ResourceHeader, Storage};
 use doctor_toolkit::create::{self, CloneOptions, IdForm, Remap};
 use doctor_toolkit::game::GameInstance;
-use doctor_toolkit::resource::names::{mem_policies, type_tags};
+use doctor_toolkit::resource::names::type_tags;
 use doctor_toolkit::workspace::{
-    NewResourceEdit, NewStream, ResourceEdit, ResourceKey, StorageChoice, Workspace,
+    NewResourceEdit, ResourceEdit, ResourceKey, StorageChoice, Workspace,
 };
 
 use crate::workspace_cmd::{self, EditMode};
@@ -129,24 +129,11 @@ pub struct CheckRefs {
 }
 
 fn parse_type(text: &str) -> Result<u32> {
-    if let Some(id) = type_tags().resolve(text) {
-        return Ok(id);
-    }
-    let hex = text.trim_start_matches("0x");
-    u32::from_str_radix(hex, 16).with_context(|| format!("unknown type `{text}`"))
+    Ok(create::parse_type(text)?)
 }
 
 fn parse_ids(text: &str) -> Result<[u32; 4]> {
-    let parts: Vec<u32> = text
-        .split('.')
-        .map(|p| u32::from_str_radix(p.trim_start_matches("0x"), 16))
-        .collect::<std::result::Result<_, _>>()
-        .with_context(|| format!("bad ids `{text}`"))?;
-    match parts.as_slice() {
-        [id] => Ok([*id; 4]),
-        [a, b, c, d] => Ok([*a, *b, *c, *d]),
-        _ => bail!("ids are one or four hexadecimal numbers separated by dots"),
-    }
+    Ok(create::parse_ids(text)?)
 }
 
 fn find_stream(game: &GameInstance, name: &str) -> Result<usize> {
@@ -177,11 +164,7 @@ pub fn add_resource(args: AddResource) -> Result<()> {
     let defaults = create::type_defaults(type_id);
     let mem_policy = match &args.policy {
         None => defaults.mem_policy,
-        Some(text) => match mem_policies().resolve(text) {
-            Some(hash) => hash,
-            None => u32::from_str_radix(text.trim_start_matches("0x"), 16)
-                .with_context(|| format!("unknown memory policy `{text}`"))?,
-        },
+        Some(text) => create::parse_mem_policy(text)?,
     };
     let before = match args.before {
         None => None,
@@ -341,54 +324,22 @@ fn retarget(
 pub fn add_stream(args: AddStream) -> Result<()> {
     let game = GameInstance::open(&args.game_dir)?;
     let mut ws = workspace_cmd::open_for_edit(&game, &args.mode)?;
-    let name = doctor_toolkit::workspace::key::normalize_stream(&args.name);
-    let parent = doctor_toolkit::workspace::key::normalize_stream(&args.parent);
-    let mut tocs = Vec::new();
-    let mut toc_parents = std::collections::BTreeMap::new();
-    for spec in &args.tocs {
-        match spec.split_once('=') {
-            Some((toc, parent)) => {
-                tocs.push(toc.to_owned());
-                toc_parents.insert(toc.to_owned(), parent.to_owned());
-            }
-            None => tocs.push(spec.clone()),
-        }
-    }
-    if tocs.is_empty() {
-        for (index, toc) in game.tocs().iter().enumerate() {
-            if game.load_toc(index)?.find_file(&parent).is_some() {
-                tocs.push(toc.rel_path.clone());
-            }
-        }
-    }
-    let guid: [u8; 16] = match &args.guid {
-        Some(text) => {
-            let bytes: Vec<u8> = (0..text.len())
-                .step_by(2)
-                .map(|i| u8::from_str_radix(text.get(i..i + 2).unwrap_or("x"), 16))
-                .collect::<std::result::Result<_, _>>()
-                .context("the GUID is 32 hexadecimal digits")?;
-            bytes
-                .try_into()
-                .map_err(|_| anyhow::anyhow!("the GUID is 32 hexadecimal digits"))?
-        }
-        None => create::new_stream_guid(&name, &game.toc_hashes()?),
-    };
-    let hash = doctor_toolkit::toc::guid_hash(&guid);
-    let guid_text: String = guid.iter().map(|b| format!("{b:02x}")).collect();
-    ws.add_stream(
+    let stream = create::new_stream(
         &game,
-        NewStream {
-            name: name.clone(),
-            guid: guid_text.clone(),
-            hash,
-            parent,
-            with_parent: args.with_parent,
-            tocs: tocs.clone(),
-            toc_parents,
-            label: String::new(),
-        },
+        &ws,
+        &args.name,
+        &args.parent,
+        args.with_parent,
+        &args.tocs,
+        args.guid.as_deref(),
     )?;
+    let (name, guid_text, hash, tocs) = (
+        stream.name.clone(),
+        stream.guid.clone(),
+        stream.hash,
+        stream.tocs.clone(),
+    );
+    ws.add_stream(&game, stream)?;
     out!(
         "new stream {name}: GUID {guid_text}, hash {hash:08x}, listed in {}",
         tocs.join(", ")

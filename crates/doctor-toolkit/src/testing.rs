@@ -265,6 +265,84 @@ pub fn triangle_glb(offset: f32, material: &str, skinned: bool) -> Vec<u8> {
     out
 }
 
+/// A binary glTF with a box `size` (metres; standing on y = 0, centred on X
+/// and Z) of eight corners and twelve triangles, with a material named
+/// `material`: a wall or a crate to import with collision.
+pub fn box_glb(size: [f32; 3], material: &str) -> Vec<u8> {
+    use serde_json::json;
+    let [x, y, z] = [size[0] / 2.0, size[1], size[2] / 2.0];
+    let corners: [[f32; 3]; 8] = [
+        [-x, 0.0, -z],
+        [x, 0.0, -z],
+        [x, 0.0, z],
+        [-x, 0.0, z],
+        [-x, y, -z],
+        [x, y, -z],
+        [x, y, z],
+        [-x, y, z],
+    ];
+    let triangles: [[u16; 3]; 12] = [
+        [0, 1, 2],
+        [0, 2, 3],
+        [4, 6, 5],
+        [4, 7, 6],
+        [0, 4, 5],
+        [0, 5, 1],
+        [1, 5, 6],
+        [1, 6, 2],
+        [2, 6, 7],
+        [2, 7, 3],
+        [3, 7, 4],
+        [3, 4, 0],
+    ];
+    let mut bin: Vec<u8> = corners
+        .iter()
+        .flatten()
+        .flat_map(|f| f.to_le_bytes())
+        .collect();
+    let positions = bin.len();
+    bin.extend(triangles.iter().flatten().flat_map(|i| i.to_le_bytes()));
+    let indices = bin.len() - positions;
+    while !bin.len().is_multiple_of(4) {
+        bin.push(0);
+    }
+    let doc = json!({
+        "asset": {"version": "2.0"},
+        "scene": 0,
+        "scenes": [{"nodes": [0]}],
+        "nodes": [{"name": "box", "mesh": 0}],
+        "materials": [{"name": material}],
+        "meshes": [{"name": "box", "primitives": [
+            {"attributes": {"POSITION": 0}, "indices": 1, "material": 0}
+        ]}],
+        "accessors": [
+            {"bufferView": 0, "componentType": 5126, "count": 8, "type": "VEC3",
+             "min": [-x, 0.0, -z], "max": [x, y, z]},
+            {"bufferView": 1, "componentType": 5123, "count": 36, "type": "SCALAR"},
+        ],
+        "bufferViews": [
+            {"buffer": 0, "byteOffset": 0, "byteLength": positions},
+            {"buffer": 0, "byteOffset": positions, "byteLength": indices},
+        ],
+        "buffers": [{"byteLength": bin.len()}],
+    });
+    let mut text = serde_json::to_vec(&doc).unwrap_or_default();
+    while !text.len().is_multiple_of(4) {
+        text.push(b' ');
+    }
+    let mut out = Vec::new();
+    out.extend_from_slice(b"glTF");
+    out.extend_from_slice(&2u32.to_le_bytes());
+    out.extend_from_slice(&((12 + 8 + text.len() + 8 + bin.len()) as u32).to_le_bytes());
+    out.extend_from_slice(&(text.len() as u32).to_le_bytes());
+    out.extend_from_slice(b"JSON");
+    out.extend_from_slice(&text);
+    out.extend_from_slice(&(bin.len() as u32).to_le_bytes());
+    out.extend_from_slice(b"BIN\0");
+    out.extend_from_slice(&bin);
+    out
+}
+
 /// Writes the miniature game into `root` (which must exist): `godfather2.exe`,
 /// [`LEVEL`] with the resources of the constants above, [`TEXT`] and a table
 /// of contents for both.
