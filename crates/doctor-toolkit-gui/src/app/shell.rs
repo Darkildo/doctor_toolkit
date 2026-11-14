@@ -229,7 +229,8 @@ pub struct Windows {
 
 /// `DOCTOR_TOOLKIT_GUI_SHELL=<window>[,…]`: opens shell windows for screenshots;
 /// `layout=level|resources|<name>` applies a layout, `drawer=content|log|changes`
-/// opens a drawer, `layouts` the window of the user's layouts.
+/// opens a drawer, `layouts` the window of the user's layouts, `content` a
+/// Content Browser docked among the documents.
 pub fn apply_capture_preset(app: &mut BrowserApp) {
     let Ok(spec) = std::env::var("DOCTOR_TOOLKIT_GUI_SHELL") else {
         return;
@@ -274,6 +275,12 @@ pub fn apply_capture_preset(app: &mut BrowserApp) {
                 app.drawers.open = Some(pane);
             }
             "layouts" => app.layout_window.open = true,
+            // A Content Browser docked among the documents (stage 55).
+            "content" => {
+                let id = app.new_pane_id();
+                app.dock_ops
+                    .push(DockOp::ShowPanel(Pane::ContentExtra { id }));
+            }
             "notify" => {
                 app.notes
                     .push(Level::Warning, "Example warning: shown as a pop-up");

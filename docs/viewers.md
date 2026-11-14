@@ -205,6 +205,7 @@ RGBA-текстуры.
 | `DOCTOR_TOOLKIT_GUI_MOVIES=<ролик>[:<кадр>][,play][,full]` | Открыть окно Movies с роликом и кадром; `play` — играть, `full` — на всё окно (`docs/formats/video.md` §5.1) |
 | `DOCTOR_TOOLKIT_GUI_LOGIC=<область>[;find=<текст>][;show][;run=<события>][;until=<с>][;live]` | Открыть граф логики на всё окно, выделить найденное, `show` — показать его в уровне (`docs/logic-graph.md` §6); `live` — включить слой «Вживую»; `run` — режим «Прогон» с начальными событиями (через `,`) до времени `until` (§9) |
 | `DOCTOR_TOOLKIT_GUI_LIVE=<порт>[:<токен>]` | Подключиться к модулю живой связи при старте; с `DOCTOR_TOOLKIT_GUI_LIVE_FOLLOW=1` вкладки уровня следуют за камерой игры, с `DOCTOR_TOOLKIT_GUI_SCRIPT` редактор скриптов открывает вкладку «Игра» (`docs/shell.md` §9.2) |
+| `DOCTOR_TOOLKIT_GUI_CONTENT=<папка или поток>[;filter=model,texture][;size=96][;list][;search=…][;select=…]` | Место, фильтры, размер плиток, поиск и выбранный ассет новых панелей Content Browser (`docs/shell.md` §11.7; `DOCTOR_TOOLKIT_GUI_SHELL=content` — ещё одна панель в раскладке, `drawer=content` — ящик) |
 | `DOCTOR_TOOLKIT_GUI_SHELL=…`, `DOCTOR_TOOLKIT_CONFIG_DIR=…` | Окна оболочки и каталог настроек (`docs/shell.md` §8) |
 | `DOCTOR_TOOLKIT_GUI_WIZARD=<мастер>[,опция…]` | Открыть мастер и пройти шаги (`docs/shell.md` §8, §10) |
 | `DOCTOR_TOOLKIT_GUI_BENCH=instances:5000` или `model:<поток>:<ресурс>` или `level:<зона>` | Замер рендера без окна (1600×900, 300 кадров с ожиданием GPU, число — `DOCTOR_TOOLKIT_GUI_BENCH_FRAMES`); `DOCTOR_TOOLKIT_GUI_BENCH_SHOT=<png>` сохраняет кадр |
@@ -281,3 +282,28 @@ preview** (`character_view.rs`). Игра и индекс ресурсов дл�
 Снимки: игрок `_all` — `character_player_all.png` (рубашка бордовая,
 брюки чёрные, как в игре); куртка без замен — отладочная RGB-маска
 (зелёная), так и задумано (`characters.md` §1).
+
+## 8. Превью Content Browser (этап 55)
+
+Миниатюры моделей и текстур панели Content Browser делает тот же рендер,
+что виды моделей и уровня (`app/content/thumb.rs`), на рабочих потоках:
+
+- **текстура** — самый маленький MIP не меньше 256 пикселей, декодированный
+  как в просмотре текстур и уменьшенный до 256, непрозрачный;
+- **модель** — сетки метамодели (как раскрывает их уровень, самый
+  подробный LOD) или одна сетка, загруженные как в просмотре моделей
+  (`model_view::load_limited`: игровые поверхности, текстуры не шире 256),
+  в 256×256 на прозрачном фоне; камера — та же, что в просмотре моделей по
+  умолчанию (`OrbitCamera::framing`). Экземпляр `SceneRenderer` свой, на
+  устройстве окна; если окно на OpenGL — на своём `wgpu`-устройстве
+  (`GpuContext::headless`).
+
+Кэш на диске — PNG по хэшу данных ресурса и версии рендера
+(`preview::RENDER_VERSION`; поменяйте её, если меняется вид превью: старые
+файлы не прочтутся и уйдут при чистке). Устройство кэша, ограничения и
+замеры — `docs/shell.md` §11.7. Замер на своей машине:
+
+```sh
+EARS_GF2_DIR="$GAME" PREVIEW_BENCH_STREAM=gf2/cuba/local \
+  cargo test --release -p doctor-toolkit-gui previews_of_a_large_stream -- --ignored --nocapture
+```

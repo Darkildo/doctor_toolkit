@@ -42,6 +42,7 @@ pub enum Command {
     ToggleZones,
     NewDetails,
     ContentDrawer,
+    NewContentBrowser,
     ShowWelcome,
     ThemeDark,
     ThemeLight,
@@ -317,6 +318,13 @@ pub const COMMANDS: &[Spec] = &[
         &[k(CTRL, Key::Space)],
         Global,
     ),
+    spec(
+        C::NewContentBrowser,
+        "cmd.new_content_browser",
+        Menu::View,
+        &[],
+        Global,
+    ),
     spec(C::ShowWelcome, "cmd.welcome", Menu::View, &[], Global),
     group(spec(
         C::ThemeDark,
@@ -589,6 +597,7 @@ impl BrowserApp {
         match command {
             C::OpenGame => idle,
             C::OpenStream
+            | C::NewContentBrowser
             | C::AllResources
             | C::LevelEditor
             | C::NewLevel
@@ -748,6 +757,11 @@ impl BrowserApp {
             C::ToggleZones => self.dock_ops.push(DockOp::TogglePanel(Pane::Zones)),
             C::NewDetails => self.new_details(),
             C::ContentDrawer => self.toggle_content(),
+            C::NewContentBrowser => {
+                let id = self.new_pane_id();
+                self.dock_ops
+                    .push(DockOp::ShowPanel(Pane::ContentExtra { id }));
+            }
             C::Save => self.save_all(),
             C::SaveLayout => {
                 let current = self.layouts.current.clone();
@@ -990,6 +1004,7 @@ mod tests {
             C::ToggleZones,
             C::NewDetails,
             C::ContentDrawer,
+            C::NewContentBrowser,
             C::SaveLayout,
             C::GizmoSelect,
             C::GizmoMove,

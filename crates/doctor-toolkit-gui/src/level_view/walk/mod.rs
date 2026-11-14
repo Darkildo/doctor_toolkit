@@ -383,6 +383,27 @@ impl Walk {
         }
     }
 
+    /// The collision world for placing objects dropped into the view (stage
+    /// 55): built in the background when there is none for this level or it
+    /// is stale; the last one built is used meanwhile.
+    pub fn world_for(
+        &mut self,
+        level: &Level,
+        catalog: &Catalog,
+        parents: &Parents,
+        centre: V3,
+    ) -> Option<&World> {
+        self.poll();
+        let fresh = self
+            .built
+            .as_ref()
+            .is_some_and(|b| b.key == Arc::as_ptr(&level.source) as usize);
+        if (!fresh || self.stale) && self.job.is_none() {
+            self.start_build(level, catalog, parents, centre);
+        }
+        self.built.as_ref().map(|b| &b.world)
+    }
+
     /// Starts walking at `at` (feet are put on the ground below it, or
     /// above it when there is nothing below).
     pub fn enter(&mut self, at: V3, level: &Level, catalog: &Catalog, parents: &Parents) {

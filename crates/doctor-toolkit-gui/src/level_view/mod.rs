@@ -35,6 +35,7 @@
 //! collision of the loaded zones, gravity, steps; problem marks and A to B.
 
 pub mod camera;
+pub mod drop;
 mod gizmo;
 pub use gizmo::{
     ANGLES as SNAP_ANGLES, Mode as GizmoMode, SCALES as SNAP_SCALES, STEPS as SNAP_STEPS, Snap,
@@ -2165,6 +2166,9 @@ impl LevelView {
             );
         }
         self.overlay_text(ui, rect);
+        if let Some(a) = self.drop_ui(ui, &response, rect, &view) {
+            action = Some(a);
+        }
         if let Some(marks) = self.live {
             live_marks(ui, rect, &to_screen, &marks);
             if let Some(a) = live::bar(ui, rect, &marks, &mut self.live_follow, &self.camera) {

@@ -379,6 +379,15 @@ impl World {
         Some((toi, self.owner(handle)))
     }
 
+    /// The first collider along the ray from `from` in the direction `dir`
+    /// (unit length) within `max` metres: the distance and the normal there.
+    pub fn cast(&self, from: V3, dir: V3, max: f32) -> Option<(f32, V3)> {
+        let ray = Ray::new(v(from), v(dir));
+        self.queries()
+            .cast_ray_and_get_normal(&ray, max, true)
+            .map(|(_, hit)| (hit.time_of_impact, a(hit.normal)))
+    }
+
     /// What the capsule of `body` with feet at `feet` overlaps, if anything.
     pub fn overlapping(&self, body: &BodySize, feet: V3) -> Option<Owner> {
         let shape = body.shape();

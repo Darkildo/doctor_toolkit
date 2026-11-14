@@ -82,9 +82,13 @@ pub enum Pane {
     Project,
     /// The game started by Play, shown in the editor (stage 33).
     Game,
-    /// The assets of the game (stage 52 shows the streams; stage 55 the
-    /// assets with previews). A drawer by default.
+    /// The assets of the game with previews (stage 55). A drawer by default.
     ContentBrowser,
+    /// Another Content Browser (View → New Content Browser), with a place
+    /// and filters of its own; closed for good, like another Details.
+    ContentExtra {
+        id: u64,
+    },
     /// The objects of the level in front: zones → classes → objects
     /// (stage 53).
     Outliner,
@@ -104,7 +108,8 @@ impl Pane {
             | Self::Search { id, .. }
             | Self::Level { id }
             | Self::Wizard { id, .. }
-            | Self::DetailsCopy { id } => Some(*id),
+            | Self::DetailsCopy { id }
+            | Self::ContentExtra { id } => Some(*id),
             Self::Logic { id, .. } => Some(*id),
             _ => None,
         }
@@ -122,6 +127,7 @@ impl Pane {
                 | Self::Outliner
                 | Self::Zones
                 | Self::DetailsCopy { .. }
+                | Self::ContentExtra { .. }
         )
     }
 
@@ -374,8 +380,8 @@ impl Behavior<Pane> for DockBehavior<'_> {
 
     fn on_tab_close(&mut self, tiles: &mut Tiles<Pane>, tile_id: TileId) -> bool {
         match tiles.get(tile_id) {
-            // Another Details panel goes for good.
-            Some(Tile::Pane(Pane::DetailsCopy { .. })) => true,
+            // Another Details panel or Content Browser goes for good.
+            Some(Tile::Pane(Pane::DetailsCopy { .. } | Pane::ContentExtra { .. })) => true,
             Some(Tile::Pane(p)) if p.is_panel() => {
                 tiles.set_visible(tile_id, false);
                 false
@@ -560,6 +566,7 @@ impl BrowserApp {
         self.levels
             .retain(|id, _| ids.contains(id) || wizard_levels.contains(id));
         self.logics.retain(|id, _| ids.contains(id));
+        self.content.retain(|id| ids.contains(&id));
         self.inspectors.copies.retain(|id, _| ids.contains(id));
         let levels = &self.levels;
         self.inspectors
@@ -773,6 +780,12 @@ impl BrowserApp {
             Pane::Project => tr("project.tab").to_owned(),
             Pane::Game => tr("gametab.title").to_owned(),
             Pane::ContentBrowser => tr("pane.content").to_owned(),
+            Pane::ContentExtra { id } => {
+                let mut extra: Vec<u64> = self.content.ids().filter(|&i| i != 0).collect();
+                extra.sort_unstable();
+                let n = extra.iter().position(|c| c == id).unwrap_or(0) + 2;
+                format!("{} {n}", tr("pane.content"))
+            }
             Pane::Outliner => tr("pane.outliner").to_owned(),
             Pane::Zones => tr("pane.zones").to_owned(),
             Pane::DetailsCopy { id } => {
@@ -811,7 +824,7 @@ pub fn dock_below(tree: &mut Tree<Pane>, pane: Pane) -> TileId {
 /// Removes a tab; a tool panel is hidden instead.
 fn close(tree: &mut Tree<Pane>, tile: TileId) {
     match tree.tiles.get(tile) {
-        Some(Tile::Pane(Pane::DetailsCopy { .. })) => {
+        Some(Tile::Pane(Pane::DetailsCopy { .. } | Pane::ContentExtra { .. })) => {
             tree.remove_recursively(tile);
         }
         Some(Tile::Pane(p)) if p.is_panel() => tree.tiles.set_visible(tile, false),

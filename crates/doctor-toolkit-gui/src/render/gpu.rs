@@ -798,6 +798,11 @@ impl SceneRenderer {
         self.sample_count
     }
 
+    /// The device the renderer draws with.
+    pub fn context(&self) -> &GpuContext {
+        &self.context
+    }
+
     /// Keeps up to `budget` meshes on the GPU (at least the ones drawn last).
     pub fn set_mesh_budget(&mut self, budget: usize) {
         self.mesh_budget = budget.max(1);

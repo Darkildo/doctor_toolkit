@@ -25,7 +25,7 @@ use crate::render::{
 };
 use load::PartInfo;
 
-pub use load::{LoadOptions, LoadedModel, load_model, load_with};
+pub use load::{LoadOptions, LoadedModel, load_limited, load_model, load_with};
 
 pub enum ModelPreview {
     Gpu(Box<GpuModelView>),

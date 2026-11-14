@@ -168,7 +168,11 @@ impl BrowserApp {
                     !rect.contains(p) && !self.drawers.buttons.iter().any(|b| b.contains(p))
                 })
         }) && !egui::Popup::is_any_open(ctx);
-        if escape || elsewhere {
+        // An asset dragged out of the drawer: it gets out of the way of
+        // the view it is dropped on.
+        let dragged_out = egui::DragAndDrop::has_payload_of_type::<super::dnd::DraggedAsset>(ctx)
+            && ctx.input(|i| i.pointer.latest_pos().is_some_and(|p| !rect.contains(p)));
+        if escape || elsewhere || dragged_out {
             self.drawers.open = None;
             return;
         }

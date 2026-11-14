@@ -63,6 +63,12 @@ impl Gpu {
         self.renderer.lock().unwrap_or_else(|e| e.into_inner())
     }
 
+    /// The device of the renderer, for another renderer on it (the previews
+    /// of the Content Browser draw on a worker thread).
+    pub fn context(&self) -> GpuContext {
+        self.lock().context().clone()
+    }
+
     /// Adapter name and backend.
     pub fn summary(&self) -> &str {
         &self.summary

@@ -368,6 +368,7 @@ impl BrowserApp {
     /// Releases every open game file before the game files are replaced.
     pub(super) fn release_files(&mut self) {
         self.files.release();
+        self.content.previews.release();
         for level in self.levels.values_mut() {
             level.release_files();
         }
@@ -376,6 +377,7 @@ impl BrowserApp {
     /// The game files were replaced: open again what the tabs show.
     pub(super) fn files_changed(&mut self) {
         self.files.resume();
+        self.content.files_changed();
         if let Some(game) = self.game.clone() {
             // The index reads the changed streams again.
             self.nav.refresh(game.clone());

@@ -156,16 +156,22 @@ fn role_name(role: TextureRole) -> String {
     format!("{role:?}").to_ascii_lowercase()
 }
 
-/// Uploads texture `hash` unless it is there; returns its key when present.
+/// Uploads texture `hash` unless it is there (from the first mip level not
+/// wider than `limit`, when given); returns its key when present.
 fn upload(
     hash: u32,
     assets: &mut dyn AssetSource,
     renderer: &mut SceneRenderer,
     srgb: &mut Option<bool>,
+    limit: Option<u32>,
 ) -> Option<u64> {
     let key = hash as u64;
     if !renderer.has_texture(key) {
-        let data = assets.texture(hash).as_ref().and_then(texture_data)?;
+        let texture = assets.texture(hash)?;
+        let data = match limit {
+            Some(limit) => crate::level_view::loader::texture_data(&texture, limit),
+            None => texture_data(&texture),
+        }?;
         *srgb = Some(data.srgb);
         renderer.upload_texture(key, &data);
     }
@@ -178,9 +184,11 @@ fn surface(
     assets: &mut dyn AssetSource,
     renderer: &mut SceneRenderer,
     base_srgb: Option<bool>,
+    limit: Option<u32>,
 ) -> Surface {
     let mut ignore = None;
-    let mut tex = |hash: Option<u32>| hash.and_then(|h| upload(h, assets, renderer, &mut ignore));
+    let mut tex =
+        |hash: Option<u32>| hash.and_then(|h| upload(h, assets, renderer, &mut ignore, limit));
     let model = match shading.family {
         Family::TintMask => SurfaceModel::TintMask,
         Family::Hair => SurfaceModel::Hair,
@@ -255,6 +263,19 @@ pub fn load_with(
     renderer: &mut SceneRenderer,
     options: &LoadOptions,
 ) -> doctor_toolkit::Result<LoadedModel> {
+    load_limited(model, key, assets, renderer, options, None)
+}
+
+/// [`load_with`] with textures from the first mip level not wider than
+/// `limit` (the previews of the Content Browser).
+pub fn load_limited(
+    model: &Model,
+    key: MeshKey,
+    assets: &mut dyn AssetSource,
+    renderer: &mut SceneRenderer,
+    options: &LoadOptions,
+    limit: Option<u32>,
+) -> doctor_toolkit::Result<LoadedModel> {
     let drawn = |hash: u32| options.swaps.get(&hash).copied().unwrap_or(hash);
     let skeleton = if model.bones.is_empty() {
         None
@@ -299,9 +320,9 @@ pub fn load_with(
                 let mut srgb = None;
                 let diffuse = material
                     .texture(TextureRole::Diffuse)
-                    .and_then(|hash| upload(hash, assets, renderer, &mut srgb));
+                    .and_then(|hash| upload(hash, assets, renderer, &mut srgb, limit));
                 let shading = Shading::from_material(&material);
-                let surface = surface(&shading, assets, renderer, srgb);
+                let surface = surface(&shading, assets, renderer, srgb, limit);
                 let mut shaders: Vec<String> =
                     material.shaders.iter().map(|s| shader_label(s.0)).collect();
                 shaders.push(shader_label(material.shadow_shader));

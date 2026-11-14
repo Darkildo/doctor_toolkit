@@ -9,7 +9,8 @@
 //!   layouts, the layout of each screen and how they are saved; `drawer`:
 //!   panels that slide up from the status bar (stage 52);
 //! - `theme`: the look in the manner of Unreal Engine 5 and the icons;
-//! - `content`: the Content Browser panel;
+//! - `content`: the Content Browser panels with previews (stage 55);
+//!   `dnd`: the payload of an asset dragged out of them;
 //! - `browse`: file list, stream tabs, all resources, search tabs, details;
 //! - `docs`: an opened resource with its views ([`crate::views`]) and the
 //!   open stream files;
@@ -26,7 +27,7 @@ mod browse;
 mod commands;
 mod content;
 mod details;
-mod dnd;
+pub mod dnd;
 mod dock;
 mod docs;
 mod drawer;
@@ -156,7 +157,8 @@ pub struct BrowserApp {
     layout_window: layouts::LayoutWindow,
     /// Panels shown as drawers over the bottom of the window.
     drawers: drawer::Drawers,
-    content: content::ContentState,
+    /// The Content Browsers and their previews (stage 55).
+    content: content::Content,
     /// The level tab drawn last, and the level the Outliner, Zones and
     /// Details panels show (stage 53).
     last_level: Option<u64>,
@@ -271,6 +273,7 @@ impl BrowserApp {
         ctx.set_zoom_factor(settings.ui_scale);
         let (tx, rx) = channel();
         let gpu = crate::render::Gpu::from_creation_context(cc);
+        let content = content::Content::new(ctx, gpu.as_ref().map(crate::render::Gpu::context));
         let loaded = layouts::load(&store);
         let mut drawers = drawer::Drawers::default();
         drawers.set(loaded.drawers);
@@ -289,7 +292,7 @@ impl BrowserApp {
             layouts: loaded.layouts,
             layout_window: layouts::LayoutWindow::default(),
             drawers,
-            content: content::ContentState::default(),
+            content,
             last_level: None,
             panel_level: None,
             outliners: HashMap::new(),
@@ -646,6 +649,7 @@ impl BrowserApp {
             || self.levels.values().any(LevelView::busy)
             || self.play.busy()
             || self.movies.busy()
+            || self.content.previews.busy()
             || self.job.is_some();
         let Some(capture) = &mut self.capture else {
             return;
@@ -950,6 +954,7 @@ impl eframe::App for BrowserApp {
             })
             .inner;
         self.drawer_ui(&ctx, dock_rect);
+        self.content_drag(&ctx);
         self.play_frame(&ctx);
         self.show_mods(&ctx);
         if let Some(game) = self.game.clone()
@@ -967,6 +972,7 @@ impl eframe::App for BrowserApp {
             self.run(command, &ctx);
         }
         self.apply_dock_ops();
+        self.content.previews.end_frame();
         self.notes.track(&self.status, self.nav.status.as_deref());
         self.notes.toasts(&ctx);
         self.track_settings(&ctx);

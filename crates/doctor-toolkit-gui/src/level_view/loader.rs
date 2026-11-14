@@ -347,8 +347,9 @@ fn mesh_data(
 /// Records of one texture: the texture, part names, vertices, indices.
 type PartGroup = (Option<u32>, String, Vec<Vertex>, Vec<u32>);
 
-/// Mip levels of a flat texture from the first one not larger than `limit`.
-fn texture_data(texture: &Texture, limit: u32) -> Option<TextureData> {
+/// Mip levels of a flat texture from the first one not larger than `limit`
+/// (also the textures of the Content Browser's previews).
+pub(crate) fn texture_data(texture: &Texture, limit: u32) -> Option<TextureData> {
     let header = &texture.header;
     if header.kind() != Kind::Flat {
         return None;
