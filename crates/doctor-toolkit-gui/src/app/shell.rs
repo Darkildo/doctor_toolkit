@@ -167,10 +167,15 @@ impl Notes {
 
     /// Title of the Log tab, with the number of new problems.
     pub fn title(&self) -> String {
+        self.title_for(tr("pane.log"))
+    }
+
+    /// `label` with the number of new problems.
+    pub fn title_for(&self, label: &str) -> String {
         if self.unseen > 0 {
-            format!("{} ({})", tr("pane.log"), self.unseen)
+            format!("{label} ({})", self.unseen)
         } else {
-            tr("pane.log").to_owned()
+            label.to_owned()
         }
     }
 
@@ -222,7 +227,9 @@ pub struct Windows {
     pub confirm_restore: bool,
 }
 
-/// `DOCTOR_TOOLKIT_GUI_SHELL=<window>[,…]`: opens shell windows for screenshots.
+/// `DOCTOR_TOOLKIT_GUI_SHELL=<window>[,…]`: opens shell windows for screenshots;
+/// `layout=level|resources|<name>` applies a layout, `drawer=content|log|changes`
+/// opens a drawer, `layouts` the window of the user's layouts.
 pub fn apply_capture_preset(app: &mut BrowserApp) {
     let Ok(spec) = std::env::var("DOCTOR_TOOLKIT_GUI_SHELL") else {
         return;
@@ -247,6 +254,26 @@ pub fn apply_capture_preset(app: &mut BrowserApp) {
                 app.pin_on_capture = true;
                 app.maximize_pinned = true;
             }
+            "layout" => {
+                let id = match value {
+                    "level" => super::layouts::LayoutId::Builtin(super::layouts::Builtin::Level),
+                    "resources" => {
+                        super::layouts::LayoutId::Builtin(super::layouts::Builtin::Resources)
+                    }
+                    name => super::layouts::LayoutId::User(name.to_owned()),
+                };
+                app.dock_ops.push(DockOp::ApplyLayout(id));
+            }
+            "drawer" => {
+                let pane = match value {
+                    "log" => Pane::Log,
+                    "changes" => Pane::Changes,
+                    _ => Pane::ContentBrowser,
+                };
+                app.drawers.add(pane.clone());
+                app.drawers.open = Some(pane);
+            }
+            "layouts" => app.layout_window.open = true,
             "notify" => {
                 app.notes
                     .push(Level::Warning, "Example warning: shown as a pop-up");
@@ -340,9 +367,15 @@ impl BrowserApp {
 
     // ------------------------------------------------------------ status bar
 
-    /// Running jobs with their progress and cancel buttons, then the last message.
+    /// The drawers (Content Drawer, Output Log), the live link, running
+    /// jobs with their progress and cancel buttons and the last message;
+    /// on the right the last edit to undo and the edition of the game.
     pub(super) fn status_bar(&mut self, ui: &mut egui::Ui) {
-        ui.horizontal(|ui| {
+        ui.horizontal_centered(|ui| {
+            ui.spacing_mut().item_spacing.x = 4.0;
+            self.drawer_buttons(ui);
+            self.link_button(ui);
+            ui.separator();
             let mut jobs: Vec<(String, Option<f32>, Option<&std::sync::atomic::AtomicBool>)> =
                 Vec::new();
             if let Some(job) = &self.job {
@@ -414,35 +447,107 @@ impl BrowserApp {
                 ui.separator();
                 ui.ctx().request_repaint_after(Duration::from_millis(100));
             }
-            let level = Level::of(&self.status);
-            let text = if self.status.is_empty() && self.game.is_none() {
-                tr("status.start")
-            } else {
-                self.status.as_str()
-            };
-            ui.add(
-                egui::Label::new(RichText::new(text).color(level.color(ui.visuals()))).truncate(),
-            );
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let problems = self.notes.unseen;
-                let text = if problems > 0 {
-                    RichText::new(format!("⚠ {problems}")).color(doctor_toolkit_mods::WARN)
-                } else {
-                    RichText::new(tr("pane.log")).weak()
-                };
-                if ui
-                    .small_button(text)
-                    .on_hover_text(tr("status.log_hint"))
-                    .clicked()
-                {
-                    self.dock_ops.push(DockOp::ShowPanel(Pane::Log));
-                }
+                ui.spacing_mut().item_spacing.x = 4.0;
+                self.edition_label(ui);
+                self.undo_button(ui);
                 self.external_status(ui);
                 if let Some(status) = &self.nav.status {
                     ui.add(egui::Label::new(RichText::new(status).weak()).truncate());
                 }
+                let level = Level::of(&self.status);
+                let text = if self.status.is_empty() && self.game.is_none() {
+                    tr("status.start")
+                } else {
+                    self.status.as_str()
+                };
+                ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                    ui.add(
+                        egui::Label::new(RichText::new(text).color(level.color(ui.visuals())))
+                            .truncate(),
+                    );
+                });
             });
         });
+    }
+
+    /// The state of the live link; a click shows the game tab.
+    fn link_button(&mut self, ui: &mut egui::Ui) {
+        let (text, color) = if self.play.live.connected() {
+            (tr("status.link_up"), Some(doctor_toolkit_mods::GOOD))
+        } else if self.play.launched() {
+            (tr("status.link_waiting"), Some(doctor_toolkit_mods::WARN))
+        } else {
+            (tr("status.link_down"), None)
+        };
+        let response = super::theme::tool_button(
+            ui,
+            Some(super::theme::Icon::Link),
+            text,
+            false,
+            super::theme::Tone::Flat,
+        )
+        .on_hover_text(tr("status.link_hint"));
+        if let Some(color) = color {
+            let dot = egui::pos2(response.rect.right() - 4.0, response.rect.top() + 5.0);
+            ui.painter().circle_filled(dot, 2.5, color);
+        }
+        if response.clicked() && self.play.game_view.is_running() {
+            self.show_game_tab();
+        }
+    }
+
+    /// "Undo: <the last edit>" (Ctrl+Z).
+    fn undo_button(&mut self, ui: &mut egui::Ui) {
+        let label = self.workspace.as_ref().and_then(|ws| ws.undo_label());
+        match label {
+            Some(label) => {
+                // Long labels (wizards) are cut: the status bar is one line.
+                let short: String = if label.chars().count() > 32 {
+                    label.chars().take(31).chain(['…']).collect()
+                } else {
+                    label.to_owned()
+                };
+                let text = trf("status.undo", &[("label", &short)]);
+                let hint = format!(
+                    "{} ({})",
+                    Command::Undo.label(),
+                    Command::Undo.shortcut_text(ui.ctx()).unwrap_or_default()
+                );
+                if super::theme::tool_button(
+                    ui,
+                    Some(super::theme::Icon::Undo),
+                    &text,
+                    false,
+                    super::theme::Tone::Flat,
+                )
+                .on_hover_text(format!("{label}\n{hint}"))
+                .clicked()
+                {
+                    self.pending.push(Command::Undo);
+                }
+            }
+            None if self.game.is_some() => {
+                ui.label(RichText::new(tr("status.nothing_to_undo")).weak());
+            }
+            None => {}
+        }
+    }
+
+    /// The edition of the game, short; the whole summary and the folder as
+    /// the hint.
+    fn edition_label(&mut self, ui: &mut egui::Ui) {
+        let Some(game) = self.game.clone() else {
+            return;
+        };
+        let edition = self.edition();
+        let short = edition.map_or_else(|| game.profile().name.to_owned(), |e| e.name());
+        let hint = format!(
+            "{}\n{}",
+            edition.map_or_else(|| game.profile().name.to_owned(), |e| e.summary()),
+            game.root().display()
+        );
+        ui.label(RichText::new(short).weak()).on_hover_text(hint);
     }
 
     // -------------------------------------------------------------- log panel

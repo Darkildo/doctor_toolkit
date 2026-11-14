@@ -1,6 +1,5 @@
-//! The menu bar, built from the command table, and the toolbar under it.
-
-use egui::RichText;
+//! The menu bar, built from the command table, with back and forward and the
+//! search box at its right end (the main toolbar under it is `toolbar`).
 
 use doctor_toolkit_mods::i18n::tr;
 
@@ -21,9 +20,33 @@ impl BrowserApp {
                         if spec.command == Command::OpenStream {
                             self.recent_menu(ui);
                         }
+                        if spec.command == Command::ResetLayout {
+                            self.layouts_menu(ui);
+                        }
                     }
                 });
             }
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.add_enabled_ui(self.game.is_some(), |ui| {
+                    if let Some(action) = self.nav.search_box(ui) {
+                        self.nav_action(action);
+                    }
+                    for (command, text) in [(Command::Forward, ">"), (Command::Back, "<")] {
+                        let hover = format!(
+                            "{} ({})",
+                            command.label(),
+                            command.shortcut_text(ui.ctx()).unwrap_or_default()
+                        );
+                        if ui
+                            .add_enabled(self.enabled(command), egui::Button::new(text).small())
+                            .on_hover_text(hover)
+                            .clicked()
+                        {
+                            self.pending.push(command);
+                        }
+                    }
+                });
+            });
         });
     }
 
@@ -60,60 +83,6 @@ impl BrowserApp {
                     self.open_game(dir, ui.ctx());
                 }
             });
-        });
-    }
-
-    /// Back and forward, the search box, the workspace state, Mods and the
-    /// game directory.
-    pub(super) fn toolbar(&mut self, ui: &mut egui::Ui) {
-        ui.horizontal(|ui| {
-            ui.add_enabled_ui(self.game.is_some(), |ui| {
-                for (command, text) in [(Command::Back, "<"), (Command::Forward, ">")] {
-                    let hover = format!(
-                        "{} ({})",
-                        command.label(),
-                        command.shortcut_text(ui.ctx()).unwrap_or_default()
-                    );
-                    if ui
-                        .add_enabled(self.enabled(command), egui::Button::new(text))
-                        .on_hover_text(hover)
-                        .clicked()
-                    {
-                        self.pending.push(command);
-                    }
-                }
-                if let Some(action) = self.nav.search_box(ui) {
-                    self.nav_action(action);
-                }
-            });
-            let Some(game) = self.game.clone() else {
-                ui.separator();
-                if ui.button(tr("cmd.open_game")).clicked() {
-                    self.pending.push(Command::OpenGame);
-                }
-                return;
-            };
-            ui.separator();
-            self.workspace_bar(ui);
-            ui.separator();
-            self.mods_button(ui);
-            self.movies.button(ui);
-            self.play_button(ui);
-            ui.separator();
-            if ui
-                .add_enabled(self.job.is_none(), egui::Button::new(tr("cmd.restore")))
-                .on_hover_text(tr("restore.hint"))
-                .clicked()
-            {
-                self.pending.push(Command::RestoreOriginals);
-            }
-            ui.separator();
-            let hover = self.edition_summary().map_or_else(
-                || game.profile().name.to_owned(),
-                |e| format!("{}\n{e}", game.profile().name),
-            );
-            ui.label(RichText::new(game.root().display().to_string()).weak())
-                .on_hover_text(hover);
         });
     }
 }

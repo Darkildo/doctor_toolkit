@@ -652,12 +652,22 @@ cargo run --release -p doctor-toolkit-gui -- "$GAME"
 cargo run --release -p doctor-toolkit-gui -- "$GAME" gf2/frontend   # open a stream directly
 ```
 
-- The window is a menu bar (File, Edit, View, Tools, Help), a toolbar, tabs
-  with dockable panels and a status bar. Streams, resources, searches and
-  levels open as tabs; **Files**, **Details**, **Changes** and **Log** are
-  panels that can be hidden (Ctrl+1…4), dragged into other groups or split.
-  Double-click a tab (Ctrl+M) to show it alone. Tabs, layout, the last game
-  and selection come back at the next start. The **command palette**
+- The window looks and works like the Unreal Engine 5 editor: a menu bar
+  (File, Edit, View, Level, Tools, Wizards, Help), a main toolbar (save; for
+  a level the gizmo modes, world or local axes, snapping and **Add**; the
+  changes not yet in the game, **Apply to game** and a green **Play**),
+  tabs with dockable panels and a status bar with the **Content Drawer**
+  (Ctrl+Space) and **Output Log** buttons, the live link, the last edit to
+  undo and the game edition. Streams, resources, searches and levels open as
+  tabs; **Files**, **Details**, **Changes**, **Log**, **Outliner**,
+  **Object** and the **Content Browser** are panels that can be hidden
+  (Ctrl+1…6), dragged into other groups, split, or made a drawer that slides
+  up over the window. Two layouts come built in, **Level Editor** (the view
+  large, Outliner over Details on the right, drawers below) and
+  **Resources**; your own layouts are saved, renamed and deleted under
+  View → Layouts, and each kind of screen (level, resources) remembers its
+  layout. Double-click a tab (Ctrl+M) to show it alone. Tabs, layouts, the
+  last game and selection come back at the next start. The **command palette**
   (Ctrl+Shift+P) runs any menu command and opens streams and resources by
   name, key, hash or text; **Help → Keyboard shortcuts** lists every key.
   Preferences (Ctrl+,): theme, interface scale, language, renderer, editors
@@ -704,18 +714,21 @@ cargo run --release -p doctor-toolkit-gui -- "$GAME" gf2/frontend   # open a str
 - Edits go to the workspace. Previews show the edited version: textures next
   to the original, changed strings highlighted with the original as a tooltip,
   changed resources marked with `*` in the stream.
-- **Changes** in the toolbar shows the Changes panel with their state
+- The change counter in the toolbar shows the Changes panel with their state
   (pending, applied, conflict), byte and string diffs and the history;
   **Apply to game** writes them, **Revert game** puts the originals back.
   Ctrl+Z / Ctrl+Shift+Z undo and redo.
-- **Write to game at once** applies every change immediately (direct mode).
-- **Tools → Level editor** (Ctrl+L) opens the level editor in a tab. Check zones on the left (a district's
+- **Write to game at once** (under **Apply to game ▾**) applies every
+  change immediately (direct mode).
+- **Tools → Level editor** (Ctrl+L) opens the level editor in a tab, in the
+  Level Editor layout. Check zones in the Outliner (a district's
   `high` directory is a good start) and **Load**; the scene fills in while
   meshes convert in the background. Right-drag looks around, W A S D / Q E
   move (Shift faster), the wheel moves forward, Alt-drag orbits the selection,
   `F` or a double-click flies to it. Click selects an object; its SimGroup
-  editor opens on the right. The gizmo moves (`1`) or rotates (`2`) along
-  world axes, Ctrl snaps to 0.5 m / 15°. **Duplicate**, **Remove** and
+  editor opens on the right. The gizmo moves (`1`), rotates (`2`) or scales
+  (`3`) along the world's or the object's axes (toolbar), and snaps to
+  steps (0.5 m / 15° / ×0.25 by default) always or with Ctrl. **Duplicate**, **Remove** and
   **Add object** (a copy of the selected object with another metamodel, or a
   clone of one in this zone) record their edit in the workspace; undo works
   as everywhere. Filters hide markers, trees, AI points and object classes;

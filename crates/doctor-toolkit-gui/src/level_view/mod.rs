@@ -7,7 +7,9 @@
 //!   distance; markers for objects without a mesh, trees and AI points.
 //!   Fly camera (right drag look, W A S D Q E, wheel, Alt + drag orbit).
 //!   Click selects (GPU id pass, or a CPU ray on software adapters).
-//! - **Gizmo**: move along or rotate about world axes; Ctrl snaps.
+//! - **Gizmo**: select, move, rotate or scale along the world's or the
+//!   object's axes; snapping always or with Ctrl (the main toolbar of the
+//!   shell switches them, stage 52).
 //! - **Object** (right): the SimGroup object browser and editor
 //!   ([`LogicView`]) with the selected object; duplicate, remove, add.
 //!
@@ -27,6 +29,10 @@
 
 pub mod camera;
 mod gizmo;
+pub use gizmo::{
+    ANGLES as SNAP_ANGLES, Mode as GizmoMode, SCALES as SNAP_SCALES, STEPS as SNAP_STEPS, Snap,
+    Space as GizmoSpace,
+};
 mod live;
 pub mod loader;
 pub mod nav;
@@ -133,7 +139,7 @@ struct RenderKey {
     size: [u32; 2],
     generation: u64,
     options: crate::render::SceneOptions,
-    gizmo: (gizmo::Mode, Option<usize>),
+    gizmo: (gizmo::Mode, gizmo::Space, Option<usize>),
     collision: Option<(ObjRef, RowMatrix)>,
     nav: u64,
     walk: u64,
@@ -144,6 +150,10 @@ struct Drag {
     /// A node of a navigation graph instead of the object.
     node: Option<nav::NodeRef>,
     axis: usize,
+    /// The gizmo's axes when the drag started.
+    axes: [math::Vec3; 3],
+    /// The gizmo's size when the drag started (scale works in its units).
+    size: f32,
     start: RowMatrix,
     start_param: f32,
     current: RowMatrix,
@@ -205,6 +215,13 @@ pub struct LevelView {
     logic: Option<(usize, u64, LogicView)>,
     group_generation: Vec<u64>,
     gizmo: gizmo::Mode,
+    space: gizmo::Space,
+    snap: gizmo::Snap,
+    /// The zone browser and the object details are shown by panels of the
+    /// shell, not by the tab (stage 52; stage 53 replaces them).
+    hosted: (bool, bool),
+    /// Open the "Add object" section once.
+    open_add: bool,
     hover_axis: Option<usize>,
     drag: Option<Drag>,
     add_model: String,
@@ -286,6 +303,10 @@ impl LevelView {
             logic: None,
             group_generation: Vec::new(),
             gizmo: gizmo::Mode::Move,
+            space: gizmo::Space::World,
+            snap: gizmo::Snap::default(),
+            hosted: (false, false),
+            open_add: false,
             hover_axis: None,
             drag: None,
             add_model: String::new(),
@@ -731,7 +752,13 @@ impl LevelView {
             "turn" if floats.len() == 1 => LevelAction::SetTransform {
                 group,
                 object: r.object,
-                matrix: gizmo::apply(gizmo::Mode::Rotate, &transform?, 1, floats[0].to_radians()),
+                matrix: gizmo::apply(
+                    gizmo::Mode::Rotate,
+                    &transform?,
+                    &gizmo::WORLD,
+                    1,
+                    floats[0].to_radians(),
+                ),
             },
             "duplicate" => LevelAction::Duplicate {
                 group,
@@ -1081,6 +1108,94 @@ impl LevelView {
         self.live_follow = on;
     }
 
+    // ------------------------------------------------- the shell's toolbar
+
+    pub fn gizmo_mode(&self) -> GizmoMode {
+        self.gizmo
+    }
+
+    pub fn set_gizmo_mode(&mut self, mode: GizmoMode) {
+        self.gizmo = mode;
+        self.hover_axis = None;
+    }
+
+    pub fn gizmo_space(&self) -> GizmoSpace {
+        self.space
+    }
+
+    pub fn set_gizmo_space(&mut self, space: GizmoSpace) {
+        self.space = space;
+    }
+
+    pub fn snap(&self) -> Snap {
+        self.snap
+    }
+
+    pub fn set_snap(&mut self, snap: Snap) {
+        self.snap = snap;
+    }
+
+    /// Whether zones are loaded.
+    pub fn loaded(&self) -> bool {
+        self.level.is_some()
+    }
+
+    /// Whether an object is selected.
+    pub fn has_selection(&self) -> bool {
+        self.filter.selected.is_some()
+    }
+
+    /// Duplicates the selected object (the edit comes from the next `ui`).
+    pub fn request_duplicate(&mut self) {
+        if let Some((group, object)) = self.selected_location() {
+            self.nav_action = Some(LevelAction::Duplicate { group, object });
+        }
+    }
+
+    /// Opens the "Add object" section of the object details.
+    pub fn request_add(&mut self) {
+        self.open_add = true;
+    }
+
+    /// Starts the game at the camera, as "Play from here".
+    pub fn request_play_here(&mut self) {
+        self.play_here = true;
+    }
+
+    /// The shell shows the zone browser (`browser`) or the object details
+    /// (`details`) in panels of its own: the tab leaves them out.
+    pub fn set_hosted(&mut self, browser: bool, details: bool) {
+        self.hosted = (browser, details);
+    }
+
+    /// The zone browser for a panel of the shell.
+    pub fn browser_panel(&mut self, ui: &mut egui::Ui, ws: Option<&Workspace>) {
+        ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
+        let load = egui::ScrollArea::vertical()
+            .id_salt("level-browser-scroll")
+            .auto_shrink(false)
+            .show(ui, |ui| self.browser(ui))
+            .inner;
+        if load {
+            let ctx = ui.ctx().clone();
+            self.start_load(&ctx, ws);
+        }
+    }
+
+    /// The object details for a panel of the shell; `None` before zones are
+    /// loaded.
+    pub fn details_panel(&mut self, ui: &mut egui::Ui) -> Option<Option<LevelAction>> {
+        self.level.as_ref()?;
+        ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
+        Some(
+            egui::ScrollArea::vertical()
+                .id_salt("level-details-scroll")
+                .auto_shrink(false)
+                .show(ui, |ui| self.details(ui))
+                .inner,
+        )
+    }
+
     pub fn ui(&mut self, ui: &mut egui::Ui, ws: Option<&Workspace>) -> Option<LevelAction> {
         let ctx = ui.ctx().clone();
         if std::mem::take(&mut self.pending_autoload) {
@@ -1106,34 +1221,20 @@ impl LevelView {
                 streams: level.streams.clone(),
             });
         }
-        egui::Panel::left("level-browser")
-            .resizable(true)
-            .default_size(260.0)
-            .max_size(420.0)
-            .show(ui, |ui| {
-                ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
-                let load = egui::ScrollArea::vertical()
-                    .id_salt("level-browser-scroll")
-                    .auto_shrink(false)
-                    .show(ui, |ui| self.browser(ui))
-                    .inner;
-                if load {
-                    self.start_load(&ctx, ws);
-                }
-            });
-        if self.level.is_some() {
+        if !self.hosted.0 {
+            egui::Panel::left("level-browser")
+                .resizable(true)
+                .default_size(260.0)
+                .max_size(420.0)
+                .show(ui, |ui| self.browser_panel(ui, ws));
+        }
+        if self.level.is_some() && !self.hosted.1 {
             egui::Panel::right("level-details")
                 .resizable(true)
                 .default_size(380.0)
                 .max_size(640.0)
                 .show(ui, |ui| {
-                    ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
-                    let details = egui::ScrollArea::vertical()
-                        .id_salt("level-details-scroll")
-                        .auto_shrink(false)
-                        .show(ui, |ui| self.details(ui))
-                        .inner;
-                    if let Some(a) = details {
+                    if let Some(Some(a)) = self.details_panel(ui) {
                         action = Some(a);
                     }
                 });
@@ -1541,6 +1642,7 @@ impl LevelView {
                 gizmo::Mode::Rotate,
                 tr("level.gizmo_rotate"),
             );
+            ui.selectable_value(&mut self.gizmo, gizmo::Mode::Scale, tr("level.gizmo_scale"));
             if ui.button(tr("level.fly_to")).clicked() {
                 self.focus();
             }
@@ -1594,9 +1696,11 @@ impl LevelView {
                 model: Some(m),
             });
         }
+        let open_add = std::mem::take(&mut self.open_add);
         egui::CollapsingHeader::new(tr("level.add_object"))
             .id_salt("level-add")
             .default_open(self.add_fixed)
+            .open(open_add.then_some(true))
             .show(ui, |ui| {
                 ui.label(RichText::new(tr("level.add_object_hint")).weak().small());
                 ui.horizontal(|ui| {
@@ -1819,11 +1923,12 @@ impl LevelView {
         ];
         let mut action = None;
         if response.hovered() && !ui.ctx().egui_wants_keyboard_input() {
-            let (f, one, two) = ui.input(|i| {
+            let (f, one, two, three) = ui.input(|i| {
                 (
                     i.key_pressed(egui::Key::F),
                     i.key_pressed(egui::Key::Num1),
                     i.key_pressed(egui::Key::Num2),
+                    i.key_pressed(egui::Key::Num3),
                 )
             });
             if f {
@@ -1838,6 +1943,9 @@ impl LevelView {
             }
             if two {
                 self.gizmo = gizmo::Mode::Rotate;
+            }
+            if three {
+                self.gizmo = gizmo::Mode::Scale;
             }
         }
 
@@ -1861,10 +1969,16 @@ impl LevelView {
         } else {
             self.gizmo
         };
-        let gizmo_at = selected
-            .and_then(|r| self.object_transform(r))
+        let selected_transform = selected.and_then(|r| self.object_transform(r));
+        let gizmo_at = selected_transform
             .map(|m| [m[3][0], m[3][1], m[3][2]])
             .or_else(|| node.and_then(|r| self.nav.position(r)));
+        // The drag keeps the axes it started with.
+        let gizmo_axes = match (&self.drag, selected_transform) {
+            (Some(drag), _) => drag.axes,
+            (None, Some(m)) if node.is_none() => gizmo::axes(gizmo_mode, self.space, &m),
+            _ => gizmo::WORLD,
+        };
         let pointer = response
             .hover_pos()
             .or(ui.input(|i| i.pointer.interact_pos()));
@@ -1872,9 +1986,16 @@ impl LevelView {
             self.hover_axis = None;
         } else if let (Some(origin), None) = (gizmo_at, &self.drag) {
             let size = gizmo::size(&view, origin);
-            self.hover_axis = pointer
-                .filter(|_| response.hovered())
-                .and_then(|p| gizmo::hit(gizmo_mode, origin, size, [p.x, p.y], &to_screen));
+            self.hover_axis = pointer.filter(|_| response.hovered()).and_then(|p| {
+                gizmo::hit(
+                    gizmo_mode,
+                    origin,
+                    &gizmo_axes,
+                    size,
+                    [p.x, p.y],
+                    &to_screen,
+                )
+            });
         }
         let ray_at = |p: Pos2| {
             let uv = (p - rect.min) / rect.size();
@@ -1886,12 +2007,14 @@ impl LevelView {
             && let (Some(axis), Some(r), Some(origin), Some(p)) =
                 (self.hover_axis, selected, gizmo_at, pointer)
             && let Some(start) = self.object_transform(r)
-            && let Some(param) = gizmo::parameter(self.gizmo, origin, axis, &ray_at(p))
+            && let Some(param) = gizmo::parameter(self.gizmo, origin, &gizmo_axes, axis, &ray_at(p))
         {
             self.drag = Some(Drag {
                 object: r,
                 node: None,
                 axis,
+                axes: gizmo_axes,
+                size: gizmo::size(&view, origin),
                 start,
                 start_param: param,
                 current: start,
@@ -1900,7 +2023,8 @@ impl LevelView {
             && !alt
             && let (Some(axis), Some(n), Some(origin), Some(p)) =
                 (self.hover_axis, node, gizmo_at, pointer)
-            && let Some(param) = gizmo::parameter(gizmo_mode, origin, axis, &ray_at(p))
+            && let Some(param) =
+                gizmo::parameter(gizmo_mode, origin, &gizmo::WORLD, axis, &ray_at(p))
         {
             let mut start = doctor_toolkit::level::IDENTITY;
             start[3] = [origin[0], origin[1], origin[2], 1.0];
@@ -1911,6 +2035,8 @@ impl LevelView {
                 },
                 node: Some(n),
                 axis,
+                axes: gizmo::WORLD,
+                size: gizmo::size(&view, origin),
                 start,
                 start_param: param,
                 current: start,
@@ -1925,18 +2051,25 @@ impl LevelView {
                 self.gizmo
             };
             if let Some(p) = pointer
-                && let Some(param) = gizmo::parameter(mode, origin, drag.axis, &ray_at(p))
+                && let Some(param) =
+                    gizmo::parameter(mode, origin, &drag.axes, drag.axis, &ray_at(p))
             {
                 let mut delta = param - drag.start_param;
-                if mode == gizmo::Mode::Rotate {
+                match mode {
                     // Shortest turn between the two angles.
-                    delta = (delta + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU)
-                        - std::f32::consts::PI;
+                    gizmo::Mode::Rotate => {
+                        delta = (delta + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU)
+                            - std::f32::consts::PI;
+                    }
+                    // A drag by the gizmo's length doubles the size.
+                    gizmo::Mode::Scale => delta /= drag.size.max(1e-3),
+                    _ => {}
                 }
-                if ui.input(|i| i.modifiers.ctrl) {
-                    delta = gizmo::snap(mode, delta);
+                // Ctrl snaps, or drags freely while snapping is on.
+                if ui.input(|i| i.modifiers.ctrl) != self.snap.on {
+                    delta = gizmo::snap(mode, delta, &self.snap);
                 }
-                let m = gizmo::apply(mode, &drag.start, drag.axis, delta);
+                let m = gizmo::apply(mode, &drag.start, &drag.axes, drag.axis, delta);
                 if m != drag.current {
                     drag.current = m;
                     moved = true;
@@ -2078,12 +2211,21 @@ impl LevelView {
         {
             let origin = [m[3][0], m[3][1], m[3][2]];
             let axis = self.drag.as_ref().map(|d| d.axis).or(self.hover_axis);
+            let axes = self
+                .drag
+                .as_ref()
+                .map_or_else(|| gizmo::axes(self.gizmo, self.space, &m), |d| d.axes);
             self.scene.overlay_lines =
-                gizmo::lines(self.gizmo, origin, gizmo::size(&view, origin), axis);
+                gizmo::lines(self.gizmo, origin, &axes, gizmo::size(&view, origin), axis);
         } else if let Some(origin) = gizmo_at.filter(|_| node.is_some()) {
             let axis = self.drag.as_ref().map(|d| d.axis).or(self.hover_axis);
-            self.scene.overlay_lines =
-                gizmo::lines(gizmo::Mode::Move, origin, gizmo::size(&view, origin), axis);
+            self.scene.overlay_lines = gizmo::lines(
+                gizmo::Mode::Move,
+                origin,
+                &gizmo::WORLD,
+                gizmo::size(&view, origin),
+                axis,
+            );
         }
         self.scene.overlay_lines.extend(self.nav.lines());
         let collision = self
@@ -2120,7 +2262,7 @@ impl LevelView {
             size: pixels,
             generation: self.generation,
             options: self.scene.options,
-            gizmo: (self.gizmo, self.hover_axis),
+            gizmo: (self.gizmo, self.space, self.hover_axis),
             collision,
             nav: self.nav.generation,
             walk: self.walk.revision,

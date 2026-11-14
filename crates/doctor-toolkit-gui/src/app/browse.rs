@@ -45,6 +45,10 @@ impl BrowserApp {
             Pane::Game => self.game_pane(ui),
             Pane::Wizard { id, kind } => self.wizard_pane(ui, *id, *kind),
             Pane::Logic { id, scope } => self.logic_pane(ui, *id, scope),
+            Pane::ContentBrowser => self.content_pane(ui),
+            Pane::Outliner => self.outliner_pane(ui),
+            Pane::ObjectDetails => self.object_details_pane(ui),
+            Pane::Documents => {}
         }
     }
 

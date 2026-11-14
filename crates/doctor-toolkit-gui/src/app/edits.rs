@@ -557,7 +557,8 @@ impl BrowserApp {
         }
     }
 
-    /// The change indicator of the toolbar and direct mode.
+    /// The change indicator of the toolbar (direct mode is in the menu of
+    /// "Apply to game", stage 52).
     pub(super) fn workspace_bar(&mut self, ui: &mut egui::Ui) {
         let unsaved = self.details.iter().any(|d| d.has_unsaved_edits())
             || self.docs.values().any(|d| d.has_unsaved_edits());
@@ -603,8 +604,10 @@ impl BrowserApp {
             ui.label(RichText::new(tr("edits.unsaved")).color(PENDING))
                 .on_hover_text(tr("edits.unsaved_hint"));
         }
-        ui.checkbox(&mut self.direct, tr("edits.direct"))
-            .on_hover_text(tr("edits.direct_hint"));
+        if self.direct {
+            ui.label(RichText::new(tr("edits.direct")).color(PENDING))
+                .on_hover_text(tr("edits.direct_hint"));
+        }
     }
 
     /// The Changes panel and what it asks for.

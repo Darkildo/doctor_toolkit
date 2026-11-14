@@ -212,10 +212,75 @@ impl BrowserApp {
             self.levels.insert(id, level);
         }
         let marks = self.play.live.marks();
+        // The shell's Outliner and Details show the side panels of the level
+        // in front; the tab then leaves them out.
+        let hosted = if self.host_level == Some(id) {
+            self.level_hosts
+        } else {
+            (false, false)
+        };
+        self.last_level = Some(id);
         let level = self.levels.get_mut(&id).expect("just made");
         level.live = marks;
+        level.set_hosted(hosted.0, hosted.1);
         if let Some(action) = level.ui(ui, self.workspace.as_ref()) {
             self.level_action(id, action);
         }
+    }
+
+    /// Before the dock is drawn: which level the Outliner and Details
+    /// panels show, and whether they are shown.
+    pub(super) fn host_level_panels(&mut self) {
+        let alive = |id: &u64| self.levels.contains_key(id) && self.live(*id);
+        self.host_level = self
+            .front_level()
+            .or(self.last_level.filter(alive))
+            .or_else(|| self.levels.keys().copied().filter(alive).min());
+        self.level_hosts = (
+            self.panel_shown(&super::dock::Pane::Outliner),
+            self.panel_shown(&super::dock::Pane::ObjectDetails),
+        );
+    }
+
+    /// The Outliner panel: for now the zone browser of the level in front
+    /// (stage 53 makes it the outliner of the level's objects).
+    pub(super) fn outliner_pane(&mut self, ui: &mut egui::Ui) {
+        let Some(level) = self.host_level.and_then(|id| self.levels.get_mut(&id)) else {
+            self.no_level(ui);
+            return;
+        };
+        level.browser_panel(ui, self.workspace.as_ref());
+    }
+
+    /// The object Details panel: the selected object of the level in front.
+    pub(super) fn object_details_pane(&mut self, ui: &mut egui::Ui) {
+        let Some(id) = self.host_level.filter(|id| self.levels.contains_key(id)) else {
+            self.no_level(ui);
+            return;
+        };
+        let level = self.levels.get_mut(&id).expect("checked");
+        match level.details_panel(ui) {
+            Some(Some(action)) => self.level_action(id, action),
+            Some(None) => {}
+            None => {
+                ui.add_space(8.0);
+                ui.label(egui::RichText::new(tr("level.details_load_first")).weak());
+            }
+        }
+    }
+
+    fn no_level(&mut self, ui: &mut egui::Ui) {
+        ui.add_space(8.0);
+        ui.vertical_centered(|ui| {
+            ui.label(egui::RichText::new(tr("level.no_level")).weak());
+            let command = super::Command::LevelEditor;
+            let mut button = egui::Button::new(command.label());
+            if let Some(keys) = command.shortcut_text(ui.ctx()) {
+                button = button.shortcut_text(keys);
+            }
+            if ui.add_enabled(self.enabled(command), button).clicked() {
+                self.pending.push(command);
+            }
+        });
     }
 }

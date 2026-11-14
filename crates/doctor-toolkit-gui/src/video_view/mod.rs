@@ -86,16 +86,6 @@ impl MoviesWindow {
         }
     }
 
-    pub fn button(&mut self, ui: &mut egui::Ui) {
-        if ui
-            .selectable_label(self.open, tr("movies.title"))
-            .on_hover_text(tr("movies.button_hint"))
-            .clicked()
-        {
-            self.toggle();
-        }
-    }
-
     pub fn toggle(&mut self) {
         self.open = !self.open;
     }

@@ -53,6 +53,7 @@ impl Palette {
 #[derive(Debug, Clone, PartialEq)]
 enum Item {
     Command(Command),
+    Layout(super::layouts::LayoutId),
     Recent(PathBuf),
     File(FileSel),
     Resource(Location),
@@ -135,6 +136,35 @@ impl BrowserApp {
                 }
             }
             groups.push(commands);
+            // Layouts, built in and the user's (stage 52).
+            let mut layouts = Vec::new();
+            let ids = super::layouts::Builtin::ALL
+                .into_iter()
+                .map(super::layouts::LayoutId::Builtin)
+                .chain(
+                    self.layouts
+                        .user
+                        .iter()
+                        .map(|n| super::layouts::LayoutId::User(n.name.clone())),
+                );
+            for id in ids {
+                let label = format!("{}: {}: {}", tr("menu.view"), tr("layout.menu"), id.name());
+                let english = format!("View: Layouts: {}", id.name());
+                if let Some(score) = scored(&label).max(scored(&english)) {
+                    let detail = if id == self.layouts.current {
+                        tr("palette.current").to_owned()
+                    } else {
+                        String::new()
+                    };
+                    layouts.push(Entry {
+                        item: Item::Layout(id),
+                        label,
+                        detail,
+                        score,
+                    });
+                }
+            }
+            groups.push(layouts);
             let mut recent = Vec::new();
             for dir in &self.settings.recent_games {
                 let label = format!("{}: {}", tr("palette.recent"), dir.display());
@@ -311,6 +341,7 @@ impl BrowserApp {
     fn run_palette_item(&mut self, item: Item, ctx: &egui::Context) {
         match item {
             Item::Command(command) => self.pending.push(command),
+            Item::Layout(id) => self.dock_ops.push(super::dock::DockOp::ApplyLayout(id)),
             Item::Recent(dir) => self.open_game(dir, ctx),
             Item::File(sel) => self.open_file(sel, false),
             Item::Resource(location) => {

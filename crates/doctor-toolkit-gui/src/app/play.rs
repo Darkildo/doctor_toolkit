@@ -324,6 +324,12 @@ impl BrowserApp {
         (self.game.as_ref()?.root() == root).then(|| edition.summary())
     }
 
+    /// The edition of the open game, once checked.
+    pub(super) fn edition(&self) -> Option<&Edition> {
+        let (root, edition) = self.play.edition.as_ref()?;
+        (self.game.as_ref()?.root() == root).then_some(edition)
+    }
+
     // ---------------------------------------------------------- detection
 
     /// Starts searching the computer for installed games, once.
@@ -461,22 +467,22 @@ impl BrowserApp {
         }
         let method = self.play_method();
         let hover = trf("play.hover", &[("method", &method.describe())]);
-        if ui
-            .add_enabled(
-                self.enabled(super::Command::Play),
-                egui::Button::new(tr("play.button")),
-            )
-            .on_hover_text(hover)
-            .clicked()
-        {
+        // Stage 52: the green button of the main toolbar and its menu
+        // (right to left).
+        self.play_menu(ui);
+        let play = ui
+            .add_enabled_ui(self.enabled(super::Command::Play), |ui| {
+                super::theme::tool_button(
+                    ui,
+                    Some(super::theme::Icon::Play),
+                    tr("play.button"),
+                    false,
+                    super::theme::Tone::Play,
+                )
+            })
+            .inner;
+        if play.on_hover_text(hover).clicked() {
             self.pending.push(super::Command::Play);
-        }
-        if ui
-            .small_button("…")
-            .on_hover_text(tr("cmd.play_options"))
-            .clicked()
-        {
-            self.play.options_open = true;
         }
     }
 

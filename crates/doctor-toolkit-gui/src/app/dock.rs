@@ -8,8 +8,12 @@
 //! Closing a tool panel hides it; View brings it back where it was.
 //!
 //! A pane holds only what is needed to open it again: the layout is saved as
-//! JSON ([`layout_json`]) and the tabs reopen their stream, resource or query
-//! when the game is opened at the next start.
+//! JSON (`super::layouts`) and the tabs reopen their stream, resource or
+//! query when the game is opened at the next start.
+//!
+//! Stage 52: a panel can also be a drawer (`super::drawer`) instead of a
+//! tile; the tab's menu moves it there and back. Layouts — built-in, the
+//! user's, per screen — are in `super::layouts`.
 
 use std::collections::HashSet;
 
@@ -21,9 +25,7 @@ use serde::{Deserialize, Serialize};
 use doctor_toolkit_mods::i18n::tr;
 
 use super::BrowserApp;
-
-/// Version of the layout file; a file of another version is ignored.
-const LAYOUT_VERSION: u32 = 1;
+use super::layouts::{LayoutId, Screen};
 
 /// The content of a tab.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -72,6 +74,18 @@ pub enum Pane {
     Project,
     /// The game started by Play, shown in the editor (stage 33).
     Game,
+    /// The assets of the game (stage 52 shows the streams; stage 55 the
+    /// assets with previews). A drawer by default.
+    ContentBrowser,
+    /// The zones and objects of the level in front (stage 52 shows the
+    /// level tab's zone browser; stage 53 the outliner).
+    Outliner,
+    /// The selected object of the level in front (stage 52 shows the level
+    /// tab's object panel; stage 53 the inspector). [`Pane::Details`] stays
+    /// the panel of the selected resource.
+    ObjectDetails,
+    /// Where the documents go in a layout; never shown.
+    Documents,
 }
 
 impl Pane {
@@ -92,7 +106,13 @@ impl Pane {
     pub fn is_panel(&self) -> bool {
         matches!(
             self,
-            Self::Files | Self::Details | Self::Changes | Self::Log
+            Self::Files
+                | Self::Details
+                | Self::Changes
+                | Self::Log
+                | Self::ContentBrowser
+                | Self::Outliner
+                | Self::ObjectDetails
         )
     }
 
@@ -127,6 +147,21 @@ pub enum DockOp {
     Reset,
     /// A game was opened: the welcome screen gives way to the documents.
     GameOpened,
+    /// Arrange the dock as a layout, keeping the documents.
+    ApplyLayout(LayoutId),
+    /// Save the dock as a user layout.
+    SaveLayout(String),
+    RenameLayout {
+        from: String,
+        to: String,
+    },
+    DeleteLayout(String),
+    /// Arrange the dock for a screen (when layouts are remembered).
+    Screen(Screen),
+    /// Take a panel out of the tree into the drawers.
+    MakeDrawer(Pane),
+    /// Put a drawer back into the tree, under the documents.
+    DockDrawer(Pane),
 }
 
 /// The layout of a first start: files left, documents centre, details right,
@@ -169,56 +204,6 @@ fn set_shares(tiles: &mut Tiles<Pane>, container: TileId, shares: &[(TileId, f32
     }
 }
 
-#[derive(Serialize, Deserialize)]
-struct LayoutFile {
-    version: u32,
-    next_pane: u64,
-    tree: Tree<Pane>,
-}
-
-/// The saved layout, or the default one.
-pub fn load_layout(store: &crate::settings::Store) -> (Tree<Pane>, u64) {
-    let saved = store
-        .layout_path()
-        .and_then(|path| std::fs::read_to_string(path).ok())
-        .and_then(|text| parse_layout(&text));
-    saved.unwrap_or_else(|| (default_tree(Vec::new()), 0))
-}
-
-/// Reads a layout file; `None` when it is broken or of another version.
-pub fn parse_layout(text: &str) -> Option<(Tree<Pane>, u64)> {
-    let file: LayoutFile = serde_json::from_str(text).ok()?;
-    if file.version != LAYOUT_VERSION || file.tree.root().is_none() {
-        return None;
-    }
-    let max_id = file
-        .tree
-        .tiles
-        .tiles()
-        .filter_map(|t| match t {
-            Tile::Pane(p) => p.id(),
-            Tile::Container(_) => None,
-        })
-        .max()
-        .unwrap_or(0);
-    Some((file.tree, file.next_pane.max(max_id)))
-}
-
-pub fn layout_json(tree: &Tree<Pane>, next_pane: u64) -> String {
-    #[derive(Serialize)]
-    struct Out<'a> {
-        version: u32,
-        next_pane: u64,
-        tree: &'a Tree<Pane>,
-    }
-    serde_json::to_string_pretty(&Out {
-        version: LAYOUT_VERSION,
-        next_pane,
-        tree,
-    })
-    .unwrap_or_default()
-}
-
 /// The tile of the first pane that `matches`.
 pub fn find(tree: &Tree<Pane>, matches: impl Fn(&Pane) -> bool) -> Option<TileId> {
     tree.tiles.iter().find_map(|(&id, tile)| match tile {
@@ -227,7 +212,7 @@ pub fn find(tree: &Tree<Pane>, matches: impl Fn(&Pane) -> bool) -> Option<TileId
     })
 }
 
-fn pane(tree: &Tree<Pane>, tile: TileId) -> Option<&Pane> {
+pub(super) fn pane(tree: &Tree<Pane>, tile: TileId) -> Option<&Pane> {
     match tree.tiles.get(tile)? {
         Tile::Pane(p) => Some(p),
         Tile::Container(_) => None,
@@ -342,6 +327,7 @@ pub fn documents(tree: &Tree<Pane>) -> Vec<Pane> {
         if let Tile::Pane(p) = tile
             && !p.is_panel()
             && *p != Pane::Welcome
+            && *p != Pane::Documents
         {
             out.push(p.clone());
         }
@@ -353,6 +339,8 @@ pub fn documents(tree: &Tree<Pane>) -> Vec<Pane> {
 /// What the dock asks of the app while it is drawn.
 struct DockBehavior<'a> {
     app: &'a mut BrowserApp,
+    /// Tiles shown when the frame started (tabs in front).
+    shown: HashSet<TileId>,
 }
 
 impl Behavior<Pane> for DockBehavior<'_> {
@@ -409,7 +397,26 @@ impl Behavior<Pane> for DockBehavior<'_> {
         if response.double_clicked() {
             self.app.dock_ops.push(DockOp::ToggleMaximize(tile_id));
         }
-        let closable = matches!(tiles.get(tile_id), Some(Tile::Pane(_)));
+        let pane = match tiles.get(tile_id) {
+            Some(Tile::Pane(p)) => Some(p.clone()),
+            _ => None,
+        };
+        // A click on a document's tab arranges the dock for its screen.
+        if response.clicked()
+            && let Some(screen) = pane.as_ref().and_then(Screen::of)
+        {
+            self.app.dock_ops.push(DockOp::Screen(screen));
+        }
+        // The tab in front of a document group: a line of the accent on top.
+        if self.shown.contains(&tile_id) && pane.as_ref().is_some_and(|p| !p.is_panel()) {
+            let rect = response.rect;
+            response.ctx.layer_painter(response.layer_id).hline(
+                rect.x_range(),
+                rect.top() + 1.0,
+                egui::Stroke::new(2.0, super::theme::ACCENT),
+            );
+        }
+        let closable = pane.is_some();
         response.context_menu(|ui| {
             if closable && ui.button(tr("tab.close")).clicked() {
                 self.app.dock_ops.push(DockOp::Close(tile_id));
@@ -425,8 +432,40 @@ impl Behavior<Pane> for DockBehavior<'_> {
             if ui.button(maximize).clicked() {
                 self.app.dock_ops.push(DockOp::ToggleMaximize(tile_id));
             }
+            if let Some(pane) = pane.as_ref().filter(|p| p.is_panel()) {
+                ui.separator();
+                if ui
+                    .button(tr("tab.make_drawer"))
+                    .on_hover_text(tr("tab.make_drawer_hint"))
+                    .clicked()
+                {
+                    self.app.dock_ops.push(DockOp::MakeDrawer(pane.clone()));
+                }
+            }
+            ui.separator();
+            if ui.button(super::Command::SaveLayout.label()).clicked() {
+                self.app.pending.push(super::Command::SaveLayout);
+            }
         });
         response
+    }
+
+    fn tab_bar_color(&self, visuals: &egui::Visuals) -> egui::Color32 {
+        super::theme::tab_bar_fill(visuals)
+    }
+
+    fn tab_outline_stroke(
+        &self,
+        _visuals: &egui::Visuals,
+        _tiles: &Tiles<Pane>,
+        _tile_id: TileId,
+        _state: &egui_tiles::TabState,
+    ) -> egui::Stroke {
+        egui::Stroke::NONE
+    }
+
+    fn tab_title_spacing(&self, _visuals: &egui::Visuals) -> f32 {
+        10.0
     }
 
     fn simplification_options(&self) -> SimplificationOptions {
@@ -443,7 +482,7 @@ impl Behavior<Pane> for DockBehavior<'_> {
     }
 
     fn tab_bar_height(&self, _style: &egui::Style) -> f32 {
-        22.0
+        24.0
     }
 
     fn gap_width(&self, _style: &egui::Style) -> f32 {
@@ -483,7 +522,8 @@ impl BrowserApp {
                 }
             }
             None => {
-                let mut behavior = DockBehavior { app: self };
+                let shown = tree.active_tiles().into_iter().collect();
+                let mut behavior = DockBehavior { app: self, shown };
                 tree.ui(&mut behavior, ui);
             }
         }
@@ -522,13 +562,28 @@ impl BrowserApp {
     fn apply_dock_op(&mut self, tree: &mut Tree<Pane>, op: DockOp) {
         match op {
             DockOp::Open(pane) => {
+                let was_empty = documents(tree).is_empty();
+                let switched = Screen::of(&pane).is_some_and(|s| self.switch_screen(tree, s));
                 let tile = add_document(tree, pane, self.active_doc);
+                // The welcome screen that stood in for no documents goes.
+                if switched
+                    && was_empty
+                    && let Some(welcome) = find(tree, |p| *p == Pane::Welcome)
+                {
+                    close(tree, welcome);
+                }
                 self.active_doc = Some(tile);
                 if self.maximized.is_some() || std::mem::take(&mut self.maximize_pinned) {
                     self.maximized = Some(tile);
                 }
             }
             DockOp::Focus(id) => {
+                if let Some(screen) = find(tree, |p| p.id() == Some(id))
+                    .and_then(|t| pane(tree, t))
+                    .and_then(Screen::of)
+                {
+                    self.switch_screen(tree, screen);
+                }
                 if let Some(tile) = find(tree, |p| p.id() == Some(id)) {
                     focus(tree, tile);
                     self.active_doc = Some(tile);
@@ -537,16 +592,41 @@ impl BrowserApp {
                     }
                 }
             }
+            DockOp::ShowPanel(pane) if self.drawers.contains(&pane) => {
+                self.drawers.open = Some(pane)
+            }
             DockOp::ShowPanel(pane) => {
                 let tile = show_panel(tree, pane, self.active_doc);
                 if self.maximized.is_some() && self.maximized != Some(tile) {
                     self.maximized = None;
                 }
             }
+            DockOp::TogglePanel(pane) if self.drawers.contains(&pane) => self.drawers.toggle(&pane),
             DockOp::TogglePanel(pane) => {
                 toggle_panel(tree, pane, self.active_doc);
                 self.maximized = None;
             }
+            DockOp::MakeDrawer(pane) => {
+                if let Some(tile) = find(tree, |p| *p == pane) {
+                    tree.remove_recursively(tile);
+                    if self.maximized == Some(tile) {
+                        self.maximized = None;
+                    }
+                }
+                self.drawers.add(pane.clone());
+                self.drawers.open = Some(pane);
+            }
+            DockOp::DockDrawer(pane) => {
+                self.drawers.remove(&pane);
+                if find(tree, |p| *p == pane).is_none() {
+                    dock_below(tree, pane);
+                }
+            }
+            op @ (DockOp::ApplyLayout(_)
+            | DockOp::SaveLayout(_)
+            | DockOp::RenameLayout { .. }
+            | DockOp::DeleteLayout(_)
+            | DockOp::Screen(_)) => self.apply_layout_op(tree, op),
             DockOp::Close(tile) => close(tree, tile),
             DockOp::CloseOthers(tile) => {
                 if let Some(parent) = tree.tiles.parent_of(tile)
@@ -589,10 +669,12 @@ impl BrowserApp {
                 };
             }
             DockOp::Reset => {
-                self.sync_descriptors(tree);
-                *tree = default_tree(documents(tree));
-                self.maximized = None;
-                self.active_doc = None;
+                // Back to the built-in layout of the screen.
+                let builtin = match &self.layouts.current {
+                    LayoutId::Builtin(b) => *b,
+                    LayoutId::User(_) => self.layouts.screen.builtin(),
+                };
+                self.apply_layout(tree, LayoutId::Builtin(builtin));
             }
             DockOp::GameOpened => {
                 // The welcome screen steps back once there is something else.
@@ -673,6 +755,10 @@ impl BrowserApp {
             Pane::Tasks => tr("pane.tasks").to_owned(),
             Pane::Project => tr("project.tab").to_owned(),
             Pane::Game => tr("gametab.title").to_owned(),
+            Pane::ContentBrowser => tr("pane.content").to_owned(),
+            Pane::Outliner => tr("pane.outliner").to_owned(),
+            Pane::ObjectDetails => tr("pane.object").to_owned(),
+            Pane::Documents => String::new(),
             Pane::Wizard { kind, .. } => kind.title().to_owned(),
             Pane::Logic { id, .. } => self
                 .logics
@@ -680,6 +766,23 @@ impl BrowserApp {
                 .map_or_else(|| tr("logic.tab").to_owned(), |l| l.title()),
         }
     }
+}
+
+/// Puts a pane into the tree under everything, as a band across the window
+/// (where a drawer sits).
+pub fn dock_below(tree: &mut Tree<Pane>, pane: Pane) -> TileId {
+    let tile = tree.tiles.insert_pane(pane);
+    let tabs = tree.tiles.insert_tab_tile(vec![tile]);
+    match tree.root() {
+        None => tree.root = Some(tabs),
+        Some(root) => {
+            let column = tree.tiles.insert_vertical_tile(vec![root, tabs]);
+            set_shares(&mut tree.tiles, column, &[(root, 0.72), (tabs, 0.28)]);
+            tree.root = Some(column);
+        }
+    }
+    focus(tree, tile);
+    tile
 }
 
 /// Removes a tab; a tool panel is hidden instead.
@@ -752,9 +855,11 @@ mod tests {
             Some(stream),
         );
         toggle_panel(&mut tree, Pane::Details, None);
-        let json = layout_json(&tree, 7);
-        let (restored, next) = parse_layout(&json).expect("parses");
-        assert_eq!(next, 7);
+        let layouts = super::super::layouts::Layouts::default();
+        let json = super::super::layouts::to_json(&tree, 7, &[], &layouts);
+        let loaded = super::super::layouts::parse(&json).expect("parses");
+        let restored = loaded.tree;
+        assert_eq!(loaded.next_pane, 7);
         assert_eq!(panes(&restored), panes(&tree));
         let details = find(&restored, |p| *p == Pane::Details).unwrap();
         assert!(
@@ -771,13 +876,15 @@ mod tests {
     }
 
     #[test]
-    fn broken_or_old_layouts_are_ignored() {
-        assert!(parse_layout("{").is_none());
-        let json = layout_json(&default_tree(Vec::new()), 0).replace(
-            &format!("\"version\": {LAYOUT_VERSION}"),
-            "\"version\": 999",
-        );
-        assert!(parse_layout(&json).is_none());
+    fn a_panel_docked_below_spans_the_window() {
+        let mut tree = default_tree(Vec::new());
+        let root = tree.root().unwrap();
+        let tile = dock_below(&mut tree, Pane::ContentBrowser);
+        let column = tree.root().unwrap();
+        assert_ne!(column, root);
+        let tabs = tree.tiles.parent_of(tile).unwrap();
+        assert_eq!(tree.tiles.parent_of(tabs), Some(column));
+        assert!(is_shown(&tree, tile));
     }
 
     #[test]

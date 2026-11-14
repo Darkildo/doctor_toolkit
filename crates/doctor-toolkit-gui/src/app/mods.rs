@@ -10,17 +10,6 @@ use doctor_toolkit_mods::i18n::tr;
 use super::BrowserApp;
 
 impl BrowserApp {
-    /// The Mods button of the toolbar.
-    pub(super) fn mods_button(&mut self, ui: &mut egui::Ui) {
-        if ui
-            .selectable_label(self.mods_open, tr("window.mods"))
-            .on_hover_text(tr("mods.window_hint"))
-            .clicked()
-        {
-            self.mods_open = !self.mods_open;
-        }
-    }
-
     /// Shows the Mods window and reacts to what it did to the game files.
     pub(super) fn show_mods(&mut self, ctx: &egui::Context) {
         if !self.mods_open {

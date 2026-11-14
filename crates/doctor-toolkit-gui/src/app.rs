@@ -4,8 +4,12 @@
 //! status bar. The parts live in submodules:
 //!
 //! - `commands`: every action of the menus, the palette and the shortcuts;
-//! - `menu`: menu bar and toolbar;
-//! - `dock`: tabs and dockable panels and how they are saved;
+//! - `menu`, `toolbar`: menu bar and the main toolbar (stage 52);
+//! - `dock`: tabs and dockable panels; `layouts`: built-in and named
+//!   layouts, the layout of each screen and how they are saved; `drawer`:
+//!   panels that slide up from the status bar (stage 52);
+//! - `theme`: the look in the manner of Unreal Engine 5 and the icons;
+//! - `content`: the Content Browser panel;
 //! - `browse`: file list, stream tabs, all resources, search tabs, details;
 //! - `docs`: an opened resource with its views ([`crate::views`]) and the
 //!   open stream files;
@@ -20,11 +24,14 @@
 mod bridge;
 mod browse;
 mod commands;
+mod content;
 mod dock;
 mod docs;
+mod drawer;
 mod edits;
 mod external;
 mod gametab;
+mod layouts;
 mod level;
 mod live;
 mod live_debug;
@@ -39,6 +46,8 @@ mod play;
 mod project;
 mod scripts;
 mod shell;
+pub mod theme;
+mod toolbar;
 mod wizard;
 
 use std::collections::{HashMap, HashSet};
@@ -139,6 +148,17 @@ pub struct BrowserApp {
     dock: Option<egui_tiles::Tree<Pane>>,
     next_pane: u64,
     dock_ops: Vec<DockOp>,
+    /// Built-in and named layouts, the layout of each screen.
+    layouts: layouts::Layouts,
+    layout_window: layouts::LayoutWindow,
+    /// Panels shown as drawers over the bottom of the window.
+    drawers: drawer::Drawers,
+    content: content::ContentState,
+    /// The level tab drawn last, and the one the Outliner and Details
+    /// panels show with whether they are shown (stage 52).
+    last_level: Option<u64>,
+    host_level: Option<u64>,
+    level_hosts: (bool, bool),
     /// The tab shown alone, in place of the whole dock.
     maximized: Option<egui_tiles::TileId>,
     /// The document tab used last; new documents open next to it.
@@ -236,11 +256,14 @@ impl BrowserApp {
         store: Store,
     ) -> Self {
         let ctx = &cc.egui_ctx;
+        theme::install(ctx);
         ctx.set_theme(settings.theme.preference());
         ctx.set_zoom_factor(settings.ui_scale);
         let (tx, rx) = channel();
         let gpu = crate::render::Gpu::from_creation_context(cc);
-        let (dock, next_pane) = dock::load_layout(&store);
+        let loaded = layouts::load(&store);
+        let mut drawers = drawer::Drawers::default();
+        drawers.set(loaded.drawers);
         let mut app = Self {
             tx,
             rx,
@@ -250,9 +273,16 @@ impl BrowserApp {
             store,
             saved: (Instant::now(), String::new()),
             notes: Notes::for_app(),
-            dock: Some(dock),
-            next_pane,
+            dock: Some(loaded.tree),
+            next_pane: loaded.next_pane,
             dock_ops: Vec::new(),
+            layouts: loaded.layouts,
+            layout_window: layouts::LayoutWindow::default(),
+            drawers,
+            content: content::ContentState::default(),
+            last_level: None,
+            host_level: None,
+            level_hosts: (false, false),
             maximized: None,
             active_doc: None,
             live_panes: HashSet::new(),
@@ -332,7 +362,9 @@ impl BrowserApp {
             let id = app.new_pane_id();
             app.levels.insert(id, level);
             app.dock_ops.push(DockOp::Open(Pane::Level { id }));
-            app.dock_ops.push(DockOp::Maximize(Some(id)));
+            if !app.layouts.remember {
+                app.dock_ops.push(DockOp::Maximize(Some(id)));
+            }
         }
         app.logic_preset();
         // `DOCTOR_TOOLKIT_GUI_PROJECT=<folder>`: the project browser with that project.
@@ -742,7 +774,7 @@ impl BrowserApp {
             return String::new();
         };
         self.sync_descriptors(&mut tree);
-        let json = dock::layout_json(&tree, self.next_pane);
+        let json = layouts::to_json(&tree, self.next_pane, &self.drawers.panes, &self.layouts);
         self.dock = Some(tree);
         json
     }
@@ -877,12 +909,34 @@ impl eframe::App for BrowserApp {
             self.nav_action(action);
         }
         self.shortcuts(&ctx);
-        egui::Panel::top("menu").show(ui, |ui| self.menu_bar(ui));
-        egui::Panel::top("toolbar").show(ui, |ui| self.toolbar(ui));
-        egui::Panel::bottom("status").show(ui, |ui| self.status_bar(ui));
-        egui::CentralPanel::default()
-            .frame(egui::Frame::central_panel(ui.style()).inner_margin(2.0))
-            .show(ui, |ui| self.dock_ui(ui));
+        self.host_level_panels();
+        let visuals = ui.visuals().clone();
+        let bar = |fill| {
+            egui::Frame::new()
+                .fill(fill)
+                .inner_margin(egui::Margin::symmetric(6, 2))
+        };
+        egui::Panel::top("menu")
+            .frame(bar(theme::bar_fill(&visuals)))
+            .show(ui, |ui| self.menu_bar(ui));
+        egui::Panel::top("toolbar")
+            .frame(bar(theme::toolbar_fill(&visuals)).inner_margin(egui::Margin::symmetric(6, 4)))
+            .show(ui, |ui| self.toolbar(ui));
+        egui::Panel::bottom("status")
+            .frame(bar(theme::bar_fill(&visuals)))
+            .show(ui, |ui| self.status_bar(ui));
+        let dock_rect = egui::CentralPanel::default()
+            .frame(
+                egui::Frame::central_panel(ui.style())
+                    .fill(theme::bar_fill(&visuals))
+                    .inner_margin(2.0),
+            )
+            .show(ui, |ui| {
+                self.dock_ui(ui);
+                ui.max_rect()
+            })
+            .inner;
+        self.drawer_ui(&ctx, dock_rect);
         self.play_frame(&ctx);
         self.show_mods(&ctx);
         if let Some(game) = self.game.clone()
@@ -894,6 +948,7 @@ impl eframe::App for BrowserApp {
         self.show_model_import(&ctx);
         self.show_script_editor(&ctx);
         self.show_windows(&ctx);
+        self.layouts_window(&ctx);
         self.palette_ui(&ctx);
         for command in std::mem::take(&mut self.pending) {
             self.run(command, &ctx);
@@ -1274,6 +1329,242 @@ mod tests {
             }
         }
         assert!(missing.is_empty(), "keys without text: {missing:?}");
+    }
+
+    #[test]
+    fn palette_lists_layouts() {
+        let (ctx, mut app) = headless(Store { dir: None });
+        app.pending.push(Command::Palette);
+        frame(&ctx, &mut app, Vec::new());
+        app.palette.text = "layouts level editor".to_owned();
+        let entries = app.palette_entries(&ctx);
+        assert!(
+            entries
+                .first()
+                .is_some_and(|e| e.label.ends_with(tr("layout.level"))),
+            "{:?}",
+            entries.iter().map(|e| &e.label).collect::<Vec<_>>()
+        );
+    }
+
+    fn click_at(pos: egui::Pos2) -> Vec<egui::Event> {
+        let press = |pressed| egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        vec![egui::Event::PointerMoved(pos), press(true), press(false)]
+    }
+
+    fn in_tree(app: &BrowserApp, pane: &Pane) -> bool {
+        app.dock
+            .as_ref()
+            .is_some_and(|t| dock::find(t, |p| p == pane).is_some())
+    }
+
+    #[test]
+    fn layouts_are_saved_applied_and_deleted() {
+        use layouts::{Builtin, LayoutId};
+        let store = temp_store("layouts");
+        let (ctx, mut app) = headless(store.clone());
+        frame(&ctx, &mut app, Vec::new());
+        assert_eq!(app.layouts.current, LayoutId::Builtin(Builtin::Resources));
+        assert!(in_tree(&app, &Pane::Log) && in_tree(&app, &Pane::Files));
+
+        // "Level Editor": Outliner over Details on the right, the bottom
+        // panels are drawers.
+        app.dock_ops
+            .push(DockOp::ApplyLayout(LayoutId::Builtin(Builtin::Level)));
+        frame(&ctx, &mut app, Vec::new());
+        assert_eq!(app.checked(Command::ToggleOutliner), Some(true));
+        assert_eq!(app.checked(Command::ToggleObjectDetails), Some(true));
+        assert!(!in_tree(&app, &Pane::Log) && app.drawers.contains(&Pane::Log));
+        assert_eq!(app.checked(Command::ToggleLog), Some(false));
+        assert!(in_tree(&app, &Pane::Welcome), "documents stay");
+
+        // Saved under a name, it comes back after another layout.
+        assert_eq!(
+            app.checked(Command::ToggleFiles),
+            Some(false),
+            "behind the Outliner"
+        );
+        app.pending.push(Command::ToggleFiles);
+        frame(&ctx, &mut app, Vec::new());
+        assert_eq!(app.checked(Command::ToggleFiles), Some(true));
+        app.dock_ops.push(DockOp::SaveLayout("Mine".into()));
+        frame(&ctx, &mut app, Vec::new());
+        assert_eq!(app.layouts.current, LayoutId::User("Mine".into()));
+        app.dock_ops
+            .push(DockOp::ApplyLayout(LayoutId::Builtin(Builtin::Resources)));
+        frame(&ctx, &mut app, Vec::new());
+        assert!(!in_tree(&app, &Pane::Outliner) && in_tree(&app, &Pane::Log));
+        app.dock_ops
+            .push(DockOp::ApplyLayout(LayoutId::User("Mine".into())));
+        frame(&ctx, &mut app, Vec::new());
+        assert!(in_tree(&app, &Pane::Outliner) && !in_tree(&app, &Pane::Log));
+        assert_eq!(app.checked(Command::ToggleFiles), Some(true), "as saved");
+
+        // Renamed, kept over a restart, deleted.
+        app.dock_ops.push(DockOp::RenameLayout {
+            from: "Mine".into(),
+            to: "Wide view".into(),
+        });
+        frame(&ctx, &mut app, Vec::new());
+        app.save_settings();
+        let (ctx, mut again) = headless(store.clone());
+        frame(&ctx, &mut again, Vec::new());
+        assert_eq!(again.layouts.current, LayoutId::User("Wide view".into()));
+        assert_eq!(again.layouts.user.len(), 1);
+        assert!(again.drawers.contains(&Pane::Log));
+        assert!(in_tree(&again, &Pane::Outliner));
+        again
+            .dock_ops
+            .push(DockOp::DeleteLayout("Wide view".into()));
+        frame(&ctx, &mut again, Vec::new());
+        assert!(again.layouts.user.is_empty());
+        // Reset goes back to the built-in layout of the screen.
+        again.pending.push(Command::ResetLayout);
+        frame(&ctx, &mut again, Vec::new());
+        assert_eq!(again.layouts.current, LayoutId::Builtin(Builtin::Resources));
+        assert!(in_tree(&again, &Pane::Log) && in_tree(&again, &Pane::Files));
+        std::fs::remove_dir_all(store.dir.unwrap()).unwrap();
+    }
+
+    #[test]
+    fn an_old_layout_file_is_read() {
+        let store = temp_store("old-layout");
+        let dir = store.dir.clone().unwrap();
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut tree = dock::default_tree(Vec::new());
+        dock::toggle_panel(&mut tree, Pane::Details, None);
+        let old = serde_json::json!({ "version": 1, "next_pane": 0, "tree": tree });
+        std::fs::write(store.layout_path().unwrap(), old.to_string()).unwrap();
+        let (ctx, mut app) = headless(store.clone());
+        frame(&ctx, &mut app, Vec::new());
+        assert_eq!(app.checked(Command::ToggleDetails), Some(false));
+        // Ctrl+Space finds no Content Browser in an old layout: it becomes a drawer.
+        frame(
+            &ctx,
+            &mut app,
+            vec![key(egui::Key::Space, egui::Modifiers::COMMAND)],
+        );
+        assert!(app.drawers.is_open(&Pane::ContentBrowser));
+        app.save_settings();
+        let text = std::fs::read_to_string(store.layout_path().unwrap()).unwrap();
+        assert!(
+            text.contains("\"version\": 2"),
+            "written in the new version"
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn drawers_open_and_close() {
+        let (ctx, mut app) = headless(Store { dir: None });
+        frame(&ctx, &mut app, Vec::new());
+        let ctrl_space = || key(egui::Key::Space, egui::Modifiers::COMMAND);
+        frame(&ctx, &mut app, vec![ctrl_space()]);
+        assert!(
+            app.drawers.is_open(&Pane::ContentBrowser),
+            "Ctrl+Space opens"
+        );
+        assert_eq!(app.checked(Command::ContentDrawer), Some(true));
+        frame(&ctx, &mut app, Vec::new());
+        frame(&ctx, &mut app, vec![ctrl_space()]);
+        assert_eq!(app.drawers.open, None, "and closes");
+        frame(&ctx, &mut app, vec![ctrl_space()]);
+        frame(
+            &ctx,
+            &mut app,
+            vec![key(egui::Key::Escape, egui::Modifiers::NONE)],
+        );
+        assert_eq!(app.drawers.open, None, "Esc closes");
+        frame(&ctx, &mut app, vec![ctrl_space()]);
+        frame(&ctx, &mut app, Vec::new());
+        // A click at the top of the window is outside the drawer.
+        frame(&ctx, &mut app, click_at(egui::pos2(640.0, 90.0)));
+        assert_eq!(app.drawers.open, None, "a click elsewhere closes");
+
+        // Any panel can become a drawer and go back into the layout.
+        app.dock_ops.push(DockOp::MakeDrawer(Pane::Details));
+        frame(&ctx, &mut app, Vec::new());
+        assert!(!in_tree(&app, &Pane::Details));
+        assert!(app.drawers.is_open(&Pane::Details));
+        assert_eq!(app.checked(Command::ToggleDetails), Some(true));
+        app.pending.push(Command::ToggleDetails);
+        frame(&ctx, &mut app, Vec::new());
+        assert_eq!(app.checked(Command::ToggleDetails), Some(false));
+        app.dock_ops.push(DockOp::DockDrawer(Pane::Details));
+        frame(&ctx, &mut app, Vec::new());
+        assert!(in_tree(&app, &Pane::Details) && !app.drawers.contains(&Pane::Details));
+        assert_eq!(app.checked(Command::ToggleDetails), Some(true));
+    }
+
+    #[test]
+    fn toolbar_follows_the_document_in_front() {
+        use crate::level_view::{GizmoMode, GizmoSpace};
+        use layouts::{Builtin, LayoutId, Screen};
+        let (ctx, mut app) = headless(Store { dir: None });
+        frame(&ctx, &mut app, Vec::new());
+        assert_eq!(app.toolbar_context(), toolbar::Context::NoGame);
+        let dir = fake_game("toolbar");
+        app.game = Some(Arc::new(GameInstance::open(&dir).unwrap()));
+        frame(&ctx, &mut app, Vec::new());
+        assert_eq!(app.toolbar_context(), toolbar::Context::Other);
+        assert!(!app.enabled(Command::GizmoRotate), "no level in front");
+
+        // A level arranges the window as the level editor.
+        app.pending.push(Command::LevelEditor);
+        frame(&ctx, &mut app, Vec::new());
+        frame(&ctx, &mut app, Vec::new());
+        let id = *app.levels.keys().next().expect("a level tab");
+        assert_eq!(app.toolbar_context(), toolbar::Context::Level(id));
+        assert_eq!(app.layouts.screen, Screen::Level);
+        assert_eq!(app.layouts.current, LayoutId::Builtin(Builtin::Level));
+        assert!(app.maximized.is_none(), "the layout, not a maximized tab");
+        assert_eq!(app.host_level, Some(id), "Outliner and Details show it");
+        for (command, mode) in [
+            (Command::GizmoRotate, GizmoMode::Rotate),
+            (Command::GizmoScale, GizmoMode::Scale),
+            (Command::GizmoSelect, GizmoMode::Select),
+        ] {
+            app.pending.push(command);
+            frame(&ctx, &mut app, Vec::new());
+            assert_eq!(app.levels[&id].gizmo_mode(), mode);
+            assert_eq!(app.checked(command), Some(true));
+        }
+        app.pending.push(Command::GizmoLocal);
+        app.pending.push(Command::GizmoSnap);
+        frame(&ctx, &mut app, Vec::new());
+        assert_eq!(app.levels[&id].gizmo_space(), GizmoSpace::Local);
+        assert!(app.levels[&id].snap().on);
+
+        // A search tab is another screen: the resources layout comes back.
+        app.pending.push(Command::ToggleOutliner);
+        frame(&ctx, &mut app, Vec::new());
+        app.pending.push(Command::NewSearch);
+        frame(&ctx, &mut app, Vec::new());
+        frame(&ctx, &mut app, Vec::new());
+        assert_eq!(app.layouts.screen, Screen::Resources);
+        assert_eq!(app.toolbar_context(), toolbar::Context::Other);
+        assert!(in_tree(&app, &Pane::Log) && !in_tree(&app, &Pane::Outliner));
+        // ... and the level its own, as it was left (the Outliner hidden).
+        app.pending.push(Command::LevelEditor);
+        frame(&ctx, &mut app, Vec::new());
+        frame(&ctx, &mut app, Vec::new());
+        assert_eq!(app.layouts.screen, Screen::Level);
+        assert!(in_tree(&app, &Pane::Outliner));
+        assert_eq!(app.checked(Command::ToggleOutliner), Some(false));
+        assert_eq!(app.checked(Command::ToggleObjectDetails), Some(true));
+        assert!(app.live(id), "the documents stay open");
+
+        // Without remembering, the layout stays as it is.
+        app.layouts.remember = false;
+        app.pending.push(Command::NewSearch);
+        frame(&ctx, &mut app, Vec::new());
+        assert_eq!(app.layouts.screen, Screen::Level);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

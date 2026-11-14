@@ -20,6 +20,7 @@ pub enum Command {
     // File
     OpenGame,
     OpenStream,
+    Save,
     Export,
     Unpack,
     Pack,
@@ -37,6 +38,9 @@ pub enum Command {
     ToggleDetails,
     ToggleChanges,
     ToggleLog,
+    ToggleOutliner,
+    ToggleObjectDetails,
+    ContentDrawer,
     ShowWelcome,
     ThemeDark,
     ThemeLight,
@@ -46,7 +50,15 @@ pub enum Command {
     ZoomReset,
     Maximize,
     Fullscreen,
+    SaveLayout,
     ResetLayout,
+    // Level
+    GizmoSelect,
+    GizmoMove,
+    GizmoRotate,
+    GizmoScale,
+    GizmoLocal,
+    GizmoSnap,
     // Tools
     Search,
     NewSearch,
@@ -88,16 +100,18 @@ pub enum Menu {
     File,
     Edit,
     View,
+    Level,
     Tools,
     Wizards,
     Help,
 }
 
 impl Menu {
-    pub const ALL: [Menu; 6] = [
+    pub const ALL: [Menu; 7] = [
         Menu::File,
         Menu::Edit,
         Menu::View,
+        Menu::Level,
         Menu::Tools,
         Menu::Wizards,
         Menu::Help,
@@ -108,6 +122,7 @@ impl Menu {
             Self::File => "menu.file",
             Self::Edit => "menu.edit",
             Self::View => "menu.view",
+            Self::Level => "menu.level",
             Self::Tools => "menu.tools",
             Self::Wizards => "menu.wizards",
             Self::Help => "menu.help",
@@ -191,6 +206,7 @@ pub const COMMANDS: &[Spec] = &[
         &[k(CTRL_SHIFT, Key::O)],
         Global,
     ),
+    spec(C::Save, "cmd.save", Menu::File, &[], Global),
     group(spec(
         C::Export,
         "cmd.export",
@@ -278,6 +294,27 @@ pub const COMMANDS: &[Spec] = &[
         &[k(CTRL, Key::Num4)],
         Global,
     ),
+    spec(
+        C::ToggleOutliner,
+        "cmd.toggle_outliner",
+        Menu::View,
+        &[k(CTRL, Key::Num5)],
+        Global,
+    ),
+    spec(
+        C::ToggleObjectDetails,
+        "cmd.toggle_object",
+        Menu::View,
+        &[k(CTRL, Key::Num6)],
+        Global,
+    ),
+    spec(
+        C::ContentDrawer,
+        "cmd.content_drawer",
+        Menu::View,
+        &[k(CTRL, Key::Space)],
+        Global,
+    ),
     spec(C::ShowWelcome, "cmd.welcome", Menu::View, &[], Global),
     group(spec(
         C::ThemeDark,
@@ -323,7 +360,26 @@ pub const COMMANDS: &[Spec] = &[
         &[k(NONE, Key::F11)],
         Global,
     ),
+    group(spec(
+        C::SaveLayout,
+        "cmd.save_layout",
+        Menu::View,
+        &[],
+        Global,
+    )),
     spec(C::ResetLayout, "cmd.reset_layout", Menu::View, &[], Global),
+    spec(C::GizmoSelect, "cmd.gizmo_select", Menu::Level, &[], Global),
+    spec(C::GizmoMove, "cmd.gizmo_move", Menu::Level, &[], Global),
+    spec(C::GizmoRotate, "cmd.gizmo_rotate", Menu::Level, &[], Global),
+    spec(C::GizmoScale, "cmd.gizmo_scale", Menu::Level, &[], Global),
+    group(spec(
+        C::GizmoLocal,
+        "cmd.gizmo_local",
+        Menu::Level,
+        &[],
+        Global,
+    )),
+    spec(C::GizmoSnap, "cmd.gizmo_snap", Menu::Level, &[], Global),
     spec(
         C::Search,
         "cmd.search",
@@ -551,6 +607,12 @@ impl BrowserApp {
             C::Back => self.nav.can_go(false),
             C::Forward => self.nav.can_go(true),
             C::Mods | C::IntegrityCheck => game && idle,
+            C::GizmoSelect
+            | C::GizmoMove
+            | C::GizmoRotate
+            | C::GizmoScale
+            | C::GizmoLocal
+            | C::GizmoSnap => self.front_level().is_some(),
             C::Movies => game,
             C::Project => true,
             C::RestoreOriginals => game && idle && self.play.running.is_empty(),
@@ -594,14 +656,36 @@ impl BrowserApp {
             C::ToggleDetails => Some(self.panel_shown(&Pane::Details)),
             C::ToggleChanges => Some(self.panel_shown(&Pane::Changes)),
             C::ToggleLog => Some(self.panel_shown(&Pane::Log)),
+            C::ToggleOutliner => Some(self.panel_shown(&Pane::Outliner)),
+            C::ToggleObjectDetails => Some(self.panel_shown(&Pane::ObjectDetails)),
+            C::ContentDrawer => Some(self.panel_shown(&Pane::ContentBrowser)),
             C::Maximize => Some(self.maximized.is_some()),
+            C::GizmoSelect | C::GizmoMove | C::GizmoRotate | C::GizmoScale => {
+                let level = self.levels.get(&self.front_level()?)?;
+                Some(level.gizmo_mode() == gizmo_mode(command)?)
+            }
+            C::GizmoLocal => {
+                let level = self.levels.get(&self.front_level()?)?;
+                Some(level.gizmo_space() == crate::level_view::GizmoSpace::Local)
+            }
+            C::GizmoSnap => {
+                let level = self.levels.get(&self.front_level()?)?;
+                Some(level.snap().on)
+            }
             _ => None,
         }
     }
 
-    fn panel_shown(&self, pane: &Pane) -> bool {
+    /// Whether a panel is shown: its tile in front, or its drawer open.
+    pub(super) fn panel_shown(&self, pane: &Pane) -> bool {
+        if self.drawers.contains(pane) {
+            return self.drawers.is_open(pane);
+        }
         self.dock.as_ref().is_some_and(|tree| {
-            super::dock::find(tree, |p| p == pane).is_some_and(|t| super::dock::is_shown(tree, t))
+            self.maximized
+                .is_none_or(|m| super::dock::pane(tree, m) == Some(pane))
+                && super::dock::find(tree, |p| p == pane)
+                    .is_some_and(|t| super::dock::is_shown(tree, t))
         })
     }
 
@@ -658,6 +742,38 @@ impl BrowserApp {
             C::ToggleDetails => self.dock_ops.push(DockOp::TogglePanel(Pane::Details)),
             C::ToggleChanges => self.dock_ops.push(DockOp::TogglePanel(Pane::Changes)),
             C::ToggleLog => self.dock_ops.push(DockOp::TogglePanel(Pane::Log)),
+            C::ToggleOutliner => self.dock_ops.push(DockOp::TogglePanel(Pane::Outliner)),
+            C::ToggleObjectDetails => self.dock_ops.push(DockOp::TogglePanel(Pane::ObjectDetails)),
+            C::ContentDrawer => self.toggle_content(),
+            C::Save => self.save_all(),
+            C::SaveLayout => {
+                let current = self.layouts.current.clone();
+                self.layout_window.show(&current);
+            }
+            C::GizmoSelect | C::GizmoMove | C::GizmoRotate | C::GizmoScale => {
+                if let Some(mode) = gizmo_mode(command)
+                    && let Some(level) = self.front_level().and_then(|id| self.levels.get_mut(&id))
+                {
+                    level.set_gizmo_mode(mode);
+                }
+            }
+            C::GizmoLocal => {
+                use crate::level_view::GizmoSpace;
+                if let Some(level) = self.front_level().and_then(|id| self.levels.get_mut(&id)) {
+                    let space = match level.gizmo_space() {
+                        GizmoSpace::World => GizmoSpace::Local,
+                        GizmoSpace::Local => GizmoSpace::World,
+                    };
+                    level.set_gizmo_space(space);
+                }
+            }
+            C::GizmoSnap => {
+                if let Some(level) = self.front_level().and_then(|id| self.levels.get_mut(&id)) {
+                    let mut snap = level.snap();
+                    snap.on = !snap.on;
+                    level.set_snap(snap);
+                }
+            }
             C::ShowWelcome => self.dock_ops.push(DockOp::ShowPanel(Pane::Welcome)),
             C::ThemeDark | C::ThemeLight | C::ThemeSystem => {
                 self.settings.theme = match command {
@@ -745,9 +861,9 @@ impl BrowserApp {
         }
     }
 
-    /// Opens a new level editor tab, shown alone.
-    /// Shows the level tab (a new one when `new` or when there is none),
-    /// alone in the window.
+    /// Shows the level tab (a new one when `new` or when there is none): in
+    /// the layout of the level screen, or alone in the window when layouts
+    /// are not remembered per screen.
     fn open_level_tab(&mut self, new: bool) {
         let existing = self
             .levels
@@ -765,7 +881,27 @@ impl BrowserApp {
                 id
             }
         };
-        self.dock_ops.push(DockOp::Maximize(Some(id)));
+        if !self.layouts.remember {
+            self.dock_ops.push(DockOp::Maximize(Some(id)));
+        }
+    }
+
+    /// File → Save: edits are in the workspace as soon as they are made;
+    /// this writes the settings and the layout and says what is kept where.
+    fn save_all(&mut self) {
+        self.saved.1.clear();
+        self.save_settings();
+        let unsaved = self.details.iter().any(|d| d.has_unsaved_edits())
+            || self.docs.values().any(|d| d.has_unsaved_edits());
+        let count = self
+            .workspace
+            .as_ref()
+            .map_or(0, doctor_toolkit::workspace::Workspace::len);
+        let mut text = trn("edits.saved", count as u64, &[]);
+        if unsaved {
+            text += &format!("; {}", tr("edits.saved_unsaved"));
+        }
+        self.notify(if unsaved { Level::Warning } else { Level::Info }, text);
     }
 
     /// File → Pack…: records an unpacked, edited folder in the workspace.
@@ -825,6 +961,18 @@ impl BrowserApp {
     }
 }
 
+/// The gizmo mode of a gizmo command.
+fn gizmo_mode(command: Command) -> Option<crate::level_view::GizmoMode> {
+    use crate::level_view::GizmoMode as M;
+    match command {
+        C::GizmoSelect => Some(M::Select),
+        C::GizmoMove => Some(M::Move),
+        C::GizmoRotate => Some(M::Rotate),
+        C::GizmoScale => Some(M::Scale),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -834,6 +982,17 @@ mod tests {
         let all = [
             C::OpenGame,
             C::OpenStream,
+            C::Save,
+            C::ToggleOutliner,
+            C::ToggleObjectDetails,
+            C::ContentDrawer,
+            C::SaveLayout,
+            C::GizmoSelect,
+            C::GizmoMove,
+            C::GizmoRotate,
+            C::GizmoScale,
+            C::GizmoLocal,
+            C::GizmoSnap,
             C::Export,
             C::Unpack,
             C::Pack,

@@ -201,7 +201,7 @@ RGBA-текстуры.
 | `DOCTOR_TOOLKIT_GUI_EXTERNAL=<формат>` | Открыть выбранный ресурс во внешней программе (`png`, `csv`, `lua`, `glb`…) — программа берётся из настроек, для снимков задайте `DOCTOR_TOOLKIT_CONFIG_DIR` с `[external_editors]` вроде `image = "true"` (`docs/external-editors.md` §5) |
 | `DOCTOR_TOOLKIT_GUI_SHOT_FRAMES=<n>` | Кадров до снимка (20 по умолчанию), например для `spin` |
 | `DOCTOR_TOOLKIT_GUI_RENDERER=glow` | Принудительно OpenGL и программный просмотр моделей |
-| `DOCTOR_TOOLKIT_GUI_LEVEL=<зона>[;опции]` | Открыть вкладку уровня (развёрнутой на всё окно) и загрузить зоны (`docs/levels.md` §5) |
+| `DOCTOR_TOOLKIT_GUI_LEVEL=<зона>[;опции]` | Открыть вкладку уровня (в раскладке «Level Editor», `docs/shell.md` §11.4; без запоминания раскладок — развёрнутой на всё окно) и загрузить зоны (`docs/levels.md` §5) |
 | `DOCTOR_TOOLKIT_GUI_MOVIES=<ролик>[:<кадр>][,play][,full]` | Открыть окно Movies с роликом и кадром; `play` — играть, `full` — на всё окно (`docs/formats/video.md` §5.1) |
 | `DOCTOR_TOOLKIT_GUI_LOGIC=<область>[;find=<текст>][;show][;run=<события>][;until=<с>][;live]` | Открыть граф логики на всё окно, выделить найденное, `show` — показать его в уровне (`docs/logic-graph.md` §6); `live` — включить слой «Вживую»; `run` — режим «Прогон» с начальными событиями (через `,`) до времени `until` (§9) |
 | `DOCTOR_TOOLKIT_GUI_LIVE=<порт>[:<токен>]` | Подключиться к модулю живой связи при старте; с `DOCTOR_TOOLKIT_GUI_LIVE_FOLLOW=1` вкладки уровня следуют за камерой игры, с `DOCTOR_TOOLKIT_GUI_SCRIPT` редактор скриптов открывает вкладку «Игра» (`docs/shell.md` §9.2) |
