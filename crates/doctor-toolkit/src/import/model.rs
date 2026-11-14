@@ -45,7 +45,9 @@ use crate::resource::names::bone_names;
 use crate::resource::rcb::{Mat4, Skeleton};
 use crate::resource::texture::{self, TYPE_TG4D, TYPE_TG4H, Texture};
 use crate::resource::{metamodel::MetaModel, pixels, tg4};
-use crate::workspace::{NewResourceEdit, ResourceEdit, ResourceKey, StorageChoice, Workspace};
+use crate::workspace::{
+    Change, NewResourceEdit, ResourceEdit, ResourceKey, StorageChoice, Workspace,
+};
 use crate::{Error, Result};
 
 /// Options of [`plan`].
@@ -746,6 +748,17 @@ impl ImportPlan {
             e.stream = into.clone();
             e.before = before.clone();
         }
+        // A material or texture copied unchanged under its own ids may already
+        // be there: an earlier import into the same stream copied it.
+        self.additions.retain(|e| {
+            let key = ResourceKey {
+                stream: into.clone(),
+                type_id: e.header.type_id,
+                ids: e.header.ids,
+            };
+            !(workspace.change(&key).is_some_and(Change::is_added)
+                && workspace.data(&key).ok().flatten().as_deref() == Some(&e.data[..]))
+        });
         for m in &mut self.summary.meshes {
             if let Ok(mut key) = m.parse::<ResourceKey>() {
                 key.stream = into.clone();
@@ -1247,6 +1260,61 @@ mod tests {
                 .collect(),
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn copies_already_in_the_target_stream_are_not_added_twice() {
+        use crate::workspace::tests::{fake_game, new_resource, new_stream};
+        let (_dir, game) = fake_game();
+        let mut ws = Workspace::for_game(&game, None).unwrap();
+        let area = "gf2/doctor/area";
+        ws.add_stream(&game, new_stream(area, false)).unwrap();
+        // A first import copied a material of the game into the new stream.
+        let copied = new_resource(area, b"material", 0x4f3b_4ebe, b"material of the game");
+        ws.add_resources(&game, "First import", std::slice::from_ref(&copied))
+            .unwrap();
+        // A second import plans the same copy (from the template's stream)
+        // and a mesh of its own.
+        let template = crate::testing::LEVEL;
+        let mut same = copied.clone();
+        same.stream = template.into();
+        let mesh = new_resource(template, b"mesh", 0x0bad_cafe, b"new mesh");
+        let mut differs = copied.clone();
+        differs.stream = template.into();
+        differs.data = b"another material under the same ids".to_vec();
+        let plan = |additions: Vec<NewResourceEdit>| ImportPlan {
+            summary: ImportSummary {
+                mode: "new".into(),
+                ..Default::default()
+            },
+            mesh: MeshImage {
+                name: String::new(),
+                platform: 3,
+                bounding_sphere: [0.0; 4],
+                aabb_min: [0.0; 4],
+                aabb_max: [0.0; 4],
+                bones: Vec::new(),
+                vertex_buffers: Vec::new(),
+                index_buffers: Vec::new(),
+                records: Vec::new(),
+                has_volatile: false,
+            },
+            label: "Second import".into(),
+            edits: Vec::new(),
+            additions,
+            stream: template.into(),
+        };
+        let mut second = plan(vec![same, mesh]);
+        second.put_into(&game, &ws, area).unwrap();
+        assert_eq!(second.additions.len(), 1);
+        assert_eq!(second.additions[0].data, b"new mesh");
+        assert_eq!(second.summary.added.len(), 1, "{:?}", second.summary.added);
+        ws.add_resources(&game, &second.label, &second.additions)
+            .unwrap();
+        // Other data under the same ids is still a conflict, not dropped.
+        let mut third = plan(vec![differs]);
+        third.put_into(&game, &ws, area).unwrap();
+        assert_eq!(third.additions.len(), 1);
     }
 
     #[test]
