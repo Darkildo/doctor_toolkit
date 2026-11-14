@@ -150,6 +150,8 @@ fn answer(request: Request, config: &Config, version: u16) -> Response {
         Request::Control(c) => return crate::debug::control(c),
         Request::Debug => return Response::Debug(crate::debug::debug_state()),
         Request::SetCamera { camera } => return crate::debug::set_camera(camera),
+        // The files the game opens (stage 46): counters of the hooks.
+        Request::Files => return Response::Files(crate::files::state()),
         _ => {}
     }
     let (tx, rx) = sync_channel(1);

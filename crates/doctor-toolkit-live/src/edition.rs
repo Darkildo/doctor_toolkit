@@ -831,6 +831,108 @@ pub const CHECKS: &[Check] = &[
         what: "variables: waking the watchers returns RET 8",
         bytes: &[0xC2, 0x08, 0x00],
     },
+    Check {
+        address: 0x00E4E6B8,
+        what: "import lookup of the slot 0x00D55120: hint and name at 0x00E4EF6C",
+        bytes: &[0x6C, 0xEF, 0xA4, 0x00],
+    },
+    Check {
+        address: 0x00E4EF6C,
+        what: "import name CreateFileA",
+        bytes: &[
+            0x53, 0x00, 0x43, 0x72, 0x65, 0x61, 0x74, 0x65, 0x46, 0x69, 0x6C, 0x65, 0x41, 0x00,
+        ],
+    },
+    Check {
+        address: 0x00E4E7EC,
+        what: "import lookup of the slot 0x00D55254: hint and name at 0x00E4EABC",
+        bytes: &[0xBC, 0xEA, 0xA4, 0x00],
+    },
+    Check {
+        address: 0x00E4EABC,
+        what: "import name CreateFileW",
+        bytes: &[
+            0x56, 0x00, 0x43, 0x72, 0x65, 0x61, 0x74, 0x65, 0x46, 0x69, 0x6C, 0x65, 0x57, 0x00,
+        ],
+    },
+    Check {
+        address: 0x00E4E824,
+        what: "import lookup of the slot 0x00D5528C: hint and name at 0x00E4FC64",
+        bytes: &[0x64, 0xFC, 0xA4, 0x00],
+    },
+    Check {
+        address: 0x00E4FC64,
+        what: "import name GetFileAttributesA",
+        bytes: &[
+            0x5E, 0x01, 0x47, 0x65, 0x74, 0x46, 0x69, 0x6C, 0x65, 0x41, 0x74, 0x74, 0x72, 0x69,
+            0x62, 0x75, 0x74, 0x65, 0x73, 0x41, 0x00,
+        ],
+    },
+    Check {
+        address: 0x00ABD73D,
+        what: "CreateFileA: the file class open 0x00ABD6E0 through the import slot 0x00D55120 (patched: call hook; nop)",
+        bytes: &[0xFF, 0x15, 0x20, 0x51, 0xD5, 0x00],
+    },
+    Check {
+        address: 0x00BCC4DD,
+        what: "CreateFileA: C library through the import slot 0x00D55120 (patched: call hook; nop)",
+        bytes: &[0xFF, 0x15, 0x20, 0x51, 0xD5, 0x00],
+    },
+    Check {
+        address: 0x00BCFC1E,
+        what: "CreateFileA: C library through the import slot 0x00D55120 (patched: call hook; nop)",
+        bytes: &[0xFF, 0x15, 0x20, 0x51, 0xD5, 0x00],
+    },
+    Check {
+        address: 0x00BCFC3D,
+        what: "CreateFileA: C library through the import slot 0x00D55120 (patched: call hook; nop)",
+        bytes: &[0xFF, 0x15, 0x20, 0x51, 0xD5, 0x00],
+    },
+    Check {
+        address: 0x00BCC18C,
+        what: "CreateFileA into EDI: C library open through the import slot 0x00D55120 (patched: mov edi, hook; nop)",
+        bytes: &[0x8B, 0x3D, 0x20, 0x51, 0xD5, 0x00],
+    },
+    Check {
+        address: 0x006987FA,
+        what: "CreateFileW: write a profile file 0x006987C0 through the import slot 0x00D55254 (patched: call hook; nop)",
+        bytes: &[0xFF, 0x15, 0x54, 0x52, 0xD5, 0x00],
+    },
+    Check {
+        address: 0x006988FD,
+        what: "CreateFileW: write a profile file 0x006987C0, second open through the import slot 0x00D55254 (patched: call hook; nop)",
+        bytes: &[0xFF, 0x15, 0x54, 0x52, 0xD5, 0x00],
+    },
+    Check {
+        address: 0x00699C59,
+        what: "CreateFileW: read a profile file through the import slot 0x00D55254 (patched: call hook; nop)",
+        bytes: &[0xFF, 0x15, 0x54, 0x52, 0xD5, 0x00],
+    },
+    Check {
+        address: 0x00AC0BDF,
+        what: "CreateFileW: the file system open 0x00AC0AD0 (streams, tables of contents, archives, cmd.txt) through the import slot 0x00D55254 (patched: call hook; nop)",
+        bytes: &[0xFF, 0x15, 0x54, 0x52, 0xD5, 0x00],
+    },
+    Check {
+        address: 0x00ACF5C8,
+        what: "CreateFileW: the open 0x00ACF580 through the import slot 0x00D55254 (patched: call hook; nop)",
+        bytes: &[0xFF, 0x15, 0x54, 0x52, 0xD5, 0x00],
+    },
+    Check {
+        address: 0x00BC45A1,
+        what: "CreateFileW: C library through the import slot 0x00D55254 (patched: call hook; nop)",
+        bytes: &[0xFF, 0x15, 0x54, 0x52, 0xD5, 0x00],
+    },
+    Check {
+        address: 0x00BC424F,
+        what: "CreateFileW into EDI: C library open through the import slot 0x00D55254 (patched: mov edi, hook; nop)",
+        bytes: &[0x8B, 0x3D, 0x54, 0x52, 0xD5, 0x00],
+    },
+    Check {
+        address: 0x00C72505,
+        what: "GetFileAttributesA: folder walk 0x00C724C0 through the import slot 0x00D5528C (patched: call hook; nop)",
+        bytes: &[0xFF, 0x15, 0x8C, 0x52, 0xD5, 0x00],
+    },
 ];
 
 #[cfg(test)]

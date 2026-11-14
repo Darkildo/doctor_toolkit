@@ -31,6 +31,7 @@ fn fake(writes: bool) -> FakeGame {
         writes,
         fix_input: true,
         journal: true,
+        ..Default::default()
     })
     .unwrap()
 }
@@ -590,4 +591,86 @@ fn world_and_state_need_a_module_of_protocol_4() {
     );
     assert!(!o.status.success());
     assert!(stderr(&o).contains("protocol 3"), "{}", stderr(&o));
+}
+
+/// `live files`: the files the module gives the game from elsewhere
+/// (stage 46); the fake module opened each of its configuration once.
+#[test]
+fn redirected_files() {
+    use doctor_toolkit::live::proto::files::Redirect;
+    let game = FakeGame::start(Config {
+        port: 0,
+        token: "tok".into(),
+        redirects: vec![
+            Redirect {
+                from: "gf2/cuba.str".into(),
+                to: "Z:\\overlay\\gf2\\cuba.str".into(),
+            },
+            Redirect {
+                from: "godfath1.viv".into(),
+                to: "GODFATH0.viv".into(),
+            },
+        ],
+        ..Default::default()
+    })
+    .unwrap();
+    let logs = tempfile::tempdir().unwrap();
+    let port = game.port.to_string();
+    let o = run(
+        &["live", "files", "--port", &port, "--token", "tok"],
+        logs.path(),
+    );
+    assert!(o.status.success(), "{}", stderr(&o));
+    let text = stdout(&o);
+    assert!(text.contains("2 file(s) redirected, 2 opened"), "{text}");
+    assert!(
+        text.contains("gf2/cuba.str -> Z:\\overlay\\gf2\\cuba.str (1x)"),
+        "{text}"
+    );
+    let o = run(
+        &["live", "files", "--json", "--port", &port, "--token", "tok"],
+        logs.path(),
+    );
+    let v: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+    assert_eq!(v["total"], 2);
+    assert_eq!(v["redirects"][1]["to"], "GODFATH0.viv");
+
+    // A module of stage 48 (protocol 4) redirects nothing.
+    game.world.lock().unwrap().protocol = 4;
+    let o = run(
+        &["live", "files", "--port", &port, "--token", "tok"],
+        logs.path(),
+    );
+    assert!(!o.status.success());
+    assert!(stderr(&o).contains("protocol 4"), "{}", stderr(&o));
+}
+
+/// `live install --mods` stages files only for the build the module knows:
+/// a folder without it is refused before anything is written.
+#[test]
+fn staging_needs_the_known_edition() {
+    let logs = tempfile::tempdir().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let module = dir.path().join("module.asi");
+    std::fs::write(&module, b"MZ fake module").unwrap();
+    let game = dir.path().join("game");
+    std::fs::create_dir(&game).unwrap();
+    std::fs::write(game.join("dinput8.dll"), b"Ultimate ASI Loader").unwrap();
+    std::fs::write(game.join("godfather2.exe"), b"MZ not the game").unwrap();
+    let o = Command::new(env!("CARGO_BIN_EXE_doctor-toolkit"))
+        .args(["live", "install", game.to_str().unwrap(), "--mods"])
+        .arg("--cmd-txt=-stream gf2 cuba")
+        .env("DOCTOR_TOOLKIT_LOG_DIR", logs.path())
+        .env("DOCTOR_TOOLKIT_GAME_PROCESS", "no-such-game.exe")
+        .env("DOCTOR_LIVE_MODULE", &module)
+        .output()
+        .unwrap();
+    assert!(!o.status.success());
+    assert!(
+        stderr(&o).contains("cannot redirect the game's files"),
+        "{}",
+        stderr(&o)
+    );
+    assert!(!game.join("scripts").exists());
+    assert!(!game.join("cmd.txt").exists());
 }

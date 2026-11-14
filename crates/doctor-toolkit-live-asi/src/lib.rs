@@ -14,6 +14,10 @@
 //!    hooks carry breakpoints and the free camera ([`debug`], stage 35);
 //! 5. listens on `127.0.0.1:PORT` in a thread of its own.
 //!
+//! Stage 46 ([`files`]): with `redirect=` lines in the configuration the
+//! game opens those files of its folder from the toolkit's folder instead
+//! — a mod or a workspace without writing into the game.
+//!
 //! Stage 48 ([`state`]) reads and writes the world and the state of the
 //! game: time of day, weather, streams one at a time, money, family,
 //! missions, variables of the story.
@@ -24,6 +28,7 @@
 #![allow(clippy::missing_safety_doc)]
 
 mod debug;
+mod files;
 mod game;
 mod journal;
 mod server;
@@ -49,6 +54,8 @@ static FRAME: AtomicU32 = AtomicU32::new(0);
 static STATE: AtomicU8 = AtomicU8::new(0);
 /// What the journal could not hook (empty: all of it, `None`: off).
 static JOURNAL: OnceLock<Option<Vec<&'static str>>> = OnceLock::new();
+/// What the file hooks could not hook (stage 46).
+static FILES: OnceLock<Vec<u32>> = OnceLock::new();
 static HOOKED: AtomicBool = AtomicBool::new(false);
 static UPDATE_HOOKED: AtomicBool = AtomicBool::new(false);
 /// `fix_input` of the configuration ([`game::fix_input`]).
@@ -381,6 +388,13 @@ unsafe extern "system" fn start(_: *mut c_void) -> u32 {
             Some(Some(failed)) => log(&format!("journal: could not hook {}", failed.join(", "))),
             _ => log("journal: off"),
         }
+        if let Some(line) = files::summary() {
+            log(&line);
+            if let Some(failed) = FILES.get().filter(|f| !f.is_empty()) {
+                let list: Vec<String> = failed.iter().map(|a| format!("{a:#010x}")).collect();
+                log(&format!("files: could not patch {}", list.join(", ")));
+            }
+        }
         server::run(config);
     });
     0
@@ -406,6 +420,11 @@ pub unsafe extern "system" fn DllMain(module: *mut c_void, reason: u32, _: *mut 
                     .map(|t| Config::parse(&t))
                     .unwrap_or_default();
             let _ = JOURNAL.set((ok && config.journal).then(journal::install));
+            // The files the game opens: before it reads `cmd.txt` in its
+            // start-up (0x0067BFA0).
+            if ok {
+                let _ = FILES.set(files::install(&config));
+            }
             // SAFETY: a thread of the module; it starts once the loader
             // releases its lock.
             unsafe {

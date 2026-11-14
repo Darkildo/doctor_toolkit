@@ -331,6 +331,7 @@ fn methods_are_stored_as_tables() {
         start: Default::default(),
         live: Default::default(),
         dxvk: false,
+        overlay: Default::default(),
     };
     let json = serde_json::to_string(&config).unwrap();
     assert_eq!(
@@ -338,6 +339,15 @@ fn methods_are_stored_as_tables() {
         r#"{"method":{"method":"wine","prefix":"/p"},"apply_before":true,"revert_after":false}"#
     );
     assert_eq!(serde_json::from_str::<PlayConfig>(&json).unwrap(), config);
+    // Playing without writing into the game is the default; switched off,
+    // it is stored (stage 46).
+    let off = PlayConfig {
+        overlay: overlay::OverlayMode::Off,
+        ..config.clone()
+    };
+    let json = serde_json::to_string(&off).unwrap();
+    assert!(json.ends_with(r#""overlay":"off"}"#), "{json}");
+    assert_eq!(serde_json::from_str::<PlayConfig>(&json).unwrap(), off);
     // Starting in a level is kept with the rest (and is absent when unused).
     let level = PlayConfig {
         start: start::StartOptions {

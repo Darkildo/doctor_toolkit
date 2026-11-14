@@ -482,7 +482,7 @@ X-сервера завершается. Без этого игра однажд
 ведёт к своему объекту, ближайшая точка). Стенд — `docs/analysis/game-bench.md`
 §17.
 
-### 9.2 Живая связь (этапы 34, 49, 35, 48)
+### 9.2 Живая связь (этапы 34, 49, 35, 48, 46)
 
 Код: `app/live.rs` (панель «Связь», поток связи, окно подтверждения,
 установка модуля при «Играть»), `level_view` (`LevelView::live`,
@@ -504,6 +504,31 @@ X-сервера завершается. Без этого игра однажд
 адресу; после выхода игры (`poll_session`) модуль убирается, журнал — в
 `_doctor_toolkit/live/last.log`. Без «Играть» кнопка «Подключиться» берёт
 порт и токен из `scripts/doctor_live.cfg` игры (`Endpoint::of_game`).
+
+**Без записи в игру (этап 46).** `PlayConfig::overlay` (`OverlayMode`:
+`auto` по умолчанию, `on`, `off`; `settings.toml`, `play.overlay`) —
+выпадающий список «How the changes reach the game» в Play options.
+`play()` при применении рабочего пространства или старте в уровне зовёт
+`play::overlay::choose` (модуль собран, загрузчик есть, `exe` проходит
+`edition::check_file`); при `Overlay` — `Overlay::build` (зеркало игры
+ссылками в кэше, `Workspace::apply` туда, разница → подмены, `cmd.txt`
+рядом) вместо `apply`, `cmd.txt` в игру не пишется, модуль ставится
+`install_live_with` с `redirects` (живая связь выключена — без записи и
+журнала, только подмены и управление), откат после выхода не нужен
+(`Launched::revert_after` ложь), `poll_session` удаляет зеркало. При `auto`
+без условий — предупреждение «записано в папку игры: причина» и прежний
+путь. Строки — `play.overlay*` в `en.toml`/`ru.toml`. Руководство —
+`docs/guide/11-play.md` §11.11, устройство — `docs/analysis/live-link.md`
+§14.
+
+**CLI.** `play --apply|--mods [--no-game-writes|--write-game]`: решение
+то же (`--write-game` — `off`, `--no-game-writes` и `--mods` — `on`); при
+подмене `play` ждёт выхода игры, убирает модуль и зеркало и пишет,
+сколько подменённых файлов игра открыла (`live::redirected_in_log` по
+журналу модуля). `live install ИГРА [--apply [--workspace-dir DIR] |
+--mods] [--cmd-txt=ТЕКСТ] [--files-log]` — то же для стенда: зеркало
+остаётся до `live uninstall`. `live files [--json]` — запрос `Files`
+(протокол 5): подмены, сколько раз игра открыла каждую.
 
 **Поток связи** (`LiveState`, `worker`): пока нет связи — попытка раз в
 2 с (тайм-аут 3 с); со связью — каждые 250 мс Status, Player, Camera (они

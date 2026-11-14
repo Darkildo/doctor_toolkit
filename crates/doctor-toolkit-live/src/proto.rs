@@ -42,6 +42,10 @@
 //! ([`Request::Family`]), missions ([`Request::Mission`]) and the variables
 //! of the story ([`Request::Variables`], [`Request::SetVariable`]).
 //!
+//! Version 5 (stage 46) adds [`Request::Files`]: the files the game opens
+//! from the toolkit's folder instead of its own ([`crate::files`]) and how
+//! often it opened each.
+//!
 //! Writes into the game ([`Request::Teleport`], [`Request::Send`],
 //! [`Request::Lua`]) are separate requests: the editor asks before it sends
 //! them, and the module refuses them when its configuration says
@@ -51,6 +55,7 @@ use std::fmt;
 use std::io::{Read, Write};
 
 pub use crate::debug::{BreakOn, BreakRule, Control, DebugState, Stop, StopPlace, StopReason};
+pub use crate::files::{FileUse, Files};
 pub use crate::journal::{Event, EventBatch, EventBody, MessageOrigin, OutputSource};
 pub use crate::state::{
     Checkpoint, CrewSlot, Family, FamilyInfo, Mission, Money, MoneyChange, Rain, StreamAction,
@@ -62,7 +67,7 @@ pub use crate::world::{World, WorldFilter, WorldObject};
 /// Magic of every frame.
 pub const MAGIC: [u8; 4] = *b"DTLV";
 /// Version of this protocol: what a client sends first.
-pub const PROTOCOL_VERSION: u16 = 4;
+pub const PROTOCOL_VERSION: u16 = 5;
 /// Oldest version a module still answers.
 pub const OLDEST_PROTOCOL_VERSION: u16 = 1;
 
@@ -327,6 +332,9 @@ pub enum Request {
     /// its record) and wakes those who watch it (`0x00442240`), as
     /// `VariableOperator` does.
     SetVariable { hash: u32, value: i32 },
+    /// Version 5: the files the game opens from elsewhere and their use
+    /// ([`crate::files`]).
+    Files,
 }
 
 /// Kinds of requests.
@@ -360,6 +368,7 @@ pub mod kind {
     pub const MISSION: u16 = 27;
     pub const VARIABLES: u16 = 28;
     pub const SET_VARIABLE: u16 = 29;
+    pub const FILES: u16 = 30;
 }
 
 impl Request {
@@ -394,6 +403,7 @@ impl Request {
             Self::Mission => kind::MISSION,
             Self::Variables { .. } => kind::VARIABLES,
             Self::SetVariable { .. } => kind::SET_VARIABLE,
+            Self::Files => kind::FILES,
         }
     }
 
@@ -418,6 +428,7 @@ impl Request {
             | Self::Mission
             | Self::Variables { .. }
             | Self::SetVariable { .. } => 4,
+            Self::Files => 5,
             _ => 1,
         }
     }
@@ -534,7 +545,8 @@ impl Request {
             | Self::StreamQueue
             | Self::Money
             | Self::Family
-            | Self::Mission => {}
+            | Self::Mission
+            | Self::Files => {}
             Self::SetTime(c) => crate::state::put_time_change(&mut w, c),
             Self::StreamLoad { name } => w.str(name),
             Self::StreamUnload { name, force } => {
@@ -661,6 +673,7 @@ impl Request {
                 hash: r.u32()?,
                 value: r.u32()? as i32,
             },
+            kind::FILES => Self::Files,
             other => return Err(DecodeError::UnknownKind(other)),
         };
         r.finish()?;
@@ -883,6 +896,8 @@ pub enum Response {
     Mission(Mission),
     /// Version 4: answer to [`Request::Variables`].
     Variables(Vec<Variable>),
+    /// Version 5: answer to [`Request::Files`].
+    Files(Files),
     Error(Failure),
 }
 
@@ -1003,6 +1018,7 @@ impl Response {
             Self::Family(f) => crate::state::put_family(&mut w, f),
             Self::Mission(m) => crate::state::put_mission(&mut w, m),
             Self::Variables(v) => crate::state::put_variables(&mut w, v),
+            Self::Files(f) => crate::files::put_files(&mut w, f),
             Self::Error(e) => {
                 w.u16(e.code as u16);
                 w.str(&e.message);
@@ -1114,6 +1130,7 @@ impl Response {
                 kind::FAMILY => Self::Family(crate::state::get_family(&mut r)?),
                 kind::MISSION => Self::Mission(crate::state::get_mission(&mut r)?),
                 kind::VARIABLES => Self::Variables(crate::state::get_variables(&mut r)?),
+                kind::FILES => Self::Files(crate::files::get_files(&mut r)?),
                 other => return Err(DecodeError::UnknownKind(other | REPLY)),
             }
         };

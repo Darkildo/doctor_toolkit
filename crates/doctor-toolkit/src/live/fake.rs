@@ -14,7 +14,8 @@
 //! traffic for trying the editor (`live fake --activity`). Protocol 4
 //! (stage 48): a clock, a stream streamer that loads one request at a time
 //! (it is done at the next look at the queue), money, a crew, checkpoints
-//! and variables of the story.
+//! and variables of the story. Protocol 5 (stage 46): the files of the
+//! configuration's `redirect` lines, each opened once by the fake game.
 
 use std::net::{Ipv4Addr, TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -850,6 +851,24 @@ fn answer(request: Request, config: &Config, version: u16, w: &mut FakeWorld) ->
             crew: w.crew.clone(),
         }),
         Request::Mission => Response::Mission(w.mission.clone()),
+        // The fake game opened every redirected file once.
+        Request::Files => Response::Files(doctor_toolkit_live::Files {
+            hooked: config.hooks_files(),
+            logging: config.files_log,
+            total: config.redirects.len() as u32,
+            redirects: config
+                .redirects
+                .iter()
+                .take(doctor_toolkit_live::files::MAX_LISTED)
+                .map(|r| doctor_toolkit_live::FileUse {
+                    from: r.from.clone(),
+                    to: r.to.clone(),
+                    opens: 1,
+                    failed: 0,
+                })
+                .collect(),
+            passed: 0,
+        }),
         Request::Variables { hashes } => Response::Variables(
             w.variables
                 .iter()

@@ -12,6 +12,7 @@ fn config(token: &str, writes: bool) -> Config {
         writes,
         fix_input: true,
         journal: true,
+        ..Default::default()
     }
 }
 
@@ -581,7 +582,7 @@ fn world_and_state_of_protocol_4() {
     use proto::{MoneyChange, StreamAction, TimeChange};
     let game = FakeGame::start(config("t", true)).unwrap();
     let mut c = Client::connect(&game.endpoint("t"), "test", T).unwrap();
-    assert_eq!(c.version(), 4);
+    assert!(c.version() >= 4);
     assert!(c.has_state());
 
     // The clock: time and rate, then back to the level's rate.
@@ -702,4 +703,44 @@ fn state_writes_need_permission_and_a_new_module() {
         c.time_of_day().unwrap_err(),
         LinkError::Unexpected(_) | LinkError::Refused(_)
     ));
+}
+
+/// Protocol 5 (stage 46): the files the module redirects, from its
+/// configuration; a module of protocol 4 is asked with version 4 and has
+/// none.
+#[test]
+fn redirected_files_of_protocol_5() {
+    use proto::files::Redirect;
+    let mut cfg = config("t", false);
+    cfg.redirects = vec![Redirect {
+        from: "cmd.txt".into(),
+        to: "Z:\\o\\cmd.txt".into(),
+    }];
+    let game = FakeGame::start(cfg).unwrap();
+    let mut c = Client::connect(&game.endpoint("t"), "test", T).unwrap();
+    assert_eq!(c.version(), 5);
+    assert!(c.has_files());
+    let f = c.files().unwrap();
+    assert!(f.hooked);
+    assert_eq!(f.total, 1);
+    assert_eq!(f.used(), 1);
+    assert_eq!(f.redirects[0].from, "cmd.txt");
+    // Read-only: allowed with writes off.
+    assert!(!proto::Request::Files.writes());
+
+    game.world.lock().unwrap().protocol = 4;
+    let mut c = Client::connect(&game.endpoint("t"), "test", T).unwrap();
+    assert_eq!(c.version(), 4);
+    assert!(!c.has_files());
+    assert_eq!(c.files().unwrap_err().code(), Some(ErrorCode::Unsupported));
+}
+
+#[test]
+fn opened_redirects_are_counted_from_the_module_log() {
+    let log = "[frame 0] files: 2 redirect(s) from Z:\\g, 13 calls hooked: on\n\
+        [frame 0] files: CreateFileW from 0x00acf5c8 cmd.txt -> Z:\\o\\cmd.txt\n\
+        [frame 3] files: CreateFileW from 0x00acf5c8 gf2/cuba.str (Z:\\g/gf2\\cuba.str)\n\
+        [frame 9] files: CreateFileW from 0x00acf5c8 gf2/cuba.toc -> Z:\\o\\cuba.toc\n";
+    assert_eq!(redirected_in_log(log), 2);
+    assert_eq!(redirected_in_log(""), 0);
 }

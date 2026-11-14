@@ -12,6 +12,7 @@ use serde_json::{Value, json};
 use doctor_toolkit::install::{self, SearchRoots};
 use doctor_toolkit::live::{self, Client, ModuleInstall};
 use doctor_toolkit::play::dxvk::{self, DxvkInstall};
+use doctor_toolkit::play::overlay::{self, Choice, Overlay, OverlayMode, Source};
 use doctor_toolkit::play::start::{self, CmdFile, StartOptions};
 use doctor_toolkit::play::{self, LaunchMethod, PlayConfig, SessionState};
 use doctor_toolkit::workspace::{ApplyOptions, ApplyReport, StreamAction, Workspace};
@@ -55,10 +56,24 @@ pub struct PlayParams {
     /// second instead of 1–2 [default: as the editor's Play options say].
     #[serde(default)]
     pub dxvk: Option<bool>,
-    /// Write the workspace into the game first and take it out again when
-    /// the game ends (default true).
+    /// Give the game the workspace for this launch (default true): through
+    /// the live module without writing into the game folder when it can,
+    /// else written into the game and taken out again when the game ends
+    /// (see `write_game`).
     #[serde(default)]
     pub apply: Option<bool>,
+    /// Give the game the enabled mods of the mod manager instead of the
+    /// workspace, through the live module (never written into the game).
+    #[serde(default)]
+    pub mods: Option<bool>,
+    /// How the workspace and `cmd.txt` reach the game: `false` — only
+    /// through the live module from staged files, the game folder is not
+    /// written (fails when the module cannot be used); `true` — written into
+    /// the game folder and put back afterwards; not given — as the editor's
+    /// Play options say (by default through the module when it is built,
+    /// the game has the ASI loader and the edition fits).
+    #[serde(default)]
+    pub write_game: Option<bool>,
     /// Wait until a level is loaded (the live link sees the player), at
     /// most `timeout_s` (default true).
     #[serde(default)]
@@ -331,9 +346,65 @@ pub fn play(kit: &Toolkit, p: PlayParams) -> ToolResult<Output> {
         notes.push(format!("took away the {} of an earlier launch", dxvk::DLL));
     }
 
+    // Through the live module, without writing into the game (stage 46).
+    let mods = p.mods.unwrap_or(false);
+    let apply = p.apply.unwrap_or(true) && !mods && Workspace::exists(&kit.workspace_dir);
+    let mode = match p.write_game {
+        Some(true) => OverlayMode::Off,
+        Some(false) => OverlayMode::On,
+        None if mods => OverlayMode::On,
+        None => editor.overlay,
+    };
+    if mods && mode == OverlayMode::Off {
+        return fail(
+            "`mods` gives the game the mods through the live module; `write_game` cannot be true with it (`mods apply` writes them)",
+        );
+    }
+    let wants = apply || mods || !options.is_empty();
+    let choice = if wants {
+        overlay::choose(&root, mode).map_err(|e| ToolError(e.to_string()))?
+    } else {
+        Choice::Write(None)
+    };
+    if let Choice::Write(Some(why)) = &choice {
+        notes.push(format!("the game folder is written for this launch: {why}"));
+    }
+    let mut staged = None;
+    if choice == Choice::Overlay {
+        if overlay::remove_stale(&root)? {
+            notes.push("removed the staged files of an earlier launch".into());
+        }
+        let source = if mods {
+            Some(Source::Mods)
+        } else if apply {
+            Some(Source::Workspace(kit.workspace_dir.clone()))
+        } else {
+            None
+        };
+        let dir = overlay::default_dir(&root)
+            .ok_or_else(|| ToolError("no folder for the staged files (no HOME)".into()))?;
+        let cmd_txt = if options.is_empty() {
+            None
+        } else {
+            Some(options.cmd_txt()?)
+        };
+        let built =
+            Overlay::build(&kit.game, source.as_ref(), cmd_txt.as_deref(), &dir).map_err(|e| {
+                ToolError(format!(
+                    "cannot stage the changes; the game was not started: {e}"
+                ))
+            })?;
+        notes.push(format!(
+            "{} file(s) given to the game by the live module from {}, nothing written into the game folder",
+            built.redirects().len(),
+            dir.display()
+        ));
+        staged = Some(built);
+    }
+
     // The workspace into the game.
     let mut applied = None;
-    if p.apply.unwrap_or(true) && Workspace::exists(&kit.workspace_dir) {
+    if staged.is_none() && apply {
         let mut access =
             kit.write_workspace("play: write the workspace into the game before starting it")?;
         let report = access
@@ -348,17 +419,27 @@ pub fn play(kit: &Toolkit, p: PlayParams) -> ToolResult<Output> {
     }
     let revert_after = applied.is_some();
     // From here on a failure takes back what was written.
+    let redirects = staged
+        .as_ref()
+        .map(|o| o.redirects().to_vec())
+        .unwrap_or_default();
     let mut cleanup = Cleanup {
         kit,
         cmd_file: None,
         live: None,
         dxvk: None,
+        overlay: staged,
         revert: revert_after,
     };
-    if !options.is_empty() {
+    if !options.is_empty() && cleanup.overlay.is_none() {
         cleanup.cmd_file = Some(CmdFile::write(&root, &options)?);
     }
-    cleanup.live = install_live(&root, kit.allow_game, &mut notes)?;
+    cleanup.live = install_live(&root, kit.allow_game, redirects, &mut notes)?;
+    if cleanup.overlay.is_some() && cleanup.live.is_none() {
+        return fail(
+            "the live module could not be installed, and without it the game would not get the staged files",
+        );
+    }
     if let Some(found) = &dxvk_found {
         cleanup.dxvk = Some(DxvkInstall::write(&root, found)?);
     }
@@ -368,6 +449,7 @@ pub fn play(kit: &Toolkit, p: PlayParams) -> ToolResult<Output> {
     session.cmd_file = cleanup.cmd_file.take();
     session.live = cleanup.live.take();
     session.dxvk = cleanup.dxvk.take();
+    session.overlay = cleanup.overlay.take();
     session.revert_after = revert_after;
     cleanup.revert = false;
     session.notes = notes;
@@ -383,6 +465,7 @@ pub fn play(kit: &Toolkit, p: PlayParams) -> ToolResult<Output> {
         "started": true,
         "game": super::live::session_info(kit),
         "workspace_applied": applied,
+        "through_live_module": session_overlay(kit),
         "wait": waited,
         "next": "screenshot shows the screen; live_status, player and objects_near read the game; \
                  teleport, send_message and lua act in it; stop ends it and takes back what play wrote",
@@ -395,6 +478,7 @@ struct Cleanup<'a> {
     cmd_file: Option<CmdFile>,
     live: Option<ModuleInstall>,
     dxvk: Option<DxvkInstall>,
+    overlay: Option<Overlay>,
     revert: bool,
 }
 
@@ -422,9 +506,20 @@ impl Drop for Cleanup<'_> {
 /// The live module for this launch (writes on: the server runs with
 /// `--allow-game`; it also lets the player move after a start straight in
 /// a level), or nothing when the game has no ASI loader.
+/// Whether the running launch gets its files through the live module, and
+/// how many.
+fn session_overlay(kit: &Toolkit) -> Value {
+    let session = kit.session.lock().unwrap_or_else(|e| e.into_inner());
+    match session.as_ref().and_then(|s| s.overlay.as_ref()) {
+        Some(o) => json!({ "files": o.redirects().len(), "staged_in": o.dir() }),
+        None => json!(null),
+    }
+}
+
 fn install_live(
     root: &std::path::Path,
     writes: bool,
+    redirects: Vec<doctor_toolkit::live::proto::files::Redirect>,
     notes: &mut Vec<String>,
 ) -> ToolResult<Option<ModuleInstall>> {
     let Some(path) = live::module_binary() else {
@@ -448,6 +543,8 @@ fn install_live(
         fix_input: true,
         // The game's output, Lua errors and messages for the assistant.
         journal: true,
+        files_log: false,
+        redirects,
     };
     let install = ModuleInstall::write(root, &bytes, &config)?;
     notes.push(format!(
@@ -532,6 +629,12 @@ pub fn finish(kit: &Toolkit, mut session: GameSession) -> ToolResult<Value> {
         && d.restore()?
     {
         done.push(format!("took away {}", dxvk::DLL));
+    }
+    if let Some(o) = session.overlay.take() {
+        o.remove()?;
+        done.push(
+            "removed the files staged for the live module; the game folder was not written".into(),
+        );
     }
     let mut reverted = json!(null);
     if session.revert_after {

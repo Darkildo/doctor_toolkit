@@ -395,3 +395,41 @@ pub const VARIABLE_SIZE: u32 = 0x14;
 /// watch the variable (`VariableWatcher`); Lua `VariableSet` and
 /// `VariableOperator` call it after they write the value.
 pub const VARIABLE_CHANGED: u32 = 0x0044_2240;
+
+// --- Files the game opens (stage 46) -----------------------------------------
+
+/// Import slot of `CreateFileA` (`KERNEL32`).
+pub const IAT_CREATE_FILE_A: u32 = 0x00D5_5120;
+/// Import slot of `CreateFileW`.
+pub const IAT_CREATE_FILE_W: u32 = 0x00D5_5254;
+/// Import slot of `GetFileAttributesA`.
+pub const IAT_GET_FILE_ATTRIBUTES_A: u32 = 0x00D5_528C;
+/// Every `call [0x00D55120]` (`FF 15`, six bytes) of the code: the file
+/// class of the game (`0x00ABD6E0`, vtable `0x00D9AFC0`) and the C library.
+/// The module does not hook the import slots: the ASI loader puts its own
+/// functions into the slots of `CreateFileA` and `CreateFileW` while it
+/// loads the modules and puts the old values back afterwards (seen on the
+/// stand: a slot set from `DllMain` held `kernel32` again). It changes
+/// these instructions into `call hook; nop`; the hook calls what the slot
+/// holds at that moment.
+pub const CREATE_FILE_A_CALLS: [u32; 4] = [0x00AB_D73D, 0x00BC_C4DD, 0x00BC_FC1E, 0x00BC_FC3D];
+/// `mov edi, [0x00D55120]` (`8B 3D`, six bytes; the C library's open calls
+/// `edi` later): becomes `mov edi, hook; nop`.
+pub const CREATE_FILE_A_LOADS: [u32; 1] = [0x00BC_C18C];
+/// Every `call [0x00D55254]`: the open of the game's file system
+/// (`0x00AC0BDF` in `0x00AC0AD0`: a path in UTF-8 under the root of the
+/// game — every stream, table of contents, archive and `cmd.txt`, as the
+/// module's log shows), the open `0x00ACF580`, profiles (`0x006987C0`,
+/// `0x00699C40`) and the C library.
+pub const CREATE_FILE_W_CALLS: [u32; 6] = [
+    0x0069_87FA,
+    0x0069_88FD,
+    0x0069_9C59,
+    0x00AC_0BDF,
+    0x00AC_F5C8,
+    0x00BC_45A1,
+];
+/// `mov edi, [0x00D55254]` of the C library.
+pub const CREATE_FILE_W_LOADS: [u32; 1] = [0x00BC_424F];
+/// The only `call [0x00D5528C]` (a walk of a folder, `0x00C724C0`).
+pub const GET_FILE_ATTRIBUTES_A_CALLS: [u32; 1] = [0x00C7_2505];

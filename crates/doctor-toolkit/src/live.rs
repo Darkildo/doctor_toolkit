@@ -59,6 +59,7 @@ impl LiveOptions {
             writes: self.writes,
             fix_input: true,
             journal: true,
+            ..Default::default()
         }
     }
 }
@@ -419,6 +420,21 @@ impl Client {
         self.version >= 4
     }
 
+    /// Whether the module answers [`Request::Files`] (protocol 5, stage
+    /// 46).
+    pub fn has_files(&self) -> bool {
+        self.version >= 5
+    }
+
+    /// The files the game opens from elsewhere and how often it opened
+    /// them (stage 46).
+    pub fn files(&mut self) -> LinkResult<proto::Files> {
+        match self.request(&Request::Files)? {
+            Response::Files(f) => Ok(f),
+            other => Err(unexpected(other)),
+        }
+    }
+
     /// The game's clock (`None`: no level).
     pub fn time_of_day(&mut self) -> LinkResult<Option<TimeOfDay>> {
         match self.request(&Request::TimeOfDay)? {
@@ -668,6 +684,7 @@ pub fn install_for_input(root: &Path) -> Result<InputFix> {
         // Only the input: no hooks of the journal for a launch without the
         // live link.
         journal: false,
+        ..Default::default()
     };
     Ok(InputFix::Installed(ModuleInstall::write(
         root, &bytes, &config,
@@ -723,6 +740,14 @@ pub fn restore_stale(root: &Path) -> Result<bool> {
         }
     }
     Ok(changed)
+}
+
+/// How many redirected files the game opened, by the module's log (it logs
+/// the first open of each: `files: CreateFileW gf2/cuba.str -> …`).
+pub fn redirected_in_log(log: &str) -> usize {
+    log.lines()
+        .filter(|l| l.contains("] files: ") && l.contains(" -> "))
+        .count()
 }
 
 /// A random token for the configuration (from the clock and the process,

@@ -1431,3 +1431,56 @@ doctor-toolkit live stream load gf2/cuba/local/yuri/high/filler_056_01 --wait --
 - Загрузка зоны `high` идёт быстро (несколько кадров при DXVK): очередь «по
   одному» проверялась вторым запросом сразу после первого — он приходил,
   пока первый ещё не загружен.
+
+## 24. Этап 46: моды без записи в игру (2026-11-14)
+
+Быстрый стенд, как в §21–§23: `DXVK=1`, `SERVER=xvfb`, 1024×768,
+`WINEDLLOVERRIDES=dinput8=n,b`, новая тень; префикс стенда по умолчанию
+был занят другим прогоном, поэтому `BENCH_PREFIX=…/wine-gf2-bench-s46`
+(копия базового, как обычно). Устройство и адреса — `live-link.md` §14.
+Снимки, журналы модуля и состояния тени — в рабочей папке проверки.
+
+**Мод формата 2** «Havana pink»: в отдельном рабочем пространстве
+(`--workspace-dir`) — 15 цветных текстур потока
+`gf2/cuba/local/yuri/high/terrain3` перекрашены в пурпурный
+(`textures --png`, перекраска, `texture-import`), новый поток
+`gf2/doctor/s46` (`add-stream --parent gf2/cuba`, TOC `cuba.toc` и
+`cuba_global.toc`) с клоном текстуры (`clone-resource --to`); `mods build`
+— формат 2, 17 ресурсов, 2 добавленных, 1 новый поток; `mods install` в
+менеджер модов тени (`mods apply` не делался ни разу).
+
+**Состояние тени** до и после каждого прогона — скрипт: SHA-256 каждого
+файла и цель, размер и время изменения каждой ссылки, без
+`_doctor_toolkit` и `.game-bench` (3 751 запись); плюс `verify`.
+
+```sh
+doctor-toolkit live install $S/shadow --writes --mods "--cmd-txt=-stream gf2 cuba"
+tools/game-bench.sh start $S/shadow $S/out
+doctor-toolkit live files --game $S/shadow
+doctor-toolkit live stream load gf2/doctor/s46 --wait --yes --game $S/shadow
+doctor-toolkit live uninstall $S/shadow
+# CLI целиком, игра — через стенд:
+DOCTOR_TOOLKIT_GAME_PROCESS=no-such-game.exe DURATION=150 \
+    doctor-toolkit play $S/shadow --method command \
+    --command "tools/bench/play-command.sh {dir}" --mods --stream gf2/cuba
+```
+
+| Прогон | Результат |
+|---|---|
+| Первая версия (подмена слотов импорта из `DllMain`) | модуль «поставил» перехваты, но ни одного открытия не увидел; `live peek 0x00D55120 4` в игре — `0x7BB9B040`, по `/proc/PID/maps` это `kernel32.dll`: загрузчик ASI вернул слоты. Переделано на места вызова (`live-link.md` §14.2) |
+| Журнал открытий (`--files-log`) | `cmd.txt`, `GODFATH0..12.VIV`, `text/localetable.txt`, `gf2\cuba.toc`, `gf2\globals_global.toc`, потоки — 77 открытий, все `CreateFileW from 0x00ac0bdf` (открытие файловой системы игры `0x00AC0AD0`), путь вида `<папка>/gf2\cuba.str`; `CreateFileA` и `GetFileAttributesA` — ни разу |
+| Контроль: только `cmd.txt` подменой | игра сразу в Гаване (`-stream gf2 cuba` пришёл из файла вне игры, `cmd.txt` в папке игры нет); `live files`: 1 подмена, открыта 1 раз; вид у ворот — агава зелёная; после `uninstall` состояние тени совпало полностью |
+| Мод, GF2ASI выключен | 5 подмен (`terrain3.str`, `cuba.toc`, `cuba_global.toc`, `doctor/s46.str`, `cmd.txt`), на старте открыты 3 (`cuba.toc` дважды); **агава у ворот пурпурная** (тот же кадр, что в контроле); `live stream load gf2/doctor/s46` — загружен за 23 кадра (состояние 3), файла `gf2/doctor/` в папке игры нет — его дала подмена; ходьба; 770 с, исключений в `wine.log` нет; после `uninstall`: изменился только `godfather2.dxvk-cache` (кэш шейдеров, его пишет DXVK сам), `verify` — оригиналы не менялись (27 файлов); папка подмен удалена |
+| Мод, GF2ASI включён | консоль «GF2SE» забрала фокус — щелчок по кнопке игры на панели задач Wine (§18); дальше то же: пурпурная агава, поток мода загружен (16 кадров) и выгружен, ходьба; 399 с без исключений; после `uninstall` изменился только `GF2_Hook.txt` — журнал самого GF2ASI |
+| `play --mods --stream gf2/cuba` (CLI целиком) | `staged: 5 file(s) … (2 stream(s) rebuilt)`, `live: module installed, … 5 file(s) redirected`; снимок на 110 с — пурпурная агава; стенд остановил игру на 150 с; `removed the staged files; the game opened 3 of the 5 redirected file(s), its folder was not written`; состояние тени до и после — **совпало побайтно** (все 3 751 записи), папки подмен нет |
+
+Найдено:
+
+- Ultimate ASI Loader возвращает слоты `CreateFileA`/`CreateFileW`
+  исполняемого файла после загрузки модулей — модуль, который ставит
+  перехват в слот из `DllMain`, теряет его.
+- Игра открывает все свои данные одним местом и только на чтение: подмены
+  чтения (`ReadFile`) не нужны.
+- `DOCTOR_TOOLKIT_GAME_PROCESS` в прогоне `play` нужен только на этом
+  стенде: рядом шла другая копия игры, и слежение за процессами (§13.7)
+  ждало бы её.

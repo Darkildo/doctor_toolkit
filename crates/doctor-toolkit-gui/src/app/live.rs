@@ -636,6 +636,42 @@ impl BrowserApp {
         }
     }
 
+    /// The module for a launch that gets its changed files through it
+    /// (stage 46): the live link as configured, or, with it off, only the
+    /// redirects and the player's controller (writes and journal off).
+    pub(super) fn install_live_with(
+        &mut self,
+        root: &Path,
+        options: &LiveOptions,
+        redirects: Vec<live::proto::files::Redirect>,
+    ) -> Option<ModuleInstall> {
+        let Some(path) = live::module_binary() else {
+            self.notify(Level::Warning, tr("live.no_module").to_owned());
+            return None;
+        };
+        let mut config = options.config();
+        if !options.enabled {
+            config.writes = false;
+            config.journal = false;
+        }
+        config.redirects = redirects;
+        let result = std::fs::read(&path)
+            .map_err(|e| e.to_string())
+            .and_then(|bytes| {
+                ModuleInstall::write(root, &bytes, &config).map_err(|e| e.to_string())
+            });
+        match result {
+            Ok(install) => Some(install),
+            Err(error) => {
+                self.notify(
+                    Level::Warning,
+                    trf("live.install_failed", &[("error", &error)]),
+                );
+                None
+            }
+        }
+    }
+
     /// A start straight into a level with the live link off: the module only
     /// so that the player can move ([`live::install_for_input`]).
     pub(super) fn install_for_input(&mut self, root: &Path) -> Option<ModuleInstall> {
@@ -1437,6 +1473,7 @@ mod tests {
             writes: true,
             fix_input: true,
             journal: true,
+            ..Default::default()
         })
         .unwrap();
         let ctx = egui::Context::default();
@@ -1549,6 +1586,7 @@ mod tests {
             writes: true,
             fix_input: true,
             journal: true,
+            ..Default::default()
         })
         .unwrap();
         let ctx = egui::Context::default();

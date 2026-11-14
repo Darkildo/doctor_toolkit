@@ -20,7 +20,10 @@
 //!   replacement of a texture (stage 35);
 //! - [`state`]: the world and the state of the game — time of day,
 //!   weather, streams one at a time, money, family, missions, variables
-//!   (stage 48).
+//!   (stage 48);
+//! - [`files`]: files the game opens from the toolkit's folder instead of
+//!   its own — a mod or a workspace without writing into the game (stage
+//!   46).
 //!
 //! The crate has no dependencies: the module builds it for
 //! `i686-pc-windows-gnu`, the editor for the host.
@@ -29,6 +32,7 @@ pub mod addr;
 pub mod config;
 pub mod debug;
 pub mod edition;
+pub mod files;
 pub mod journal;
 pub mod proto;
 pub mod state;

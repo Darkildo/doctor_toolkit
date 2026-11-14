@@ -786,7 +786,7 @@ mod undo_redo {
 
 // ------------------------------------------------- added resources and streams
 
-fn new_resource(stream: &str, tag: &[u8], id: u32, data: &[u8]) -> NewResourceEdit {
+pub(crate) fn new_resource(stream: &str, tag: &[u8], id: u32, data: &[u8]) -> NewResourceEdit {
     let mut header = header(tag, [id; 4]);
     let defaults = crate::create::type_defaults(header.type_id);
     header.mem_policy = defaults.mem_policy;
@@ -800,7 +800,7 @@ fn new_resource(stream: &str, tag: &[u8], id: u32, data: &[u8]) -> NewResourceEd
     }
 }
 
-fn new_stream(name: &str, with_parent: bool) -> NewStream {
+pub(crate) fn new_stream(name: &str, with_parent: bool) -> NewStream {
     NewStream {
         name: name.into(),
         guid: "00".repeat(16),
@@ -1048,7 +1048,7 @@ fn a_workspace_is_written_by_its_first_operation() {
 }
 
 /// The fake game with two `.viv` archives and a movie.
-fn fake_game_with_files() -> (tempfile::TempDir, GameInstance) {
+pub(crate) fn fake_game_with_files() -> (tempfile::TempDir, GameInstance) {
     use crate::container::big::build_archive;
     let (dir, _) = fake_game();
     let root = dir.path();

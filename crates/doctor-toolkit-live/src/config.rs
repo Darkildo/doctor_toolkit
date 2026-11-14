@@ -8,7 +8,12 @@
 //! writes=1
 //! fix_input=1
 //! journal=1
+//! files_log=0
+//! redirect=gf2/cuba.str|_doctor_toolkit/overlay/gf2/cuba.str
 //! ```
+//!
+//! `redirect` lines (stage 46, [`crate::files`]) name files the game opens
+//! from elsewhere: the path in the game folder, `|`, the file it gets.
 
 use crate::DEFAULT_PORT;
 
@@ -30,6 +35,12 @@ pub struct Config {
     /// (`docs/analysis/live-link.md` §11). On unless the file says
     /// `journal=0`.
     pub journal: bool,
+    /// Whether the module logs every file of the game folder the game
+    /// opens (stage 46, for finding what to redirect). Off unless the file
+    /// says `files_log=1`.
+    pub files_log: bool,
+    /// Files the game opens from elsewhere (stage 46).
+    pub redirects: Vec<crate::files::Redirect>,
 }
 
 impl Default for Config {
@@ -40,6 +51,8 @@ impl Default for Config {
             writes: false,
             fix_input: true,
             journal: true,
+            files_log: false,
+            redirects: Vec::new(),
         }
     }
 }
@@ -66,6 +79,14 @@ impl Config {
                 "writes" => out.writes = matches!(value, "1" | "true" | "yes"),
                 "fix_input" => out.fix_input = !matches!(value, "0" | "false" | "no"),
                 "journal" => out.journal = !matches!(value, "0" | "false" | "no"),
+                "files_log" => out.files_log = matches!(value, "1" | "true" | "yes"),
+                "redirect" => {
+                    if out.redirects.len() < crate::files::MAX_REDIRECTS
+                        && let Some(r) = crate::files::Redirect::parse(value)
+                    {
+                        out.redirects.push(r);
+                    }
+                }
                 _ => {}
             }
         }
@@ -73,14 +94,31 @@ impl Config {
     }
 
     pub fn to_text(&self) -> String {
-        format!(
+        let mut out = format!(
             "# doctor_toolkit live link (stage 34); written by the toolkit, removed after the game exits\r\nport={}\r\ntoken={}\r\nwrites={}\r\nfix_input={}\r\njournal={}\r\n",
             self.port,
             self.token,
             u8::from(self.writes),
             u8::from(self.fix_input),
             u8::from(self.journal)
-        )
+        );
+        if self.files_log {
+            out.push_str("files_log=1\r\n");
+        }
+        if !self.redirects.is_empty() {
+            out.push_str("# files the game opens from elsewhere (stage 46)\r\n");
+        }
+        for r in &self.redirects {
+            out.push_str("redirect=");
+            out.push_str(&r.to_line());
+            out.push_str("\r\n");
+        }
+        out
+    }
+
+    /// Whether the module hooks the files the game opens.
+    pub fn hooks_files(&self) -> bool {
+        self.files_log || !self.redirects.is_empty()
     }
 }
 
@@ -96,8 +134,21 @@ mod tests {
             writes: true,
             fix_input: false,
             journal: false,
+            files_log: true,
+            redirects: vec![
+                crate::files::Redirect {
+                    from: "gf2/cuba.str".into(),
+                    to: "_doctor_toolkit/overlay/gf2/cuba.str".into(),
+                },
+                crate::files::Redirect {
+                    from: "godfath1.viv".into(),
+                    to: "GODFATH0.viv".into(),
+                },
+            ],
         };
         assert_eq!(Config::parse(&c.to_text()), c);
+        assert!(c.hooks_files());
+        assert!(!Config::default().hooks_files());
         // A file of an older installer has no fix_input: the fix is on.
         assert!(Config::parse("port=47801\nwrites=0").fix_input);
         assert!(Config::parse("port=47801\nwrites=0").journal);
@@ -111,7 +162,15 @@ mod tests {
                 writes: false,
                 fix_input: true,
                 journal: true,
+                files_log: false,
+                redirects: Vec::new(),
             }
+        );
+        // A bad redirect line is left out.
+        assert!(
+            Config::parse("redirect=../x|y\nredirect=cmd.txt")
+                .redirects
+                .is_empty()
         );
     }
 }

@@ -45,7 +45,31 @@ unsafe extern "system" {
     ) -> Handle;
     pub fn CloseHandle(handle: Handle) -> i32;
     pub fn GetCurrentThreadId() -> u32;
+    pub fn CreateFileW(
+        name: *const u16,
+        access: u32,
+        share: u32,
+        security: *mut c_void,
+        disposition: u32,
+        flags: u32,
+        template: Handle,
+    ) -> Handle;
+    pub fn GetFileAttributesW(name: *const u16) -> u32;
+    pub fn GetCurrentDirectoryW(size: u32, buffer: *mut u16) -> u32;
+    pub fn GetLastError() -> u32;
+    pub fn SetLastError(code: u32);
+    pub fn MultiByteToWideChar(
+        code_page: u32,
+        flags: u32,
+        text: *const u8,
+        len: i32,
+        out: *mut u16,
+        out_len: i32,
+    ) -> i32;
 }
+
+/// `INVALID_HANDLE_VALUE` and `INVALID_FILE_ATTRIBUTES`.
+pub const INVALID: usize = usize::MAX;
 
 /// Whether `[address, address + len)` is committed, readable memory.
 pub fn readable(address: u32, len: usize) -> bool {

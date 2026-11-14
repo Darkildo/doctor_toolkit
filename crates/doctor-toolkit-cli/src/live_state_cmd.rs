@@ -168,6 +168,56 @@ pub fn time(
     Ok(())
 }
 
+/// `live files`.
+pub fn files(link: &LinkArgs) -> Result<()> {
+    let mut c = link.connect()?;
+    if !c.has_files() {
+        bail!(
+            "the module speaks protocol {}: it redirects no files (stage 46 needs protocol 5)",
+            c.version()
+        );
+    }
+    let f = c.files()?;
+    if link.json {
+        out!(
+            "{}",
+            json!({
+                "hooked": f.hooked,
+                "logging": f.logging,
+                "total": f.total,
+                "used": f.used(),
+                "passed": f.passed,
+                "redirects": f.redirects.iter().map(|r| json!({
+                    "from": r.from, "to": r.to, "opens": r.opens, "failed": r.failed,
+                })).collect::<Vec<_>>(),
+            })
+        );
+        return Ok(());
+    }
+    if !f.hooked {
+        out!("the module redirects no files (none listed in doctor_live.cfg)");
+        return Ok(());
+    }
+    out!(
+        "{} file(s) redirected, {} opened by the game; {} other open(s) in the game folder",
+        f.total,
+        f.used(),
+        f.passed
+    );
+    for r in &f.redirects {
+        let failed = if r.failed > 0 {
+            format!(", {} failed", r.failed)
+        } else {
+            String::new()
+        };
+        out!("  {} -> {} ({}x{failed})", r.from, r.to, r.opens);
+    }
+    if (f.redirects.len() as u32) < f.total {
+        out!("  … and {} more", f.total - f.redirects.len() as u32);
+    }
+    Ok(())
+}
+
 pub fn weather(link: &LinkArgs) -> Result<()> {
     let w = connect(link)?.weather()?;
     if link.json {

@@ -11,6 +11,7 @@ use doctor_toolkit::edition::Edition;
 use doctor_toolkit::game::{GameInstance, looks_like_game};
 use doctor_toolkit::install::{self, Install, SearchRoots};
 use doctor_toolkit::play::dxvk;
+use doctor_toolkit::play::overlay::{self, Choice, Overlay, OverlayMode, Source};
 use doctor_toolkit::play::start::{self, CmdFile, StartOptions};
 use doctor_toolkit::play::{self, LaunchMethod, Session, SessionState};
 use doctor_toolkit::workspace::{ApplyOptions, Workspace};
@@ -136,6 +137,21 @@ pub struct PlayArgs {
     /// needs 32-bit Vulkan)
     #[arg(long)]
     dxvk: bool,
+    /// Play the enabled mods of the mod manager without writing them into
+    /// the game: the live module gives the game their files (implies
+    /// `--wait`); see `--write-game`
+    #[arg(long, conflicts_with_all = ["apply", "revert_after"])]
+    mods: bool,
+    /// Write the workspace and `cmd.txt` into the game folder (and put them
+    /// back after the game exits) instead of letting the live module give
+    /// the game those files. By default the module is used when it is
+    /// built, the game has the ASI loader and the edition fits
+    #[arg(long, conflicts_with_all = ["no_game_writes", "mods"])]
+    write_game: bool,
+    /// Never write the workspace or `cmd.txt` into the game folder: fail
+    /// when the live module cannot give the game those files
+    #[arg(long)]
+    no_game_writes: bool,
 }
 
 fn parse_resolution(text: &str) -> std::result::Result<(u32, u32), String> {
@@ -152,6 +168,7 @@ impl PlayArgs {
             || self.revert_after
             || self.live
             || self.dxvk
+            || self.mods
             || !self.start_options().is_empty())
             && !self.dry_run
             && !self.list_spawns
@@ -170,6 +187,16 @@ impl PlayArgs {
                 None
             },
             resolution: self.resolution,
+        }
+    }
+
+    fn overlay_mode(&self) -> OverlayMode {
+        if self.write_game {
+            OverlayMode::Off
+        } else if self.no_game_writes || self.mods {
+            OverlayMode::On
+        } else {
+            OverlayMode::Auto
         }
     }
 
@@ -326,12 +353,37 @@ pub fn play(args: &PlayArgs) -> Result<()> {
     if let Some(text) = &cmd_txt {
         out!("{}: {}", start::CMD_FILE, text.trim_end());
     }
+    // Through the live module, without writing into the game (stage 46),
+    // when there is something to bring in.
+    let wants = args.apply || args.mods || cmd_txt.is_some();
+    let choice = if wants {
+        overlay::choose(game.root(), args.overlay_mode())?
+    } else {
+        Choice::Write(None)
+    };
+    if let Choice::Write(Some(why)) = &choice {
+        out!("note: the game folder is written for this launch: {why}");
+    }
+    let staged = choice == Choice::Overlay;
     if args.dry_run {
-        if args.apply {
-            out!("would apply the workspace first");
-        }
-        if args.revert_after {
-            out!("would put the original files back after the game exits");
+        if staged {
+            out!(
+                "would give the game {} through the live module, without writing into its folder",
+                if args.mods {
+                    "the enabled mods"
+                } else if args.apply {
+                    "the workspace"
+                } else {
+                    start::CMD_FILE
+                }
+            );
+        } else {
+            if args.apply {
+                out!("would apply the workspace first");
+            }
+            if args.revert_after {
+                out!("would put the original files back after the game exits");
+            }
         }
         return Ok(());
     }
@@ -348,12 +400,43 @@ pub fn play(args: &PlayArgs) -> Result<()> {
     if dxvk::restore_stale(game.root())? {
         out!("took away the {} of an earlier launch", dxvk::DLL);
     }
+    if overlay::remove_stale(game.root())? {
+        out!("removed the staged files of an earlier launch");
+    }
     let ws_dir = args
         .workspace_dir
         .clone()
         .unwrap_or_else(|| Workspace::default_dir(game.root()));
     let mut workspace = None;
-    if args.apply || args.revert_after {
+    let staged_overlay = if staged {
+        let source = if args.mods {
+            Some(Source::Mods)
+        } else if args.apply && Workspace::exists(&ws_dir) {
+            Some(Source::Workspace(ws_dir.clone()))
+        } else {
+            if args.apply {
+                out!("no workspace in {}: nothing to apply", ws_dir.display());
+            }
+            None
+        };
+        let dir = overlay::default_dir(game.root())
+            .context("no folder for the staged files (no HOME or LOCALAPPDATA)")?;
+        let built = Overlay::build(&game, source.as_ref(), cmd_txt.as_deref(), &dir)
+            .context("cannot stage the changes; the game was not started")?;
+        out!(
+            "staged: {} file(s) the game opens from {} instead of its folder ({} stream(s) rebuilt)",
+            built.redirects().len(),
+            dir.display(),
+            built.report().streams.len()
+        );
+        for warning in &built.report().warnings {
+            out!("warning: {warning}");
+        }
+        Some(built)
+    } else {
+        None
+    };
+    if !staged && (args.apply || args.revert_after) {
         if Workspace::exists(&ws_dir) {
             crate::workspace_cmd::lock(&ws_dir)?;
             workspace = Some(Workspace::open(&ws_dir)?);
@@ -376,12 +459,16 @@ pub fn play(args: &PlayArgs) -> Result<()> {
             out!("warning: {warning}");
         }
     }
-    let cmd_file = match cmd_txt {
-        Some(_) => Some(CmdFile::write(game.root(), &options)?),
-        None => None,
+    let cmd_file = match &cmd_txt {
+        Some(_) if !staged => Some(CmdFile::write(game.root(), &options)?),
+        _ => None,
     };
-    let live_module = if args.live {
-        Some(install_live(args, game.root())?)
+    let redirects = staged_overlay
+        .as_ref()
+        .map(|o| o.redirects().to_vec())
+        .unwrap_or_default();
+    let live_module = if args.live || staged {
+        Some(install_live(args, game.root(), redirects)?)
     } else if !args.stream.is_empty() {
         input_fix(game.root())?
     } else {
@@ -395,6 +482,7 @@ pub fn play(args: &PlayArgs) -> Result<()> {
     out!("started");
     if !(args.wait
         || args.revert_after
+        || staged_overlay.is_some()
         || cmd_file.is_some()
         || live_module.is_some()
         || dxvk_install.is_some())
@@ -437,6 +525,16 @@ pub fn play(args: &PlayArgs) -> Result<()> {
         && install.restore()?
     {
         out!("took away {}", dxvk::DLL);
+    }
+    if let Some(o) = staged_overlay {
+        let total = o.redirects().len();
+        o.remove()?;
+        let log = std::fs::read_to_string(game.root().join(doctor_toolkit::live::LAST_LOG))
+            .unwrap_or_default();
+        out!(
+            "removed the staged files; the game opened {} of the {total} redirected file(s), its folder was not written",
+            doctor_toolkit::live::redirected_in_log(&log)
+        );
     }
     if args.revert_after
         && let Some(ws) = &mut workspace
@@ -519,10 +617,12 @@ fn input_fix(root: &std::path::Path) -> Result<Option<doctor_toolkit::live::Modu
     })
 }
 
-/// `play --live`: the module and its configuration in the game folder.
+/// `play --live` (or a launch through the module, stage 46): the module and
+/// its configuration in the game folder, with the files it redirects.
 fn install_live(
     args: &PlayArgs,
     root: &std::path::Path,
+    redirects: Vec<doctor_toolkit::live::proto::files::Redirect>,
 ) -> Result<doctor_toolkit::live::ModuleInstall> {
     use doctor_toolkit::live;
     let path = live::module_binary()
@@ -547,13 +647,21 @@ fn install_live(
         token: live::new_token(),
         writes: args.live_writes,
         fix_input: true,
-        journal: true,
+        // The journal's hooks only with the live link.
+        journal: args.live,
+        files_log: false,
+        redirects,
     };
     let install = live::ModuleInstall::write(root, &bytes, &config)?;
     out!(
-        "live: module installed, port {}, writes {}",
+        "live: module installed, port {}, writes {}{}",
         config.port,
-        if config.writes { "on" } else { "off" }
+        if config.writes { "on" } else { "off" },
+        if config.redirects.is_empty() {
+            String::new()
+        } else {
+            format!(", {} file(s) redirected", config.redirects.len())
+        }
     );
     Ok(install)
 }

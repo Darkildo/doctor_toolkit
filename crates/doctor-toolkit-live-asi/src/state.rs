@@ -205,6 +205,14 @@ fn stream_file_exists(name: &str) -> bool {
         // `embedded:\…` streams live inside the executable's data.
         return true;
     }
+    // A new stream of a mod the module redirects (stage 46).
+    let key = format!(
+        "{}.str",
+        name.replace('\\', "/").trim_matches('/').to_lowercase()
+    );
+    if crate::files::redirected(&key) {
+        return true;
+    }
     let Some(root) = crate::module_dir()
         .parent()
         .map(std::path::Path::to_path_buf)

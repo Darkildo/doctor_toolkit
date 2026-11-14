@@ -496,6 +496,7 @@ async fn the_game_is_written_run_and_stopped_and_the_live_link_acts_in_it() {
         writes: true,
         fix_input: true,
         journal: true,
+        ..Default::default()
     })
     .unwrap();
     let mut config = configured(&f, true, true);
@@ -520,7 +521,28 @@ async fn the_game_is_written_run_and_stopped_and_the_live_link_acts_in_it() {
     );
     assert_eq!(original, stream_files(&f.game), "unapply put it back");
 
-    // play: the workspace in, the game on its X server, loaded per the live link.
+    // Only through the live module (stage 46): the fake game has no ASI
+    // loader and is not the known edition, so nothing is written or started.
+    for params in [
+        json!({ "stream": "gf2/level", "write_game": false }),
+        json!({ "mods": true }),
+    ] {
+        let (text, error) = c.call("play", params).await;
+        assert!(
+            error && text.contains("cannot play without writing into the game"),
+            "{text}"
+        );
+        assert_eq!(original, stream_files(&f.game), "nothing written");
+        assert!(!f.game.join("cmd.txt").exists());
+        assert!(kit.session.lock().unwrap().is_none());
+    }
+    let (text, error) = c
+        .call("play", json!({ "mods": true, "write_game": true }))
+        .await;
+    assert!(error && text.contains("mods"), "{text}");
+
+    // play: the workspace in (written: the module cannot be used here),
+    // the game on its X server, loaded per the live link.
     let started = c
         .json("play", json!({ "stream": "gf2/level", "timeout_s": 20 }))
         .await;
@@ -533,6 +555,7 @@ async fn the_game_is_written_run_and_stopped_and_the_live_link_acts_in_it() {
         "play applied the workspace"
     );
     assert!(f.game.join("cmd.txt").is_file(), "cmd.txt for -stream");
+    assert_eq!(started["through_live_module"], json!(null), "{started}");
     let (text, error) = c.call("play", json!({})).await;
     assert!(error && text.contains("stop"), "{text}");
     let (text, error) = c.call("apply", json!({})).await;
@@ -615,6 +638,7 @@ async fn writes_into_the_live_game_need_the_flag_and_the_module() {
         writes: false,
         fix_input: true,
         journal: true,
+        ..Default::default()
     })
     .unwrap();
     // Without --allow-game: reading only.
@@ -715,6 +739,7 @@ async fn the_world_and_state_of_the_live_game() {
         writes: true,
         fix_input: true,
         journal: true,
+        ..Default::default()
     })
     .unwrap();
     // Reading needs no flag.

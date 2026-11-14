@@ -131,6 +131,7 @@ fn requests() -> Vec<Request> {
             hash: 0x9381_3AB9,
             value: -3,
         },
+        Request::Files,
     ]
 }
 
@@ -319,6 +320,30 @@ fn responses() -> Vec<(u16, Response)> {
             }]),
         ),
         (
+            kind::FILES,
+            Response::Files(Files {
+                hooked: true,
+                logging: false,
+                total: 3,
+                redirects: vec![
+                    FileUse {
+                        from: "gf2/cuba.str".into(),
+                        to: "Z:\\overlay\\gf2\\cuba.str".into(),
+                        opens: 2,
+                        failed: 0,
+                    },
+                    FileUse {
+                        from: "cmd.txt".into(),
+                        to: "_doctor_toolkit/overlay/cmd.txt".into(),
+                        opens: 0,
+                        failed: 1,
+                    },
+                ],
+                passed: 1380,
+            }),
+        ),
+        (kind::FILES, Response::Files(Files::default())),
+        (
             kind::SET_MONEY,
             Response::Done(Done {
                 count: 1,
@@ -498,7 +523,8 @@ fn writes_are_marked() {
         [
             false, false, false, false, false, false, false, true, true, true, true, true, false,
             false, false, false, false, false, false, false, false, true, true, true, false, true,
-            true, false, true, true, false, false, true, true, false, false, false, false, true
+            true, false, true, true, false, false, true, true, false, false, false, false, true,
+            false
         ]
     );
 }
@@ -508,7 +534,7 @@ fn header_layout_is_fixed() {
     let bytes = Request::Status.to_frame(0x0102_0304);
     assert_eq!(
         bytes,
-        [b'D', b'T', b'L', b'V', 4, 0, 2, 0, 4, 3, 2, 1, 0, 0, 0, 0]
+        [b'D', b'T', b'L', b'V', 5, 0, 2, 0, 4, 3, 2, 1, 0, 0, 0, 0]
     );
     // A client of stage 34 sends version 1, and gets its answer in it.
     let old = Request::Status.to_frame_of(1, 0x0102_0304);
@@ -531,8 +557,8 @@ fn header_layout_is_fixed() {
 
 #[test]
 fn versions_and_their_requests() {
-    assert!(supported(1) && supported(2) && supported(3) && supported(4));
-    assert!(!supported(0) && !supported(5));
+    assert!(supported(1) && supported(2) && supported(3) && supported(4) && supported(5));
+    assert!(!supported(0) && !supported(6));
     assert_eq!(OLDEST_PROTOCOL_VERSION, 1);
     for r in requests() {
         let since = match r {
@@ -554,6 +580,7 @@ fn versions_and_their_requests() {
             | Request::Mission
             | Request::Variables { .. }
             | Request::SetVariable { .. } => 4,
+            Request::Files => 5,
             _ => 1,
         };
         assert_eq!(r.since(), since, "{r:?}");

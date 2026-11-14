@@ -241,6 +241,9 @@ pub struct GameSession {
     pub cmd_file: Option<CmdFile>,
     pub live: Option<ModuleInstall>,
     pub dxvk: Option<DxvkInstall>,
+    /// Files the live module gives the game instead of writing them into
+    /// its folder (stage 46), removed when the launch ends.
+    pub overlay: Option<doctor_toolkit::play::overlay::Overlay>,
     /// The workspace was written into the game for this launch and is
     /// taken out again when it ends.
     pub revert_after: bool,
@@ -280,6 +283,7 @@ impl GameSession {
             cmd_file: None,
             live: None,
             dxvk: None,
+            overlay: None,
             revert_after: false,
             notes: Vec::new(),
             own_processes_only: false,

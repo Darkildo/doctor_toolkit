@@ -109,6 +109,9 @@ struct Launched {
     cmd_file: Option<play::start::CmdFile>,
     /// DXVK's `d3d9.dll` for this launch, taken away when the game exits.
     dxvk: Option<play::dxvk::DxvkInstall>,
+    /// The changes the live module gives the game (stage 46), removed when
+    /// the game exits.
+    overlay: Option<play::overlay::Overlay>,
 }
 
 /// What opening a game found out about its files.
@@ -549,7 +552,67 @@ impl BrowserApp {
         } else {
             None
         };
-        if config.apply_before && self.workspace.as_ref().is_some_and(|ws| ws.is_saved()) {
+        // Through the live module when possible (settings: play.overlay):
+        // the workspace and cmd.txt are staged outside the game folder.
+        let workspace_dir = self
+            .workspace
+            .as_ref()
+            .filter(|ws| ws.is_saved())
+            .map(|ws| ws.dir().to_path_buf());
+        let apply = config.apply_before && workspace_dir.is_some();
+        let choice = if apply || !options.is_empty() {
+            match play::overlay::choose(game.root(), config.overlay) {
+                Ok(choice) => choice,
+                Err(error) => {
+                    self.notify(Level::Error, trf("play.cannot_start", &[("error", &error)]));
+                    return;
+                }
+            }
+        } else {
+            play::overlay::Choice::Write(None)
+        };
+        if let play::overlay::Choice::Write(Some(reason)) = &choice {
+            self.notify(
+                Level::Warning,
+                trf("play.overlay_not_used", &[("reason", reason)]),
+            );
+        }
+        let overlay = if choice == play::overlay::Choice::Overlay {
+            let source = workspace_dir
+                .filter(|_| apply)
+                .map(play::overlay::Source::Workspace);
+            let built = play::overlay::remove_stale(game.root()).and_then(|_| {
+                let dir = play::overlay::default_dir(game.root()).ok_or_else(|| {
+                    doctor_toolkit::Error::InvalidArgument("no folder for the staged files".into())
+                })?;
+                let cmd_txt = (!options.is_empty())
+                    .then(|| options.cmd_txt())
+                    .transpose()?;
+                play::overlay::Overlay::build(&game, source.as_ref(), cmd_txt.as_deref(), &dir)
+            });
+            match built {
+                Ok(o) => {
+                    self.notify(
+                        Level::Info,
+                        trf(
+                            "play.overlay_used",
+                            &[("count", &o.redirects().len().to_string())],
+                        ),
+                    );
+                    Some(o)
+                }
+                Err(error) => {
+                    self.notify(
+                        Level::Error,
+                        trf("play.overlay_failed", &[("error", &error)]),
+                    );
+                    return;
+                }
+            }
+        } else {
+            None
+        };
+        if overlay.is_none() && apply {
             self.apply(false);
             let applied = self
                 .ws_status
@@ -567,7 +630,21 @@ impl BrowserApp {
             self.notify(Level::Error, trf("play.cannot_start", &[("error", &error)]));
             return;
         }
-        let mut live_module = self.install_live(game.root(), &config.live);
+        let redirects = overlay
+            .as_ref()
+            .map(|o| o.redirects().to_vec())
+            .unwrap_or_default();
+        let mut live_module = if overlay.is_some() {
+            // The module carries the staged files; with the live link off
+            // it only redirects them and gives the player his controller.
+            let module = self.install_live_with(game.root(), &config.live, redirects);
+            if module.is_none() {
+                return;
+            }
+            module
+        } else {
+            self.install_live(game.root(), &config.live)
+        };
         // Straight into a level the player has no controller without the
         // module (live-link.md §5.1): install it for that alone.
         if live_module.is_none() && !config.live.enabled && !options.streams.is_empty() {
@@ -575,7 +652,7 @@ impl BrowserApp {
         }
         // Start in a level (settings: play.start): the game reads cmd.txt.
         let cmd_file = match play::start::restore_stale(game.root()).and_then(|_| {
-            (!options.is_empty())
+            (!options.is_empty() && overlay.is_none())
                 .then(|| play::start::CmdFile::write(game.root(), &options))
                 .transpose()
         }) {
@@ -628,10 +705,12 @@ impl BrowserApp {
                     session,
                     root: game.root().to_path_buf(),
                     method,
-                    revert_after: config.revert_after,
+                    // Nothing was written into the game with the module.
+                    revert_after: config.revert_after && overlay.is_none(),
                     announced: false,
                     cmd_file,
                     dxvk,
+                    overlay,
                 });
             }
             Err(error) => self.notify(Level::Error, trf("play.cannot_start", &[("error", &error)])),
@@ -673,6 +752,11 @@ impl BrowserApp {
                     doctor_toolkit::report::log(&format!("d3d9.dll not taken away: {error}"));
                 }
                 self.live_after_exit();
+                if let Some(o) = launched.overlay.take()
+                    && let Err(error) = o.remove()
+                {
+                    doctor_toolkit::report::log(&format!("staged files not removed: {error}"));
+                }
                 let text = match &state {
                     SessionState::NotStarted(reason) => trf(
                         "play.not_started",
@@ -800,6 +884,23 @@ impl BrowserApp {
                 ui.checkbox(&mut config.apply_before, tr("play.apply_before"));
                 ui.checkbox(&mut config.revert_after, tr("play.revert_after"))
                     .on_hover_text(tr("play.revert_hint"));
+                ui.horizontal(|ui| {
+                    use play::overlay::OverlayMode;
+                    ui.label(tr("play.overlay"))
+                        .on_hover_text(tr("play.overlay_hint"));
+                    let name = |m: OverlayMode| match m {
+                        OverlayMode::Auto => tr("play.overlay_auto"),
+                        OverlayMode::On => tr("play.overlay_on"),
+                        OverlayMode::Off => tr("play.overlay_off"),
+                    };
+                    egui::ComboBox::from_id_salt("play_overlay")
+                        .selected_text(name(config.overlay))
+                        .show_ui(ui, |ui| {
+                            for m in [OverlayMode::Auto, OverlayMode::On, OverlayMode::Off] {
+                                ui.selectable_value(&mut config.overlay, m, name(m));
+                            }
+                        });
+                });
                 ui.separator();
                 reload_points = super::gametab::start_editor(
                     ui,

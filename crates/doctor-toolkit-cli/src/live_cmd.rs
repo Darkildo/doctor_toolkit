@@ -132,6 +132,10 @@ pub enum LiveCommand {
     },
     /// The weather: rain, and what decides the sky
     Weather(LinkArgs),
+    /// Files of the game folder the module gives the game from elsewhere
+    /// (`play` without writing into the game, stage 46) and how often the
+    /// game opened each
+    Files(LinkArgs),
     /// The player's money: print it, or --set / --add (a write: needs --yes)
     Money {
         #[arg(long, allow_hyphen_values = true, conflicts_with = "add")]
@@ -263,8 +267,26 @@ pub enum LiveCommand {
         /// The module file [default: built one, see tools/build-live-module.sh]
         #[arg(long)]
         module: Option<PathBuf>,
+        /// Give the game the workspace without writing it into the game
+        /// folder: its files are staged outside and the module redirects
+        /// the game to them (stage 46) until `live uninstall`
+        #[arg(long, conflicts_with = "mods")]
+        apply: bool,
+        /// With --apply: the workspace [default: <GAME_DIR>/_doctor_toolkit/workspace]
+        #[arg(long, value_name = "DIR", requires = "apply")]
+        workspace_dir: Option<PathBuf>,
+        /// Give the game the enabled mods of the mod manager the same way
+        #[arg(long)]
+        mods: bool,
+        /// Give the game this `cmd.txt` through the module (its launch
+        /// options, e.g. "-stream gf2 cuba"), not written into the folder
+        #[arg(long, value_name = "TEXT")]
+        cmd_txt: Option<String>,
+        /// Log every file of the game folder the game opens (doctor_live.log)
+        #[arg(long)]
+        files_log: bool,
     },
-    /// Take the module away from a game folder
+    /// Take the module (and the files staged for it) away from a game folder
     Uninstall { game_dir: PathBuf },
     /// Answer like the module, without the game (to try the editor and scripts)
     Fake {
@@ -768,6 +790,7 @@ pub fn run(command: LiveCommand) -> Result<()> {
             link,
         } => st::time(&link, at.as_deref(), rate, default_rate, yes)?,
         LiveCommand::Weather(link) => st::weather(&link)?,
+        LiveCommand::Files(link) => st::files(&link)?,
         LiveCommand::Money {
             set,
             add,
@@ -1091,6 +1114,11 @@ pub fn run(command: LiveCommand) -> Result<()> {
             writes,
             port,
             module,
+            apply,
+            workspace_dir,
+            mods,
+            cmd_txt,
+            files_log,
         } => {
             let path = module.or_else(live::module_binary).context(
                 "the module is not built: run tools/build-live-module.sh (or --module FILE)",
@@ -1102,8 +1130,43 @@ pub fn run(command: LiveCommand) -> Result<()> {
                 writes,
                 fix_input: true,
                 journal: true,
+                files_log,
+                redirects: Vec::new(),
             };
+            let mut config = config;
+            use doctor_toolkit::play::overlay::{self, Overlay, Source};
+            let mut staged = None;
+            if apply || mods || cmd_txt.is_some() {
+                overlay::availability(&game_dir)
+                    .map_err(|why| anyhow::anyhow!("cannot redirect the game's files: {why}"))?;
+                overlay::remove_stale(&game_dir)?;
+                let game = doctor_toolkit::game::GameInstance::open(&game_dir)?;
+                let source = if mods {
+                    Some(Source::Mods)
+                } else if apply {
+                    Some(Source::Workspace(workspace_dir.unwrap_or_else(|| {
+                        doctor_toolkit::workspace::Workspace::default_dir(&game_dir)
+                    })))
+                } else {
+                    None
+                };
+                let text = cmd_txt.map(|t| format!("{}\r\n", t.trim_end()));
+                let dir = overlay::default_dir(&game_dir)
+                    .context("no folder for the staged files (no HOME or LOCALAPPDATA)")?;
+                let built = Overlay::build(&game, source.as_ref(), text.as_deref(), &dir)?;
+                config.redirects = built.redirects().to_vec();
+                out!(
+                    "staged {} file(s) in {}; the module gives them to the game",
+                    config.redirects.len(),
+                    dir.display()
+                );
+                staged = Some(built);
+            }
             let install = ModuleInstall::write(&game_dir, &bytes, &config)?;
+            // Kept until `live uninstall`.
+            if let Some(o) = staged {
+                o.keep();
+            }
             out!(
                 "installed {} (port {}, writes {})",
                 game_dir.join("scripts").join(proto::MODULE_FILE).display(),
@@ -1134,6 +1197,9 @@ pub fn run(command: LiveCommand) -> Result<()> {
             } else {
                 out!("no module of the toolkit in {}", game_dir.display());
             }
+            if doctor_toolkit::play::overlay::remove_stale(&game_dir)? {
+                out!("removed the files staged for it");
+            }
         }
         LiveCommand::Fake {
             port,
@@ -1148,6 +1214,7 @@ pub fn run(command: LiveCommand) -> Result<()> {
                     writes,
                     fix_input: true,
                     journal: true,
+                    ..Default::default()
                 },
             )?;
             out!("fake game on 127.0.0.1:{} (Ctrl+C to stop)", game.port);

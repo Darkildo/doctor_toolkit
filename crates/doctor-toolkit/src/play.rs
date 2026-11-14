@@ -5,7 +5,9 @@
 //! The programs (`doctor-toolkit play`, the editor's Play button) apply the
 //! workspace before the launch and revert it after the game exits when
 //! asked to ([`PlayConfig`]); while the game runs they refuse to write into
-//! its files.
+//! its files. Since stage 46 they rather let the live module give the game
+//! the changed files from a staged copy ([`overlay`]): nothing is written
+//! into the game's files and nothing has to be put back.
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -154,6 +156,10 @@ pub struct PlayConfig {
     /// game folder for the launch ([`dxvk`]).
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub dxvk: bool,
+    /// Whether the workspace goes into the game through the live module
+    /// instead of being written ([`overlay`], stage 46).
+    #[serde(skip_serializing_if = "overlay::OverlayMode::is_default")]
+    pub overlay: overlay::OverlayMode,
 }
 
 /// The method for a game folder when nothing better is known: the
@@ -791,6 +797,7 @@ impl Session {
 }
 
 pub mod dxvk;
+pub mod overlay;
 pub mod start;
 
 #[cfg(test)]

@@ -203,6 +203,30 @@ fn detect_and_play_dry_run() {
     let text = String::from_utf8_lossy(&play.stdout);
     assert!(text.contains("WINEPREFIX=/prefixes/gf2"), "{text}");
     assert!(text.contains("would apply the workspace first"), "{text}");
+    // Without an ASI loader the live module cannot give the game the
+    // workspace (stage 46): written into the game, with a word why; and
+    // refused where nothing may be written.
+    assert!(text.contains("note: the game folder is written"), "{text}");
+    for flag in ["--no-game-writes", "--mods"] {
+        let mut args: Vec<&std::ffi::OsStr> = vec![
+            "play".as_ref(),
+            root.as_ref(),
+            "--method".as_ref(),
+            "wine".as_ref(),
+            flag.as_ref(),
+            "--dry-run".as_ref(),
+        ];
+        if flag != "--mods" {
+            args.push("--apply".as_ref());
+        }
+        let refused = run(&args, &logs);
+        assert!(!refused.status.success(), "{flag}");
+        let err = String::from_utf8_lossy(&refused.stderr);
+        assert!(
+            err.contains("cannot play without writing into the game"),
+            "{flag}: {err}"
+        );
+    }
 }
 
 /// Edits the first string of the exported table and records it.
