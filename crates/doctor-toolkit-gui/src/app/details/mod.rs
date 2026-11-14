@@ -8,6 +8,10 @@
 //!   Ctrl+Z takes them back.
 //! - **Resource** ([`resource`]): the resource's header, references and
 //!   views, as the Details panel showed up to stage 52.
+//! - **Document** ([`document`], stage 56): what is selected in an asset
+//!   editor — a node of a graph, a line of a dialogue, a part of a model, a
+//!   movie — with the resource's header and references folded under it.
+//!   The editors leave their own side column out while Details is open.
 //!
 //! **Pin** keeps a Details panel on what it shows while the selection moves
 //! on. View → "Another Details panel" opens one more ([`Pane::DetailsCopy`]),
@@ -17,6 +21,7 @@
 //! [`LevelAction`]: crate::level_view::LevelAction
 //! [`Pane::DetailsCopy`]: super::dock::Pane::DetailsCopy
 
+mod document;
 mod object;
 mod resource;
 #[cfg(test)]
@@ -43,6 +48,30 @@ pub enum Focus {
     /// The resource selected in a list (the Files panel, a stream tab, a
     /// search).
     Resource,
+    /// The selection of an asset editor (stage 56).
+    Document(DocRef),
+}
+
+/// An asset editor: a tab with an id (a resource, a logic graph) or one of
+/// the editors there is one of.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DocRef {
+    Tab(u64),
+    Script,
+    Movies,
+}
+
+impl DocRef {
+    /// The editor of a pane, if it is one.
+    pub fn of(pane: &super::dock::Pane) -> Option<Self> {
+        use super::dock::Pane;
+        match pane {
+            Pane::Resource { id, .. } | Pane::Logic { id, .. } => Some(Self::Tab(*id)),
+            Pane::Script => Some(Self::Script),
+            Pane::Movies => Some(Self::Movies),
+            _ => None,
+        }
+    }
 }
 
 /// What a pinned Details panel keeps showing.
@@ -53,6 +82,7 @@ pub enum Pinned {
         object: usize,
     },
     Resource(Box<ResourceDoc>),
+    Document(DocRef),
 }
 
 /// One Details panel.
@@ -79,6 +109,8 @@ enum Shown {
     NoObject(u64),
     /// The resource of the Details selection (`self.details`).
     Resource,
+    /// The selection of an asset editor.
+    Document(DocRef),
     Pinned,
     Nothing,
 }
@@ -129,6 +161,13 @@ impl BrowserApp {
     fn shown(&self, inspector: &Inspector, level: Option<u64>) -> Shown {
         match &inspector.pinned {
             Some(Pinned::Resource(_)) => return Shown::Pinned,
+            Some(Pinned::Document(doc)) => {
+                return if self.has_document(*doc) {
+                    Shown::Document(*doc)
+                } else {
+                    Shown::Nothing
+                };
+            }
             Some(Pinned::Object {
                 level,
                 group,
@@ -151,6 +190,7 @@ impl BrowserApp {
         match self.inspect {
             Focus::Level(id) if self.levels.contains_key(&id) => of_level(id),
             Focus::Resource if self.details.is_some() => Shown::Resource,
+            Focus::Document(doc) if self.has_document(doc) => Shown::Document(doc),
             _ if self.details.is_some() => Shown::Resource,
             _ => match self.panel_level {
                 Some(id) => of_level(id),
@@ -175,6 +215,7 @@ impl BrowserApp {
                 let loc = self.details.as_ref()?.loc;
                 Some(Pinned::Resource(Box::new(self.load_doc(loc, None))))
             }
+            Shown::Document(doc) => Some(Pinned::Document(doc)),
             Shown::Pinned => match pinned {
                 Some(Pinned::Resource(doc)) => {
                     Some(Pinned::Resource(Box::new(self.load_doc(doc.loc, None))))
@@ -188,6 +229,7 @@ impl BrowserApp {
                     group: *group,
                     object: *object,
                 }),
+                Some(Pinned::Document(doc)) => Some(Pinned::Document(*doc)),
                 None => None,
             },
             Shown::NoObject(_) | Shown::Nothing => None,
@@ -205,7 +247,11 @@ impl BrowserApp {
         let shown = self.shown(inspector, level);
         // The bar: Pin.
         let pinned = inspector.pinned.is_some();
-        let can_pin = pinned || matches!(shown, Shown::Object(..) | Shown::Resource);
+        let can_pin = pinned
+            || matches!(
+                shown,
+                Shown::Object(..) | Shown::Resource | Shown::Document(_)
+            );
         let clicked = ui
             .horizontal(|ui| {
                 let response = ui
@@ -256,6 +302,7 @@ impl BrowserApp {
                     ui.label(RichText::new(text).weak());
                 }
                 Shown::Resource => self.resource_details(ui),
+                Shown::Document(doc) => self.document_details(ui, doc),
                 Shown::Pinned => {
                     if let Some(Pinned::Resource(doc)) = &mut inspector.pinned {
                         self.pinned_resource_details(ui, doc);

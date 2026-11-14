@@ -122,3 +122,83 @@ fn wire_hit_test_uses_the_curve() {
     assert!(view::polyline_distance(&pts, Pos2::new(5.0, 1.0)) < 1.01);
     assert!(view::polyline_distance(&pts, Pos2::new(0.0, 10.0)) > 7.0);
 }
+
+/// Draws the view over a 800×600 screen with `events`; returns its events.
+fn run_view(
+    ctx: &egui::Context,
+    view: &mut GraphView,
+    graph: &mut Graph,
+    mut events: Vec<egui::Event>,
+) -> Vec<GraphEvent> {
+    // The keys' modifiers held for the frame, as a window reports them.
+    let modifiers = events
+        .iter()
+        .find_map(|e| match e {
+            egui::Event::Key { modifiers, .. } => Some(*modifiers),
+            _ => None,
+        })
+        .unwrap_or_default();
+    events.insert(0, egui::Event::ModifiersChanged(modifiers));
+    let input = egui::RawInput {
+        screen_rect: Some(Rect::from_min_size(Pos2::ZERO, egui::vec2(800.0, 600.0))),
+        events,
+        ..Default::default()
+    };
+    let mut out = Vec::new();
+    let mut output = ctx.run_ui(input, |ui| {
+        out = view.show(ui, graph, &mut |_, _| {}).events;
+    });
+    output.textures_delta.clear();
+    out
+}
+
+fn key(key: egui::Key, modifiers: egui::Modifiers) -> egui::Event {
+    egui::Event::Key {
+        key,
+        physical_key: None,
+        pressed: true,
+        repeat: false,
+        modifiers,
+    }
+}
+
+#[test]
+fn ctrl_d_duplicates_and_escape_deselects_as_in_the_level_view() {
+    // Stage 56: the same keys in every editor.
+    let ctx = egui::Context::default();
+    let mut view = GraphView::default();
+    let mut g = chain(2);
+    let pointer = egui::Event::PointerMoved(Pos2::new(400.0, 300.0));
+    run_view(&ctx, &mut view, &mut g, vec![pointer.clone()]);
+    view.set_selection([NodeId(1)]);
+    let events = run_view(
+        &ctx,
+        &mut view,
+        &mut g,
+        vec![pointer.clone(), key(egui::Key::D, egui::Modifiers::COMMAND)],
+    );
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, GraphEvent::Copy(ids) if ids == &vec![NodeId(1)]))
+    );
+    let at = g.node(NodeId(1)).unwrap().pos + egui::Vec2::splat(40.0);
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, GraphEvent::Paste(p) if *p == at)),
+        "pasted beside the node"
+    );
+    let events = run_view(
+        &ctx,
+        &mut view,
+        &mut g,
+        vec![pointer, key(egui::Key::Escape, egui::Modifiers::NONE)],
+    );
+    assert!(view.selection().is_empty());
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, GraphEvent::Selection(ids) if ids.is_empty()))
+    );
+}

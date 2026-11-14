@@ -105,4 +105,64 @@ impl ResourceViewer for ExternalBar {
         }
         action
     }
+
+    fn tab_body(&self) -> crate::views::TabBody {
+        crate::views::TabBody::Toolbar
+    }
+
+    /// In a tab: "Open in external editor ▾" with the formats, and the
+    /// linked file.
+    fn toolbar(&mut self, ui: &mut egui::Ui, cx: &mut ViewContext<'_>) -> Option<ViewAction> {
+        let mut action = None;
+        let text = format!(
+            "{} ({})",
+            tr("external.open"),
+            self.format.extension().to_uppercase()
+        );
+        let open = crate::app::theme::tool_button(
+            ui,
+            Some(crate::app::theme::Icon::Export),
+            &text,
+            false,
+            crate::app::theme::Tone::Plain,
+        )
+        .on_hover_text(tr("external.open_hint"));
+        if open.clicked() {
+            action = Some(ViewAction::OpenExternal {
+                format: self.format,
+            });
+        }
+        if self.formats.len() > 1 {
+            let arrow = crate::app::theme::menu_arrow(ui, crate::app::theme::Tone::Plain);
+            egui::Popup::menu(&arrow).show(|ui| {
+                for &f in self.formats {
+                    ui.selectable_value(&mut self.format, f, f.extension().to_uppercase());
+                }
+            });
+        }
+        let link = self
+            .key
+            .as_ref()
+            .and_then(|k| cx.links.iter().find(|l| &l.key == k));
+        if let Some(link) = link {
+            let name = link
+                .path
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            ui.label(
+                RichText::new(trf("external.linked", &[("file", &name)]))
+                    .color(crate::changes_view::PENDING),
+            )
+            .on_hover_text(format!("{}\n{}", link.path.display(), link.state));
+            if ui
+                .small_button(tr("external.unlink"))
+                .on_hover_text(tr("external.unlink_hint"))
+                .clicked()
+            {
+                action = Some(ViewAction::Unlink(link.key.clone()));
+            }
+        }
+        action
+    }
 }

@@ -50,6 +50,14 @@ struct Globals {
     light: [f32; 4],
     params: [u32; 4],
     line: [f32; 4],
+    /// rgb: colour of the light (linear), w: weight of the light from the camera.
+    sun: [f32; 4],
+    /// rgb: ambient colour multiplying `light.w`.
+    ambient: [f32; 4],
+    /// rgb: fog colour (linear).
+    fog_color: [f32; 4],
+    /// x: fog start, y: fog end (metres from the eye), z: fog at the end (0 = none).
+    fog: [f32; 4],
 }
 
 #[repr(C)]
@@ -808,6 +816,11 @@ impl SceneRenderer {
         self.mesh_budget = budget.max(1);
     }
 
+    /// Meshes kept on the GPU (see [`Self::set_mesh_budget`]).
+    pub fn mesh_budget(&self) -> usize {
+        self.mesh_budget
+    }
+
     pub fn has_texture(&self, key: TextureKey) -> bool {
         self.textures.contains_key(&key)
     }
@@ -1047,10 +1060,29 @@ impl SceneRenderer {
             .map_or((0, Pick::ALL_PARTS), |p| (p.instance + 1, p.part));
         // Light from above, slightly behind the camera's left shoulder.
         let back = math::normalize_or(math::sub(view.eye, [0.0; 3]), [0.0, 0.0, 1.0]);
-        let light = math::normalize_or(
+        let mut light = math::normalize_or(
             math::add([0.3, 1.0, 0.2], math::scale(back, 0.4)),
             [0.0, 1.0, 0.0],
         );
+        let (mut sun, mut ambient, mut fog_color, mut fog) =
+            ([1.0; 4], [1.0; 4], [0.0; 4], [0.0, 1.0, 0.0, 0.0]);
+        if let Some(env) = &options.environment {
+            light = math::normalize_or(env.sun, [0.0, 1.0, 0.0]);
+            sun = [
+                env.sun_color[0],
+                env.sun_color[1],
+                env.sun_color[2],
+                env.camera_light,
+            ];
+            ambient = [env.ambient[0], env.ambient[1], env.ambient[2], 1.0];
+            fog_color = [env.fog_color[0], env.fog_color[1], env.fog_color[2], 1.0];
+            fog = [
+                env.fog_start,
+                env.fog_end.max(env.fog_start + 1.0),
+                env.fog_max,
+                0.0,
+            ];
+        }
         let globals = Globals {
             view_proj,
             eye: [view.eye[0], view.eye[1], view.eye[2], 1.0],
@@ -1062,6 +1094,10 @@ impl SceneRenderer {
                 highlight_part,
             ],
             line: [0.0004, aspect, 0.0, 0.0],
+            sun,
+            ambient,
+            fog_color,
+            fog,
         };
         self.context
             .queue

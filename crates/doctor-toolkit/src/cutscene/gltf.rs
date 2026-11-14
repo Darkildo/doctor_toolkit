@@ -566,8 +566,29 @@ pub fn export(
             let input = doc.floats(&vis_times[..keep], "SCALAR", true);
             let output = doc.floats(&vis[..keep * 3], "VEC3", false);
             doc.channel(node, "scale", input, output, true);
+            // The clip's root sits on the actor's position when the clip
+            // starts, and people are the rig's base scale larger
+            // (`docs/formats/cutscenes.md` §9.2).
+            let inner = match &animation {
+                Some(a) => {
+                    let s = a.scale;
+                    let r = a.skeleton.bones.iter().position(|b| b.parent.is_none());
+                    let t = r.map_or([0.0; 3], |r| {
+                        let m = a.pose(0.0)[r];
+                        [-m[12] * s, -m[13] * s, -m[14] * s]
+                    });
+                    let inner = doc.node(json!({
+                        "name": format!("{label} clip"),
+                        "translation": t,
+                        "scale": [s, s, s],
+                    }));
+                    array(&mut doc.json["nodes"][node], "children").push(json!(inner));
+                    inner
+                }
+                None => node,
+            };
             let offset = start + anim.as_ref().map_or(0.0, |a| a.1);
-            doc.merge(&glb, node, offset)?;
+            doc.merge(&glb, inner, offset)?;
             if character.is_some() {
                 report.characters += 1;
             }

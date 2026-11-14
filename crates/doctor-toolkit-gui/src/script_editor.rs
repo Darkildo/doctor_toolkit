@@ -35,6 +35,26 @@ pub enum ScriptAction {
     Remove { stream: String, name: String },
 }
 
+/// A command of the "File ▾" menu.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum FileCmd {
+    New,
+    Open,
+    Save,
+    SaveAs,
+}
+
+/// The keys of the editor, for its "?" (stage 56).
+pub const KEYS: &[(&str, &str)] = &[
+    ("F / Home", "keys.frame"),
+    ("Delete", "keys.delete"),
+    ("Ctrl+D", "keys.duplicate"),
+    ("Ctrl+A", "keys.select_all"),
+    ("Ctrl+C / Ctrl+V", "keys.copy_paste"),
+    ("Ctrl+Z / Ctrl+Y", "keys.script_undo"),
+    ("RMB", "keys.add_node"),
+];
+
 /// Tabs of the bottom panel.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Bottom {
@@ -532,21 +552,25 @@ impl ScriptEditor {
     }
 
     /// Draws the editor. Returns what the app should do.
-    pub fn show(&mut self, ui: &mut egui::Ui) -> Option<ScriptAction> {
+    /// The editor in its tab; `details`: the shared Details panel shows
+    /// the inspector, so the editor leaves its right column out (stage 56).
+    pub fn show(&mut self, ui: &mut egui::Ui, details: bool) -> Option<ScriptAction> {
         let mut action = None;
         self.toolbar(ui, &mut action);
         egui::Panel::left("script-palette")
             .resizable(true)
             .default_size(200.0)
             .show(ui, |ui| self.palette(ui));
-        egui::Panel::right("script-inspector")
-            .resizable(true)
-            .default_size(300.0)
-            .show(ui, |ui| {
-                egui::ScrollArea::vertical()
-                    .auto_shrink(false)
-                    .show(ui, |ui| self.inspector(ui));
-            });
+        if !details {
+            egui::Panel::right("script-inspector")
+                .resizable(true)
+                .default_size(300.0)
+                .show(ui, |ui| {
+                    egui::ScrollArea::vertical()
+                        .auto_shrink(false)
+                        .show(ui, |ui| self.inspector(ui));
+                });
+        }
         egui::Panel::bottom("script-bottom")
             .resizable(true)
             .default_size(180.0)
@@ -602,18 +626,46 @@ impl ScriptEditor {
             Some(MenuCmd::Frame) => self.view.frame_all(),
             None => {}
         }
-        if ui.input(|i| i.modifiers.command && i.key_pressed(egui::Key::Z)) {
-            if ui.input(|i| i.modifiers.shift) {
-                self.redo();
-            } else {
-                self.undo();
-            }
-        }
+        // Ctrl+Z and Ctrl+Y come as Edit → Undo and Redo while the tab is
+        // in front (`BrowserApp::undo`).
         action
     }
 
+    /// An edit as the name field makes it, for the tests of the app.
+    #[cfg(test)]
+    pub fn rename_for_test(&mut self, name: &str) {
+        self.edit(|g| g.name = name.to_owned());
+    }
+
+    /// Whether the editor's own history has a step back or forward.
+    pub fn can_undo(&self, redo: bool) -> bool {
+        if redo {
+            !self.redo.is_empty()
+        } else {
+            !self.undo.is_empty()
+        }
+    }
+
     fn toolbar(&mut self, ui: &mut egui::Ui, action: &mut Option<ScriptAction>) {
-        ui.horizontal_wrapped(|ui| {
+        use crate::app::theme::{self, Icon, Tone};
+        let mut file = None;
+        theme::doc_bar(ui, |ui| {
+            theme::menu_button(ui, None, tr("script.file"), "", |ui| {
+                for (key, what) in [
+                    ("script.new", FileCmd::New),
+                    ("script.open", FileCmd::Open),
+                    ("script.save", FileCmd::Save),
+                    ("script.save_as", FileCmd::SaveAs),
+                ] {
+                    if ui.button(tr(key)).clicked() {
+                        file = Some(what);
+                        ui.close();
+                    }
+                }
+            });
+            if theme::icon_button(ui, Icon::Save, tr("script.save")) {
+                file = Some(FileCmd::Save);
+            }
             ui.label(tr("script.name"));
             let mut name = self.graph.name.clone();
             if ui
@@ -622,25 +674,111 @@ impl ScriptEditor {
             {
                 self.edit(|g| g.name = name);
             }
-            if ui.button(tr("script.new")).clicked() {
-                self.load(starter(), None);
+            theme::separator(ui);
+            let undo = theme::tool_button_if(
+                ui,
+                !self.undo.is_empty(),
+                Some(Icon::Undo),
+                "",
+                false,
+                Tone::Plain,
+            )
+            .on_hover_text(tr("script.undo_hint"));
+            if undo.clicked() {
+                self.undo();
             }
-            if ui.button(tr("script.open")).clicked()
-                && let Some(p) = rfd::FileDialog::new()
+            let redo = theme::tool_button_if(
+                ui,
+                !self.redo.is_empty(),
+                Some(Icon::Redo),
+                "",
+                false,
+                Tone::Plain,
+            )
+            .on_hover_text(tr("script.redo_hint"));
+            if redo.clicked() {
+                self.redo();
+            }
+            if theme::icon_button(ui, Icon::Frame, tr("script.frame")) {
+                self.view.frame_all();
+            }
+            if theme::tool_button(
+                ui,
+                Some(Icon::Graph),
+                tr("script.auto_layout"),
+                false,
+                Tone::Plain,
+            )
+            .clicked()
+            {
+                self.auto_layout();
+            }
+            theme::separator(ui);
+            ui.label(tr("script.stream"));
+            ui.add(
+                egui::TextEdit::singleline(&mut self.stream)
+                    .desired_width(200.0)
+                    .hint_text("gf2/globals_global"),
+            );
+            let ok = !self.compiled.has_errors();
+            let deploy = theme::tool_button_if(
+                ui,
+                ok,
+                Some(Icon::Apply),
+                tr("script.deploy"),
+                false,
+                Tone::Primary,
+            )
+            .on_hover_text(tr("script.deploy_hint"));
+            if deploy.clicked()
+                && let Some(chunk) = self.compiled.chunk.clone()
+            {
+                *action = Some(ScriptAction::Deploy {
+                    stream: self.stream.trim().to_owned(),
+                    graph: Box::new(self.graph.clone()),
+                    chunk,
+                });
+            }
+            let more = theme::menu_arrow(ui, Tone::Plain);
+            egui::Popup::menu(&more).show(|ui| {
+                if ui.button(tr("script.remove")).clicked() {
+                    *action = Some(ScriptAction::Remove {
+                        stream: self.stream.trim().to_owned(),
+                        name: self.graph.chunk_name(),
+                    });
+                }
+            });
+            let errors = self.compiled.errors().count();
+            let text = if errors == 0 {
+                RichText::new(tr("script.compiles")).color(Color32::from_rgb(110, 200, 110))
+            } else {
+                RichText::new(trn("count.errors", errors as u64, &[]))
+                    .color(Color32::from_rgb(230, 80, 80))
+            };
+            ui.label(text);
+            if !self.status.is_empty() {
+                ui.label(RichText::new(&self.status).weak());
+            }
+            theme::help_button(ui, KEYS);
+        });
+        match file {
+            Some(FileCmd::New) => self.load(starter(), None),
+            Some(FileCmd::Open) => {
+                if let Some(p) = rfd::FileDialog::new()
                     .add_filter(tr("script.graph_filter"), &["json"])
                     .pick_file()
-            {
-                match std::fs::read_to_string(&p)
-                    .map_err(|e| e.to_string())
-                    .and_then(|t| ScriptGraph::from_json(&t).map_err(|e| e.to_string()))
                 {
-                    Ok(g) => self.load(g, Some(p)),
-                    Err(e) => self.status = e,
+                    match std::fs::read_to_string(&p)
+                        .map_err(|e| e.to_string())
+                        .and_then(|t| ScriptGraph::from_json(&t).map_err(|e| e.to_string()))
+                    {
+                        Ok(g) => self.load(g, Some(p)),
+                        Err(e) => self.status = e,
+                    }
                 }
             }
-            let save_as = ui.button(tr("script.save_as")).clicked();
-            if (ui.button(tr("script.save")).clicked() && self.path.is_some()) || save_as {
-                let path = if save_as || self.path.is_none() {
+            Some(cmd @ (FileCmd::Save | FileCmd::SaveAs)) => {
+                let path = if cmd == FileCmd::SaveAs || self.path.is_none() {
                     rfd::FileDialog::new()
                         .add_filter(tr("script.graph_filter"), &["json"])
                         .set_file_name(format!("{}.json", self.graph.name))
@@ -658,63 +796,8 @@ impl ScriptEditor {
                     }
                 }
             }
-            ui.separator();
-            if ui
-                .add_enabled(!self.undo.is_empty(), egui::Button::new(tr("script.undo")))
-                .clicked()
-            {
-                self.undo();
-            }
-            if ui
-                .add_enabled(!self.redo.is_empty(), egui::Button::new(tr("script.redo")))
-                .clicked()
-            {
-                self.redo();
-            }
-            if ui.button(tr("script.frame")).clicked() {
-                self.view.frame_all();
-            }
-            if ui.button(tr("script.auto_layout")).clicked() {
-                self.auto_layout();
-            }
-            ui.separator();
-            ui.label(tr("script.stream"));
-            ui.add(
-                egui::TextEdit::singleline(&mut self.stream)
-                    .desired_width(220.0)
-                    .hint_text("gf2/globals_global"),
-            );
-            let ok = !self.compiled.has_errors();
-            if ui
-                .add_enabled(ok, egui::Button::new(tr("script.deploy")))
-                .on_hover_text(tr("script.deploy_hint"))
-                .clicked()
-                && let Some(chunk) = self.compiled.chunk.clone()
-            {
-                *action = Some(ScriptAction::Deploy {
-                    stream: self.stream.trim().to_owned(),
-                    graph: Box::new(self.graph.clone()),
-                    chunk,
-                });
-            }
-            if ui.button(tr("script.remove")).clicked() {
-                *action = Some(ScriptAction::Remove {
-                    stream: self.stream.trim().to_owned(),
-                    name: self.graph.chunk_name(),
-                });
-            }
-            let errors = self.compiled.errors().count();
-            let text = if errors == 0 {
-                RichText::new(tr("script.compiles")).color(Color32::from_rgb(110, 200, 110))
-            } else {
-                RichText::new(trn("count.errors", errors as u64, &[]))
-                    .color(Color32::from_rgb(230, 80, 80))
-            };
-            ui.label(text);
-            if !self.status.is_empty() {
-                ui.label(RichText::new(&self.status).weak());
-            }
-        });
+            None => {}
+        }
     }
 
     fn palette(&mut self, ui: &mut egui::Ui) {
@@ -755,6 +838,20 @@ impl ScriptEditor {
         if let Some(kind) = add {
             self.add_node(kind, at);
         }
+    }
+
+    /// F: frames the selected nodes, or the whole script.
+    pub fn frame_selection(&mut self) {
+        if self.view.selection().is_empty() {
+            self.view.frame_all();
+        } else {
+            self.view.frame_selection();
+        }
+    }
+
+    /// The selected node's settings, or the script's, for the Details panel.
+    pub fn inspector_ui(&mut self, ui: &mut egui::Ui) {
+        self.inspector(ui);
     }
 
     fn inspector(&mut self, ui: &mut egui::Ui) {

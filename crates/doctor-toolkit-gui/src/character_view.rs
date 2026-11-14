@@ -3,9 +3,14 @@
 //! game's material swaps, body morphs and shading; export as glTF.
 //!
 //! `DOCTOR_TOOLKIT_GUI_CHARACTER=<options>` presets the preview for
-//! screenshots: comma-separated `window`, `set=<name>`, `lod=<n>`, `yaw=<rad>`,
+//! screenshots: comma-separated `set=<name>`, `lod=<n>`, `yaw=<rad>`,
 //! `pitch=<rad>`, `zoom=<factor>`, `select=<part>` and `choose=<KEY=VALUE>`
 //! (as `doctor-toolkit partsdb character --choose`; repeatable).
+//!
+//! In a tab of its own (stage 56; a floating window before) the choices
+//! and parts are on the left, the preview fills the rest, Random, Export
+//! and the shading are on the bar of the tab, and the materials of the
+//! selected part are in the Details panel.
 
 use std::collections::BTreeMap;
 use std::collections::hash_map::DefaultHasher;
@@ -118,8 +123,6 @@ pub struct CharacterView {
     filter: String,
     status: String,
     preview_open: bool,
-    /// The preview is shown in a large window.
-    window: bool,
     /// Meshes and materials not in the game files.
     extra: Extra,
 }
@@ -161,7 +164,6 @@ impl CharacterView {
             filter: String::new(),
             status: String::new(),
             preview_open: true,
-            window: false,
             extra: Extra::default(),
         };
         if let Ok(preset) = std::env::var("DOCTOR_TOOLKIT_GUI_CHARACTER") {
@@ -184,7 +186,6 @@ impl CharacterView {
                 "lod" => self.lod = value.parse().unwrap_or(0),
                 "choose" => choices.push(value.to_owned()),
                 "select" => self.selected = value.parse().ok(),
-                "window" => self.window = true,
                 _ => camera.push((name.to_owned(), value.parse::<f32>().ok())),
             }
         }
@@ -363,17 +364,7 @@ impl CharacterView {
                         self.rebuild();
                     }
                     ui.label(RichText::new(tr("character.assemble_hint")).weak().small());
-                } else if self.window {
-                    ui.horizontal(|ui| {
-                        ui.label(RichText::new(tr("model.in_window")).weak());
-                        if ui.button(tr("model.dock")).clicked() {
-                            self.window = false;
-                        }
-                    });
                 } else {
-                    if ui.button(tr("model.window_button")).clicked() {
-                        self.window = true;
-                    }
                     let changed = self.controls(ui);
                     if changed {
                         self.rebuild();
@@ -382,46 +373,119 @@ impl CharacterView {
                         let width = ui.available_width().max(64.0);
                         let height = (width * 0.9).clamp(200.0, 720.0);
                         self.viewport_ui(ui, egui::vec2(width, height));
-                        self.part_list(ui);
+                        self.part_list(ui, true);
                     }
                 }
             });
-        if self.window && self.loaded.is_some() {
-            let mut open = true;
-            egui::Window::new(trf(
-                "character.window_title",
-                &[("name", &self.db.sets[self.set].name)],
-            ))
-            .id(egui::Id::unique("character preview window"))
-            .open(&mut open)
-            .default_size([1300.0, 900.0])
-            .resizable(true)
-            .show(ui.ctx(), |ui| {
-                egui::Panel::left("character window controls")
-                    .resizable(true)
-                    .default_size(420.0)
-                    .show(ui, |ui| {
-                        egui::ScrollArea::vertical()
-                            .id_salt("character window scroll")
-                            .show(ui, |ui| {
-                                if self.controls(ui) {
-                                    self.rebuild();
-                                }
-                                self.part_list(ui);
-                            });
-                    });
-                if self.view_ready(ui) {
-                    let size = ui.available_size().max(Vec2::splat(64.0));
-                    self.viewport_ui(ui, size);
-                }
-            });
-            if !open {
-                self.window = false;
-            }
-        }
         egui::CollapsingHeader::new(tr("character.tree"))
             .id_salt("partsdb tree")
             .show(ui, |ui| self.tree(ui));
+    }
+
+    /// The preview in a tab of its own: the choices, the parts and the tree
+    /// on the left, the preview in the rest; `details`: the materials of
+    /// the selected part are in the Details panel.
+    pub fn show_tab(&mut self, ui: &mut egui::Ui, details: bool) {
+        egui::Panel::left(ui.scope_id().with("character controls"))
+            .resizable(true)
+            .default_size(420.0)
+            .show(ui, |ui| {
+                egui::ScrollArea::vertical()
+                    .id_salt("character tab scroll")
+                    .show(ui, |ui| {
+                        if self.choices(ui) {
+                            self.rebuild();
+                        }
+                        if !self.status.is_empty() {
+                            ui.colored_label(Color32::YELLOW, &self.status);
+                        }
+                        if self.loaded.is_some() {
+                            self.part_list(ui, !details);
+                        }
+                        egui::CollapsingHeader::new(tr("character.tree"))
+                            .id_salt("partsdb tree")
+                            .show(ui, |ui| self.tree(ui));
+                    });
+            });
+        if self.loaded.is_none() {
+            ui.add_space(20.0);
+            ui.vertical_centered(|ui| {
+                if ui.button(tr("character.assemble")).clicked() {
+                    self.rebuild();
+                }
+                ui.label(RichText::new(tr("character.assemble_hint")).weak().small());
+            });
+        } else if self.view_ready(ui) {
+            let size = ui.available_size().max(Vec2::splat(64.0));
+            self.viewport_ui(ui, size);
+        }
+    }
+
+    /// Random, Export, "Shading ▾" and Frame on the bar of the tab.
+    pub fn toolbar_ui(&mut self, ui: &mut egui::Ui) {
+        use crate::app::theme::{self, Icon, Tone};
+        if theme::tool_button(ui, None, tr("character.random"), false, Tone::Plain)
+            .on_hover_text(tr("character.random_hint"))
+            .clicked()
+        {
+            self.randomise();
+            self.rebuild();
+        }
+        if theme::tool_button(
+            ui,
+            Some(Icon::Export),
+            tr("import.export_model"),
+            false,
+            Tone::Plain,
+        )
+        .on_hover_text(tr("import.export_model_hint"))
+        .clicked()
+        {
+            self.export();
+        }
+        theme::menu_button(ui, None, tr("model.shading"), "", |ui| {
+            let o = &mut self.scene.options;
+            ui.checkbox(&mut o.surfaces, tr("model.game_shading"));
+            ui.checkbox(&mut o.textures, tr("model.textures"));
+            ui.checkbox(&mut o.lighting, tr("model.lighting"));
+            ui.checkbox(&mut o.backface_culling, tr("model.cull"));
+        });
+        if theme::icon_button(ui, Icon::Frame, tr("model.frame_hint")) {
+            self.frame_selected();
+        }
+    }
+
+    /// F: frames the character.
+    pub fn frame_selected(&mut self) {
+        if let Some(Ok(loaded)) = &self.loaded
+            && !loaded.bounds.is_empty()
+        {
+            self.camera.frame(&loaded.bounds);
+        }
+    }
+
+    /// The materials of the selected part, for the Details panel.
+    pub fn inspector_ui(&mut self, ui: &mut egui::Ui) {
+        let Some(Ok(loaded)) = &self.loaded else {
+            return;
+        };
+        let Some(i) = self.selected else { return };
+        let (Some(model), Some(part)) = (loaded.models.get(i), loaded.character.parts.get(i))
+        else {
+            return;
+        };
+        ui.strong(trf("character.materials_of", &[("name", &part.name)]));
+        for (k, info) in model.parts.iter().enumerate() {
+            ui.separator();
+            ui.label(
+                RichText::new(trf(
+                    "character.record",
+                    &[("index", &k), ("name", &info.name)],
+                ))
+                .small(),
+            );
+            material_panel::show(ui, info, ("character details", i, k));
+        }
     }
 
     fn choices(&mut self, ui: &mut egui::Ui) -> bool {
@@ -718,7 +782,7 @@ impl CharacterView {
         }
     }
 
-    fn part_list(&mut self, ui: &mut egui::Ui) {
+    fn part_list(&mut self, ui: &mut egui::Ui, materials: bool) {
         let Some(Ok(loaded)) = &self.loaded else {
             return;
         };
@@ -791,7 +855,8 @@ impl CharacterView {
             self.selected = (self.selected != Some(c)).then_some(c);
         }
         self.hovered = hovered;
-        if let Some(i) = self.selected
+        if materials
+            && let Some(i) = self.selected
             && let Some(model) = loaded.models.get(i)
         {
             egui::CollapsingHeader::new(trf(
@@ -963,7 +1028,6 @@ struct SavedState {
     selection: Selection,
     lod: usize,
     camera: OrbitCamera,
-    window: bool,
     assembled: bool,
 }
 
@@ -971,10 +1035,49 @@ impl crate::views::ResourceViewer for CharacterView {
     fn show(
         &mut self,
         ui: &mut egui::Ui,
+        cx: &mut crate::views::ViewContext<'_>,
+    ) -> Option<crate::views::ViewAction> {
+        if cx.in_tab() {
+            self.show_tab(ui, cx.details);
+        } else {
+            CharacterView::show(self, ui);
+        }
+        None
+    }
+
+    fn tab_body(&self) -> crate::views::TabBody {
+        crate::views::TabBody::Fill
+    }
+
+    fn toolbar(
+        &mut self,
+        ui: &mut egui::Ui,
         _cx: &mut crate::views::ViewContext<'_>,
     ) -> Option<crate::views::ViewAction> {
-        CharacterView::show(self, ui);
+        self.toolbar_ui(ui);
         None
+    }
+
+    fn has_inspector(&self) -> bool {
+        self.selected.is_some() && matches!(self.loaded, Some(Ok(_)))
+    }
+
+    fn inspector(
+        &mut self,
+        ui: &mut egui::Ui,
+        _cx: &mut crate::views::ViewContext<'_>,
+    ) -> Option<crate::views::ViewAction> {
+        self.inspector_ui(ui);
+        None
+    }
+
+    fn frame_selection(&mut self) -> bool {
+        self.frame_selected();
+        true
+    }
+
+    fn keys(&self) -> &'static [(&'static str, &'static str)] {
+        crate::model_view::KEYS
     }
 
     fn state(&self) -> Option<Box<dyn std::any::Any>> {
@@ -983,7 +1086,6 @@ impl crate::views::ResourceViewer for CharacterView {
             selection: self.selection.clone(),
             lod: self.lod,
             camera: self.camera,
-            window: self.window,
             assembled: matches!(self.loaded, Some(Ok(_))),
         }))
     }
@@ -998,7 +1100,6 @@ impl crate::views::ResourceViewer for CharacterView {
         self.set = state.set;
         self.selection = state.selection;
         self.lod = state.lod;
-        self.window = state.window;
         if state.assembled {
             self.rebuild();
             self.camera = state.camera;

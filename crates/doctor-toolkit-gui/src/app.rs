@@ -13,7 +13,8 @@
 //!   `dnd`: the payload of an asset dragged out of them;
 //! - `browse`: file list, stream tabs, all resources, search tabs, details;
 //! - `docs`: an opened resource with its views ([`crate::views`]) and the
-//!   open stream files;
+//!   open stream files; `asset_tab`: a resource in its own tab, an asset
+//!   editor with a bar of tools and Details (stage 56);
 //! - `edits`, `level`, `mods`, `model_import`: edits recorded in the
 //!   workspace and the windows that make them;
 //! - `palette`, `shell`: the command palette, welcome screen, notifications,
@@ -22,6 +23,9 @@
 //!   game, Play and the lock on writing while the game runs;
 //! - `wizard`: guided wizards for typical modding tasks.
 
+mod asset_tab;
+#[cfg(test)]
+mod asset_tests;
 mod bridge;
 mod browse;
 mod commands;
@@ -173,6 +177,11 @@ pub struct BrowserApp {
     /// What was selected last (Details follows it), and the selection of
     /// each level view as Details saw it.
     inspect: details::Focus,
+    /// The main Details panel is open and follows the selection: the
+    /// editors of the tabs leave their side column out (stage 56).
+    details_open: bool,
+    /// Asset commands of the tab menus, run after the dock is drawn.
+    asset_cmds: Vec<(Location, asset_tab::AssetCmd)>,
     selection_seen: HashMap<u64, u64>,
     /// The tab shown alone, in place of the whole dock.
     maximized: Option<egui_tiles::TileId>,
@@ -301,6 +310,8 @@ impl BrowserApp {
             outliners: HashMap::new(),
             inspectors: details::Inspectors::default(),
             inspect: details::Focus::default(),
+            details_open: false,
+            asset_cmds: Vec::new(),
             selection_seen: HashMap::new(),
             maximized: None,
             active_doc: None,
@@ -386,6 +397,13 @@ impl BrowserApp {
             }
         }
         app.logic_preset();
+        // The movies and the script editor asked for at start open as tabs.
+        if app.movies.open {
+            app.dock_ops.push(DockOp::Open(Pane::Movies));
+        }
+        if app.script_editor.open {
+            app.dock_ops.push(DockOp::Open(Pane::Script));
+        }
         // `DOCTOR_TOOLKIT_GUI_PROJECT=<folder>`: the project browser with that project.
         if let Some(dir) = std::env::var_os("DOCTOR_TOOLKIT_GUI_PROJECT") {
             app.open_project_tab();
@@ -650,6 +668,7 @@ impl BrowserApp {
         let busy = self.mods_busy()
             || self.nav.busy()
             || self.levels.values().any(LevelView::busy)
+            || crate::cutscene_view::busy()
             || self.play.busy()
             || self.movies.busy()
             || self.content.previews.busy()
@@ -929,7 +948,9 @@ impl eframe::App for BrowserApp {
             self.nav_action(action);
         }
         self.shortcuts(&ctx);
+        self.document_keys(&ctx);
         self.update_panel_level();
+        self.track_details_open();
         let visuals = ui.visuals().clone();
         let bar = |fill| {
             egui::Frame::new()
@@ -957,17 +978,17 @@ impl eframe::App for BrowserApp {
             })
             .inner;
         self.drawer_ui(&ctx, dock_rect);
+        self.run_asset_cmds(&ctx);
         self.content_drag(&ctx);
         self.play_frame(&ctx);
         self.show_mods(&ctx);
         if let Some(game) = self.game.clone()
-            && let Some(done) = self.movies.show(&ctx, game.root())
+            && let Some(done) = self.movies.update(&ctx, game.root())
         {
             let key = doctor_toolkit::workspace::FileKey::loose(&done.rel_path);
             self.record_file(key, done.data, &done.label);
         }
         self.show_model_import(&ctx);
-        self.show_script_editor(&ctx);
         self.show_windows(&ctx);
         self.layouts_window(&ctx);
         self.palette_ui(&ctx);
@@ -1476,7 +1497,7 @@ mod tests {
         app.save_settings();
         let text = std::fs::read_to_string(store.layout_path().unwrap()).unwrap();
         assert!(
-            text.contains("\"version\": 4"),
+            text.contains("\"version\": 5"),
             "written in the new version"
         );
         std::fs::remove_dir_all(dir).unwrap();

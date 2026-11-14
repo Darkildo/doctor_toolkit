@@ -901,6 +901,11 @@ fn load_view(
 }
 
 impl crate::views::ResourceViewer for LogicView {
+    /// The editor fills its tab (stage 56).
+    fn tab_body(&self) -> crate::views::TabBody {
+        crate::views::TabBody::Fill
+    }
+
     fn show(
         &mut self,
         ui: &mut egui::Ui,

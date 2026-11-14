@@ -615,6 +615,17 @@ impl BrowserApp {
             C::Export => game && (!self.nav.selected.is_empty() || self.details.is_some()),
             C::Unpack => game && !self.nav.selected.is_empty(),
             C::Pack => game && idle,
+            C::Undo | C::Redo if self.front_is(&Pane::Script) => {
+                let redo = command == C::Redo;
+                self.script_editor.can_undo(redo)
+                    || self.workspace.as_ref().is_some_and(|ws| {
+                        if redo {
+                            ws.redo_label().is_some()
+                        } else {
+                            ws.undo_label().is_some()
+                        }
+                    })
+            }
             C::Undo => self
                 .workspace
                 .as_ref()
@@ -744,6 +755,15 @@ impl BrowserApp {
             C::Pack => self.pack_dialog(ctx),
             C::CloseTab => self.dock_ops.push(DockOp::CloseActive),
             C::Quit => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
+            // The script editor in front has a history of its own (its graph
+            // is a file, not the workspace); everything else goes through the
+            // workspace's.
+            C::Undo if self.front_is(&Pane::Script) && self.script_editor.can_undo(false) => {
+                self.script_editor.undo();
+            }
+            C::Redo if self.front_is(&Pane::Script) && self.script_editor.can_undo(true) => {
+                self.script_editor.redo();
+            }
             C::Undo => self.undo(),
             C::Redo => self.redo(),
             C::Preferences => self.windows.preferences = true,
@@ -831,8 +851,11 @@ impl BrowserApp {
             C::LevelEditor => self.open_level_tab(false),
             C::NewLevel => self.open_level_tab(true),
             C::LogicEditor => self.open_logic_tab("", None),
-            C::ScriptEditor => self.script_editor.open = !self.script_editor.open,
-            C::Movies => self.movies.toggle(),
+            C::ScriptEditor => self.open_script_editor(),
+            C::Movies => {
+                self.movies.open = true;
+                self.dock_ops.push(DockOp::Open(Pane::Movies));
+            }
             C::Project => self.open_project_tab(),
             C::Mods => self.mods_open = !self.mods_open,
             C::IntegrityCheck => self.integrity_check(),

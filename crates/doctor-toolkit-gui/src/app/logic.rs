@@ -10,7 +10,7 @@ use crate::logic_editor::{LogicAction, LogicEditor};
 
 impl BrowserApp {
     /// `DOCTOR_TOOLKIT_GUI_LOGIC=<scope>[;find=<text>][;show][;run=<inputs>][;until=<s>]`
-    /// opens a logic tab shown alone (for screenshots and checks); `show`
+    /// opens a logic tab (for screenshots and checks); `show`
     /// then shows the first found node in the level view; `run` switches the
     /// run mode on with these start inputs (`|` between them) and runs to
     /// `until` seconds (or until nothing is left).
@@ -41,7 +41,11 @@ impl BrowserApp {
                 editor.live.on = true;
             }
         }
-        if let Some(id) = id {
+        // In the Asset Editor layout (stage 56), with Details beside it;
+        // without layouts per screen, alone over the window as before.
+        if let Some(id) = id
+            && !self.layouts.remember
+        {
             self.dock_ops.push(DockOp::Maximize(Some(id)));
         }
     }
@@ -85,8 +89,9 @@ impl BrowserApp {
             }
             self.logics.insert(id, editor);
         }
+        let details = self.details_follow();
         let editor = self.logics.get_mut(&id).expect("just made");
-        let action = editor.ui(ui, self.workspace.as_ref());
+        let action = editor.ui(ui, self.workspace.as_ref(), details);
         // The layout keeps the scope for the next start.
         if editor.scope() != scope.as_str() {
             *scope = editor.scope().to_owned();
@@ -98,7 +103,7 @@ impl BrowserApp {
     }
 
     /// Records an edit of a logic tab in the workspace.
-    fn logic_action(&mut self, action: LogicAction, ctx: &egui::Context) {
+    pub(super) fn logic_action(&mut self, action: LogicAction, ctx: &egui::Context) {
         let (Some(game), Some(index)) = (self.game.clone(), self.index.clone()) else {
             return;
         };

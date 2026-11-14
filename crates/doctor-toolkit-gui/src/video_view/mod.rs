@@ -1,5 +1,7 @@
-//! The Movies window: the game's `.vp6` movies with info, a player (built-in
-//! VP6 decoder, sound in sync), WAV/PNG export and replacement.
+//! Movies: the game's `.vp6` movies with info, a player (built-in VP6
+//! decoder, sound in sync), WAV/PNG export and replacement. A document tab
+//! since stage 56 (`Pane::Movies`; a window before): the list and the
+//! player in the tab, information, export and import in Details.
 
 mod player;
 
@@ -86,17 +88,15 @@ impl MoviesWindow {
         }
     }
 
-    pub fn toggle(&mut self) {
-        self.open = !self.open;
-    }
-
     /// Waiting for a picture (screenshots wait for it).
     pub fn busy(&self) -> bool {
         self.open && self.player.as_ref().is_some_and(Player::busy)
     }
 
-    /// Shows the window. Returns a finished import for the app to record.
-    pub fn show(&mut self, ctx: &egui::Context, root: &Path) -> Option<MovieImport> {
+    /// Keeps the list, the player and an import going while the Movies tab
+    /// is open (stage 56: a tab, a window before). Returns a finished import
+    /// for the app to record.
+    pub fn update(&mut self, ctx: &egui::Context, root: &Path) -> Option<MovieImport> {
         if !self.open {
             if let Some(p) = &mut self.player {
                 p.stop();
@@ -141,27 +141,42 @@ impl MoviesWindow {
         }
         if self.full && self.player.is_some() {
             self.full_window(ctx);
-            return finished;
-        }
-        self.full = false;
-        let mut open = self.open;
-        egui::Window::new(tr("movies.title"))
-            .id(egui::Id::unique("movies_window"))
-            .open(&mut open)
-            .default_size([1000.0, 640.0])
-            .resizable(true)
-            .show(ctx, |ui| {
-                egui::Panel::left("movie_list")
-                    .resizable(true)
-                    .default_size(240.0)
-                    .show(ui, |ui| self.list(ui));
-                egui::CentralPanel::default().show(ui, |ui| self.details(ui));
-            });
-        self.open = open;
-        if !open && let Some(p) = &mut self.player {
-            p.stop();
+        } else {
+            self.full = false;
         }
         finished
+    }
+
+    /// The Movies tab closed: the sound stops.
+    pub fn close(&mut self) {
+        self.open = false;
+        if let Some(p) = &mut self.player {
+            p.stop();
+        }
+    }
+
+    /// The Movies tab: the list on the left, the picture and the play bar;
+    /// the information, export and import under them, or in Details when
+    /// `details` (it is open and shows them).
+    pub fn ui(&mut self, ui: &mut egui::Ui, details: bool) {
+        egui::Panel::left(ui.scope_id().with("movie_list"))
+            .resizable(true)
+            .default_size(240.0)
+            .show(ui, |ui| self.list(ui));
+        egui::CentralPanel::default().show(ui, |ui| self.picture_ui(ui, details));
+    }
+
+    /// The selected movie's information and its export and import, for
+    /// the Details panel.
+    pub fn details_ui(&mut self, ui: &mut egui::Ui) {
+        let Some(movie) = self.selected.and_then(|i| self.movies.get(i)).cloned() else {
+            ui.label(RichText::new(tr("movies.select")).weak());
+            return;
+        };
+        ui.strong(&movie.rel_path);
+        self.info(ui);
+        ui.separator();
+        self.actions(ui, &movie);
     }
 
     /// The picture and the play bar over the editor window.
@@ -284,15 +299,41 @@ impl MoviesWindow {
         }
     }
 
-    fn details(&mut self, ui: &mut egui::Ui) {
+    fn picture_ui(&mut self, ui: &mut egui::Ui, details: bool) {
         let Some(movie) = self.selected.and_then(|i| self.movies.get(i)).cloned() else {
             ui.label(RichText::new(tr("movies.select")).weak());
             return;
         };
+        if self.loaded.is_none() {
+            return;
+        }
+        ui.heading(&movie.rel_path);
+        if !details {
+            self.info(ui);
+            // Export and import below, the player fills the rest.
+            egui::Panel::bottom(ui.scope_id().with("movie_actions"))
+                .show(ui, |ui| self.actions(ui, &movie));
+        }
+        if let Some(player) = &mut self.player {
+            let controls = 64.0;
+            let size = egui::vec2(
+                ui.available_width(),
+                (ui.available_height() - controls).max(120.0),
+            );
+            if player.picture(ui, size) {
+                self.full = true;
+            }
+            if player.controls(ui, false) {
+                self.full = true;
+            }
+        }
+    }
+
+    /// Video and audio of the selected movie.
+    fn info(&self, ui: &mut egui::Ui) {
         let Some(loaded) = self.loaded.as_ref() else {
             return;
         };
-        ui.heading(&movie.rel_path);
         match &loaded.info {
             Ok(info) => {
                 if let Some(v) = &info.video {
@@ -326,21 +367,6 @@ impl MoviesWindow {
             }
             Err(e) => {
                 ui.colored_label(egui::Color32::LIGHT_RED, e);
-            }
-        }
-        // Export and import below, the player fills the rest.
-        egui::Panel::bottom("movie_actions").show(ui, |ui| self.actions(ui, &movie));
-        if let Some(player) = &mut self.player {
-            let controls = 64.0;
-            let size = egui::vec2(
-                ui.available_width(),
-                (ui.available_height() - controls).max(120.0),
-            );
-            if player.picture(ui, size) {
-                self.full = true;
-            }
-            if player.controls(ui, false) {
-                self.full = true;
             }
         }
     }

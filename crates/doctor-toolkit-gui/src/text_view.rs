@@ -258,12 +258,18 @@ impl TextView {
                 .collect(),
             None => Vec::new(),
         };
+        // In a tab the table takes the rest of it (stage 56); in a
+        // scrolling panel it keeps its height.
+        let height = match ui.available_height() {
+            h if h.is_finite() && h > 420.0 && h < 10_000.0 => h - 4.0,
+            _ => 420.0,
+        };
         TableBuilder::new(ui)
             .id_salt("lh2-table")
             .striped(true)
             .column(Column::exact(80.0))
             .column(Column::remainder())
-            .max_scroll_height(420.0)
+            .max_scroll_height(height)
             .body(|body| {
                 body.rows(ROW_HEIGHT, rows.len(), |mut row| {
                     let entry = rows[row.index()];
@@ -330,6 +336,11 @@ fn load_view(
 }
 
 impl crate::views::ResourceViewer for TextView {
+    /// The editor fills its tab (stage 56).
+    fn tab_body(&self) -> crate::views::TabBody {
+        crate::views::TabBody::Fill
+    }
+
     fn show(
         &mut self,
         ui: &mut egui::Ui,

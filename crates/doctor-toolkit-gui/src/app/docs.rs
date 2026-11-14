@@ -230,7 +230,9 @@ impl BrowserApp {
     }
 
     /// Opens resource `loc` in a tab of its own.
-    pub(super) fn open_resource_tab(&mut self, loc: Location) {
+    /// Opens a resource in its own tab (or shows the tab it has); returns
+    /// the tab's id.
+    pub(super) fn open_resource_tab(&mut self, loc: Location) -> u64 {
         let existing = self
             .docs
             .iter()
@@ -238,7 +240,7 @@ impl BrowserApp {
             .map(|(&id, _)| id);
         if let Some(id) = existing {
             self.dock_ops.push(super::dock::DockOp::Focus(id));
-            return;
+            return id;
         }
         // Reuse the doc of the Details panel when it shows the same resource.
         let doc = match self.details.take() {
@@ -260,6 +262,7 @@ impl BrowserApp {
                 id,
                 key,
             }));
+        id
     }
 
     /// Opens a stream or table of contents in the stream tab used last, or

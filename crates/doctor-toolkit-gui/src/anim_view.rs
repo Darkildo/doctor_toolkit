@@ -2,6 +2,10 @@
 //! named entries, a skeleton preview of the selected clip, JSON and glTF
 //! export, and importing a glTF, FBX or USD animation over a clip or as a
 //! new clip.
+//!
+//! In a tab of its own (stage 56; floating windows before) the bank has two
+//! parts switched on the bar of the tab: Clips and the animation graph
+//! (`anim_graph_view`), whose selected node is edited in the Details panel.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -42,10 +46,10 @@ pub struct AnimView {
     preview: Option<Preview>,
     camera: Option<OrbitCamera>,
     import: Option<ImportDialog>,
-    /// The graph window (stage 43).
+    /// The animation graph (stage 43), made when first shown.
     graph: Option<crate::anim_graph_view::GraphEditor>,
-    /// Shown in a separate window.
-    window: bool,
+    /// In a tab: the graph instead of the clips (stage 56).
+    show_graph: bool,
 }
 
 /// Tracks shown on the skeleton.
@@ -116,7 +120,7 @@ fn load(source: &mut ViewSource<'_>) -> Option<Box<dyn ResourceViewer>> {
         camera: None,
         import: None,
         graph: None,
-        window: false,
+        show_graph: false,
     };
     view.apply_preset();
     Some(Box::new(view))
@@ -152,7 +156,6 @@ impl AnimView {
                 Some(("graph", v)) => graph = Some(Some(v.to_owned())),
                 Some(("node", v)) => node = v.parse::<usize>().ok(),
                 None if item == "graph" => graph = Some(None),
-                None if item == "window" => self.window = true,
                 _ => {}
             }
         }
@@ -170,6 +173,7 @@ impl AnimView {
             if let Ok(mut editor) = crate::anim_graph_view::GraphEditor::new(&self.data, names) {
                 editor.preset(entry.as_deref(), node);
                 self.graph = Some(editor);
+                self.show_graph = true;
             }
         }
         if let (Some(p), Some(f)) = (&mut self.preview, frame) {
@@ -539,34 +543,126 @@ impl AnimView {
 
 impl ResourceViewer for AnimView {
     fn show(&mut self, ui: &mut egui::Ui, cx: &mut ViewContext<'_>) -> Option<ViewAction> {
-        if !self.window {
-            if ui.button(tr("anim.window")).clicked() {
-                self.window = true;
-            }
+        if !cx.in_tab() {
             return self.contents(ui, cx);
         }
-        ui.horizontal(|ui| {
-            ui.label(RichText::new(tr("anim.in_window")).weak());
-            if ui.button(tr("anim.dock")).clicked() {
-                self.window = false;
-            }
-        });
-        let mut open = true;
-        let mut action = None;
-        egui::Window::new(trf("anim.window_title", &[("bank", &self.key)]))
-            .id(egui::Id::unique("anim view window"))
-            .open(&mut open)
-            .default_size([1100.0, 860.0])
-            .resizable(true)
-            .show(ui.ctx(), |ui| {
-                egui::ScrollArea::vertical()
-                    .id_salt("anim window scroll")
-                    .show(ui, |ui| action = self.contents(ui, cx));
-            });
-        if !open {
-            self.window = false;
+        if self.show_graph && self.ensure_graph(cx.status) {
+            let editor = self.graph.as_mut()?;
+            return editor
+                .ui(ui, &self.key, cx.details)
+                .map(|(data, label)| ViewAction::SaveData { data, label });
         }
-        action
+        egui::ScrollArea::vertical()
+            .id_salt("anim tab clips")
+            .auto_shrink(false)
+            .show(ui, |ui| self.contents(ui, cx))
+            .inner
+    }
+
+    fn tab_body(&self) -> crate::views::TabBody {
+        crate::views::TabBody::Fill
+    }
+
+    /// Clips | Graph, and Frame for the graph.
+    fn toolbar(&mut self, ui: &mut egui::Ui, cx: &mut ViewContext<'_>) -> Option<ViewAction> {
+        use crate::app::theme::{self, Icon, Tone};
+        if theme::tool_button(
+            ui,
+            None,
+            tr("anim.clips_tab"),
+            !self.show_graph,
+            Tone::Plain,
+        )
+        .clicked()
+        {
+            self.show_graph = false;
+        }
+        if theme::tool_button(
+            ui,
+            Some(Icon::Graph),
+            tr("anim.graph"),
+            self.show_graph,
+            Tone::Plain,
+        )
+        .on_hover_text(tr("anim.graph_hint"))
+        .clicked()
+            && self.ensure_graph(cx.status)
+        {
+            self.show_graph = true;
+        }
+        if self.show_graph
+            && let Some(editor) = &mut self.graph
+            && theme::icon_button(ui, Icon::Frame, tr("anim_graph.frame"))
+        {
+            editor.frame();
+        }
+        None
+    }
+
+    fn has_inspector(&self) -> bool {
+        self.show_graph && self.graph.is_some()
+    }
+
+    fn inspector(&mut self, ui: &mut egui::Ui, _cx: &mut ViewContext<'_>) -> Option<ViewAction> {
+        let editor = self.graph.as_mut()?;
+        editor
+            .inspector_ui(ui, &self.key)
+            .map(|(data, label)| ViewAction::SaveData { data, label })
+    }
+
+    fn set_mode(&mut self, mode: &str) {
+        if mode == "graph" {
+            let mut status = String::new();
+            self.show_graph = self.ensure_graph(&mut status);
+        }
+    }
+
+    fn frame_selection(&mut self) -> bool {
+        match &mut self.graph {
+            Some(editor) if self.show_graph => {
+                editor.frame();
+                true
+            }
+            _ => false,
+        }
+    }
+
+    fn keys(&self) -> &'static [(&'static str, &'static str)] {
+        crate::anim_graph_view::KEYS
+    }
+
+    fn state(&self) -> Option<Box<dyn std::any::Any>> {
+        Some(Box::new(self.show_graph))
+    }
+
+    fn restore(&mut self, state: Box<dyn std::any::Any>) {
+        if let Ok(show) = state.downcast::<bool>()
+            && *show
+        {
+            let mut status = String::new();
+            self.show_graph = self.ensure_graph(&mut status);
+        }
+    }
+}
+
+impl AnimView {
+    /// Makes the graph editor if it is not there; false when the bank has
+    /// no readable graph (the reason goes to `status`).
+    fn ensure_graph(&mut self, status: &mut String) -> bool {
+        if self.graph.is_some() {
+            return true;
+        }
+        let names = self.bank.clips.iter().map(|c| c.display_name()).collect();
+        match crate::anim_graph_view::GraphEditor::new(&self.data, names) {
+            Ok(editor) => {
+                self.graph = Some(editor);
+                true
+            }
+            Err(e) => {
+                *status = trf("anim.graph_error", &[("error", &e)]);
+                false
+            }
+        }
     }
 }
 
@@ -616,16 +712,15 @@ impl AnimView {
             self.selected = i;
             self.preview_clip(i);
         }
-        if ui
-            .button(tr("anim.graph"))
-            .on_hover_text(tr("anim.graph_hint"))
-            .clicked()
+        // The graph opens in the bank's tab (stage 56; a window before).
+        let mut open_graph = false;
+        if !cx.in_tab()
+            && ui
+                .button(tr("anim.graph"))
+                .on_hover_text(tr("anim.graph_hint"))
+                .clicked()
         {
-            let names = self.bank.clips.iter().map(|c| c.display_name()).collect();
-            match crate::anim_graph_view::GraphEditor::new(&self.data, names) {
-                Ok(editor) => self.graph = Some(editor),
-                Err(e) => *cx.status = trf("anim.graph_error", &[("error", &e)]),
-            }
+            open_graph = true;
         }
         if !self.entries.is_empty() {
             egui::CollapsingHeader::new(trf("anim.entries", &[("count", &self.entries.len())]))
@@ -718,13 +813,8 @@ impl AnimView {
         if let Some((data, label)) = self.import_window(ui.ctx()) {
             action = Some(ViewAction::SaveData { data, label });
         }
-        if let Some(editor) = &mut self.graph {
-            if let Some((data, label)) = editor.window(ui.ctx(), &self.key) {
-                action = Some(ViewAction::SaveData { data, label });
-            }
-            if !editor.open {
-                self.graph = None;
-            }
+        if open_graph {
+            action = Some(ViewAction::OpenInTab(Some("graph")));
         }
         match export {
             Some(false) => {

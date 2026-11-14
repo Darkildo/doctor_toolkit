@@ -54,6 +54,18 @@ pub enum LogicAction {
     OpenGroup(Location),
 }
 
+/// The keys of the logic graph, for its "?" (stage 56).
+pub const KEYS: &[(&str, &str)] = &[
+    ("F", "keys.frame"),
+    ("Home", "keys.frame_all"),
+    ("Delete", "keys.delete"),
+    ("Ctrl+D", "keys.duplicate"),
+    ("Ctrl+A", "keys.select_all"),
+    ("Ctrl+C / Ctrl+V", "keys.copy_paste"),
+    ("Ctrl+Z / Ctrl+Y", "keys.undo"),
+    ("RMB", "keys.graph_menu"),
+];
+
 fn category_color(c: Category) -> Color32 {
     match c {
         Category::Trigger => Color32::from_rgb(190, 115, 40),
@@ -680,7 +692,32 @@ impl LogicEditor {
     }
 
     /// The tab: toolbar, side panel, canvas. Returns an edit to record.
-    pub fn ui(&mut self, ui: &mut egui::Ui, ws: Option<&Workspace>) -> Option<LogicAction> {
+    /// F: frames the selected nodes, or the whole graph.
+    pub fn frame_selection(&mut self) {
+        if self.view.selection().is_empty() {
+            self.view.frame_all();
+        } else {
+            self.view.frame_selection();
+        }
+    }
+
+    /// The selected node (or the overview) for the Details panel
+    /// (stage 56), with what the live layer knows of it.
+    pub fn inspector(&mut self, ui: &mut egui::Ui) -> Option<LogicAction> {
+        if let Some(g) = &self.graph {
+            self.live.side_panel(ui, g, self.selected);
+        }
+        self.side_panel(ui)
+    }
+
+    /// The tab; `details`: the shared Details panel shows the inspector,
+    /// so the editor leaves its right column out (stage 56).
+    pub fn ui(
+        &mut self,
+        ui: &mut egui::Ui,
+        ws: Option<&Workspace>,
+        details: bool,
+    ) -> Option<LogicAction> {
         if self.stale {
             self.load(ws);
         }
@@ -705,7 +742,6 @@ impl LogicEditor {
             action = Some(LogicAction::ShowInLevel { group, object });
         }
         self.toolbar(ui, ws);
-        ui.horizontal_wrapped(|ui| self.live.toolbar(ui, self.graph.as_ref()));
         if self.graph.is_none() {
             ui.add_space(20.0);
             ui.vertical_centered(|ui| {
@@ -719,19 +755,18 @@ impl LogicEditor {
                 .default_size(280.0)
                 .show(ui, |ui| self.run_panel(ui, ws));
         }
-        egui::Panel::right("logic-side")
-            .resizable(true)
-            .default_size(320.0)
-            .show(ui, |ui| {
-                egui::ScrollArea::vertical()
-                    .auto_shrink(false)
-                    .show(ui, |ui| {
-                        if let Some(g) = &self.graph {
-                            self.live.side_panel(ui, g, self.selected);
-                        }
-                        action = self.side_panel(ui).or(action.take());
-                    });
-            });
+        if !details {
+            egui::Panel::right("logic-side")
+                .resizable(true)
+                .default_size(320.0)
+                .show(ui, |ui| {
+                    egui::ScrollArea::vertical()
+                        .auto_shrink(false)
+                        .show(ui, |ui| {
+                            action = self.inspector(ui).or(action.take());
+                        });
+                });
+        }
         let mut menu_action = None;
         let mut menu_cmd: Option<MenuCmd> = None;
         let graph_ref = self.graph.clone();
@@ -775,59 +810,76 @@ impl LogicEditor {
     }
 
     fn toolbar(&mut self, ui: &mut egui::Ui, _ws: Option<&Workspace>) {
-        ui.horizontal_wrapped(|ui| {
+        use crate::app::theme::{self, Icon, Tone};
+        theme::doc_bar(ui, |ui| {
             ui.label(tr("logic.scope"));
             let edit = ui.add(
                 egui::TextEdit::singleline(&mut self.scope_text)
-                    .desired_width(320.0)
+                    .desired_width(260.0)
                     .hint_text("mission:… checkpoint:… stream:… group:…#…"),
             );
             if edit.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                 self.stale = true;
             }
-            egui::ComboBox::from_id_salt(ui.scope_id().with("missions"))
-                .selected_text(tr("logic.missions"))
-                .height(400.0)
-                .show_ui(ui, |ui| {
-                    for m in &self.missions {
-                        if ui.selectable_label(false, &m.name).clicked() {
-                            self.scope_text = format!("mission:{}", m.name);
-                            self.stale = true;
+            let mut mission = None;
+            theme::menu_button(ui, None, tr("logic.missions"), "", |ui| {
+                egui::ScrollArea::vertical()
+                    .max_height(400.0)
+                    .show(ui, |ui| {
+                        for m in &self.missions {
+                            if ui.selectable_label(false, &m.name).clicked() {
+                                mission = Some(m.name.clone());
+                                ui.close();
+                            }
                         }
-                    }
-                });
-            if ui.button(tr("logic.load")).clicked() {
+                    });
+            });
+            if let Some(name) = mission {
+                self.scope_text = format!("mission:{name}");
                 self.stale = true;
             }
-            ui.separator();
-            if ui
-                .button(tr("logic.auto_layout"))
-                .on_hover_text(tr("logic.auto_layout_hint"))
-                .clicked()
+            if theme::tool_button(ui, None, tr("logic.load"), false, Tone::Plain).clicked() {
+                self.stale = true;
+            }
+            theme::separator(ui);
+            if theme::tool_button(
+                ui,
+                Some(Icon::Graph),
+                tr("logic.auto_layout"),
+                false,
+                Tone::Plain,
+            )
+            .on_hover_text(tr("logic.auto_layout_hint"))
+            .clicked()
             {
                 self.auto_layout();
             }
-            if ui
-                .button(tr("logic.frame"))
-                .on_hover_text(tr("logic.frame_hint"))
-                .clicked()
-            {
+            if theme::icon_button(ui, Icon::Frame, tr("logic.frame_hint")) {
                 self.view.frame_all();
             }
-            if ui
-                .toggle_value(&mut self.runm.on, tr("logic_run.mode"))
-                .on_hover_text(tr("logic_run.mode_hint"))
-                .changed()
+            if theme::tool_button(
+                ui,
+                Some(Icon::Play),
+                tr("logic_run.mode"),
+                self.runm.on,
+                Tone::Plain,
+            )
+            .on_hover_text(tr("logic_run.mode_hint"))
+            .clicked()
             {
+                self.runm.on = !self.runm.on;
                 self.rebuild_shown_keep_positions();
             }
-            ui.checkbox(&mut self.view.show_minimap, tr("logic.minimap"));
             let before = self.filters;
-            ui.checkbox(&mut self.filters.engine, tr("logic.show_engine"));
-            ui.checkbox(&mut self.filters.links, tr("logic.show_links"));
-            ui.checkbox(&mut self.filters.hubs, tr("logic.show_hubs"))
-                .on_hover_text(tr("logic.show_hubs_hint"));
-            ui.checkbox(&mut self.filters.empty_pins, tr("logic.empty_pins"));
+            theme::menu_button(ui, None, tr("view.show"), tr("logic.show_hint"), |ui| {
+                ui.checkbox(&mut self.view.show_minimap, tr("logic.minimap"));
+                ui.separator();
+                ui.checkbox(&mut self.filters.engine, tr("logic.show_engine"));
+                ui.checkbox(&mut self.filters.links, tr("logic.show_links"));
+                ui.checkbox(&mut self.filters.hubs, tr("logic.show_hubs"))
+                    .on_hover_text(tr("logic.show_hubs_hint"));
+                ui.checkbox(&mut self.filters.empty_pins, tr("logic.empty_pins"));
+            });
             if before != self.filters {
                 if before.hubs != self.filters.hubs || before.engine != self.filters.engine {
                     self.capture_layout();
@@ -836,7 +888,7 @@ impl LogicEditor {
                     self.rebuild_shown_keep_positions();
                 }
             }
-            ui.separator();
+            theme::separator(ui);
             let search = ui.add(
                 egui::TextEdit::singleline(&mut self.search)
                     .desired_width(160.0)
@@ -848,6 +900,8 @@ impl LogicEditor {
             if search.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                 self.select_matches();
             }
+            self.live.toolbar(ui, self.graph.as_ref());
+            theme::help_button(ui, KEYS);
         });
         ui.horizontal(|ui| {
             ui.label(RichText::new(&self.status).small());

@@ -663,6 +663,11 @@ fn edited_texture(
 }
 
 impl crate::views::ResourceViewer for TexturePreview {
+    /// The editor fills its tab (stage 56).
+    fn tab_body(&self) -> crate::views::TabBody {
+        crate::views::TabBody::Fill
+    }
+
     fn show(
         &mut self,
         ui: &mut egui::Ui,

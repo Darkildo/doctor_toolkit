@@ -69,4 +69,28 @@ impl ResourceViewer for WizardBar {
         });
         action
     }
+
+    fn tab_body(&self) -> crate::views::TabBody {
+        crate::views::TabBody::Toolbar
+    }
+
+    /// In a tab: "Wizard ▾" with the wizards of the resource.
+    fn toolbar(&mut self, ui: &mut egui::Ui, _cx: &mut ViewContext<'_>) -> Option<ViewAction> {
+        let mut action = None;
+        crate::app::theme::menu_button(
+            ui,
+            None,
+            tr("wizard.view_menu"),
+            tr("wizard.view_hint"),
+            |ui| {
+                for &(task, key) in self.tasks {
+                    if ui.button(tr(key)).clicked() {
+                        action = Some(ViewAction::StartWizard(task));
+                        ui.close();
+                    }
+                }
+            },
+        );
+        action
+    }
 }

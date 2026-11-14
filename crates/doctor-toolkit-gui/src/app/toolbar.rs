@@ -20,6 +20,9 @@ pub enum Context {
     NoGame,
     /// A level tab with this id is in front.
     Level(u64),
+    /// An asset editor (stage 56): a resource in its tab, the logic graph,
+    /// the script editor or Movies.
+    Asset(super::details::DocRef),
     /// Any other document.
     Other,
 }
@@ -43,11 +46,37 @@ impl BrowserApp {
             .or_else(|| shown.iter().find_map(|&t| level_of(t)))
     }
 
+    /// The document in front: the maximized tab, else the document used
+    /// last when it is shown, else the first one shown.
+    pub(super) fn front_document(&self) -> Option<Pane> {
+        let tree = self.dock.as_ref()?;
+        if let Some(t) = self.maximized {
+            return dock::pane(tree, t).cloned();
+        }
+        let shown = dock::shown_documents(tree);
+        let tile = self
+            .active_doc
+            .filter(|t| shown.contains(t))
+            .or_else(|| shown.first().copied())?;
+        dock::pane(tree, tile).cloned()
+    }
+
+    /// Whether `pane` is the document in front.
+    pub(super) fn front_is(&self, pane: &Pane) -> bool {
+        self.front_document().as_ref() == Some(pane)
+    }
+
     pub(super) fn toolbar_context(&self) -> Context {
         if self.game.is_none() {
             Context::NoGame
         } else if let Some(id) = self.front_level() {
             Context::Level(id)
+        } else if let Some(doc) = self
+            .front_document()
+            .as_ref()
+            .and_then(super::details::DocRef::of)
+        {
+            Context::Asset(doc)
         } else {
             Context::Other
         }
@@ -80,16 +109,25 @@ impl BrowserApp {
                 self.add_menu(ui, id);
                 theme::separator(ui);
             }
+            if let Context::Asset(doc) = context {
+                self.asset_buttons(ui, doc);
+                theme::separator(ui);
+            }
             let mods = theme::tool_button(ui, None, tr("window.mods"), self.mods_open, Tone::Plain)
                 .on_hover_text(tr("mods.window_hint"));
             if mods.clicked() {
                 self.pending.push(Command::Mods);
             }
-            let movies =
-                theme::tool_button(ui, None, tr("movies.title"), self.movies.open, Tone::Plain)
-                    .on_hover_text(tr("movies.button_hint"));
+            let movies = theme::tool_button(
+                ui,
+                None,
+                tr("movies.title"),
+                self.front_is(&Pane::Movies),
+                Tone::Plain,
+            )
+            .on_hover_text(tr("movies.button_hint"));
             if movies.clicked() {
-                self.movies.toggle();
+                self.pending.push(Command::Movies);
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.spacing_mut().item_spacing.x = 4.0;
@@ -133,6 +171,30 @@ impl BrowserApp {
             .on_disabled_hover_text(&hint);
         if response.clicked() {
             self.pending.push(command);
+        }
+    }
+
+    /// The part of an asset editor in front (stage 56): undo and redo
+    /// (of the script editor's own history while it is in front), and for
+    /// a resource "Browse" — show it in the Content Browser.
+    fn asset_buttons(&mut self, ui: &mut egui::Ui, doc: super::details::DocRef) {
+        self.command_button(ui, Icon::Undo, Command::Undo, "");
+        self.command_button(ui, Icon::Redo, Command::Redo, "");
+        if let super::details::DocRef::Tab(id) = doc
+            && let Some(loc) = self.docs.get(&id).map(|d| d.loc)
+        {
+            let browse = theme::tool_button(
+                ui,
+                Some(Icon::Browse),
+                tr("toolbar.browse"),
+                false,
+                Tone::Plain,
+            )
+            .on_hover_text(tr("doc.show_in_content"));
+            if browse.clicked() {
+                self.asset_cmds
+                    .push((loc, super::asset_tab::AssetCmd::ShowInContent));
+            }
         }
     }
 

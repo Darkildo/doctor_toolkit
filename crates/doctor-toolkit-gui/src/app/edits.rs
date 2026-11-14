@@ -158,6 +158,14 @@ impl BrowserApp {
                 self.open_location(Location { stream, resource })
             }
             ViewAction::OpenExternal { format } => self.open_external(loc, format),
+            ViewAction::OpenInTab(mode) => {
+                let id = self.open_resource_tab(loc);
+                if let (Some(mode), Some(doc)) = (mode, self.docs.get_mut(&id)) {
+                    for (_, view) in &mut doc.views {
+                        view.set_mode(mode);
+                    }
+                }
+            }
             ViewAction::Unlink(key) => self.unlink_external(&key),
             ViewAction::StartWizard(task) => {
                 if let Some(kind) = super::wizard::Kind::from_slug(task) {

@@ -4,6 +4,9 @@
 //! removing and reordering children, and the checks of
 //! `resource::anim_graph`. "Apply" records the new bank in the workspace as
 //! one undoable change.
+//!
+//! Stage 56: the graph is a part of the bank's tab (a window before); the
+//! inspector is in the Details panel while it is open.
 
 use doctor_toolkit::resource::anim_graph::{
     self, AnimGraph, Field, FieldType, GraphNode, Issue, KindInfo, Severity,
@@ -33,8 +36,16 @@ pub struct GraphEditor {
     rename: String,
     confirm_remove_entry: bool,
     error: Option<String>,
-    pub open: bool,
 }
+
+/// The keys of the graph, for the "?" of the bank's tab.
+pub const KEYS: &[(&str, &str)] = &[
+    ("F", "keys.frame"),
+    ("Home", "keys.frame_all"),
+    ("Delete", "keys.delete"),
+    ("Ctrl+A", "keys.select_all"),
+    ("Ctrl+Z / Ctrl+Y", "keys.undo_applied"),
+];
 
 /// Header colour by what a node does.
 fn color(kind: u8) -> Color32 {
@@ -91,7 +102,6 @@ impl GraphEditor {
             rename: String::new(),
             confirm_remove_entry: false,
             error: None,
-            open: true,
         };
         // Wires are the tree; the user does not draw them.
         editor.view.can_connect = Some(Box::new(|_, _, _| false));
@@ -213,49 +223,67 @@ impl GraphEditor {
         self.stale = true;
     }
 
-    /// Draws the window; returns the new bank and a label when the user applies.
-    pub fn window(&mut self, ctx: &egui::Context, bank: &str) -> Option<(Vec<u8>, String)> {
+    /// Frames the selected node, or the whole entry.
+    pub fn frame(&mut self) {
+        if self.selected.is_some() {
+            self.view.frame_selection();
+        } else {
+            self.view.frame_all();
+        }
+    }
+
+    /// The inspector for the Details panel; returns the new bank and a
+    /// label when the user applies.
+    pub fn inspector_ui(&mut self, ui: &mut egui::Ui, bank: &str) -> Option<(Vec<u8>, String)> {
         if self.stale {
             self.rebuild();
         }
-        let mut open = self.open;
+        self.inspector(ui, bank)
+    }
+
+    /// The graph in the bank's tab: the entries on the left, the graph, and
+    /// the inspector on the right unless `details` shows it. Returns the
+    /// new bank and a label when the user applies.
+    pub fn ui(
+        &mut self,
+        ui: &mut egui::Ui,
+        bank: &str,
+        details: bool,
+    ) -> Option<(Vec<u8>, String)> {
+        if self.stale {
+            self.rebuild();
+        }
         let mut result = None;
-        egui::Window::new(trf("anim_graph.title", &[("bank", &bank)]))
-            .id(egui::Id::unique("anim graph window"))
-            .open(&mut open)
-            .default_size([1300.0, 820.0])
+        egui::Panel::left(ui.scope_id().with("anim-graph-entries"))
             .resizable(true)
-            .show(ctx, |ui| {
-                egui::Panel::left("anim-graph-entries")
-                    .resizable(true)
-                    .default_size(220.0)
-                    .show(ui, |ui| self.entries_panel(ui));
-                egui::Panel::right("anim-graph-inspector")
-                    .resizable(true)
-                    .default_size(340.0)
-                    .show(ui, |ui| {
-                        egui::ScrollArea::vertical()
-                            .id_salt("anim graph inspector")
-                            .auto_shrink(false)
-                            .show(ui, |ui| result = self.inspector(ui, bank));
-                    });
-                let response = self.view.show(ui, &mut self.shown, &mut |_, _| {});
-                for event in response.events {
-                    match event {
-                        GraphEvent::Selection(ids) => {
-                            self.selected = ids.first().map(|id| id.0 as usize);
-                        }
-                        GraphEvent::Delete(ids) => {
-                            if let Some(&id) = ids.first() {
-                                self.edit(|g| g.remove_node(id.0 as usize));
-                                self.selected = None;
-                            }
-                        }
-                        _ => {}
+            .default_size(220.0)
+            .show(ui, |ui| self.entries_panel(ui));
+        if !details {
+            egui::Panel::right(ui.scope_id().with("anim-graph-inspector"))
+                .resizable(true)
+                .default_size(340.0)
+                .show(ui, |ui| {
+                    egui::ScrollArea::vertical()
+                        .id_salt("anim graph inspector")
+                        .auto_shrink(false)
+                        .show(ui, |ui| result = self.inspector(ui, bank));
+                });
+        }
+        let response = self.view.show(ui, &mut self.shown, &mut |_, _| {});
+        for event in response.events {
+            match event {
+                GraphEvent::Selection(ids) => {
+                    self.selected = ids.first().map(|id| id.0 as usize);
+                }
+                GraphEvent::Delete(ids) => {
+                    if let Some(&id) = ids.first() {
+                        self.edit(|g| g.remove_node(id.0 as usize));
+                        self.selected = None;
                     }
                 }
-            });
-        self.open = open;
+                _ => {}
+            }
+        }
         result
     }
 

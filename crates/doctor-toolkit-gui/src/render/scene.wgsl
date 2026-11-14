@@ -10,6 +10,14 @@ struct Globals {
     params: vec4<u32>,
     // x: depth offset of lines in clip space (fraction of w).
     line: vec4<f32>,
+    // rgb: colour of the light (linear), w: weight of the light from the camera.
+    sun: vec4<f32>,
+    // rgb: ambient colour multiplying light.w.
+    ambient: vec4<f32>,
+    // rgb: fog colour (linear).
+    fog_color: vec4<f32>,
+    // x: fog start, y: fog end (metres from the eye), z: fog at the end (0 = none).
+    fog: vec4<f32>,
 };
 
 const FLAG_TEXTURES: u32 = 1u;
@@ -259,7 +267,7 @@ fn fs_mesh(v: VertexOut, @builtin(front_facing) front: bool) -> @location(0) vec
         let l = normalize(globals.light.xyz);
         let view_dir = normalize(globals.eye.xyz - v.world);
         let diffuse_term = max(dot(n, l), 0.0);
-        let head = max(dot(n, view_dir), 0.0) * 0.35;
+        let head = max(dot(n, view_dir), 0.0) * 0.35 * globals.sun.w;
         let h = normalize(l + view_dir);
         // Clothes and skin multiply every light term by the gloss map's green.
         var ao = 1.0;
@@ -267,18 +275,27 @@ fn fs_mesh(v: VertexOut, @builtin(front_facing) front: bool) -> @location(0) vec
             ao = gloss.g;
         }
         let specular = pow(max(dot(n, h), 0.0), max(material.spec.w, 1.0)) * material.spec.rgb
-            * gloss.b * diffuse_term;
-        lit = (color.rgb * (globals.light.w + diffuse_term * 0.65 + head) + specular) * ao;
+            * gloss.b * diffuse_term * globals.sun.rgb;
+        let light = globals.light.w * globals.ambient.rgb + diffuse_term * 0.65 * globals.sun.rgb
+            + vec3<f32>(head);
+        lit = (color.rgb * light + specular) * ao;
     } else if ((globals.params.x & FLAG_LIGHTING) != 0u) {
         let n = geometric;
         let l = normalize(globals.light.xyz);
         let view_dir = normalize(globals.eye.xyz - v.world);
         let diffuse_term = max(dot(n, l), 0.0);
         // Light from the camera keeps faces turned away from the sun readable.
-        let head = max(dot(n, view_dir), 0.0) * 0.35;
+        let head = max(dot(n, view_dir), 0.0) * 0.35 * globals.sun.w;
         let h = normalize(l + view_dir);
-        let specular = pow(max(dot(n, h), 0.0), 48.0) * 0.12;
-        lit = color.rgb * (globals.light.w + diffuse_term * 0.65 + head) + vec3<f32>(specular);
+        let specular = pow(max(dot(n, h), 0.0), 48.0) * 0.12 * globals.sun.rgb;
+        let light = globals.light.w * globals.ambient.rgb + diffuse_term * 0.65 * globals.sun.rgb
+            + vec3<f32>(head);
+        lit = color.rgb * light + specular;
+    }
+    if (globals.fog.z > 0.0) {
+        let distance = length(globals.eye.xyz - v.world);
+        let f = clamp((distance - globals.fog.x) / (globals.fog.y - globals.fog.x), 0.0, 1.0);
+        lit = mix(lit, globals.fog_color.rgb, f * globals.fog.z);
     }
     if (is_highlighted(v)) {
         lit = mix(lit, vec3<f32>(1.0, 0.35, 0.02), 0.45);

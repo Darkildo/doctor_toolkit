@@ -14,8 +14,13 @@
 //!
 //! The file (`layout.json`) is versioned; versions 1 (the dock alone, up to
 //! stage 51), 2 (stage 52, with the object panel `ObjectDetails` and the
-//! zones in the Outliner) and 3 (stage 53, without the History panel) are
-//! read and migrated: see [`parse`].
+//! zones in the Outliner), 3 (stage 53, without the History panel) and 4
+//! (stage 54, without the screen of asset editors) are read and migrated:
+//! see [`parse`].
+//!
+//! Stage 56: "Asset Editor" — the screen of the asset editors (a resource
+//! in its tab, the logic graph, the script editor, Movies): the editor large
+//! with Details on the right, the rest as drawers.
 
 use std::collections::BTreeMap;
 
@@ -28,7 +33,7 @@ use super::dock::{self, DockOp, Pane};
 use super::{BrowserApp, Command};
 
 /// Version of the layout file written now.
-pub const LAYOUT_VERSION: u32 = 4;
+pub const LAYOUT_VERSION: u32 = 5;
 
 /// A kind of screen, by the document in front: each remembers its layout.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -36,6 +41,8 @@ pub const LAYOUT_VERSION: u32 = 4;
 pub enum Screen {
     Resources,
     Level,
+    /// An asset editor in front (stage 56).
+    Assets,
 }
 
 impl Screen {
@@ -44,11 +51,10 @@ impl Screen {
     pub fn of(pane: &Pane) -> Option<Screen> {
         match pane {
             Pane::Level { .. } => Some(Self::Level),
-            Pane::Index
-            | Pane::Stream { .. }
-            | Pane::Resource { .. }
-            | Pane::Search { .. }
-            | Pane::Logic { .. } => Some(Self::Resources),
+            Pane::Index | Pane::Stream { .. } | Pane::Search { .. } => Some(Self::Resources),
+            Pane::Resource { .. } | Pane::Logic { .. } | Pane::Script | Pane::Movies => {
+                Some(Self::Assets)
+            }
             _ => None,
         }
     }
@@ -58,6 +64,7 @@ impl Screen {
         match self {
             Self::Resources => Builtin::Resources,
             Self::Level => Builtin::Level,
+            Self::Assets => Builtin::Assets,
         }
     }
 }
@@ -68,15 +75,18 @@ impl Screen {
 pub enum Builtin {
     Resources,
     Level,
+    /// The asset editors (stage 56).
+    Assets,
 }
 
 impl Builtin {
-    pub const ALL: [Builtin; 2] = [Builtin::Level, Builtin::Resources];
+    pub const ALL: [Builtin; 3] = [Builtin::Level, Builtin::Assets, Builtin::Resources];
 
     pub fn name(self) -> &'static str {
         match self {
             Self::Resources => tr("layout.resources"),
             Self::Level => tr("layout.level"),
+            Self::Assets => tr("layout.assets"),
         }
     }
 
@@ -87,6 +97,7 @@ impl Builtin {
                 drawers: vec![Pane::ContentBrowser],
             },
             Self::Level => level_arrangement(),
+            Self::Assets => assets_arrangement(),
         }
     }
 }
@@ -274,6 +285,29 @@ fn level_arrangement() -> Arrangement {
     }
 }
 
+/// "Asset Editor" (stage 56): the editor large, Details on the right over
+/// the whole height; the Content Browser, Files, the Log, Changes and
+/// History are drawers.
+fn assets_arrangement() -> Arrangement {
+    let mut tiles = Tiles::default();
+    let docs = tiles.insert_pane(Pane::Documents);
+    let center = tiles.insert_tab_tile(vec![docs]);
+    let details = tiles.insert_pane(Pane::Details);
+    let right = tiles.insert_tab_tile(vec![details]);
+    let root = tiles.insert_horizontal_tile(vec![center, right]);
+    set_shares(&mut tiles, root, &[(center, 0.74), (right, 0.26)]);
+    Arrangement {
+        tree: Tree::new(egui::Id::unique("dock"), root, tiles),
+        drawers: vec![
+            Pane::ContentBrowser,
+            Pane::Files,
+            Pane::Log,
+            Pane::Changes,
+            Pane::History,
+        ],
+    }
+}
+
 /// The dock of an arrangement with these documents (the welcome screen
 /// when there are none) in place of its placeholder.
 pub fn arrange(arrangement: &Arrangement, documents: Vec<Pane>) -> (Tree<Pane>, Vec<Pane>) {
@@ -446,7 +480,7 @@ pub fn parse(text: &str) -> Option<Loaded> {
                 layouts: Layouts::default(),
             }
         }
-        2 | 3 | LAYOUT_VERSION => {
+        2..=LAYOUT_VERSION => {
             let file: FileV2 = serde_json::from_str(text).ok()?;
             Loaded {
                 tree: file.tree,
@@ -482,6 +516,9 @@ pub fn parse(text: &str) -> Option<Loaded> {
             );
         }
     }
+    if version.version < 5 {
+        seed_assets(&mut loaded.layouts);
+    }
     // A pane is a drawer or in the tree, never both; placeholders never show.
     loaded.drawers.retain(|p| p.is_panel());
     let mut seen = Vec::new();
@@ -515,6 +552,22 @@ pub fn parse(text: &str) -> Option<Loaded> {
         .unwrap_or(0);
     loaded.next_pane = loaded.next_pane.max(max_id);
     Some(loaded)
+}
+
+/// Version 4 → 5: up to stage 55 the resource tabs and the logic graph were
+/// on the Resources screen. A user who made that screen a layout of their
+/// own keeps it for the asset editors too; otherwise they get the built-in
+/// Asset Editor.
+fn seed_assets(layouts: &mut Layouts) {
+    if layouts.screens.contains_key(&Screen::Assets) {
+        return;
+    }
+    if let Some(remembered) = layouts.screens.get(&Screen::Resources)
+        && matches!(remembered.layout, LayoutId::User(_))
+    {
+        let remembered = remembered.clone();
+        layouts.screens.insert(Screen::Assets, remembered);
+    }
 }
 
 /// Version 2 → 3: one Details where there were two, Zones next to the
@@ -1059,7 +1112,7 @@ mod tests {
         assert!(!loaded.layouts.remember);
         assert_eq!(loaded.layouts.user[0].name, "Wide");
         assert!(parse("{").is_none());
-        assert!(parse(&json.replace("\"version\": 4", "\"version\": 999")).is_none());
+        assert!(parse(&json.replace("\"version\": 5", "\"version\": 999")).is_none());
     }
 
     #[test]
@@ -1117,7 +1170,7 @@ mod tests {
     /// A stage 52 file: `ObjectDetails` for the first Details.
     fn as_stage_52(json: &str) -> String {
         json.replacen("\"Details\"", "\"ObjectDetails\"", 1)
-            .replace("\"version\": 4", "\"version\": 2")
+            .replace("\"version\": 5", "\"version\": 2")
     }
 
     #[test]
@@ -1155,7 +1208,7 @@ mod tests {
         );
         // Saved again it is version 4, and reads the same.
         let again = to_json(&loaded.tree, 1, &loaded.drawers, &loaded.layouts);
-        assert!(again.contains("\"version\": 4") && !again.contains("ObjectDetails"));
+        assert!(again.contains("\"version\": 5") && !again.contains("ObjectDetails"));
 
         assert_eq!(panes(&parse(&again).unwrap().tree), panes(&loaded.tree));
 
@@ -1182,7 +1235,7 @@ mod tests {
         layouts.save("Files only", Builtin::Resources.arrangement());
         let stage_53 = [Pane::ContentBrowser, Pane::Log, Pane::Changes];
         let json =
-            to_json(&tree, 1, &stage_53, &layouts).replace("\"version\": 4", "\"version\": 3");
+            to_json(&tree, 1, &stage_53, &layouts).replace("\"version\": 5", "\"version\": 3");
         let loaded = parse(&json).expect("a stage 53 file reads");
         assert_eq!(
             loaded.drawers,
@@ -1203,7 +1256,7 @@ mod tests {
         let mut docked = tree.clone();
         dock::show_panel(&mut docked, Pane::History, None);
         let json = to_json(&docked, 1, &stage_53, &Layouts::default())
-            .replace("\"version\": 4", "\"version\": 3");
+            .replace("\"version\": 5", "\"version\": 3");
         let loaded = parse(&json).unwrap();
         assert_eq!(loaded.drawers, stage_53);
         assert!(dock::find(&loaded.tree, |p| *p == Pane::History).is_some());
@@ -1219,5 +1272,78 @@ mod tests {
         assert_eq!(Screen::of(&Pane::Welcome), None);
         assert_eq!(Screen::of(&Pane::Log), None);
         assert_eq!(Screen::Level.builtin(), Builtin::Level);
+        // Stage 56: the asset editors have a screen of their own.
+        for pane in [
+            Pane::Resource {
+                id: 1,
+                key: String::new(),
+            },
+            Pane::Logic {
+                id: 2,
+                scope: String::new(),
+            },
+            Pane::Script,
+            Pane::Movies,
+        ] {
+            assert_eq!(Screen::of(&pane), Some(Screen::Assets), "{pane:?}");
+        }
+        assert_eq!(Screen::Assets.builtin(), Builtin::Assets);
+    }
+
+    #[test]
+    fn asset_editor_layout_puts_details_beside_the_editor() {
+        let (tree, drawers) = arrange(
+            &Builtin::Assets.arrangement(),
+            vec![Pane::Script, Pane::Movies],
+        );
+        let script = dock::find(&tree, |p| *p == Pane::Script).unwrap();
+        let movies = dock::find(&tree, |p| *p == Pane::Movies).unwrap();
+        assert_eq!(tree.tiles.parent_of(script), tree.tiles.parent_of(movies));
+        let details = dock::find(&tree, |p| *p == Pane::Details).unwrap();
+        assert!(dock::is_shown(&tree, details));
+        assert!(dock::find(&tree, |p| *p == Pane::Files).is_none());
+        for pane in [Pane::ContentBrowser, Pane::Files, Pane::History] {
+            assert!(drawers.contains(&pane), "{pane:?}");
+        }
+        let mut names: Vec<&str> = Builtin::ALL.iter().map(|b| b.name()).collect();
+        names.dedup();
+        assert_eq!(names.len(), 3);
+    }
+
+    #[test]
+    fn version_four_files_are_read_and_keep_a_users_layout_for_the_editors() {
+        let (tree, drawers) = arrange(&Builtin::Resources.arrangement(), Vec::new());
+        // A stage-55 user with a layout of their own for resources.
+        let mut layouts = Layouts::default();
+        layouts.save("Mine", Builtin::Resources.arrangement());
+        layouts.screens.insert(
+            Screen::Resources,
+            Remembered {
+                layout: LayoutId::User("Mine".into()),
+                arrangement: Builtin::Resources.arrangement(),
+            },
+        );
+        let v4 = to_json(&tree, 3, &drawers, &layouts).replace("\"version\": 5", "\"version\": 4");
+        let loaded = parse(&v4).expect("version 4 is read");
+        assert_eq!(
+            loaded.layouts.screens[&Screen::Assets].layout,
+            LayoutId::User("Mine".into())
+        );
+        // Without a layout of their own: the built-in Asset Editor.
+        let v4 = to_json(&tree, 3, &drawers, &Layouts::default())
+            .replace("\"version\": 5", "\"version\": 4");
+        let loaded = parse(&v4).unwrap();
+        assert!(!loaded.layouts.screens.contains_key(&Screen::Assets));
+        // Version 5 with the new tabs round-trips.
+        let (tree, drawers) = arrange(
+            &Builtin::Assets.arrangement(),
+            vec![Pane::Script, Pane::Movies],
+        );
+        let json = to_json(&tree, 3, &drawers, &Layouts::default());
+        assert!(json.contains("\"version\": 5"));
+        let loaded = parse(&json).unwrap();
+        assert!(dock::find(&loaded.tree, |p| *p == Pane::Script).is_some());
+        assert!(dock::find(&loaded.tree, |p| *p == Pane::Movies).is_some());
+        assert_eq!(loaded.drawers, drawers);
     }
 }

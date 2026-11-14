@@ -23,6 +23,9 @@ pub struct Animation {
     pub skeleton: Skeleton,
     pub tracks: Vec<BoneTrack>,
     pub frames: usize,
+    /// Base scale of the rig (`rcb` 0x38): 1.88 for people, whose rigs are
+    /// 1.0 high; the game draws them, and moves them, that much larger.
+    pub scale: f32,
 }
 
 impl Animation {
@@ -233,11 +236,18 @@ impl Cast {
         })?;
         let tracks = clip.decode(data, bones)?;
         let frames = tracks.iter().map(|t| t.rotations.len()).max().unwrap_or(0);
+        let scale = self
+            .rigs
+            .iter()
+            .find(|r| r.skeletons.iter().any(|s| s.name_hash == bank.skeleton))
+            .map_or(1.0, |r| r.scale)
+            .clamp(0.01, 100.0);
         Ok(Animation {
             name: clip.display_name(),
             skeleton,
             tracks,
             frames,
+            scale,
         })
     }
 

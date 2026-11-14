@@ -1,7 +1,9 @@
 //! The 3D preview of a cut-scene at the play head: the actors of the shot as
-//! characters posed by their clips (skinned on the CPU), props and actors
-//! without a character as markers, the camera path of the shot and the camera
-//! itself; seen through the shot camera or from a free orbit camera.
+//! characters posed by their clips (skinned on the CPU), props with the
+//! meshes of their shot stream (markers without), the camera path of the shot
+//! and the camera itself, and the level around them in the light of the time
+//! of day (`world.rs`); seen through the shot camera or from a free orbit
+//! camera.
 
 use std::collections::HashMap;
 use std::collections::hash_map::DefaultHasher;
@@ -10,6 +12,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use doctor_toolkit::cutscene::cast::{Animation, Cast};
+use doctor_toolkit::cutscene::world::{TimeOfDay, matrix_to_world, time_at, to_world};
 use doctor_toolkit::cutscene::{Cutscene, Source, actor_state, camera_state};
 use doctor_toolkit::export::gltf::AssetSource;
 use doctor_toolkit::game::{GameAssets, GameInstance, ResourceIndex};
@@ -18,6 +21,7 @@ use doctor_toolkit::resource::trinity::Command;
 use doctor_toolkit_mods::i18n::tr;
 use egui::{Color32, Pos2, Rect, Sense, Vec2};
 
+use super::world::{self, SharedWorld};
 use crate::model_view::{LoadOptions, load_with};
 use crate::render::{
     Gpu, Instance, LineVertex, MeshData, MeshKey, OrbitCamera, Scene, View, Viewport, math,
@@ -26,7 +30,7 @@ use crate::render::{
 /// A game directory with its game and resource index, opened once.
 type OpenedGame = (PathBuf, Arc<GameInstance>, Arc<ResourceIndex>);
 
-fn open_game(root: &PathBuf) -> Result<(Arc<GameInstance>, Arc<ResourceIndex>), String> {
+pub(super) fn open_game(root: &PathBuf) -> Result<(Arc<GameInstance>, Arc<ResourceIndex>), String> {
     static OPENED: Mutex<Option<OpenedGame>> = Mutex::new(None);
     let mut cache = OPENED.lock().unwrap_or_else(|e| e.into_inner());
     if let Some((r, game, index)) = &*cache
@@ -83,9 +87,36 @@ pub struct Preview {
     pub shared: Shared,
     /// Draw characters (`false`: markers only).
     pub characters: bool,
+    /// The level around the cut-scene.
+    pub world: SharedWorld,
+    /// Time of day chosen by the user; `None`: the cut-scene's.
+    pub hour: Option<f32>,
     scene: Scene,
-    last: Option<(u32, [u32; 2], bool, OrbitCamera, u64)>,
+    last: Option<FrameKey>,
     generation: u64,
+    /// Seconds of the last frames drawn (for the frame rate while playing).
+    pub frame_times: std::collections::VecDeque<f32>,
+}
+
+/// What a drawn frame depends on: time, size, camera, loads, world.
+type FrameKey = (
+    u32,
+    [u32; 2],
+    bool,
+    OrbitCamera,
+    u64,
+    u64,
+    bool,
+    Option<u32>,
+);
+
+/// The time of day at `t`: the cut-scene's command, else the mission's
+/// `SetTimeOfDay`, else the game's starting hour.
+pub fn time_of_day(cutscene: &Cutscene, t: f32, mission: Option<TimeOfDay>) -> TimeOfDay {
+    time_at(cutscene, t)
+        .0
+        .or(mission)
+        .unwrap_or(world::DEFAULT_TIME)
 }
 
 fn key_of(parts: impl Hash) -> MeshKey {
@@ -150,9 +181,12 @@ impl Preview {
             framed: false,
             shared: Shared::default(),
             characters: true,
+            world: SharedWorld::default(),
+            hour: None,
             scene: Scene::default(),
             last: None,
             generation: 0,
+            frame_times: Default::default(),
         }
     }
 
@@ -280,16 +314,28 @@ impl Preview {
             loaded.actors.insert((shot.resource, actor.guid.0), model);
         }
         let count: usize = loaded.actors.values().map(|a| a.parts.len()).sum();
-        gpu.lock().set_mesh_budget(64.max(count * 3));
+        // The budget is shared with the world and other views: only raise it.
+        let mut renderer = gpu.lock();
+        let budget = renderer.mesh_budget().max(64.max(count * 3));
+        renderer.set_mesh_budget(budget);
     }
 
-    /// Builds the scene for time `t` (seconds from the start of the cut-scene).
-    fn build(&mut self, cutscene: &Cutscene, t: f32) {
+    /// Builds the scene for time `t` (seconds from the start of the
+    /// cut-scene) seen through `view` (culling and levels of detail of the
+    /// world).
+    fn build(&mut self, cutscene: &Cutscene, t: f32, view: &View) {
         self.scene.instances.clear();
         self.scene.lines.clear();
         self.scene.overlay_lines.clear();
         self.scene.options.frustum_culling = false;
         let Some(s) = cutscene.shot_at(t) else { return };
+        let anchor = cutscene.anchor(s);
+        let world_guard = self.world.clone();
+        let world_state = world_guard.lock().unwrap_or_else(|e| e.into_inner());
+        let world_shown = world_state.enabled;
+        if let Some(gpu) = &self.gpu {
+            world_state.fill(&mut self.scene, view, gpu);
+        }
         let shared = self.shared.clone();
         let mut guard = shared.lock().unwrap_or_else(|e| e.into_inner());
         let mut loaded = match &mut *guard {
@@ -307,8 +353,9 @@ impl Preview {
             let Some(state) = actor_state(shot, &actor.guid, local) else {
                 continue;
             };
-            let world = state.matrix();
-            bounds.add_point(state.position);
+            let world = matrix_to_world(&anchor, &state.matrix());
+            let position = [world[12], world[13], world[14]];
+            bounds.add_point(position);
             let model = loaded.and_then(|l| l.actors.get(&(shot.resource, actor.guid.0)));
             let pose = state.clip.as_ref().and_then(|(clip, at)| {
                 let anim = loaded?
@@ -318,6 +365,30 @@ impl Preview {
                     .ok()?;
                 Some((anim, anim.pose(*at)))
             });
+            // The actor's position (0x206) is where the clip's root bone
+            // (the trajectory on the ground) is when the clip starts: the
+            // root's own translation only moves it from there. People are
+            // drawn, and moved, the rig's base scale larger: their rigs and
+            // models are 1.0 high, the scale 1.88 (`docs/formats/cutscenes.md`
+            // §9.2).
+            let root = pose
+                .as_ref()
+                .map(|(anim, _)| anim.skeleton.bones.iter().position(|b| b.parent.is_none()))
+                .unwrap_or_default();
+            let actor_world = world;
+            let world = match (&pose, root) {
+                (Some((anim, _)), Some(r)) => {
+                    let start = anim.pose(0.0);
+                    let s = anim.scale;
+                    let offset = math::translation([
+                        -start[r][12] * s,
+                        -start[r][13] * s,
+                        -start[r][14] * s,
+                    ]);
+                    math::mul(&math::mul(&world, &offset), &math::uniform_scale(s))
+                }
+                _ => world,
+            };
             let mut drawn = false;
             let _ = a;
             if let (Some(model), Some(gpu)) = (model, &self.gpu) {
@@ -347,6 +418,20 @@ impl Preview {
                     drawn = true;
                 }
             }
+            // Props: the meshes of their object in the shot stream.
+            if !drawn && world_shown && actor.assembly.is_none() {
+                // Moved by the clip's root bone when the clip is loaded.
+                let placed = match (&pose, root) {
+                    (Some((_, globals)), Some(r)) => math::mul(&world, &globals[r]),
+                    _ => actor_world,
+                };
+                for (mesh, local) in world_state.props(&actor.guid.0) {
+                    self.scene
+                        .instances
+                        .push(Instance::new(*mesh, math::mul(&placed, local)));
+                    drawn = true;
+                }
+            }
             // Props and actors without a character: their skeleton or a cross.
             if !drawn {
                 let colour = [255, 200, 60, 255];
@@ -360,7 +445,7 @@ impl Preview {
                         }
                     }
                 } else {
-                    let c = state.position;
+                    let c = position;
                     for axis in 0..3 {
                         let mut a = c;
                         let mut b = c;
@@ -379,7 +464,7 @@ impl Preview {
         for i in 0..=steps {
             let at = shot.duration() * i as f32 / steps as f32;
             if let Some(c) = camera_state(shot, at) {
-                let p = [c.values[0], c.values[1], c.values[2]];
+                let p = to_world(&anchor, [c.values[0], c.values[1], c.values[2]]);
                 bounds.add_point(p);
                 if let Some(q) = previous {
                     self.scene.lines.push(LineVertex::new(q, path_colour));
@@ -391,7 +476,7 @@ impl Preview {
         if !self.shot_camera
             && let Some(c) = camera_state(shot, local)
         {
-            let m = c.matrix();
+            let m = matrix_to_world(&anchor, &c.matrix());
             let eye = point(&m, [0.0; 3]);
             let h = (c.vertical_fov().to_radians() / 2.0).tan();
             let w = h * c.aspect;
@@ -439,34 +524,79 @@ impl Preview {
             (rect.width() * ppp).round().max(1.0) as u32,
             (rect.height() * ppp).round().max(1.0) as u32,
         ];
+        // The world: start it, take what the workers finished, upload meshes.
+        let (world_shown, world_generation, mission) = {
+            let mut world = self.world.lock().unwrap_or_else(|e| e.into_inner());
+            let ctx = ui.ctx().clone();
+            if world.enabled && world.is_idle() {
+                world.start(self.root.clone(), cutscene, open_game, &ctx);
+            }
+            world.poll(&ctx);
+            world.upload(&gpu);
+            (world.enabled, world.generation, world.mission_time)
+        };
+        let hours = self
+            .hour
+            .unwrap_or_else(|| time_of_day(cutscene, t, mission).hours());
         let key = (
             t.to_bits(),
             pixels,
             self.shot_camera,
             self.orbit,
             self.generation,
+            world_generation,
+            world_shown,
+            world_shown.then_some(hours.to_bits()),
         );
         if self.last != Some(key) {
-            self.build(cutscene, t);
+            let started = std::time::Instant::now();
+            // Far enough for the city around: the world reaches kilometres.
+            let far = if world_shown { 6000.0 } else { 2000.0 };
+            let near = if world_shown { 0.1 } else { 0.05 };
             let view = match (self.shot_camera, camera) {
                 (true, Some(c)) => {
-                    let m = c.matrix();
+                    let m = matrix_to_world(&cutscene.anchor(c.shot), &c.matrix());
                     View {
                         view: math::inverse(&m).unwrap_or(math::IDENTITY),
                         projection: math::perspective(
                             c.vertical_fov().to_radians().clamp(0.05, 3.0),
                             rect.aspect_ratio(),
-                            0.05,
-                            2000.0,
+                            near,
+                            far,
                         ),
                         eye: [m[12], m[13], m[14]],
                     }
                 }
-                _ => self.orbit.view(rect.aspect_ratio()),
+                _ => {
+                    let mut view = self.orbit.view(rect.aspect_ratio());
+                    if world_shown {
+                        view.projection = math::perspective(
+                            self.orbit.fov_y,
+                            rect.aspect_ratio().max(1e-3),
+                            near,
+                            far,
+                        );
+                    }
+                    view
+                }
             };
+            self.build(cutscene, t, &view);
+            let defaults = crate::render::SceneOptions::default();
+            if world_shown {
+                let (environment, sky) = world::environment(hours);
+                self.scene.options.environment = Some(environment);
+                self.scene.options.background = sky;
+            } else {
+                self.scene.options.environment = None;
+                self.scene.options.background = defaults.background;
+            }
             gpu.lock()
                 .render(&mut self.viewport, pixels, &self.scene, &view);
             self.last = Some(key);
+            self.frame_times.push_back(started.elapsed().as_secs_f32());
+            if self.frame_times.len() > 60 {
+                self.frame_times.pop_front();
+            }
         }
         if let Some(id) = self.viewport.texture_id() {
             ui.painter().image(

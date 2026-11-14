@@ -349,6 +349,28 @@ pub struct SceneOptions {
     pub frustum_culling: bool,
     /// Game-like shading of parts that have a [`Surface`]; off draws the base texture.
     pub surfaces: bool,
+    /// Sun, ambient light and fog of an outdoor scene; `None`: white light
+    /// from above the camera.
+    pub environment: Option<Environment>,
+}
+
+/// Light and air of an outdoor scene (the cut-scene preview's time of day).
+/// Colours are linear.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Environment {
+    /// Direction towards the sun (or the moon).
+    pub sun: Vec3,
+    pub sun_color: [f32; 3],
+    /// Multiplies the ambient term.
+    pub ambient: [f32; 3],
+    /// Weight of the soft light from the camera (1 in the viewers).
+    pub camera_light: f32,
+    pub fog_color: [f32; 3],
+    /// Metres from the eye where the fog starts and is strongest.
+    pub fog_start: f32,
+    pub fog_end: f32,
+    /// How much the fog hides at `fog_end` (0 = no fog).
+    pub fog_max: f32,
 }
 
 impl Default for SceneOptions {
@@ -365,6 +387,7 @@ impl Default for SceneOptions {
             background: [0.15, 0.155, 0.17, 1.0],
             frustum_culling: true,
             surfaces: true,
+            environment: None,
         }
     }
 }

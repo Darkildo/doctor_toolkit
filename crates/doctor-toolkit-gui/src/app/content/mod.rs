@@ -330,6 +330,14 @@ impl Content {
         self.browsers.retain(|&id, _| id == 0 || keep(id));
     }
 
+    /// Shows a resource in the main Content Browser: its stream, the
+    /// resource selected (stage 56, "Show in Content Browser").
+    pub fn reveal(&mut self, key: &ResourceKey) {
+        let state = self.state(0);
+        state.go(Place::Stream(key.stream.clone()));
+        state.selected = Some(Selected::Asset(key.clone()));
+    }
+
     fn state(&mut self, id: u64) -> &mut ContentState {
         let (preset, tree) = (&self.preset, &self.tree);
         self.browsers.entry(id).or_insert_with(|| match preset {
@@ -637,7 +645,9 @@ impl BrowserApp {
                     self.details = Some(self.load_doc(loc, previous));
                 }
                 Act::Open(asset) => match asset.at {
-                    Some(loc) => self.open_resource_tab(loc),
+                    Some(loc) => {
+                        self.open_resource_tab(loc);
+                    }
                     None => self.open_key(&asset.key),
                 },
                 Act::OpenStream(i) => self.open_file(FileSel::Stream(i), false),

@@ -20,6 +20,17 @@
 //! The view never writes to the workspace or the game itself: the app records
 //! the returned action, then loads the views of the resource again from the
 //! workspace (keeping what [`ResourceViewer::state`] returned).
+//!
+//! **A view in a tab** (stage 56). A resource opened in its own tab is an
+//! asset editor in the manner of Unreal Engine: a bar of tools over the
+//! editor, the editor in the rest of the tab and the properties of what is
+//! selected in it in the shared Details panel. A view says how it fits a tab
+//! with [`ResourceViewer::tab_body`] (fill the tab, scroll with the others,
+//! or nothing but its tools), adds its tools with
+//! [`ResourceViewer::toolbar`] and shows the selection with
+//! [`ResourceViewer::inspector`]; [`ViewContext::place`] tells where it is
+//! drawn and [`ViewContext::details`] whether Details shows its inspector
+//! (then the view leaves its own side column out).
 
 use std::any::Any;
 use std::path::PathBuf;
@@ -80,6 +91,64 @@ pub trait ResourceViewer {
 
     /// Takes back what [`Self::state`] returned, from the view before the reload.
     fn restore(&mut self, _state: Box<dyn Any>) {}
+
+    /// How the view takes part in a tab of its own (stage 56).
+    fn tab_body(&self) -> TabBody {
+        TabBody::Scroll
+    }
+
+    /// Tools of the view on the bar of its tab (stage 56).
+    fn toolbar(&mut self, _ui: &mut egui::Ui, _cx: &mut ViewContext<'_>) -> Option<ViewAction> {
+        None
+    }
+
+    /// Whether [`Self::inspector`] has something to show.
+    fn has_inspector(&self) -> bool {
+        false
+    }
+
+    /// The properties of what is selected in the view, for the Details
+    /// panel (stage 56).
+    fn inspector(&mut self, _ui: &mut egui::Ui, _cx: &mut ViewContext<'_>) -> Option<ViewAction> {
+        None
+    }
+
+    /// Switches a view that was just opened in a tab to a part of it
+    /// ([`ViewAction::OpenInTab`]): `graph` for the animation graph of a bank.
+    fn set_mode(&mut self, _mode: &str) {}
+
+    /// Frames the selection (F, also when the pointer is not over the
+    /// view); true when the view did.
+    fn frame_selection(&mut self) -> bool {
+        false
+    }
+
+    /// The keys of the view for the "?" of its tab: (keys, text key of what
+    /// they do).
+    fn keys(&self) -> &'static [(&'static str, &'static str)] {
+        &[]
+    }
+}
+
+/// How a view takes part in a tab of its own.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TabBody {
+    /// The editor fills the tab under the bar of tools.
+    Fill,
+    /// The view scrolls with the other views of the resource.
+    Scroll,
+    /// The view is only its tools on the bar (wizards, external editors).
+    Toolbar,
+}
+
+/// Where a view is drawn.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Place {
+    /// In the Details panel (or a panel of a wizard): narrow, scrolls.
+    #[default]
+    Details,
+    /// In the resource's own tab.
+    Tab,
 }
 
 /// What a view asks the app to do.
@@ -114,6 +183,9 @@ pub enum ViewAction {
     /// Start a wizard (`retexture`, `model`, `outfit`, `texts`, `params`,
     /// `place`) for the shown resource.
     StartWizard(&'static str),
+    /// Open the shown resource in its own tab, in a mode of its views
+    /// ([`ResourceViewer::set_mode`]).
+    OpenInTab(Option<&'static str>),
 }
 
 /// An edit a view hands to the app, see [`ViewAction::Apply`].
@@ -126,6 +198,19 @@ pub struct ViewContext<'a> {
     pub status: &'a mut String,
     /// Resources linked to working files of other programs.
     pub links: &'a [crate::external_view::LinkInfo],
+    /// Where the view is drawn (stage 56).
+    pub place: Place,
+    /// In a tab: the shared Details panel is open and shows the view's
+    /// [`ResourceViewer::inspector`], so the view leaves its own side
+    /// column out.
+    pub details: bool,
+}
+
+impl ViewContext<'_> {
+    /// The view is drawn in its own tab.
+    pub fn in_tab(&self) -> bool {
+        self.place == Place::Tab
+    }
 }
 
 /// Where a view loads its resource from: the stream, and the workspace

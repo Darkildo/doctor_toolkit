@@ -2,11 +2,16 @@
 //! software rasteriser as a fallback when no GPU renderer is available.
 //!
 //! `DOCTOR_TOOLKIT_GUI_MODEL=<options>` presets the viewer for screenshots:
-//! comma-separated `window`, `wireframe`, `normals`, `skeleton`, `flat`
+//! comma-separated `wireframe`, `normals`, `skeleton`, `flat`
 //! (no textures), `unlit`, `cull`, `weights=<bone>`, `select=<part>`,
 //! `hide=<first>-<last>`, `yaw=<rad>`, `pitch=<rad>`, `zoom=<factor>`,
 //! `collision` (Havok collision wireframe) and `spin` (turn every frame,
 //! print frame intervals to stderr).
+//!
+//! In a tab of its own (stage 56; a floating window before) the viewer is
+//! an asset editor: its switches are "Shading ▾" and "Show ▾" on the bar of
+//! the tab, the parts and bones on the left, the viewport fills the rest,
+//! and the material of the selected part is in the Details panel.
 
 mod load;
 pub mod material_panel;
@@ -78,6 +83,15 @@ impl ModelPreview {
     }
 }
 
+/// The keys of the model viewer, for the "?" of its tab.
+pub const KEYS: &[(&str, &str)] = &[
+    ("LMB drag", "keys.orbit"),
+    ("RMB / MMB drag, Shift", "keys.pan"),
+    ("Wheel", "keys.zoom"),
+    ("Click", "keys.select_part"),
+    ("Double click", "keys.frame_part"),
+];
+
 /// Everything that changes the rendered image; the view is redrawn only when it changes.
 #[derive(Clone, PartialEq)]
 struct RenderKey {
@@ -109,7 +123,6 @@ pub struct GpuModelView {
     hovered_bone: Option<usize>,
     /// Bone whose weights are shown while nothing else is hovered.
     weight_bone: Option<usize>,
-    window: bool,
     last_render: Option<RenderKey>,
     last_pick: Option<Pos2>,
     stats: RenderStats,
@@ -159,7 +172,6 @@ impl GpuModelView {
             list_hover: None,
             hovered_bone: None,
             weight_bone: None,
-            window: false,
             last_render: None,
             last_pick: None,
             stats: RenderStats::default(),
@@ -177,7 +189,6 @@ impl GpuModelView {
             let number = value.parse::<f32>().ok();
             let options = &mut self.scene.options;
             match name {
-                "window" => self.window = true,
                 "spin" => self.spin = Some(Vec::new()),
                 "wireframe" => options.wireframe = true,
                 "normals" => options.normals = true,
@@ -213,49 +224,107 @@ impl GpuModelView {
             return;
         }
         self.header(ui);
-        if self.window {
-            ui.horizontal(|ui| {
-                ui.label(RichText::new(tr("model.in_window")).weak());
-                if ui.button(tr("model.dock")).clicked() {
-                    self.window = false;
-                }
-            });
-            let mut open = true;
-            let title = match &self.model {
-                Ok(model) => trf("model.window_title", &[("name", &model.name)]),
-                Err(_) => tr("model.window").to_owned(),
-            };
-            egui::Window::new(title)
-                .id(egui::Id::unique("model viewer window"))
-                .open(&mut open)
-                .default_size([1000.0, 700.0])
-                .resizable(true)
-                .show(ui.ctx(), |ui| {
-                    self.controls(ui);
-                    egui::Panel::left("model viewer parts")
-                        .resizable(true)
-                        .default_size(320.0)
-                        .max_size(560.0)
-                        .show(ui, |ui| {
-                            ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
-                            egui::ScrollArea::vertical()
-                                .id_salt("model window lists")
-                                .show(ui, |ui| self.lists(ui, true));
-                        });
-                    let size = ui.available_size().max(Vec2::splat(64.0));
-                    self.viewport_ui(ui, size);
-                });
-            if !open {
-                self.window = false;
-            }
-            return;
-        }
         self.controls(ui);
         let width = ui.available_width().max(64.0);
         let height = (width * 0.75).clamp(160.0, 640.0);
         self.viewport_ui(ui, egui::vec2(width, height));
         self.hover_line(ui);
-        self.lists(ui, false);
+        self.lists(ui, false, true);
+    }
+
+    /// The viewer in a tab of its own: the parts and bones on the left, the
+    /// viewport in the rest; `details`: the selected part's material is in
+    /// the Details panel, not under the lists.
+    pub fn show_tab(&mut self, ui: &mut egui::Ui, details: bool) {
+        if let Err(error) = &self.model {
+            ui.colored_label(Color32::RED, trf("model.cannot_load", &[("error", error)]));
+            return;
+        }
+        egui::Panel::left(ui.scope_id().with("model parts"))
+            .resizable(true)
+            .default_size(300.0)
+            .max_size(560.0)
+            .show(ui, |ui| {
+                ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
+                self.header(ui);
+                egui::ScrollArea::vertical()
+                    .id_salt("model tab lists")
+                    .show(ui, |ui| self.lists(ui, true, !details));
+            });
+        let size = ui.available_size().max(Vec2::splat(64.0));
+        self.viewport_ui(ui, size);
+    }
+
+    /// The switches of the viewer on the bar of its tab: "Shading ▾",
+    /// "Show ▾" and Frame.
+    pub fn toolbar_ui(&mut self, ui: &mut egui::Ui) {
+        use crate::app::theme::{self, Icon};
+        let has_bones = self.model.as_ref().is_ok_and(|m| !m.bones.is_empty());
+        theme::menu_button(ui, None, tr("model.shading"), "", |ui| {
+            let o = &mut self.scene.options;
+            ui.checkbox(&mut o.textures, tr("model.textures"));
+            ui.checkbox(&mut o.surfaces, tr("model.game_shading"))
+                .on_hover_text(tr("model.game_shading_hint"));
+            ui.checkbox(&mut o.lighting, tr("model.lighting"));
+            ui.checkbox(&mut o.alpha_test, tr("model.alpha_test"))
+                .on_hover_text(tr("model.alpha_test_hint"));
+            ui.checkbox(&mut o.vertex_colors, tr("model.vertex_colors"));
+            ui.checkbox(&mut o.backface_culling, tr("model.cull"))
+                .on_hover_text(tr("model.cull_hint"));
+            ui.separator();
+            ui.checkbox(&mut o.wireframe, tr("model.wireframe"));
+            ui.checkbox(&mut o.normals, tr("model.normals"));
+        });
+        let mut reframe = false;
+        theme::menu_button(ui, None, tr("view.show"), "", |ui| {
+            reframe = ui
+                .add_enabled(
+                    has_bones,
+                    egui::Checkbox::new(&mut self.show_skeleton, tr("model.skeleton")),
+                )
+                .on_disabled_hover_text(tr("model.no_skeleton"))
+                .changed();
+            ui.add_enabled(
+                matches!(self.collision, Some(Ok(_))),
+                egui::Checkbox::new(&mut self.show_collision, tr("model.collision")),
+            );
+            ui.separator();
+            if ui.button(tr("model.show_all")).clicked() {
+                self.hidden.fill(false);
+            }
+            if ui.button(tr("model.hide_all")).clicked() {
+                self.hidden.fill(true);
+            }
+        });
+        if reframe {
+            self.frame(None);
+        }
+        if theme::icon_button(ui, Icon::Frame, tr("model.frame_hint")) {
+            self.frame(self.selected_part);
+        }
+    }
+
+    /// The selected part, for the Details panel.
+    pub fn has_selection(&self) -> bool {
+        self.selected_part.is_some() && self.model.is_ok()
+    }
+
+    /// The selected part's material and details, for the Details panel.
+    pub fn inspector_ui(&mut self, ui: &mut egui::Ui) {
+        let Ok(model) = &self.model else { return };
+        let Some(part) = self.selected_part.and_then(|p| model.parts.get(p as usize)) else {
+            return;
+        };
+        ui.strong(trf("model.material_of", &[("name", &part.name)]));
+        material_panel::show(ui, part, ("model", "details"));
+        egui::CollapsingHeader::new(tr("model.part"))
+            .id_salt("model part details")
+            .show(ui, |ui| part_details(ui, part, model));
+    }
+
+    /// F: frames the selected part, or the model.
+    pub fn frame_selected(&mut self) {
+        self.frame(self.selected_part);
     }
 
     fn header(&self, ui: &mut egui::Ui) {
@@ -371,14 +440,6 @@ impl GpuModelView {
                 .clicked()
             {
                 self.frame(None);
-            }
-            if !self.window
-                && ui
-                    .button(tr("model.window_button"))
-                    .on_hover_text(tr("model.window_hint"))
-                    .clicked()
-            {
-                self.window = true;
             }
         });
         ui.label(RichText::new(tr("model.mouse_hint")).weak().small());
@@ -636,7 +697,7 @@ impl GpuModelView {
     }
 
     /// The part list with visibility, materials and skinning, and the bone list.
-    fn lists(&mut self, ui: &mut egui::Ui, in_window: bool) {
+    fn lists(&mut self, ui: &mut egui::Ui, in_window: bool, material: bool) {
         let Ok(model) = &self.model else { return };
         ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
         self.list_hover = None;
@@ -700,7 +761,8 @@ impl GpuModelView {
                     }
                 });
             });
-        if let Some(part) = self.selected_part.and_then(|p| model.parts.get(p as usize)) {
+        if !material {
+        } else if let Some(part) = self.selected_part.and_then(|p| model.parts.get(p as usize)) {
             egui::CollapsingHeader::new(trf("model.material_of", &[("name", &part.name)]))
                 .id_salt(("model material", in_window))
                 .default_open(true)
@@ -846,9 +908,56 @@ impl crate::views::ResourceViewer for ModelPreview {
     fn show(
         &mut self,
         ui: &mut egui::Ui,
+        cx: &mut crate::views::ViewContext<'_>,
+    ) -> Option<crate::views::ViewAction> {
+        match self {
+            Self::Gpu(view) if cx.in_tab() => view.show_tab(ui, cx.details),
+            _ => ModelPreview::show(self, ui),
+        }
+        None
+    }
+
+    fn tab_body(&self) -> crate::views::TabBody {
+        crate::views::TabBody::Fill
+    }
+
+    fn toolbar(
+        &mut self,
+        ui: &mut egui::Ui,
         _cx: &mut crate::views::ViewContext<'_>,
     ) -> Option<crate::views::ViewAction> {
-        ModelPreview::show(self, ui);
+        if let Self::Gpu(view) = self {
+            view.toolbar_ui(ui);
+        }
         None
+    }
+
+    fn has_inspector(&self) -> bool {
+        matches!(self, Self::Gpu(view) if view.has_selection())
+    }
+
+    fn inspector(
+        &mut self,
+        ui: &mut egui::Ui,
+        _cx: &mut crate::views::ViewContext<'_>,
+    ) -> Option<crate::views::ViewAction> {
+        if let Self::Gpu(view) = self {
+            view.inspector_ui(ui);
+        }
+        None
+    }
+
+    fn frame_selection(&mut self) -> bool {
+        match self {
+            Self::Gpu(view) => {
+                view.frame_selected();
+                true
+            }
+            Self::Software(_) => false,
+        }
+    }
+
+    fn keys(&self) -> &'static [(&'static str, &'static str)] {
+        KEYS
     }
 }

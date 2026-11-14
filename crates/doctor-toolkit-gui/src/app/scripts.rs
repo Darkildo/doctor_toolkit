@@ -1,8 +1,10 @@
-//! The script editor window (Tools → Script editor) and its deploy actions.
+//! The script editor tab (Tools → Script editor; a window up to stage 55)
+//! and its deploy actions.
 
 use doctor_toolkit::script::deploy;
 use doctor_toolkit_mods::i18n::{tr, trf};
 
+use super::dock::{DockOp, Pane};
 use super::{BrowserApp, Level};
 use crate::script_editor::{ScriptAction, ScriptEditor};
 
@@ -34,34 +36,17 @@ pub(super) fn editor_from_env() -> ScriptEditor {
 }
 
 impl BrowserApp {
-    pub(super) fn show_script_editor(&mut self, ctx: &egui::Context) {
-        if !self.script_editor.open {
-            return;
-        }
-        let mut open = true;
-        let mut action = None;
-        let mark = if self.script_editor.has_unsaved_edits() {
-            " *"
-        } else {
-            ""
-        };
-        let title = match &self.script_editor.path {
-            Some(p) => format!("{} — {}{mark}", tr("script.title"), p.display()),
-            None => format!(
-                "{} — {}{mark}",
-                tr("script.title"),
-                self.script_editor.graph().name
-            ),
-        };
-        egui::Window::new(title)
-            .id(egui::Id::unique("script-editor"))
-            .open(&mut open)
-            .default_size([1200.0, 760.0])
-            .resizable(true)
-            .show(ctx, |ui| {
-                action = self.script_editor.show(ui);
-            });
-        self.script_editor.open = open;
+    /// Opens the script editor's tab, or shows it.
+    pub(super) fn open_script_editor(&mut self) {
+        self.script_editor.open = true;
+        self.dock_ops.push(DockOp::Open(Pane::Script));
+    }
+
+    /// The script editor's tab.
+    pub(super) fn script_pane(&mut self, ui: &mut egui::Ui) {
+        self.script_editor.open = true;
+        let details = self.details_follow();
+        let action = self.script_editor.show(ui, details);
         if let Some(a) = action {
             self.script_action(a);
         }

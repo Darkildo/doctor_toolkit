@@ -7,14 +7,24 @@
 //! and redo work as for any edit. Play plays the sound tracks with the
 //! picture (`sound.rs`).
 //!
+//! The preview shows the level around the cut-scene (`world.rs`, stage 61)
+//! unless the World switch is off.
+//!
 //! `DOCTOR_TOOLKIT_GUI_CUTSCENE=<options>` presets the view for screenshots:
 //! comma-separated `time=<s>`, `load` (characters), `free` (orbit camera),
 //! `select=<shot>:<command>` or `select=sub:<line>`, `zoom=<pt per s>`,
-//! `scroll=<s>`, `play`.
+//! `scroll=<s>`, `play`, `noworld` (actors only), `hour=<h>` (time of day),
+//! `preview=<height share>` (0.3–0.9 of the view for the picture).
 
 mod preview;
 pub(crate) mod sound;
 mod timeline;
+pub(crate) mod world;
+
+/// Whether a cut-scene preview is still loading its world (screenshots wait).
+pub fn busy() -> bool {
+    world::busy()
+}
 
 use std::any::Any;
 use std::sync::Arc;
@@ -74,7 +84,13 @@ fn load(source: &mut ViewSource<'_>) -> Option<Box<dyn ResourceViewer>> {
         playing: false,
         draft: None,
         message: String::new(),
+        preview_share: 0.5,
+        zone_filter: String::new(),
+        fps: 0.0,
     };
+    view.preview.world = Arc::new(std::sync::Mutex::new(world::World::new(world::Edits::of(
+        source.workspace,
+    ))));
     if let Ok(c) = &view.cutscene
         && let Some(shot) = c.shots.iter().find(|s| s.resource == source.index)
     {
@@ -107,6 +123,11 @@ struct CutsceneView {
     playing: bool,
     draft: Option<Draft>,
     message: String,
+    /// Share of the view's height the picture takes.
+    preview_share: f32,
+    zone_filter: String,
+    /// Frames per second while playing (smoothed).
+    fps: f32,
 }
 
 /// What survives a reload after an edit.
@@ -116,6 +137,9 @@ struct State {
     shot_camera: bool,
     characters: bool,
     orbit: crate::render::OrbitCamera,
+    world: world::SharedWorld,
+    hour: Option<f32>,
+    preview_share: f32,
 }
 
 impl CutsceneView {
@@ -129,6 +153,9 @@ impl CutsceneView {
                 "load" => self.preview.load(),
                 "free" => self.preview.shot_camera = false,
                 "play" => self.playing = true,
+                "noworld" => self.set_world(false),
+                "hour" => self.preview.hour = value.parse().ok(),
+                "preview" => self.preview_share = value.parse().unwrap_or(0.5f32).clamp(0.3, 0.9),
                 "select" => {
                     let parts: Vec<&str> = value.split(':').collect();
                     self.timeline.selected = match parts.as_slice() {
@@ -146,6 +173,169 @@ impl CutsceneView {
                 }
                 _ => {}
             }
+        }
+    }
+
+    fn set_world(&mut self, on: bool) {
+        self.preview
+            .world
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .enabled = on;
+        self.preview.invalidate();
+    }
+
+    /// The world switch, the zones it shows, the time of day and how the
+    /// load goes.
+    fn world_bar(&mut self, ui: &mut egui::Ui, cutscene: &Cutscene) {
+        let world = self.preview.world.clone();
+        let mut w = world.lock().unwrap_or_else(|e| e.into_inner());
+        let mut on = w.enabled;
+        if ui
+            .checkbox(&mut on, tr("cutscene.world"))
+            .on_hover_text(tr("cutscene.world_hint"))
+            .changed()
+        {
+            w.enabled = on;
+            self.preview.invalidate();
+        }
+        if !on {
+            return;
+        }
+        let ctx = ui.ctx().clone();
+        ui.menu_button(trf("cutscene.zones", &[("count", &w.loaded.len())]), |ui| {
+            ui.set_max_width(520.0);
+            ui.horizontal(|ui| {
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.zone_filter)
+                        .hint_text(tr("cutscene.zones_filter"))
+                        .desired_width(220.0),
+                );
+                if ui.button(tr("cutscene.zones_auto")).clicked() {
+                    w.chosen = w.auto.clone();
+                }
+                if ui
+                    .add_enabled(
+                        w.chosen != w.loaded && !w.is_loading(),
+                        egui::Button::new(tr("cutscene.zones_apply")),
+                    )
+                    .clicked()
+                {
+                    w.reload(&ctx);
+                    self.preview.invalidate();
+                }
+            });
+            ui.label(RichText::new(tr("cutscene.zones_hint")).weak());
+            let filter = self.zone_filter.to_lowercase();
+            let listed: Vec<(usize, String, &'static str, f32, bool)> = w
+                .listed()
+                .into_iter()
+                .filter(|z| filter.is_empty() || z.name.contains(&filter))
+                .take(300)
+                .map(|z| {
+                    (
+                        z.stream,
+                        z.name.clone(),
+                        world::kind_name(z.kind),
+                        w.distances.get(&z.stream).copied().unwrap_or(f32::MAX),
+                        w.auto.contains(&z.stream),
+                    )
+                })
+                .collect();
+            egui::ScrollArea::vertical()
+                .id_salt("cutscene zones")
+                .max_height(360.0)
+                .show(ui, |ui| {
+                    for (stream, name, kind, distance, auto) in listed {
+                        let mut checked = w.chosen.contains(&stream);
+                        ui.horizontal(|ui| {
+                            if ui.checkbox(&mut checked, &name).changed() {
+                                if checked {
+                                    w.chosen.insert(stream);
+                                } else {
+                                    w.chosen.remove(&stream);
+                                }
+                            }
+                            let mut text = kind.to_owned();
+                            if distance < f32::MAX {
+                                text += &format!(", {distance:.0} m");
+                            }
+                            if auto {
+                                text += ", auto";
+                            }
+                            ui.label(RichText::new(text).weak());
+                        });
+                    }
+                });
+        });
+        // Time of day: the cut-scene's, or one chosen.
+        let t = self.timeline.playhead;
+        let (command, source) = doctor_toolkit::cutscene::world::time_at(cutscene, t);
+        let automatic = preview::time_of_day(cutscene, t, w.mission_time);
+        let why = match (command, source) {
+            (Some(_), doctor_toolkit::cutscene::world::TimeSource::Command { shot, .. }) => trf(
+                "cutscene.time_command",
+                &[("shot", &cutscene.shots[shot].seq.source_name())],
+            ),
+            _ if w.mission_time.is_some() => tr("cutscene.time_mission").into(),
+            _ => tr("cutscene.time_default").into(),
+        };
+        let current = match self.preview.hour {
+            Some(h) => format!("{:02}:{:02}", h as u32, ((h.fract()) * 60.0) as u32),
+            None => trf(
+                "cutscene.time_auto",
+                &[("time", &automatic.to_string()), ("why", &why)],
+            ),
+        };
+        let before = self.preview.hour;
+        egui::ComboBox::from_id_salt("cutscene time of day")
+            .selected_text(current)
+            .show_ui(ui, |ui| {
+                ui.selectable_value(
+                    &mut self.preview.hour,
+                    None,
+                    trf(
+                        "cutscene.time_auto",
+                        &[("time", &automatic.to_string()), ("why", &why)],
+                    ),
+                );
+                for h in [0.0f32, 6.0, 9.0, 12.0, 16.0, 19.0, 22.0] {
+                    ui.selectable_value(&mut self.preview.hour, Some(h), format!("{h:02}:00"));
+                }
+            })
+            .response
+            .on_hover_text(tr("cutscene.time_hint"));
+        if before != self.preview.hour {
+            self.preview.invalidate();
+        }
+        // How the load goes.
+        if let Some(e) = &w.error {
+            ui.colored_label(
+                egui::Color32::RED,
+                trf("cutscene.world_error", &[("error", e)]),
+            );
+        } else if w.is_loading() {
+            ui.spinner();
+            let text = match w.progress {
+                Some((done, total)) => trf(
+                    "cutscene.world_meshes",
+                    &[("done", &done), ("total", &total)],
+                ),
+                None => tr("cutscene.world_zones").into(),
+            };
+            ui.label(RichText::new(text).weak());
+        } else if w.is_ready() {
+            let timings: Vec<String> = w
+                .timings
+                .iter()
+                .map(|(name, d)| format!("{name} {:.2} s", d.as_secs_f32()))
+                .collect();
+            ui.label(RichText::new(format!("{} ({})", w.status, timings.join(", "))).weak());
+        }
+        if self.playing && self.fps > 0.0 {
+            ui.label(
+                RichText::new(trf("cutscene.fps", &[("fps", &format!("{:.0}", self.fps))])).weak(),
+            );
         }
     }
 
@@ -340,6 +530,9 @@ impl CutsceneView {
                 self.preview.load();
             }
         });
+        if self.preview.has_gpu() {
+            ui.horizontal_wrapped(|ui| self.world_bar(ui, cutscene));
+        }
     }
 
     fn inspector(&mut self, ui: &mut egui::Ui, cutscene: &Cutscene) -> Option<ViewAction> {
@@ -758,6 +951,9 @@ impl ResourceViewer for CutsceneView {
             shot_camera: self.preview.shot_camera,
             characters: self.preview.characters,
             orbit: self.preview.orbit,
+            world: self.preview.world.clone(),
+            hour: self.preview.hour,
+            preview_share: self.preview_share,
         }))
     }
 
@@ -768,6 +964,10 @@ impl ResourceViewer for CutsceneView {
             self.preview.shot_camera = state.shot_camera;
             self.preview.characters = state.characters;
             self.preview.orbit = state.orbit;
+            // The world loaded stays: an edit of a shot does not move zones.
+            self.preview.world = state.world;
+            self.preview.hour = state.hour;
+            self.preview_share = state.preview_share;
             self.preview.invalidate();
         }
     }
@@ -781,6 +981,15 @@ impl CutsceneView {
         cutscene: &Cutscene,
     ) -> Option<ViewAction> {
         if self.playing {
+            let dt = ui.input(|i| i.unstable_dt);
+            if dt > 0.0 {
+                let fps = 1.0 / dt;
+                self.fps = if self.fps > 0.0 {
+                    self.fps * 0.9 + fps * 0.1
+                } else {
+                    fps
+                };
+            }
             match self.sound.clock() {
                 Clock::Audio { time, playing } => {
                     self.timeline.playhead = time;
@@ -816,7 +1025,7 @@ impl CutsceneView {
         if !available.y.is_finite() || available.y > 4000.0 {
             available.y = ui.ctx().content_rect().height() * 0.8;
         }
-        let preview_height = (available.y * 0.5).clamp(160.0, available.x * 0.4);
+        let preview_height = (available.y * self.preview_share).clamp(160.0, available.x * 0.6);
         let inspector_width = 360.0f32.min(available.x * 0.4);
         let preview_width = (available.x - inspector_width - 16.0).max(120.0);
         ui.allocate_ui_with_layout(

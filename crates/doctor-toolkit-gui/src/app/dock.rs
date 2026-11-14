@@ -97,6 +97,10 @@ pub enum Pane {
     Zones,
     /// The operations of the workspace to go back and forth in (stage 54).
     History,
+    /// The visual script editor (stage 56; a window before).
+    Script,
+    /// The movies of the game (stage 56; a window before).
+    Movies,
     /// Where the documents go in a layout; never shown.
     Documents,
 }
@@ -354,6 +358,9 @@ pub fn documents(tree: &Tree<Pane>) -> Vec<Pane> {
     out
 }
 
+/// `close_warned` for the script editor (pane ids start at 1).
+const SCRIPT_WARNED: u64 = 0;
+
 /// What the dock asks of the app while it is drawn.
 struct DockBehavior<'a> {
     app: &'a mut BrowserApp,
@@ -368,6 +375,7 @@ impl Behavior<Pane> for DockBehavior<'_> {
             && ui.rect_contains_pointer(ui.max_rect())
         {
             self.app.active_doc = Some(tile_id);
+            self.app.focus_document(pane);
         }
         self.app.pane_ui(ui, pane);
         UiResponse::None
@@ -388,6 +396,19 @@ impl Behavior<Pane> for DockBehavior<'_> {
             Some(Tile::Pane(p)) if p.is_panel() => {
                 tiles.set_visible(tile_id, false);
                 false
+            }
+            // The script editor with edits not saved to a file: the first
+            // close only warns.
+            Some(Tile::Pane(Pane::Script)) => {
+                if self.app.script_editor.has_unsaved_edits()
+                    && self.app.close_warned != Some(SCRIPT_WARNED)
+                {
+                    self.app.close_warned = Some(SCRIPT_WARNED);
+                    self.app.warn(tr("tab.unsaved").to_owned());
+                    false
+                } else {
+                    true
+                }
             }
             // Unsaved edits of a view: the first close only warns.
             Some(Tile::Pane(Pane::Resource { id, .. })) => {
@@ -427,6 +448,17 @@ impl Behavior<Pane> for DockBehavior<'_> {
         {
             self.app.dock_ops.push(DockOp::Screen(screen));
         }
+        // ... and Details follow its editor.
+        if response.clicked()
+            && let Some(p) = &pane
+        {
+            self.app.focus_document(p);
+        }
+        // A resource tab: the commands of its asset.
+        let asset = match &pane {
+            Some(Pane::Resource { id, .. }) => self.app.docs.get(id).map(|d| d.loc),
+            _ => None,
+        };
         // The tab in front of a document group: a line of the accent on top.
         if self.shown.contains(&tile_id) && pane.as_ref().is_some_and(|p| !p.is_panel()) {
             let rect = response.rect;
@@ -451,6 +483,14 @@ impl Behavior<Pane> for DockBehavior<'_> {
             };
             if ui.button(maximize).clicked() {
                 self.app.dock_ops.push(DockOp::ToggleMaximize(tile_id));
+            }
+            if let Some(loc) = asset {
+                ui.separator();
+                let mut cmds = Vec::new();
+                super::asset_tab::asset_menu(ui, true, &mut cmds);
+                self.app
+                    .asset_cmds
+                    .extend(cmds.into_iter().map(|c| (loc, c)));
             }
             if let Some(pane) = pane.as_ref().filter(|p| p.is_panel()) {
                 ui.separator();
@@ -570,6 +610,12 @@ impl BrowserApp {
             .retain(|id, _| ids.contains(id) || wizard_levels.contains(id));
         self.logics.retain(|id, _| ids.contains(id));
         self.content.retain(|id| ids.contains(&id));
+        // The script editor and Movies live as long as their tabs.
+        let has = |pane: &Pane| find(&tree, |p| p == pane).is_some();
+        self.script_editor.open = has(&Pane::Script);
+        if self.movies.open && !has(&Pane::Movies) {
+            self.movies.close();
+        }
         self.inspectors.copies.retain(|id, _| ids.contains(id));
         let levels = &self.levels;
         self.inspectors
@@ -588,7 +634,24 @@ impl BrowserApp {
 
     fn apply_dock_op(&mut self, tree: &mut Tree<Pane>, op: DockOp) {
         match op {
+            // The script editor and Movies are one tab each.
+            DockOp::Open(pane @ (Pane::Script | Pane::Movies))
+                if find(tree, |p| *p == pane).is_some() =>
+            {
+                if let Some(screen) = Screen::of(&pane) {
+                    self.switch_screen(tree, screen);
+                }
+                if let Some(tile) = find(tree, |p| *p == pane) {
+                    focus(tree, tile);
+                    self.active_doc = Some(tile);
+                    if self.maximized.is_some() {
+                        self.maximized = Some(tile);
+                    }
+                }
+                self.focus_document(&pane);
+            }
             DockOp::Open(pane) => {
+                self.focus_document(&pane);
                 let was_empty = documents(tree).is_empty();
                 let switched = Screen::of(&pane).is_some_and(|s| self.switch_screen(tree, s));
                 let tile = add_document(tree, pane, self.active_doc);
@@ -616,6 +679,9 @@ impl BrowserApp {
                     self.active_doc = Some(tile);
                     if self.maximized.is_some() {
                         self.maximized = Some(tile);
+                    }
+                    if let Some(p) = pane(tree, tile).cloned() {
+                        self.focus_document(&p);
                     }
                 }
             }
@@ -792,6 +858,15 @@ impl BrowserApp {
             Pane::Outliner => tr("pane.outliner").to_owned(),
             Pane::Zones => tr("pane.zones").to_owned(),
             Pane::History => tr("pane.history").to_owned(),
+            Pane::Script => {
+                let mark = if self.script_editor.has_unsaved_edits() {
+                    " *"
+                } else {
+                    ""
+                };
+                format!("{}{mark}", tr("script.title"))
+            }
+            Pane::Movies => tr("movies.title").to_owned(),
 
             Pane::DetailsCopy { id } => {
                 let mut copies: Vec<u64> = self.inspectors.copies.keys().copied().collect();

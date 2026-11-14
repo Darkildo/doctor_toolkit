@@ -191,12 +191,27 @@ pub enum Icon {
     Unlock,
     /// A Details panel kept on what it shows.
     Pin,
+    /// Frame the selection (F).
+    Frame,
+    Copy,
+    Export,
+    /// The Content Browser: tiles.
+    Browse,
+    /// A graph of nodes.
+    Graph,
+    Redo,
 }
 
 impl Icon {
     /// Every icon, for the tests.
     #[cfg(test)]
-    pub const ALL: [Icon; 20] = [
+    pub const ALL: [Icon; 26] = [
+        Icon::Frame,
+        Icon::Copy,
+        Icon::Export,
+        Icon::Browse,
+        Icon::Graph,
+        Icon::Redo,
         Icon::Save,
         Icon::Select,
         Icon::Move,
@@ -402,7 +417,125 @@ pub fn paint_icon(painter: &egui::Painter, rect: Rect, icon: Icon, color: Color3
             ]);
             line(&[(8.0, 10.0), (8.0, 14.5)]);
         }
+        Icon::Frame => {
+            for (a, b, c) in [
+                ((2.0, 6.0), (2.0, 2.0), (6.0, 2.0)),
+                ((10.0, 2.0), (14.0, 2.0), (14.0, 6.0)),
+                ((14.0, 10.0), (14.0, 14.0), (10.0, 14.0)),
+                ((6.0, 14.0), (2.0, 14.0), (2.0, 10.0)),
+            ] {
+                line(&[a, b, c]);
+            }
+            painter.circle_filled(p(8.0, 8.0), 1.8 * s, color);
+        }
+        Icon::Copy => {
+            closed(&[(5.5, 5.5), (13.5, 5.5), (13.5, 14.0), (5.5, 14.0)]);
+            line(&[
+                (3.0, 11.0),
+                (2.5, 11.0),
+                (2.5, 2.5),
+                (10.5, 2.5),
+                (10.5, 3.0),
+            ]);
+        }
+        Icon::Export => {
+            line(&[
+                (5.0, 7.0),
+                (2.5, 7.0),
+                (2.5, 14.0),
+                (13.5, 14.0),
+                (13.5, 7.0),
+                (11.0, 7.0),
+            ]);
+            line(&[(8.0, 10.5), (8.0, 1.5)]);
+            line(&[(5.0, 4.5), (8.0, 1.5), (11.0, 4.5)]);
+        }
+        Icon::Browse => {
+            for (x, y) in [(2.0, 2.0), (9.0, 2.0), (2.0, 9.0), (9.0, 9.0)] {
+                closed(&[(x, y), (x + 5.0, y), (x + 5.0, y + 5.0), (x, y + 5.0)]);
+            }
+        }
+        Icon::Graph => {
+            closed(&[(1.5, 2.5), (6.5, 2.5), (6.5, 6.5), (1.5, 6.5)]);
+            closed(&[(9.5, 9.5), (14.5, 9.5), (14.5, 13.5), (9.5, 13.5)]);
+            line(&[(6.5, 4.5), (8.5, 4.5), (8.5, 11.5), (9.5, 11.5)]);
+        }
+        Icon::Redo => {
+            line(&[(11.0, 3.0), (14.0, 6.0), (11.0, 9.0)]);
+            let mut arc = vec![(14.0, 6.0), (6.5, 6.0)];
+            arc.extend((0..=8).map(|i| {
+                let a = -std::f32::consts::FRAC_PI_2 - i as f32 / 8.0 * std::f32::consts::PI;
+                (6.5 + 4.0 * a.cos(), 10.0 + 4.0 * a.sin())
+            }));
+            arc.push((9.0, 14.0));
+            line(&arc);
+        }
     }
+}
+
+/// The bar of tools of a document (stage 56): the strip under the tab with
+/// the tools of the editor in it, in the colours and spacing of the main
+/// toolbar.
+pub fn doc_bar<R>(ui: &mut Ui, add: impl FnOnce(&mut Ui) -> R) -> R {
+    let fill = toolbar_fill(ui.visuals());
+    egui::Frame::new()
+        .fill(fill)
+        .inner_margin(egui::Margin::symmetric(4, 3))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.spacing_mut().item_spacing.x = 4.0;
+            ui.horizontal_wrapped(add).inner
+        })
+        .inner
+}
+
+/// A button "text ▾" (with an icon) that opens a menu, as "Show ▾" over
+/// the level view.
+pub fn menu_button(
+    ui: &mut Ui,
+    icon: Option<Icon>,
+    text: &str,
+    hint: &str,
+    contents: impl FnOnce(&mut Ui),
+) -> Response {
+    let button = tool_button(ui, icon, &format!("{text} ▾"), false, Tone::Plain);
+    let button = if hint.is_empty() {
+        button
+    } else {
+        button.on_hover_text(hint)
+    };
+    egui::Popup::menu(&button)
+        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+        .show(contents);
+    button
+}
+
+/// An icon button with a hint; true when clicked.
+pub fn icon_button(ui: &mut Ui, icon: Icon, hint: &str) -> bool {
+    tool_button(ui, Some(icon), "", false, Tone::Plain)
+        .on_hover_text(hint)
+        .clicked()
+}
+
+/// "?" at the end of a bar: the keys of the editor, (keys, text key).
+pub fn help_button(ui: &mut Ui, keys: &[(&str, &str)]) {
+    let help = tool_button(ui, None, "?", false, Tone::Plain)
+        .on_hover_text(doctor_toolkit_mods::i18n::tr("doc.keys_hint"));
+    egui::Popup::menu(&help).show(|ui| keys_grid(ui, keys));
+}
+
+/// The keys of an editor as a table (also in the shortcut window).
+pub fn keys_grid(ui: &mut Ui, keys: &[(&str, &str)]) {
+    egui::Grid::new(ui.next_auto_id())
+        .num_columns(2)
+        .spacing([16.0, 4.0])
+        .show(ui, |ui| {
+            for (key, what) in keys {
+                ui.monospace(*key);
+                ui.label(doctor_toolkit_mods::i18n::tr(what));
+                ui.end_row();
+            }
+        });
 }
 
 /// How a tool button looks.
@@ -427,6 +560,22 @@ pub fn tool_button(
     selected: bool,
     tone: Tone,
 ) -> Response {
+    let enabled = ui.is_enabled();
+    tool_button_if(ui, enabled, icon, text, selected, tone)
+}
+
+/// [`tool_button`] that is greyed out and does not click unless `enabled`
+/// — without a child `Ui`, so a wrapping bar of tools wraps it as any other
+/// button (stage 56).
+pub fn tool_button_if(
+    ui: &mut Ui,
+    enabled: bool,
+    icon: Option<Icon>,
+    text: &str,
+    selected: bool,
+    tone: Tone,
+) -> Response {
+    let enabled = enabled && ui.is_enabled();
     let height = if tone == Tone::Flat { 20.0 } else { 26.0 };
     let icon_size = if tone == Tone::Flat { 13.0 } else { 16.0 };
     // A trailing "▾" is drawn, not written: the default fonts lack it.
@@ -463,11 +612,15 @@ pub fn tool_button(
         height + 2.0
     };
     let width = width.max(min_width);
-    let (rect, response) = ui.allocate_exact_size(vec2(width, height), Sense::click());
+    let sense = if enabled {
+        Sense::click()
+    } else {
+        Sense::hover()
+    };
+    let (rect, response) = ui.allocate_exact_size(vec2(width, height), sense);
     if ui.is_rect_visible(rect) {
         let visuals = ui.visuals();
         let dark = visuals.dark_mode;
-        let enabled = ui.is_enabled();
         let hovered = response.hovered() && enabled;
         let (fill, stroke, fg) = match tone {
             Tone::Play => (

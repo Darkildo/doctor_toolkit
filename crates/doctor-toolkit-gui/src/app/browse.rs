@@ -51,6 +51,12 @@ impl BrowserApp {
             Pane::ContentExtra { id } => self.content_pane(ui, *id),
             Pane::Outliner => self.outliner_pane(ui),
             Pane::History => self.history_pane(ui),
+            Pane::Script => self.script_pane(ui),
+            Pane::Movies => {
+                let details = self.details_follow();
+                self.movies.open = true;
+                self.movies.ui(ui, details);
+            }
             Pane::Documents => {}
         }
     }
@@ -661,33 +667,8 @@ impl BrowserApp {
 
     // ------------------------------------------------------- resource tabs
 
-    fn resource_pane(&mut self, ui: &mut egui::Ui, id: u64, key: &str) {
-        if !self.docs.contains_key(&id) {
-            // A tab of a saved layout: find the resource by its key.
-            let Some(loc) = self.locate_key(key) else {
-                ui.label(RichText::new(format!("{key}: {}", tr("doc.not_found"))).weak());
-                return;
-            };
-            let doc = self.load_doc(loc, None);
-            self.docs.insert(id, doc);
-        }
-        let Some(mut doc) = self.docs.remove(&id) else {
-            return;
-        };
-        let action = egui::ScrollArea::vertical()
-            .id_salt(("resource scroll", id))
-            .auto_shrink(false)
-            .show(ui, |ui| self.doc_ui(ui, &mut doc, true))
-            .inner;
-        let loc = doc.loc;
-        self.docs.entry(id).or_insert(doc);
-        if let Some(action) = action {
-            self.doc_action(Some(loc), action);
-        }
-    }
-
     /// The resource with a workspace key in this game.
-    fn locate_key(&mut self, key: &str) -> Option<Location> {
+    pub(super) fn locate_key(&mut self, key: &str) -> Option<Location> {
         let game = self.game.clone()?;
         let key: doctor_toolkit::workspace::ResourceKey = key.parse().ok()?;
         let stream = game.find_stream(&key.stream)?;
@@ -758,11 +739,10 @@ impl BrowserApp {
             }
         };
         let index = doc.loc.resource;
-        let layout = file.layout();
-        let Some(h) = layout.resources.get(index).map(|r| r.header) else {
+        if file.layout().resources.get(index).is_none() {
             ui.colored_label(Color32::RED, tr("doc.not_found"));
             return None;
-        };
+        }
         let mut action = None;
         ui.horizontal(|ui| {
             ui.heading(trf("browse.resource", &[("index", &index)]));
@@ -783,6 +763,56 @@ impl BrowserApp {
                 action = Some(DocAction::Pin);
             }
         });
+        if let Some(a) = self.resource_header(ui, doc, &file) {
+            action = Some(a);
+        }
+        if let Some(nav) = self.nav.refs_panel(ui, doc.loc) {
+            return Some(DocAction::Nav(nav));
+        }
+        ui.separator();
+        self.model_import_button(ui, doc.loc, doc.type_id);
+        let mut cx = ViewContext {
+            status: &mut self.status,
+            links: &self.external.infos,
+            place: crate::views::Place::Details,
+            details: false,
+        };
+        for (_, view) in &mut doc.views {
+            if let Some(a) = view.show(ui, &mut cx) {
+                action = Some(DocAction::View(a));
+            }
+            ui.separator();
+        }
+        if let Some(action @ DocAction::View(_)) = action {
+            return Some(action);
+        }
+        match &doc.hex {
+            Some(Ok(data)) => {
+                hex::show(ui, egui::IdSalt::new(("hex", file.path(), index)), data);
+            }
+            Some(Err(error)) => {
+                ui.colored_label(Color32::RED, error);
+            }
+            None if doc.hides_hex() => {}
+            None => {
+                ui.label(RichText::new(tr("browse.too_large")).weak());
+            }
+        }
+        action
+    }
+
+    /// The header of a resource as a grid (type, policy, ids, sizes,
+    /// offsets) with "Save data as…" and the hex view on request.
+    pub(super) fn resource_header(
+        &mut self,
+        ui: &mut egui::Ui,
+        doc: &mut ResourceDoc,
+        file: &doctor_toolkit::game::StreamFile,
+    ) -> Option<DocAction> {
+        let index = doc.loc.resource;
+        let layout = file.layout();
+        let h = layout.resources.get(index)?.header;
+        let mut action = None;
         egui::Grid::new("details")
             .num_columns(2)
             .striped(true)
@@ -834,7 +864,7 @@ impl BrowserApp {
         ui.horizontal(|ui| {
             if ui.button(tr("browse.save_data")).clicked() {
                 let mut dialog =
-                    rfd::FileDialog::new().set_file_name(jobs::resource_file_name(&file, index));
+                    rfd::FileDialog::new().set_file_name(jobs::resource_file_name(file, index));
                 if let Some(dir) = &self.settings.export_dirs.export {
                     dialog = dialog.set_directory(dir);
                 }
@@ -858,36 +888,6 @@ impl BrowserApp {
         });
         if matches!(action, Some(DocAction::LoadHex)) {
             self.load_hex(doc);
-        }
-        if let Some(nav) = self.nav.refs_panel(ui, doc.loc) {
-            return Some(DocAction::Nav(nav));
-        }
-        ui.separator();
-        self.model_import_button(ui, doc.loc, doc.type_id);
-        let mut cx = ViewContext {
-            status: &mut self.status,
-            links: &self.external.infos,
-        };
-        for (_, view) in &mut doc.views {
-            if let Some(a) = view.show(ui, &mut cx) {
-                action = Some(DocAction::View(a));
-            }
-            ui.separator();
-        }
-        if let Some(action @ DocAction::View(_)) = action {
-            return Some(action);
-        }
-        match &doc.hex {
-            Some(Ok(data)) => {
-                hex::show(ui, egui::IdSalt::new(("hex", file.path(), index)), data);
-            }
-            Some(Err(error)) => {
-                ui.colored_label(Color32::RED, error);
-            }
-            None if doc.hides_hex() => {}
-            None => {
-                ui.label(RichText::new(tr("browse.too_large")).weak());
-            }
         }
         action
     }

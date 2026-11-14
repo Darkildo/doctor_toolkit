@@ -41,8 +41,8 @@ export XDG_CACHE_HOME=${SHOT_CACHE:-/tmp/doctor-toolkit-shots-cache}
 # [| crop x,y,w,h in window pixels (needs python3 with Pillow)]
 shots=(
   "overview|gf2/globalfolder/characters/allcharacters|DOCTOR_TOOLKIT_GUI_SELECT=5288"
-  "model|gf2/globalfolder/characters/allcharacters|DOCTOR_TOOLKIT_GUI_SELECT=5288 DOCTOR_TOOLKIT_GUI_MODEL=window,yaw=0.6,pitch=0.15 DOCTOR_TOOLKIT_GUI_SHOT_FRAMES=150"
-  "character|gf2/globalfolder/characters/allcharacters|DOCTOR_TOOLKIT_GUI_SELECT=6905 DOCTOR_TOOLKIT_GUI_CHARACTER=window,set=_all,lod=0,yaw=0.5"
+  "model|gf2/globalfolder/characters/allcharacters|DOCTOR_TOOLKIT_GUI_SELECT=5288 DOCTOR_TOOLKIT_GUI_SHELL=pin DOCTOR_TOOLKIT_GUI_MODEL=yaw=0.6,pitch=0.15,select=0 DOCTOR_TOOLKIT_GUI_SHOT_FRAMES=150"
+  "character|gf2/globalfolder/characters/allcharacters|DOCTOR_TOOLKIT_GUI_SELECT=6905 DOCTOR_TOOLKIT_GUI_SHELL=pin DOCTOR_TOOLKIT_GUI_CHARACTER=set=_all,lod=0,yaw=0.5,select=4"
   "level|-|DOCTOR_TOOLKIT_GUI_LEVEL=gf2/cuba/local;eye=305,9,395;look=283,2,371 DOCTOR_TOOLKIT_GUI_SHOT_FRAMES=200"
   "level-details|-|DOCTOR_TOOLKIT_GUI_LEVEL=gf2/cuba/local;eye=305,9,395;look=283,2,371;near DOCTOR_TOOLKIT_GUI_SHOT_FRAMES=200"
   "level-select|-|DOCTOR_TOOLKIT_GUI_LEVEL=gf2/cuba/local;eye=305,9,395;look=283,2,371;nearby=6;grid DOCTOR_TOOLKIT_GUI_SHOT_FRAMES=200"
@@ -51,12 +51,17 @@ shots=(
   "content-browser|-|DOCTOR_TOOLKIT_GUI_SHELL=content DOCTOR_TOOLKIT_GUI_CONTENT=gf2/globals_global;filter=model,texture;size=96;select=beretta DOCTOR_TOOLKIT_GUI_SHOT_FRAMES=90"
   "logic|-|DOCTOR_TOOLKIT_GUI_LOGIC=checkpoint:737 DOCTOR_TOOLKIT_GUI_SHOT_FRAMES=150"
   "logic-run|-|DOCTOR_TOOLKIT_GUI_LOGIC=checkpoint:737;run=load,send:cp_737_loaded,send:cp_737_was_started,wait:5,enter:#19;until=12 DOCTOR_TOOLKIT_GUI_SHOT_FRAMES=200"
-  "cutscene|gf2/cuba/global/objectives/chapter60-mission08-killingcastro/cp_734/_734_igc_content|DOCTOR_TOOLKIT_GUI_SELECT=2 DOCTOR_TOOLKIT_GUI_CUTSCENE=time=6,load,zoom=30 DOCTOR_TOOLKIT_GUI_SHELL=max DOCTOR_TOOLKIT_GUI_SHOT_FRAMES=150|0,410,1200,325"
-  "dialogue|gf2/globalfolder/dlg/03ccd0bc|DOCTOR_TOOLKIT_GUI_SELECT=15 DOCTOR_TOOLKIT_GUI_SHELL=max|0,390,1200,345"
+  "cutscene|gf2/cuba/global/objectives/chapter60-mission08-killingcastro/cp_734/_734_igc_content|DOCTOR_TOOLKIT_GUI_SELECT=2 DOCTOR_TOOLKIT_GUI_CUTSCENE=time=7.2,load,zoom=30,preview=0.9 DOCTOR_TOOLKIT_GUI_SHELL=max DOCTOR_TOOLKIT_GUI_SHOT_FRAMES=150"
+  "dialogue|gf2/globalfolder/dlg/03ccd0bc|DOCTOR_TOOLKIT_GUI_SELECT=15 DOCTOR_TOOLKIT_GUI_SHELL=pin"
   "movies|-|DOCTOR_TOOLKIT_GUI_MOVIES=FMV02:900"
   "wizards|-|DOCTOR_TOOLKIT_GUI_SHELL=welcome"
   "play|-|DOCTOR_TOOLKIT_GUI_SHELL=play|10,12,560,428"
-  "anim-graph|gf2/globals_global|DOCTOR_TOOLKIT_GUI_SELECT=2657 DOCTOR_TOOLKIT_GUI_ANIM=graph=idle,node=2 DOCTOR_TOOLKIT_GUI_SHOT_FRAMES=60"
+  "anim-graph|gf2/globals_global|DOCTOR_TOOLKIT_GUI_SELECT=2657 DOCTOR_TOOLKIT_GUI_SHELL=pin DOCTOR_TOOLKIT_GUI_ANIM=graph=idle,node=2 DOCTOR_TOOLKIT_GUI_SHOT_FRAMES=60"
+  "texture|gf2/globalfolder/characters/allcharacters|DOCTOR_TOOLKIT_GUI_SELECT=740 DOCTOR_TOOLKIT_GUI_SHELL=pin"
+  "text|gf2/text/856c146c|DOCTOR_TOOLKIT_GUI_SELECT=0 DOCTOR_TOOLKIT_GUI_SHELL=pin"
+  "sound|gf2/globalfolder/audio/emx_global_folder_stream|DOCTOR_TOOLKIT_GUI_SELECT=0 DOCTOR_TOOLKIT_GUI_SHELL=pin DOCTOR_TOOLKIT_GUI_SHOT_FRAMES=60"
+  "lua|gf2/globals_global|DOCTOR_TOOLKIT_GUI_SELECT=2570 DOCTOR_TOOLKIT_GUI_SHELL=pin"
+  "script-editor|-|DOCTOR_TOOLKIT_GUI_SCRIPT=$root/examples/scripts/doctor_e2e.json"
 )
 
 shoot() {

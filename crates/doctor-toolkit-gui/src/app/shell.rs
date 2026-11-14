@@ -1034,6 +1034,21 @@ impl BrowserApp {
                                 ui.end_row();
                             }
                         });
+                    // Stage 56: the keys every asset editor shares, then
+                    // each editor's own (the "?" of their bars).
+                    ui.add_space(6.0);
+                    ui.strong(tr("shortcuts.editors"));
+                    super::theme::keys_grid(ui, super::asset_tab::COMMON_KEYS);
+                    for (title, keys) in [
+                        ("shortcuts.editor_model", crate::model_view::KEYS),
+                        ("shortcuts.editor_logic", crate::logic_editor::KEYS),
+                        ("shortcuts.editor_anim_graph", crate::anim_graph_view::KEYS),
+                        ("shortcuts.editor_script", crate::script_editor::KEYS),
+                    ] {
+                        ui.add_space(4.0);
+                        ui.label(RichText::new(tr(title)).weak());
+                        super::theme::keys_grid(ui, keys);
+                    }
                 });
             });
         self.windows.shortcuts = open;

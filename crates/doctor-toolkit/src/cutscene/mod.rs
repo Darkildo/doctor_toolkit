@@ -22,6 +22,7 @@
 pub mod cast;
 pub mod gltf;
 pub mod sound;
+pub mod world;
 
 use std::collections::HashMap;
 
@@ -104,6 +105,9 @@ pub struct SequenceObject {
     pub next_message: Option<String>,
     /// Shot resource ids in playing order (the object's links).
     pub shots: Vec<u32>,
+    /// The object's matrix (`CSystemCommands.CMD_LoadMatrix`), the anchor
+    /// of the keys ([`world::anchor`]); no object of the game has one.
+    pub matrix: Option<[[f32; 4]; 4]>,
 }
 
 /// A clip of a bank of a shot stream.
@@ -287,6 +291,7 @@ pub fn sequences_in(source: &Source<'_>, stream: usize) -> Result<Vec<SequenceOb
                     .iter()
                     .filter_map(|l| l.resource_id())
                     .collect(),
+                matrix: group.transform(object),
             });
         }
     }
@@ -594,23 +599,27 @@ pub struct CameraState {
     pub camera: u32,
     /// x, y, z, rotation x, y, z (degrees).
     pub values: [f32; 6],
-    /// Field of view in degrees as stored (the `0x307` curve). The camera
-    /// update (0x00595E70) passes it with the aspect ratio to a conversion,
-    /// and Maya, the tool the shots come from, gives the horizontal angle:
-    /// taken as horizontal, see [`Self::vertical_fov`].
+    /// The `0x307` curve as stored: the focal length of the Maya camera in
+    /// millimetres (70, 50, 35 …), not an angle; see [`Self::vertical_fov`].
     pub fov: f32,
     pub aspect: f32,
 }
 
+/// Half the vertical film aperture of the shots' Maya cameras, mm: the film
+/// back is 1.778 × 1 inch (16:9), so the 16:9 picture spans
+/// `2·atan(12.7 / focal length)` vertically and `2·atan(22.58 / focal
+/// length)` across. The game on a 4:3 screen keeps the width and adds bars:
+/// its frustum then spans `2·atan(16.93 / focal length)` vertically, which
+/// the live link measured during `igc16` (70 → 27.2°, 50 → 37.4°,
+/// 35 → 51.6°; `docs/formats/cutscenes.md` §9.4).
+pub const HALF_APERTURE_MM: f32 = 12.7;
+
 impl CameraState {
-    /// Vertical field of view in degrees, from the stored horizontal one.
+    /// Vertical field of view in degrees of the 16:9 picture, from the
+    /// focal length.
     pub fn vertical_fov(&self) -> f32 {
-        let aspect = if self.aspect > 0.0 {
-            self.aspect
-        } else {
-            16.0 / 9.0
-        };
-        (2.0 * ((self.fov.to_radians() / 2.0).tan() / aspect).atan()).to_degrees()
+        let focal = self.fov.max(1.0);
+        (2.0 * (HALF_APERTURE_MM / focal).atan()).to_degrees()
     }
 
     /// Camera to world, column-major.

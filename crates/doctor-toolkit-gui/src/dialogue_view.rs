@@ -1104,26 +1104,10 @@ fn add_string(
     Ok(())
 }
 
-impl ResourceViewer for DialogueView {
-    fn show(&mut self, ui: &mut egui::Ui, _cx: &mut ViewContext<'_>) -> Option<ViewAction> {
-        let mut edit = None;
-        self.show_header(ui, &mut edit);
-        ui.separator();
-        let before = self.selected;
-        ui.columns(2, |cols| {
-            let [left, right] = cols else { return };
-            left.push_id("tree", |ui| self.show_tree(ui));
-            right.push_id("details", |ui| {
-                egui::ScrollArea::vertical()
-                    .id_salt("details")
-                    .auto_shrink([false, false])
-                    .show(ui, |ui| self.show_details(ui, &mut edit));
-            });
-        });
-        if self.selected != before {
-            self.buffer_for = None;
-        }
-        match edit? {
+impl DialogueView {
+    /// What an edit of the tree or the inspector asks of the app.
+    fn finish(&mut self, edit: Edit) -> Option<ViewAction> {
+        match edit {
             Edit::Save(label) => {
                 self.rows = self.outline();
                 self.save(label)
@@ -1131,6 +1115,57 @@ impl ResourceViewer for DialogueView {
             Edit::Apply(label, run) => Some(ViewAction::Apply { label, run }),
             Edit::Open(stream, resource) => Some(ViewAction::Open { stream, resource }),
         }
+    }
+}
+
+impl ResourceViewer for DialogueView {
+    fn show(&mut self, ui: &mut egui::Ui, cx: &mut ViewContext<'_>) -> Option<ViewAction> {
+        let mut edit = None;
+        self.show_header(ui, &mut edit);
+        ui.separator();
+        let before = self.selected;
+        if cx.in_tab() && cx.details {
+            // The selected node is edited in the Details panel (stage 56).
+            ui.push_id("tree", |ui| self.show_tree(ui));
+        } else {
+            ui.columns(2, |cols| {
+                let [left, right] = cols else { return };
+                left.push_id("tree", |ui| self.show_tree(ui));
+                right.push_id("details", |ui| {
+                    egui::ScrollArea::vertical()
+                        .id_salt("details")
+                        .auto_shrink([false, false])
+                        .show(ui, |ui| self.show_details(ui, &mut edit));
+                });
+            });
+        }
+        if self.selected != before {
+            self.buffer_for = None;
+        }
+        self.finish(edit?)
+    }
+
+    fn tab_body(&self) -> crate::views::TabBody {
+        crate::views::TabBody::Fill
+    }
+
+    fn has_inspector(&self) -> bool {
+        self.selected < self.dialogue.nodes.len()
+    }
+
+    /// The selected node: its kind, branches, line, speech and subtitle.
+    fn inspector(&mut self, ui: &mut egui::Ui, _cx: &mut ViewContext<'_>) -> Option<ViewAction> {
+        let mut edit = None;
+        let before = self.selected;
+        ui.push_id("dialogue details", |ui| self.show_details(ui, &mut edit));
+        if self.selected != before {
+            self.buffer_for = None;
+        }
+        self.finish(edit?)
+    }
+
+    fn keys(&self) -> &'static [(&'static str, &'static str)] {
+        &[("Enter", "keys.dialogue_search")]
     }
 
     fn hides_hex(&self) -> bool {

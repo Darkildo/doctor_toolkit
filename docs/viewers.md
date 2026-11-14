@@ -150,7 +150,7 @@ RGBA-текстуры.
 - Скелет из подходящего `rcb` (поиск — как при экспорте glTF):
   кости линиями, суставы точками, имя кости под курсором; список костей;
   наведение или щелчок по кости раскрашивает вершины по её весу.
-- Кнопка «Window» открывает просмотр в большом окне со списками сбоку.
+- Вкладка ресурса (двойной щелчок, «Open in tab»; до этапа 56 — кнопка «Window» и плавающее окно) — редактор: «Shading ▾» и «Show ▾» на полосе вкладки, части и кости слева, вид на всю вкладку, материал выбранной части — в Details (`docs/shell.md` §11.10).
 - **Коллизия** (этап 18): флажок «Collision» рисует поверх модели зелёный
   каркас коллизии Havok — `hkx` той metamodel потока, что показывает меш
   (`DOCTOR_TOOLKIT_GUI_MODEL=collision`). Ресурс `hkx` сам по себе
@@ -192,18 +192,18 @@ RGBA-текстуры.
 | Переменная | Действие |
 |---|---|
 | `DOCTOR_TOOLKIT_GUI_SHOT=<png>` + `DOCTOR_TOOLKIT_GUI_SELECT=<ресурс>` | Снимок окна и выход (как раньше) |
-| `DOCTOR_TOOLKIT_GUI_MODEL=window,skeleton,weights=29,cull,wireframe,normals,flat,unlit,select=3,hide=0-10,yaw=0.5,pitch=0.2,zoom=2,spin` | Начальные настройки просмотра модели; `spin` вращает камеру и печатает интервалы кадров |
+| `DOCTOR_TOOLKIT_GUI_MODEL=skeleton,weights=29,cull,wireframe,normals,flat,unlit,select=3,hide=0-10,yaw=0.5,pitch=0.2,zoom=2,spin` | Начальные настройки просмотра модели; `spin` вращает камеру и печатает интервалы кадров; с `DOCTOR_TOOLKIT_GUI_SHELL=pin` ресурс открывается вкладкой-редактором (этап 56, `docs/shell.md` §11.10) |
 | `DOCTOR_TOOLKIT_GUI_TEXTURE=zoom=4,channels=rgb,alpha,mip=1,layer=0,pan=100:50,compare=0` | Начальные настройки просмотра текстуры |
-| `DOCTOR_TOOLKIT_GUI_CHARACTER=window,set=_all,lod=0,choose=a_hat=a_hat_fedora,yaw=0.5,zoom=1.2,select=3` | Для выбранного ресурса `partsdb`: собрать персонажа сразу (`docs/formats/characters.md` §4) |
+| `DOCTOR_TOOLKIT_GUI_CHARACTER=set=_all,lod=0,choose=a_hat=a_hat_fedora,yaw=0.5,zoom=1.2,select=3` | Для выбранного ресурса `partsdb`: собрать персонажа сразу (`docs/formats/characters.md` §4) |
 | `DOCTOR_TOOLKIT_GUI_CUTSCENE=time=26,zoom=30,scroll=15,load,free,play,select=3:29` | Для выбранного `trinity_seq_master`: курсор, масштаб и прокрутка шкалы, собрать персонажей (`load`), свободная камера, проигрывание, выбор команды `кадр:номер` или субтитра `sub:строка` |
-| `DOCTOR_TOOLKIT_GUI_ANIM=clip=3,frame=10,import=<file.glb>,add=<имя>,graph=idle,node=2` | Для выбранного банка `bnk`: показать клип на скелете, открыть импорт анимации, открыть окно графа анимации на входе и выделить его узел (номер в обходе входа; `docs/guide/24-anim-graph.md`) |
+| `DOCTOR_TOOLKIT_GUI_ANIM=clip=3,frame=10,import=<file.glb>,add=<имя>,graph=idle,node=2` | Для выбранного банка `bnk`: показать клип на скелете, открыть импорт анимации, показать граф анимации (во вкладке банка — часть Graph) на входе и выделить его узел (номер в обходе входа; `docs/guide/24-anim-graph.md`) |
 | `DOCTOR_TOOLKIT_GUI_IMPORT=<file.glb>` | Открыть окно импорта модели (`docs/model-import.md`) для выбранного меша или metamodel |
 | `DOCTOR_TOOLKIT_GUI_EXTERNAL=<формат>` | Открыть выбранный ресурс во внешней программе (`png`, `csv`, `lua`, `glb`…) — программа берётся из настроек, для снимков задайте `DOCTOR_TOOLKIT_CONFIG_DIR` с `[external_editors]` вроде `image = "true"` (`docs/external-editors.md` §5) |
 | `DOCTOR_TOOLKIT_GUI_SHOT_FRAMES=<n>` | Кадров до снимка (20 по умолчанию), например для `spin` |
 | `DOCTOR_TOOLKIT_GUI_RENDERER=glow` | Принудительно OpenGL и программный просмотр моделей |
 | `DOCTOR_TOOLKIT_GUI_LEVEL=<зона>[;опции]` | Открыть вкладку уровня (в раскладке «Level Editor», `docs/shell.md` §11.4; без запоминания раскладок — развёрнутой на всё окно) и загрузить зоны (`docs/levels.md` §5) |
-| `DOCTOR_TOOLKIT_GUI_MOVIES=<ролик>[:<кадр>][,play][,full]` | Открыть окно Movies с роликом и кадром; `play` — играть, `full` — на всё окно (`docs/formats/video.md` §5.1) |
-| `DOCTOR_TOOLKIT_GUI_LOGIC=<область>[;find=<текст>][;show][;run=<события>][;until=<с>][;live]` | Открыть граф логики на всё окно, выделить найденное, `show` — показать его в уровне (`docs/logic-graph.md` §6); `live` — включить слой «Вживую»; `run` — режим «Прогон» с начальными событиями (через `,`) до времени `until` (§9) |
+| `DOCTOR_TOOLKIT_GUI_MOVIES=<ролик>[:<кадр>][,play][,full]` | Открыть вкладку Movies с роликом и кадром; `play` — играть, `full` — на всё окно (`docs/formats/video.md` §5.1) |
+| `DOCTOR_TOOLKIT_GUI_LOGIC=<область>[;find=<текст>][;show][;run=<события>][;until=<с>][;live]` | Открыть граф логики (в раскладке Asset Editor рядом с Details; без запоминания раскладок — на всё окно), выделить найденное, `show` — показать его в уровне (`docs/logic-graph.md` §6); `live` — включить слой «Вживую»; `run` — режим «Прогон» с начальными событиями (через `,`) до времени `until` (§9) |
 | `DOCTOR_TOOLKIT_GUI_LIVE=<порт>[:<токен>]` | Подключиться к модулю живой связи при старте; с `DOCTOR_TOOLKIT_GUI_LIVE_FOLLOW=1` вкладки уровня следуют за камерой игры, с `DOCTOR_TOOLKIT_GUI_SCRIPT` редактор скриптов открывает вкладку «Игра» (`docs/shell.md` §9.2) |
 | `DOCTOR_TOOLKIT_GUI_CONTENT=<папка или поток>[;filter=model,texture][;size=96][;list][;search=…][;select=…]` | Место, фильтры, размер плиток, поиск и выбранный ассет новых панелей Content Browser (`docs/shell.md` §11.7; `DOCTOR_TOOLKIT_GUI_SHELL=content` — ещё одна панель в раскладке, `drawer=content` — ящик) |
 | `DOCTOR_TOOLKIT_GUI_SHELL=…`, `DOCTOR_TOOLKIT_CONFIG_DIR=…` | Окна оболочки и каталог настроек (`docs/shell.md` §8) |
@@ -215,7 +215,7 @@ RGBA-текстуры.
 ```sh
 Xephyr :57 -screen 1600x1000 &
 DISPLAY=:57 WAYLAND_DISPLAY= DOCTOR_TOOLKIT_GUI_SHOT=out.png DOCTOR_TOOLKIT_GUI_SELECT=5288 \
-  DOCTOR_TOOLKIT_GUI_MODEL=window,skeleton doctor-toolkit-gui "$GAME" gf2/globalfolder/characters/allcharacters
+  DOCTOR_TOOLKIT_GUI_SHELL=pin DOCTOR_TOOLKIT_GUI_MODEL=skeleton doctor-toolkit-gui "$GAME" gf2/globalfolder/characters/allcharacters
 ```
 
 Снимки для README и руководства делает `tools/screenshots.sh ИГРА [ПАПКА]

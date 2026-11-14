@@ -5415,6 +5415,106 @@ fn every_cutscene_resolves() {
     assert_eq!(with_audio, 16);
 }
 
+/// Cut-scene keys are world coordinates: no sequence object has a matrix,
+/// every block transform is the identity, and the zones chosen around the
+/// camera path and the actors (stage 61) hold the actors' points.
+#[test]
+fn cutscene_worlds_hold_their_actors() {
+    use doctor_toolkit::cutscene::world::{
+        PointKind, ZoneKind, candidate_boxes, choose_zones, is_identity, path_points,
+    };
+    use doctor_toolkit::cutscene::{Cutscene, Source, list_shots};
+    let Some(dir) = game_dir() else { return };
+    let game = std::sync::Arc::new(GameInstance::open(&dir).unwrap());
+    let (index, _) = game.build_index(|_| {});
+    let source = Source::new(&game, None);
+    let mut streams: Vec<usize> = list_shots(&game)
+        .unwrap()
+        .iter()
+        .map(|s| s.stream)
+        .collect();
+    streams.dedup();
+    let failures = Failures::default();
+    let mut cities = std::collections::BTreeSet::new();
+    for &stream in &streams {
+        let cutscene = Cutscene::load(&source, stream, None).unwrap();
+        let folder = game.streams()[stream].stream_name();
+        if let Some(seq) = &cutscene.sequence
+            && seq.matrix.is_some()
+        {
+            failures.push(format!("{folder}: the sequence object has a matrix"));
+        }
+        for s in 0..cutscene.shots.len() {
+            if !is_identity(&cutscene.anchor(s)) {
+                failures.push(format!("{folder}: shot {s} has an anchor"));
+            }
+        }
+        let started = std::time::Instant::now();
+        let boxes = candidate_boxes(&game, &index, &folder).unwrap();
+        let points = path_points(&cutscene, 0.5);
+        let chosen = choose_zones(&boxes, &points);
+        let elapsed = started.elapsed();
+        let chosen_boxes: Vec<_> = boxes
+            .iter()
+            .filter(|b| chosen.iter().any(|c| c.stream == b.stream))
+            .filter(|b| {
+                matches!(
+                    b.kind,
+                    ZoneKind::High | ZoneKind::Interior | ZoneKind::Medium
+                )
+            })
+            .collect();
+        // Actors in the level's area: igc02 plays its aeroplane scenes on a
+        // set of props 100 m above the origin, far from any zone.
+        let actors: Vec<_> = points
+            .iter()
+            .filter(|p| p.kind == PointKind::Actor)
+            .filter(|p| {
+                boxes.iter().any(|b| {
+                    b.kind != ZoneKind::Sky && !b.is_empty() && b.distance(p.position) < 50.0
+                })
+            })
+            .collect();
+        let inside = actors
+            .iter()
+            .filter(|p| chosen_boxes.iter().any(|b| b.distance(p.position) <= 5.0))
+            .count();
+        let kinds = |k: ZoneKind| {
+            boxes
+                .iter()
+                .filter(|b| b.kind == k && chosen.iter().any(|c| c.stream == b.stream))
+                .count()
+        };
+        eprintln!(
+            "{:<28} {:>4} actor points, {:>4} in zones; {} zones (high {}, medium {}, interior {}, mission {}) of {} in {:.2} s",
+            cutscene.name,
+            actors.len(),
+            inside,
+            chosen.len(),
+            kinds(ZoneKind::High),
+            kinds(ZoneKind::Medium),
+            kinds(ZoneKind::Interior),
+            kinds(ZoneKind::Mission),
+            boxes.len(),
+            elapsed.as_secs_f32()
+        );
+        if let Some(city) = doctor_toolkit::cutscene::world::city_of(&folder) {
+            cities.insert(city.to_owned());
+        }
+        if inside * 10 < actors.len() * 9 {
+            failures.push(format!(
+                "{folder}: {inside} of {} actor points in chosen zones",
+                actors.len()
+            ));
+        }
+        if kinds(ZoneKind::Sky) != 1 {
+            failures.push(format!("{folder}: no sky"));
+        }
+    }
+    assert_eq!(cities.len(), 3);
+    failures.assert_empty();
+}
+
 /// Cut-scene sound: every track of every sequence decodes to its length;
 /// the cut-scene's own track starts with it, music where its message is
 /// sent, with the volume of the audio script.

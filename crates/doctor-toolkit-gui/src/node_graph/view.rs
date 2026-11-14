@@ -524,6 +524,30 @@ impl GraphView {
 
         // Keys.
         if response.hovered() && !ui.ctx().egui_wants_keyboard_input() && self.editing.is_none() {
+            let (duplicate, escape) = ui.input(|i| {
+                (
+                    i.modifiers.command && i.key_pressed(Key::D),
+                    i.key_pressed(Key::Escape),
+                )
+            });
+            // Ctrl+D (stage 56, as in the level view): a copy of the
+            // selection beside it.
+            if duplicate && !self.selected.is_empty() {
+                let ids: Vec<NodeId> = self.selected.iter().copied().collect();
+                let at = ids
+                    .iter()
+                    .filter_map(|&id| graph.node(id))
+                    .map(|n| n.pos)
+                    .reduce(|a, b| a.min(b))
+                    .unwrap_or(Pos2::ZERO)
+                    + Vec2::splat(40.0);
+                events.push(GraphEvent::Copy(ids));
+                events.push(GraphEvent::Paste(at));
+            }
+            if escape && !self.selected.is_empty() {
+                self.selected.clear();
+                events.push(GraphEvent::Selection(Vec::new()));
+            }
             let (del, all, frame, home, copy, paste) = ui.input(|i| {
                 (
                     i.key_pressed(Key::Delete),

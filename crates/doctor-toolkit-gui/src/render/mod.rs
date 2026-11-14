@@ -33,8 +33,8 @@ pub use gpu::{GpuContext, RenderStats, SceneRenderer, Viewport, adapter_rank};
 // The whole scene API is public for the level view, even parts the model viewer does not use.
 #[allow(unused_imports)]
 pub use scene::{
-    Instance, LineVertex, MaterialData, MeshData, MeshKey, Pick, Scene, SceneOptions, Surface,
-    SurfaceModel, TextureData, TextureKey, Vertex,
+    Environment, Instance, LineVertex, MaterialData, MeshData, MeshKey, Pick, Scene, SceneOptions,
+    Surface, SurfaceModel, TextureData, TextureKey, Vertex,
 };
 
 /// The renderer shared by every view of the application.
