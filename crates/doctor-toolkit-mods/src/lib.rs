@@ -99,6 +99,8 @@ pub struct Overview {
     pub(crate) all_clashes: Vec<Clash>,
     /// Streams the editor's workspace holds in the game.
     pub(crate) workspace_held: Vec<String>,
+    /// Streams whose last write by the mod manager did not finish.
+    pub(crate) interrupted: Vec<String>,
     pub(crate) old_toolkit: bool,
     /// Names of the saved sets of mods.
     pub(crate) sets: Vec<String>,
@@ -1096,6 +1098,22 @@ impl ModsPanel {
             if let Some(reason) = &self.write_lock {
                 ui.label(RichText::new(tr("mods.game_running")).color(WARN))
                     .on_hover_text(reason.as_str());
+            } else if !self.overview.interrupted.is_empty() {
+                let text = trf(
+                    "mods.interrupted",
+                    &[("streams", &self.overview.interrupted.join(", "))],
+                );
+                ui.add(egui::Label::new(RichText::new(text).color(BAD)).wrap());
+                if ui
+                    .add_enabled(
+                        self.running.is_none(),
+                        egui::Button::new(tr("mods.unapply")).small(),
+                    )
+                    .on_hover_text(tr("mods.unapply_hint"))
+                    .clicked()
+                {
+                    self.dialog = Some(dialogs::Dialog::Restore);
+                }
             } else if !self.overview.workspace_held.is_empty() {
                 ui.colored_label(BAD, tr("mods.workspace_held"));
             } else if self.overview.foreign_changes() {
@@ -1248,6 +1266,7 @@ fn overview(game: &GameInstance, manager: &ModManager) -> Overview {
         clashes: manager.clashes(true),
         all_clashes: manager.clashes(false),
         workspace_held: held(Workspace::default_dir(game.root())),
+        interrupted: manager.interrupted(game).unwrap_or_default(),
         old_toolkit: integrity::detect_old_toolkit(game.root()).is_some(),
         sets: manager
             .sets()

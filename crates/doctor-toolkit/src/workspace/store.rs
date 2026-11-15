@@ -245,6 +245,16 @@ impl FileStamp {
         }
     }
 
+    /// This stamp of contents just put in place at `path`, with the file's hints.
+    pub fn placed_at(&self, path: &Path) -> Self {
+        let (mtime_ns, file_id) = hints(path);
+        Self {
+            mtime_ns,
+            file_id,
+            ..self.clone()
+        }
+    }
+
     /// Whether the file at `path` has this stamp's size, modification time
     /// and file id, so that it can be assumed unchanged without hashing.
     pub fn quick_match(&self, path: &Path) -> bool {

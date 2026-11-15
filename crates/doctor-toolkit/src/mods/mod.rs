@@ -814,6 +814,36 @@ pub fn ensure_workspace_not_in_game(game: &GameInstance) -> Result<()> {
     )))
 }
 
+/// Who wrote into the game.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WriteOwner {
+    ModManager,
+    /// The game's default workspace of the editor.
+    Workspace,
+}
+
+/// Writes into the game that did not finish (see
+/// [`Deployment::interrupted`]), of the mod manager and of the game's
+/// default workspace: the owner and the streams. "Restore originals" of the
+/// owner ([`manager::ModManager::unapply`], [`Workspace::unapply`]) or the
+/// editor's restore from the backups puts the originals back.
+pub fn interrupted_writes(game: &GameInstance) -> Result<Vec<(WriteOwner, Vec<String>)>> {
+    let mut out = Vec::new();
+    for (owner, path) in [
+        (WriteOwner::ModManager, manager::applied_path(game.root())),
+        (
+            WriteOwner::Workspace,
+            Workspace::default_dir(game.root()).join("applied.json"),
+        ),
+    ] {
+        let streams = Deployment::load(&path)?.interrupted(game)?;
+        if !streams.is_empty() {
+            out.push((owner, streams));
+        }
+    }
+    Ok(out)
+}
+
 /// Up to five items joined by commas, then a count of the rest.
 pub(crate) fn list_some(items: &[String]) -> String {
     let mut text = items.iter().take(5).cloned().collect::<Vec<_>>().join(", ");

@@ -26,7 +26,7 @@ use super::{
 use crate::container::ustream::{
     self, Insertion, Replacement, ResourceHeader, Storage, StreamLayout,
 };
-use crate::game::{GameInstance, ReplaceReport};
+use crate::game::{GameInstance, GameWrite};
 use crate::toc::Toc;
 use crate::{Error, Result};
 
@@ -189,8 +189,11 @@ impl Deployment {
     ) -> bool {
         match state {
             StreamState::Original => desired.is_empty() && wanted_new.is_none(),
+            // A write that did not finish: the record cannot tell what the
+            // file holds, and the tables of contents may not match it.
             StreamState::Applied => self.streams.get(name).is_some_and(|record| {
-                record.resources.len() == desired.len()
+                record.in_flight.is_none()
+                    && record.resources.len() == desired.len()
                     && desired
                         .iter()
                         .all(|c| record.resources.get(&c.key) == Some(&c.payload.sha256))
@@ -207,9 +210,10 @@ impl Deployment {
     pub fn held_streams(&self, game: &GameInstance) -> Result<Vec<String>> {
         let mut held = Vec::new();
         for (name, record) in &self.streams {
-            if (!record.resources.is_empty() || record.new_stream.is_some())
-                && self.stream_state(game, name)? == StreamState::Applied
-            {
+            let changed = !record.resources.is_empty()
+                || record.new_stream.is_some()
+                || record.in_flight.is_some();
+            if changed && self.stream_state(game, name)? == StreamState::Applied {
                 held.push(name.clone());
             }
         }
@@ -280,11 +284,19 @@ impl Deployment {
     /// `desired(name)`: each stream that differs is rebuilt from its original
     /// with all of its changes and its size is updated in the tables of
     /// contents; a stream without changes is put back to its original.
-    /// `payload` reads the data of a change. The record is saved to
-    /// `record_path` before and after every write.
+    /// `payload` reads the data of a change.
     ///
-    /// Everything is checked before the first write. Streams changed by
-    /// someone else are refused unless `force`.
+    /// The whole operation is one [`GameWrite`]: every file is built and
+    /// staged before the first game file changes, and when putting them in
+    /// place fails, the files already written get their previous contents
+    /// back and the record stays as it was. The record is saved to
+    /// `record_path` before the files are put in place (with the files about
+    /// to be written, see [`Self::interrupted`]) and after.
+    ///
+    /// Streams changed by someone else are refused unless `force`. Putting
+    /// originals back only (no changes, no created streams) does not stop at
+    /// a table of contents or an original that cannot be read: the file goes
+    /// back and the report warns.
     pub fn sync(
         &mut self,
         record_path: &Path,
@@ -390,13 +402,21 @@ impl Deployment {
                 stream_tocs.extend(stream.tocs.iter().map(|t| t.to_ascii_lowercase()));
             }
         }
+        // Putting originals back only: a table of contents or an original
+        // that cannot be read must not stop it.
+        let restoring = new_streams.is_empty() && plan.iter().all(|(_, _, w, _)| w.is_empty());
         let mut report = ApplyReport::default();
         let total = plan.iter().filter(|(_, _, _, write)| *write).count();
         let mut done = 0;
-        for (name, state, wanted, write) in plan {
-            if !write {
-                self.streams.remove(&name);
-                self.save(record_path)?;
+        // Everything that can fail happens before the first game file
+        // changes: each new file is built and staged next to its target.
+        let mut write = game.begin_write();
+        let mut prepared = Vec::with_capacity(plan.len());
+        let mut sizes: Vec<(String, u64)> = Vec::new();
+        for (name, state, wanted, write_it) in plan {
+            if !write_it {
+                // Restored by other means (e.g. `restore`): forget the record.
+                prepared.push(Prepared::forget(name));
                 continue;
             }
             progress(SyncProgress {
@@ -406,30 +426,87 @@ impl Deployment {
             });
             done += 1;
             let created = self.created(&name, new_streams.get(&name)).cloned();
-            match created {
-                Some(stream) => self.sync_new_stream(
-                    record_path,
+            prepared.push(match created {
+                Some(stream) => self.prepare_new_stream(
                     game,
                     &stream,
                     new_streams.contains_key(&name),
                     &wanted,
                     &payload,
-                    &mut report,
+                    &mut write,
                 )?,
-                None => self.sync_stream(
-                    record_path,
+                None => self.prepare_stream(
                     game,
                     &name,
                     state,
                     &wanted,
                     &payload,
+                    restoring,
+                    &mut write,
+                    &mut sizes,
                     &mut report,
                 )?,
+            });
+        }
+        // The records once everything is written: the entries of created
+        // streams in the tables of contents come from them.
+        let mut after = self.streams.clone();
+        for p in &prepared {
+            match &p.after {
+                Some(record) => after.insert(p.name.clone(), record.clone()),
+                None => after.remove(&p.name),
+            };
+        }
+        prepare_tocs(
+            game,
+            &sizes,
+            &stream_tocs,
+            &after,
+            restoring,
+            &mut write,
+            &mut report,
+        )?;
+
+        // Note the files about to be written, so an interruption is recognised.
+        let before = self.clone();
+        if !write.is_empty() {
+            for p in &prepared {
+                if let Some(record) = &p.in_flight {
+                    self.streams.insert(p.name.clone(), record.clone());
+                }
+            }
+            if let Err(error) = self.save(record_path) {
+                *self = before;
+                return Err(error);
             }
         }
-        if !stream_tocs.is_empty() {
-            self.sync_new_stream_tocs(game, &stream_tocs, &mut report)?;
+        let written = match write.commit() {
+            Ok(written) => written,
+            Err(failure) => {
+                if failure.unchanged {
+                    *self = before;
+                    self.save(record_path)?;
+                }
+                return Err(failure.error);
+            }
+        };
+        for p in prepared {
+            match p.after {
+                Some(mut record) => {
+                    record.written = record.written.placed_at(&game.root().join(&record.path));
+                    self.streams.insert(p.name.clone(), record);
+                }
+                None => {
+                    self.streams.remove(&p.name);
+                }
+            }
+            if let Some(action) = p.action {
+                report.streams.push((p.name, action));
+            }
         }
+        self.save(record_path)?;
+        report.written.extend(written.written);
+        report.backed_up.extend(written.backed_up);
         progress(SyncProgress {
             done: total,
             total,
@@ -438,17 +515,22 @@ impl Deployment {
         Ok(report)
     }
 
+    /// Builds the new file of stream `name` from its original with the
+    /// changes `wanted` (the original itself without changes) and stages it.
+    /// Its new data size goes to `sizes`.
     #[allow(clippy::too_many_arguments)]
-    fn sync_stream(
-        &mut self,
-        record_path: &Path,
+    fn prepare_stream(
+        &self,
         game: &GameInstance,
         name: &str,
         state: StreamState,
         wanted: &[Change],
         payload: &impl Fn(&Change) -> Result<Vec<u8>>,
+        restoring: bool,
+        write: &mut GameWrite<'_>,
+        sizes: &mut Vec<(String, u64)>,
         report: &mut ApplyReport,
-    ) -> Result<()> {
+    ) -> Result<Prepared> {
         let index = game
             .find_stream(name)
             .ok_or_else(|| Error::InvalidArgument(format!("stream {name} is not in the game")))?;
@@ -466,11 +548,24 @@ impl Deployment {
         };
         let original = fs::read(&original_path).map_err(|e| Error::io(&original_path, e))?;
         let original_stamp = FileStamp::of_data(&original);
-        let original_layout = StreamLayout::parse(&original)?;
 
-        let (target, action) = if wanted.is_empty() {
-            (original.clone(), StreamAction::Restored)
+        let (target, action, data_size) = if wanted.is_empty() {
+            // The original goes back as it is; only its size in the tables
+            // of contents needs it parsed.
+            let data_size = match StreamLayout::parse(&original) {
+                Ok(layout) => Some(layout.total_data_size()),
+                Err(error) if restoring => {
+                    report.warnings.push(format!(
+                        "{}: {error}; its size in the tables of contents is left as it is",
+                        file.rel_path
+                    ));
+                    None
+                }
+                Err(error) => return Err(error),
+            };
+            (original, StreamAction::Restored, data_size)
         } else {
+            let original_layout = StreamLayout::parse(&original)?;
             let mut payloads = Vec::with_capacity(wanted.len());
             let mut additions = Vec::new();
             for change in wanted {
@@ -536,91 +631,76 @@ impl Deployment {
                 .collect();
             let rebuilt =
                 ustream::rebuild_with(&original, &original_layout, &replacements, &insertions)?;
-            (rebuilt, StreamAction::Rebuilt(wanted.len()))
+            let data_size = StreamLayout::parse(&rebuilt)?.total_data_size();
+            (
+                rebuilt,
+                StreamAction::Rebuilt(wanted.len()),
+                Some(data_size),
+            )
         };
-        let data_size = StreamLayout::parse(&target)?.total_data_size();
-
-        // Note the file about to be written, so an interruption is recognised.
-        let resources: BTreeMap<ResourceKey, String> = wanted
-            .iter()
-            .map(|c| (c.key.clone(), c.payload.sha256.clone()))
-            .collect();
-        let previous = self.streams.get(name).cloned();
-        self.streams.insert(
-            name.to_owned(),
-            AppliedStream {
-                path: file.rel_path.clone(),
-                original: original_stamp.clone(),
-                written: previous
-                    .as_ref()
-                    .map_or_else(|| original_stamp.clone(), |p| p.written.clone()),
-                in_flight: Some(FileStamp::of_data(&target)),
-                data_size: previous.as_ref().and_then(|p| p.data_size),
-                resources: previous.map(|p| p.resources).unwrap_or_default(),
-                new_stream: None,
-            },
-        );
-        self.save(record_path)?;
-
-        let mut files = ReplaceReport {
-            old_len: file.len,
-            new_len: target.len() as u64,
-            old_data_size: 0,
-            new_data_size: data_size,
-            written: Vec::new(),
-            backed_up: Vec::new(),
-        };
-        game.write_with_backup(file, &target, &mut files)?;
-        game.update_toc_sizes(index, data_size, &mut files)?;
-
-        if wanted.is_empty() {
-            self.streams.remove(name);
-        } else {
-            self.streams.insert(
-                name.to_owned(),
-                AppliedStream {
-                    path: file.rel_path.clone(),
-                    original: original_stamp,
-                    written: FileStamp::of_written(&file.path, &target),
-                    in_flight: None,
-                    resources,
-                    data_size: Some(data_size),
-                    new_stream: None,
-                },
-            );
+        if let Some(size) = data_size {
+            sizes.push((file.stream_name(), size));
         }
-        self.save(record_path)?;
-        report.streams.push((name.to_owned(), action));
-        report.written.extend(files.written);
-        report.backed_up.extend(files.backed_up);
-        Ok(())
+        let target_stamp = FileStamp::of_data(&target);
+        write.replace(file, &target)?;
+        drop(target);
+
+        let previous = self.streams.get(name).cloned();
+        let in_flight = AppliedStream {
+            path: file.rel_path.clone(),
+            original: original_stamp.clone(),
+            written: previous
+                .as_ref()
+                .map_or_else(|| original_stamp.clone(), |p| p.written.clone()),
+            in_flight: Some(target_stamp.clone()),
+            data_size: previous.as_ref().and_then(|p| p.data_size),
+            resources: previous.map(|p| p.resources).unwrap_or_default(),
+            new_stream: None,
+        };
+        let after = (!wanted.is_empty()).then(|| AppliedStream {
+            path: file.rel_path.clone(),
+            original: original_stamp,
+            written: target_stamp,
+            in_flight: None,
+            resources: wanted
+                .iter()
+                .map(|c| (c.key.clone(), c.payload.sha256.clone()))
+                .collect(),
+            data_size,
+            new_stream: None,
+        });
+        Ok(Prepared {
+            name: name.to_owned(),
+            in_flight: Some(in_flight),
+            after,
+            action: Some(action),
+        })
     }
 
-    /// Creates, rewrites or deletes (`keep` false) a created stream. Only
-    /// added resources can be in it; they are written in their order.
-    #[allow(clippy::too_many_arguments)]
-    fn sync_new_stream(
-        &mut self,
-        record_path: &Path,
+    /// Builds and stages a created stream, or its deletion (`keep` false).
+    /// Only added resources can be in it; they are written in their order.
+    fn prepare_new_stream(
+        &self,
         game: &GameInstance,
         stream: &NewStream,
         keep: bool,
         wanted: &[Change],
         payload: &impl Fn(&Change) -> Result<Vec<u8>>,
-        report: &mut ApplyReport,
-    ) -> Result<()> {
+        write: &mut GameWrite<'_>,
+    ) -> Result<Prepared> {
         let rel_path = stream.rel_path();
         let path = game.root().join(&rel_path);
         let name = stream.name.clone();
         if !keep {
-            if path.exists() {
-                fs::remove_file(&path).map_err(|e| Error::io(&path, e))?;
-                report.written.push(rel_path);
+            if fs::symlink_metadata(&path).is_ok() {
+                write.delete(&rel_path)?;
             }
-            self.streams.remove(&name);
-            self.save(record_path)?;
-            report.streams.push((name, StreamAction::Restored));
-            return Ok(());
+            return Ok(Prepared {
+                name,
+                in_flight: None,
+                after: None,
+                action: Some(StreamAction::Restored),
+            });
         }
         let mut additions: Vec<&Change> = wanted.iter().collect();
         if let Some(change) = additions.iter().find(|c| !c.is_added()) {
@@ -646,117 +726,202 @@ impl Deployment {
             .collect();
         let target = ustream::build(&borrowed)?;
         let data_size = StreamLayout::parse(&target)?.total_data_size();
+        let target_stamp = FileStamp::of_data(&target);
+        write.create(&rel_path, &target)?;
+        drop(target);
         let empty = FileStamp::of_data(&[]);
         let previous = self.streams.get(&name).cloned();
-        self.streams.insert(
-            name.clone(),
-            AppliedStream {
-                path: rel_path.clone(),
-                original: empty.clone(),
-                written: previous
-                    .as_ref()
-                    .map_or_else(|| empty.clone(), |p| p.written.clone()),
-                in_flight: Some(FileStamp::of_data(&target)),
-                data_size: previous.as_ref().and_then(|p| p.data_size),
-                resources: previous
-                    .as_ref()
-                    .map(|p| p.resources.clone())
-                    .unwrap_or_default(),
-                new_stream: Some(stream.clone()),
-            },
-        );
-        self.save(record_path)?;
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent).map_err(|e| Error::io(parent, e))?;
-        }
-        crate::atomic::write(&path, &target)?;
-        self.streams.insert(
-            name.clone(),
-            AppliedStream {
-                path: rel_path.clone(),
-                original: empty,
-                written: FileStamp::of_written(&path, &target),
-                in_flight: None,
-                resources: wanted
-                    .iter()
-                    .map(|c| (c.key.clone(), c.payload.sha256.clone()))
-                    .collect(),
-                data_size: Some(data_size),
-                new_stream: Some(stream.clone()),
-            },
-        );
-        self.save(record_path)?;
-        report
-            .streams
-            .push((name, StreamAction::Rebuilt(wanted.len())));
-        report.written.push(rel_path);
-        Ok(())
+        let in_flight = AppliedStream {
+            path: rel_path.clone(),
+            original: empty.clone(),
+            written: previous
+                .as_ref()
+                .map_or_else(|| empty.clone(), |p| p.written.clone()),
+            in_flight: Some(target_stamp.clone()),
+            data_size: previous.as_ref().and_then(|p| p.data_size),
+            resources: previous
+                .as_ref()
+                .map(|p| p.resources.clone())
+                .unwrap_or_default(),
+            new_stream: Some(stream.clone()),
+        };
+        let after = AppliedStream {
+            path: rel_path,
+            original: empty,
+            written: target_stamp,
+            in_flight: None,
+            resources: wanted
+                .iter()
+                .map(|c| (c.key.clone(), c.payload.sha256.clone()))
+                .collect(),
+            data_size: Some(data_size),
+            new_stream: Some(stream.clone()),
+        };
+        Ok(Prepared {
+            name,
+            in_flight: Some(in_flight),
+            after: Some(after),
+            action: Some(StreamAction::Rebuilt(wanted.len())),
+        })
     }
 
-    /// Brings the entries of created streams in the tables of contents
-    /// `tocs` (lower-case relative paths) in line with the record.
-    ///
-    /// A table is rebuilt from its original (the backup, or the file when
-    /// there is none) with the current data size of every stream it lists,
-    /// plus an entry for every created stream of this record that names it.
-    /// Without created streams a table returns to its original structure,
-    /// byte for byte when the sizes are the original ones.
-    fn sync_new_stream_tocs(
-        &self,
-        game: &GameInstance,
-        tocs: &BTreeSet<String>,
-        report: &mut ApplyReport,
-    ) -> Result<()> {
-        for toc_file in game.tocs() {
-            if !tocs.contains(&toc_file.rel_path.to_ascii_lowercase()) {
+    /// Streams whose last write did not finish: the record still notes a
+    /// file about to be written, and the game file is neither the original
+    /// nor the file written before. The tables of contents may not match
+    /// such a stream; [`Self::sync`] without changes (putting the originals
+    /// back) mends it from the backups.
+    pub fn interrupted(&self, game: &GameInstance) -> Result<Vec<String>> {
+        let mut out = Vec::new();
+        for (name, record) in &self.streams {
+            if record.in_flight.is_none() {
                 continue;
             }
-            let original_path = game.original_path(toc_file);
-            let original = fs::read(&original_path).map_err(|e| Error::io(&original_path, e))?;
-            let current_bytes =
-                fs::read(&toc_file.path).map_err(|e| Error::io(&toc_file.path, e))?;
-            let current = Toc::parse(&current_bytes)?;
-            let mut table = Toc::parse(&original)?;
-            // Keep the sizes written since, by anyone.
-            for index in 0..table.files.len() {
-                let name = table.file_name(index).name_lossy();
-                if let Some(found) = current.find_file(&name) {
-                    table.files[index].data_size = current.files[found].data_size;
+            let path = game.root().join(&record.path);
+            if !path.exists() {
+                // A created stream not created yet is as before; a game
+                // stream that is gone is not.
+                if record.new_stream.is_none() {
+                    out.push(name.clone());
                 }
-            }
-            for record in self.streams.values() {
-                let Some(stream) = &record.new_stream else {
-                    continue;
-                };
-                if !stream
-                    .tocs
-                    .iter()
-                    .any(|t| t.eq_ignore_ascii_case(&toc_file.rel_path))
-                {
-                    continue;
-                }
-                let parent = stream.parent_in(&toc_file.rel_path);
-                add_stream_entry(&mut table, stream, parent, record.data_size.unwrap_or(0))
-                    .map_err(|e| Error::InvalidArgument(format!("{}: {e}", toc_file.rel_path)))?;
-            }
-            let bytes = table.to_bytes()?;
-            if bytes == current_bytes {
                 continue;
             }
-            let mut files = ReplaceReport {
-                old_len: current_bytes.len() as u64,
-                new_len: bytes.len() as u64,
-                old_data_size: 0,
-                new_data_size: 0,
-                written: Vec::new(),
-                backed_up: Vec::new(),
-            };
-            game.write_with_backup(toc_file, &bytes, &mut files)?;
-            report.written.extend(files.written);
-            report.backed_up.extend(files.backed_up);
+            if record.original.matches_file(&path)? || record.written.matches_file(&path)? {
+                continue;
+            }
+            out.push(name.clone());
         }
-        Ok(())
+        Ok(out)
     }
+}
+
+/// One stream of [`Deployment::sync_with_progress`], staged.
+struct Prepared {
+    name: String,
+    /// The record while the write is under way; `None` keeps the current one.
+    in_flight: Option<AppliedStream>,
+    /// The record afterwards; `None` forgets the stream.
+    after: Option<AppliedStream>,
+    /// What is done to the stream, for the report.
+    action: Option<StreamAction>,
+}
+
+impl Prepared {
+    /// A stream already back to its original: only its record goes.
+    fn forget(name: String) -> Self {
+        Self {
+            name,
+            in_flight: None,
+            after: None,
+            action: None,
+        }
+    }
+}
+
+/// Stages the tables of contents that change: the data size of every stream
+/// in `sizes` (by stream name), and, for the tables `stream_tocs` (lower-case
+/// relative paths), the entries of created streams.
+///
+/// A table in `stream_tocs` is rebuilt from its original (the backup, or the
+/// file when there is none) with the current data size of every stream it
+/// lists, plus an entry for every created stream in `records` that names it.
+/// Without created streams a table returns to its original structure, byte
+/// for byte when the sizes are the original ones.
+///
+/// When `restoring`, a table that cannot be read is left as it is, with a
+/// warning: putting the originals back must not depend on it.
+fn prepare_tocs(
+    game: &GameInstance,
+    sizes: &[(String, u64)],
+    stream_tocs: &BTreeSet<String>,
+    records: &BTreeMap<String, AppliedStream>,
+    restoring: bool,
+    write: &mut GameWrite<'_>,
+    report: &mut ApplyReport,
+) -> Result<()> {
+    let mut sizes32 = Vec::with_capacity(sizes.len());
+    for (name, size) in sizes {
+        let size = u32::try_from(*size)
+            .map_err(|_| Error::InvalidArgument(format!("stream {name}: data exceeds 4 GiB")))?;
+        sizes32.push((name.as_str(), size));
+    }
+    for toc_file in game.tocs() {
+        let rebuild = stream_tocs.contains(&toc_file.rel_path.to_ascii_lowercase());
+        if sizes32.is_empty() && !rebuild {
+            continue;
+        }
+        let read = |path: &Path| -> Result<(Vec<u8>, Toc)> {
+            let bytes = fs::read(path).map_err(|e| Error::io(path, e))?;
+            let table = Toc::parse(&bytes).map_err(|e| {
+                Error::mod_error(format!("table of contents {}: {e}", toc_file.rel_path))
+            })?;
+            Ok((bytes, table))
+        };
+        let (current_bytes, mut table) = match read(&toc_file.path) {
+            Ok(read) => read,
+            Err(error) if restoring => {
+                report.warnings.push(format!("{error}; left as it is"));
+                continue;
+            }
+            Err(error) => return Err(error),
+        };
+        let mut changed = false;
+        for &(name, size) in &sizes32 {
+            if let Some(index) = table.find_file(name)
+                && table.files[index].data_size != size
+            {
+                table.files[index].data_size = size;
+                changed = true;
+            }
+        }
+        if rebuild {
+            let original = match read(&game.original_path(toc_file)) {
+                Ok((_, original)) => Some(original),
+                Err(error) if restoring => {
+                    report
+                        .warnings
+                        .push(format!("{error}; its created streams are left in it"));
+                    None
+                }
+                Err(error) => return Err(error),
+            };
+            if let Some(mut original) = original {
+                // Keep the sizes written since, by anyone.
+                for index in 0..original.files.len() {
+                    let name = original.file_name(index).name_lossy();
+                    if let Some(found) = table.find_file(&name) {
+                        original.files[index].data_size = table.files[found].data_size;
+                    }
+                }
+                for record in records.values() {
+                    let Some(stream) = &record.new_stream else {
+                        continue;
+                    };
+                    if !stream
+                        .tocs
+                        .iter()
+                        .any(|t| t.eq_ignore_ascii_case(&toc_file.rel_path))
+                    {
+                        continue;
+                    }
+                    let parent = stream.parent_in(&toc_file.rel_path);
+                    add_stream_entry(&mut original, stream, parent, record.data_size.unwrap_or(0))
+                        .map_err(|e| {
+                            Error::InvalidArgument(format!("{}: {e}", toc_file.rel_path))
+                        })?;
+                }
+                table = original;
+                changed = true;
+            }
+        }
+        if !changed {
+            continue;
+        }
+        let bytes = table.to_bytes()?;
+        if bytes != current_bytes {
+            write.replace(toc_file, &bytes)?;
+        }
+    }
+    Ok(())
 }
 
 /// Adds the entry of a created stream to a table of contents: a name record

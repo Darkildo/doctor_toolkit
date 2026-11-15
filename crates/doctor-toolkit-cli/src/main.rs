@@ -1097,6 +1097,12 @@ fn validate(game_dir: &Path, decompress: bool, roundtrip: bool) -> Result<()> {
         game.streams().len(),
         game.tocs().len()
     );
+    for file in game.skipped() {
+        out!(
+            "skipped {}: named like a game file but not one (no magic)",
+            file.rel_path
+        );
+    }
 
     let failures = AtomicUsize::new(0);
     let resources = AtomicU64::new(0);

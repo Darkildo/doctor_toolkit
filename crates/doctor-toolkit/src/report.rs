@@ -131,8 +131,12 @@ pub fn game_summary(game: &GameInstance) -> String {
         ),
         _ => format!("{} not found", profile.executable),
     };
+    let skipped = match game.skipped().len() {
+        0 => String::new(),
+        n => format!("; {n} other .str/.toc file(s) skipped"),
+    };
     format!(
-        "{} at {}: {exe}; {} streams, {} tables of contents",
+        "{} at {}: {exe}; {} streams, {} tables of contents{skipped}",
         profile.name,
         game.root().display(),
         game.streams().len(),

@@ -18,8 +18,20 @@ use crate::{Error, Result};
 /// Directory inside the game directory where originals are kept.
 pub const BACKUP_DIR: &str = "_doctor_toolkit/backups";
 
-/// Directories that hold tool data, not game data. They are skipped when scanning.
-const SKIPPED_DIRS: &[&str] = &["_toolkit", "_doctor_toolkit"];
+/// Directories that hold tool data or caches of other programs, not game
+/// data. They are skipped when scanning (compared ignoring case). Graphics
+/// drivers keep shader caches next to the executable: NVIDIA's `GLCache`
+/// holds `*.toc` files of its own.
+const SKIPPED_DIRS: &[&str] = &[
+    "_toolkit",
+    "_doctor_toolkit",
+    "GLCache",
+    "DXCache",
+    "NV_Cache",
+    "ShaderCache",
+    "shader_cache",
+    "DxcCache",
+];
 
 /// A memory-mapped stream file together with its parsed layout.
 ///
@@ -175,6 +187,7 @@ pub struct GameInstance {
     profile: GameProfile,
     streams: Vec<GameFile>,
     tocs: Vec<GameFile>,
+    skipped: Vec<GameFile>,
 }
 
 impl GameInstance {
@@ -192,19 +205,25 @@ impl GameInstance {
             return Err(Error::NotAGame { path: root });
         }
         let profile = detected.unwrap_or(GameProfile::GF2_PC);
-        let mut streams = Vec::new();
-        let mut tocs = Vec::new();
-        scan(&root, "", &mut streams, &mut tocs)?;
+        let mut found = Found::default();
+        scan(&root, "", &mut found)?;
+        let Found {
+            mut streams,
+            mut tocs,
+            mut skipped,
+        } = found;
         if streams.is_empty() && tocs.is_empty() {
             return Err(Error::NotAGame { path: root });
         }
         streams.sort_by(|a, b| a.rel_path.cmp(&b.rel_path));
         tocs.sort_by(|a, b| a.rel_path.cmp(&b.rel_path));
+        skipped.sort_by(|a, b| a.rel_path.cmp(&b.rel_path));
         Ok(Self {
             root,
             profile,
             streams,
             tocs,
+            skipped,
         })
     }
 
@@ -226,6 +245,13 @@ impl GameInstance {
     /// All `.toc` files, sorted by relative path.
     pub fn tocs(&self) -> &[GameFile] {
         &self.tocs
+    }
+
+    /// Files named like streams or tables of contents that are not the
+    /// game's (they do not start with the format's magic): caches of
+    /// graphics drivers and other programs. They are never read or written.
+    pub fn skipped(&self) -> &[GameFile] {
+        &self.skipped
     }
 
     /// Finds a stream by name. Accepts a table-of-contents name (`gf2\frontend`),
@@ -397,10 +423,14 @@ impl GameInstance {
             written: Vec::new(),
             backed_up: Vec::new(),
         };
-        self.write_with_backup(entry, &rebuilt, &mut report)?;
+        let mut write = self.begin_write();
+        write.replace(entry, &rebuilt)?;
         for (toc_file, bytes) in toc_updates {
-            self.write_with_backup(toc_file, &bytes, &mut report)?;
+            write.replace(toc_file, &bytes)?;
         }
+        let done = write.commit().map_err(|failure| failure.error)?;
+        report.written = done.written;
+        report.backed_up = done.backed_up;
         Ok(report)
     }
 
@@ -544,52 +574,242 @@ impl GameInstance {
         Ok(true)
     }
 
-    /// Replaces the contents of `file` after backing it up, atomically.
-    pub(crate) fn write_with_backup(
-        &self,
-        file: &GameFile,
-        contents: &[u8],
-        report: &mut ReplaceReport,
-    ) -> Result<()> {
-        if self.ensure_backup(file)? {
-            report.backed_up.push(file.rel_path.clone());
+    /// Starts a write of several game files as one operation; see [`GameWrite`].
+    pub fn begin_write(&self) -> GameWrite<'_> {
+        GameWrite {
+            game: self,
+            steps: Vec::new(),
         }
-        // Write next to the target and rename, so a crash never leaves a torn
-        // file. A symbolic link is replaced, not written through.
-        crate::atomic::write(&file.path, contents)?;
-        report.written.push(file.rel_path.clone());
+    }
+}
+
+/// Tool directory where a [`GameWrite`] keeps the files it replaces until
+/// it is done.
+pub const UNDO_DIR: &str = "_doctor_toolkit/undo";
+
+/// Several game files changed as one operation.
+///
+/// Everything that can fail is done first: the new contents are written and
+/// flushed next to their files ([`crate::atomic::Staged`]). [`Self::commit`]
+/// then backs up every replaced file that has no backup yet, and only after
+/// that puts the new files in place, one rename each, keeping every replaced
+/// file in [`UNDO_DIR`]. When a step fails, the files already put in place
+/// get their previous contents back and the backups made by this write are
+/// removed: the game is as before. Dropped without a commit, it changes
+/// nothing.
+#[derive(Debug)]
+pub struct GameWrite<'g> {
+    game: &'g GameInstance,
+    steps: Vec<WriteStep>,
+}
+
+#[derive(Debug)]
+struct WriteStep {
+    rel_path: String,
+    path: PathBuf,
+    /// The new contents; `None` deletes the file.
+    staged: Option<crate::atomic::Staged>,
+    /// Back the file up before it changes the first time.
+    backup: bool,
+}
+
+/// What [`GameWrite::commit`] changed.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct WriteDone {
+    /// Relative paths of the files written or deleted.
+    pub written: Vec<String>,
+    /// Relative paths of the files backed up by this write.
+    pub backed_up: Vec<String>,
+}
+
+/// A failed [`GameWrite::commit`].
+#[derive(Debug)]
+pub struct WriteFailure {
+    pub error: Error,
+    /// Whether the game files are as they were before the write. When not,
+    /// the replaced files are in [`UNDO_DIR`] and the originals in
+    /// [`BACKUP_DIR`].
+    pub unchanged: bool,
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Tests: fail a [`GameWrite::commit`] of this thread after this many
+    /// files are in place.
+    pub(crate) static FAIL_WRITE_AFTER: std::cell::Cell<Option<usize>> =
+        const { std::cell::Cell::new(None) };
+}
+
+impl GameWrite<'_> {
+    /// Whether nothing is to be written.
+    pub fn is_empty(&self) -> bool {
+        self.steps.is_empty()
+    }
+
+    /// Replaces the game file `file` with `contents`; it is backed up first.
+    pub fn replace(&mut self, file: &GameFile, contents: &[u8]) -> Result<()> {
+        self.push(&file.rel_path, Some(contents), true)
+    }
+
+    /// Writes the file `rel_path` the tool owns (a created stream), without a backup.
+    pub fn create(&mut self, rel_path: &str, contents: &[u8]) -> Result<()> {
+        self.push(rel_path, Some(contents), false)
+    }
+
+    /// Deletes the file `rel_path` the tool owns (a created stream).
+    pub fn delete(&mut self, rel_path: &str) -> Result<()> {
+        self.push(rel_path, None, false)
+    }
+
+    fn push(&mut self, rel_path: &str, contents: Option<&[u8]>, backup: bool) -> Result<()> {
+        let path = self.game.root.join(rel_path);
+        if self.steps.iter().any(|s| s.path == path) {
+            return Err(Error::InvalidArgument(format!(
+                "{rel_path} is written twice in one operation"
+            )));
+        }
+        let staged = match contents {
+            Some(contents) => {
+                if let Some(parent) = path.parent() {
+                    fs::create_dir_all(parent).map_err(|e| Error::io(parent, e))?;
+                }
+                Some(crate::atomic::stage(&path, contents)?)
+            }
+            None => None,
+        };
+        self.steps.push(WriteStep {
+            rel_path: rel_path.to_owned(),
+            path,
+            staged,
+            backup,
+        });
         Ok(())
     }
 
-    /// Sets the data size of stream `stream_index` in every table of contents
-    /// that lists it. Tables are backed up and written atomically.
-    pub fn update_toc_sizes(
-        &self,
-        stream_index: usize,
-        data_size: u64,
-        report: &mut ReplaceReport,
-    ) -> Result<()> {
-        let entry = self.streams.get(stream_index).ok_or_else(|| {
-            Error::InvalidArgument(format!("stream index {stream_index} out of range"))
-        })?;
-        let toc_size = u32::try_from(data_size)
-            .map_err(|_| Error::InvalidArgument("stream data exceeds 4 GiB".into()))?;
-        let name = entry.stream_name();
-        let mut updates = Vec::new();
-        for toc_file in &self.tocs {
-            let data = fs::read(&toc_file.path).map_err(|e| Error::io(&toc_file.path, e))?;
-            let mut table = Toc::parse(&data)?;
-            if let Some(file_index) = table.find_file(&name)
-                && table.files[file_index].data_size != toc_size
-            {
-                table.files[file_index].data_size = toc_size;
-                updates.push((toc_file, table.to_bytes()?));
+    /// Puts every file in place; see [`GameWrite`].
+    pub fn commit(mut self) -> std::result::Result<WriteDone, WriteFailure> {
+        let game = self.game;
+        let undo_root = game.root.join(UNDO_DIR);
+        // A leftover of an earlier write that could not finish.
+        if undo_root.exists() {
+            fs::remove_dir_all(&undo_root).map_err(|e| WriteFailure {
+                error: Error::io(&undo_root, e),
+                unchanged: true,
+            })?;
+        }
+        let mut done = WriteDone::default();
+        // Backups first: until every one is made, no game file changes.
+        for step in &self.steps {
+            if !step.backup || fs::symlink_metadata(&step.path).is_err() {
+                continue;
+            }
+            let file = GameFile {
+                rel_path: step.rel_path.clone(),
+                path: step.path.clone(),
+                len: 0,
+            };
+            match game.ensure_backup(&file) {
+                Ok(true) => done.backed_up.push(step.rel_path.clone()),
+                Ok(false) => {}
+                Err(error) => {
+                    game.remove_backups(&done.backed_up);
+                    return Err(WriteFailure {
+                        error,
+                        unchanged: true,
+                    });
+                }
             }
         }
-        for (toc_file, bytes) in updates {
-            self.write_with_backup(toc_file, &bytes, report)?;
+        // `placed[i]`: whether step `i` kept a replaced file in the undo folder.
+        let mut placed: Vec<bool> = Vec::new();
+        let mut failure = None;
+        for step in &mut self.steps {
+            #[cfg(test)]
+            if FAIL_WRITE_AFTER.get() == Some(placed.len()) {
+                failure = Some(Error::io(
+                    &step.path,
+                    std::io::Error::other("simulated failure"),
+                ));
+                break;
+            }
+            match place(step, &undo_root) {
+                Ok(kept) => placed.push(kept),
+                Err(error) => {
+                    failure = Some(error);
+                    break;
+                }
+            }
         }
-        Ok(())
+        let Some(error) = failure else {
+            let _ = fs::remove_dir_all(&undo_root);
+            done.written = self.steps.iter().map(|s| s.rel_path.clone()).collect();
+            return Ok(done);
+        };
+        // Give the files already in place their previous contents, last first.
+        let mut put_back = Ok(());
+        for (step, kept) in self.steps.iter().zip(&placed).rev() {
+            let result = if *kept {
+                fs::rename(undo_root.join(&step.rel_path), &step.path)
+            } else {
+                fs::remove_file(&step.path)
+            };
+            if let Err(e) = result {
+                put_back = Err(Error::io(&step.path, e));
+                break;
+            }
+        }
+        match put_back {
+            Ok(()) => {
+                game.remove_backups(&done.backed_up);
+                let _ = fs::remove_dir_all(&undo_root);
+                Err(WriteFailure {
+                    error: Error::mod_error(format!(
+                        "{error}. The files written so far were put back: nothing is changed \
+                         in the game"
+                    )),
+                    unchanged: true,
+                })
+            }
+            Err(again) => Err(WriteFailure {
+                error: Error::mod_error(format!(
+                    "{error}. Putting the written files back failed too ({again}); the \
+                     replaced files are in {UNDO_DIR}. Use Restore originals to put the \
+                     game's originals back"
+                )),
+                unchanged: false,
+            }),
+        }
+    }
+}
+
+/// Puts the new contents of `step` in place, keeping the file it replaces
+/// (a hard link, or a copy where links are not supported) under `undo_root`.
+/// Returns whether there was a file to keep.
+fn place(step: &mut WriteStep, undo_root: &Path) -> Result<bool> {
+    let kept = fs::symlink_metadata(&step.path).is_ok();
+    if kept {
+        let undo = undo_root.join(&step.rel_path);
+        if let Some(parent) = undo.parent() {
+            fs::create_dir_all(parent).map_err(|e| Error::io(parent, e))?;
+        }
+        if fs::hard_link(&step.path, &undo).is_err() {
+            fs::copy(&step.path, &undo).map_err(|e| Error::io(&undo, e))?;
+        }
+    }
+    match step.staged.take() {
+        Some(staged) => staged.commit()?,
+        None if kept => fs::remove_file(&step.path).map_err(|e| Error::io(&step.path, e))?,
+        None => {}
+    }
+    Ok(kept)
+}
+
+impl GameInstance {
+    /// Removes the backups `rel_paths`, made by a write that did not happen.
+    fn remove_backups(&self, rel_paths: &[String]) {
+        for rel_path in rel_paths {
+            let _ = fs::remove_file(self.root.join(BACKUP_DIR).join(rel_path));
+        }
     }
 }
 
@@ -774,13 +994,60 @@ fn has_game_files(dir: &Path, depth: usize) -> bool {
     subdirs.iter().any(|sub| has_game_files(sub, depth - 1))
 }
 
-/// Recursively collects `.str` and `.toc` files below `dir`.
-fn scan(
-    dir: &Path,
-    rel: &str,
-    streams: &mut Vec<GameFile>,
-    tocs: &mut Vec<GameFile>,
-) -> Result<()> {
+/// What [`scan`] finds.
+#[derive(Default)]
+struct Found {
+    streams: Vec<GameFile>,
+    tocs: Vec<GameFile>,
+    skipped: Vec<GameFile>,
+}
+
+/// What a file named `*.str` or `*.toc` holds, by its first four bytes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Kind {
+    Stream,
+    Toc,
+    Other,
+}
+
+/// Whether `bytes` start with `magic` in either byte order.
+fn starts_with_magic(bytes: &[u8], magic: u32) -> bool {
+    bytes.len() >= 4 && (bytes[..4] == magic.to_le_bytes() || bytes[..4] == magic.to_be_bytes())
+}
+
+/// The kind of the file at `path` named `lower` (lower case): a stream or a
+/// table of contents only when it starts with the format's magic. Other
+/// programs use the same extensions: NVIDIA's shader cache writes `*.toc`
+/// files that start with `CDVN`.
+fn kind_of(path: &Path, lower: &str) -> std::io::Result<Kind> {
+    use std::io::Read;
+    let (kind, magic) = if lower.ends_with(".str") {
+        (Kind::Stream, ustream::MAGIC)
+    } else if lower.ends_with(".toc") {
+        (Kind::Toc, toc::MAGIC)
+    } else {
+        return Ok(Kind::Other);
+    };
+    let mut head = [0u8; 4];
+    let mut read = 0;
+    let mut file = fs::File::open(path)?;
+    while read < head.len() {
+        match file.read(&mut head[read..])? {
+            0 => break,
+            n => read += n,
+        }
+    }
+    Ok(if starts_with_magic(&head[..read], magic) {
+        kind
+    } else {
+        Kind::Other
+    })
+}
+
+/// Recursively collects stream and table-of-contents files below `dir`. A
+/// file is taken by its name and its magic: a `.str` or `.toc` file with
+/// other contents goes to `found.skipped`.
+fn scan(dir: &Path, rel: &str, found: &mut Found) -> Result<()> {
     let entries = match fs::read_dir(dir) {
         Ok(entries) => entries,
         // A folder the user cannot read holds no game files; this happens when
@@ -810,23 +1077,31 @@ fn scan(
             Err(e) => return Err(Error::io(&path, e)),
         };
         if metadata.is_dir() {
-            if !SKIPPED_DIRS.contains(&name.as_str()) {
-                scan(&path, &rel_path, streams, tocs)?;
+            if !SKIPPED_DIRS.iter().any(|d| d.eq_ignore_ascii_case(&name)) {
+                scan(&path, &rel_path, found)?;
             }
             continue;
         }
-        let target = if lower.ends_with(".str") {
-            &mut *streams
-        } else if lower.ends_with(".toc") {
-            &mut *tocs
-        } else {
+        if !game_file {
             continue;
+        }
+        let kind = match kind_of(&path, &lower) {
+            Ok(kind) => kind,
+            // Held open without sharing by its program (a driver's cache
+            // while the game runs): the game's own files are never locked so.
+            Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => Kind::Other,
+            Err(e) => return Err(Error::io(&path, e)),
         };
-        target.push(GameFile {
+        let file = GameFile {
             rel_path,
             path,
             len: metadata.len(),
-        });
+        };
+        match kind {
+            Kind::Stream => found.streams.push(file),
+            Kind::Toc => found.tocs.push(file),
+            Kind::Other => found.skipped.push(file),
+        }
     }
     Ok(())
 }
@@ -1011,12 +1286,42 @@ mod tests {
     #[test]
     fn index_reports_broken_streams() {
         let dir = fake_game();
-        fs::write(dir.path().join("gf2/broken.str"), b"not a stream").unwrap();
+        fs::write(dir.path().join("gf2/broken.str"), b"3slo and then nonsense").unwrap();
+        fs::write(dir.path().join("gf2/notes.str"), b"not a stream").unwrap();
         let game = GameInstance::open(dir.path()).unwrap();
         let (index, errors) = game.build_index(|_| {});
         assert_eq!(index.entries.len(), 3);
         assert_eq!(errors.len(), 1);
         assert_eq!(game.streams()[errors[0].0].rel_path, "gf2/broken.str");
+        // Without the magic it is not taken for a stream at all.
+        let skipped: Vec<_> = game.skipped().iter().map(|f| &f.rel_path).collect();
+        assert_eq!(skipped, ["gf2/notes.str"]);
+    }
+
+    /// NVIDIA's shader cache next to the executable: `GLCache/<hash>/<hash>/*.toc`
+    /// starting with `CDVN`. Neither the folder nor such a file elsewhere is a
+    /// table of contents.
+    #[test]
+    fn foreign_toc_files_are_skipped() {
+        let dir = fake_game();
+        let root = dir.path();
+        let cache = root.join("GLCache/a5006eb268eeda1b/1271864ec7dbc5c8");
+        fs::create_dir_all(&cache).unwrap();
+        let cdvn = [&b"CDVN"[..], &[0, 0, 3, 0], &[0xC8; 24]].concat();
+        fs::write(cache.join("483ab422c6120620.toc"), &cdvn).unwrap();
+        fs::write(cache.join("483ab422c6120620.bin"), [0u8; 32]).unwrap();
+        fs::create_dir_all(root.join("Cache")).unwrap();
+        fs::write(root.join("Cache/x.toc"), &cdvn).unwrap();
+        fs::write(root.join("gf2/empty.toc"), b"").unwrap();
+        let game = GameInstance::open(root).unwrap();
+        let tocs: Vec<_> = game.tocs().iter().map(|f| f.rel_path.as_str()).collect();
+        assert_eq!(tocs, ["gf2/frontend.toc", "gf2/frontend_global.toc"]);
+        let skipped: Vec<_> = game.skipped().iter().map(|f| f.rel_path.as_str()).collect();
+        assert_eq!(skipped, ["Cache/x.toc", "gf2/empty.toc"]);
+        assert_eq!(game.toc_hashes().unwrap().len(), 2);
+        assert!(game.stream_parents().is_ok());
+        let (_, errors) = game.build_index(|_| {});
+        assert!(errors.is_empty());
     }
 
     #[test]

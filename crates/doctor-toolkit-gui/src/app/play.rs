@@ -1532,7 +1532,7 @@ mod tests {
         let root = dir.as_path();
         std::fs::create_dir_all(root.join("gf2")).unwrap();
         std::fs::write(root.join("godfather2.exe"), b"MZ").unwrap();
-        std::fs::write(root.join("gf2/a.str"), b"stream").unwrap();
+        std::fs::write(root.join("gf2/a.str"), b"3slo stream").unwrap();
         let game = GameInstance::open(root).unwrap();
         assert_eq!(
             first_run_state(&game),
@@ -1540,7 +1540,7 @@ mod tests {
         );
         // The old toolkit backed up the stream and changed it.
         std::fs::create_dir_all(root.join("_toolkit/backups/gf2")).unwrap();
-        std::fs::write(root.join("_toolkit/backups/gf2/a.str"), b"original").unwrap();
+        std::fs::write(root.join("_toolkit/backups/gf2/a.str"), b"3slo original").unwrap();
         std::fs::write(
             root.join("_toolkit/game_instance.xml"),
             "<installed_patches><patch>P.vpat</patch></installed_patches>",

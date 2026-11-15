@@ -10,7 +10,10 @@ use crate::workspace::tests::{
     LEVEL, MESH, STRINGS, TEX_DATA, TEXT, edit, fake_game, game_data, key, sample_table, snapshot,
     stream, toc_size,
 };
-use crate::workspace::{ApplyOptions, NewResourceEdit, PayloadStore, StreamAction};
+use crate::workspace::{
+    AppliedStream, ApplyOptions, FileStamp, NewResourceEdit, PayloadStore, StreamAction,
+    StreamState,
+};
 
 fn info(id: &str) -> ModInfo {
     ModInfo {
@@ -2036,4 +2039,295 @@ fn malicious_version_2_manifests_are_refused() {
     let mut json: serde_json::Value = serde_json::from_slice(&good.to_json().unwrap()).unwrap();
     json["streams"][0]["future"] = 1.into();
     ModManifest::parse(json.to_string().as_bytes()).unwrap();
+}
+
+// ------------------------------------------------- foreign files, interrupted writes
+
+/// NVIDIA's shader cache in the game folder: `GLCache/<hash>/<hash>/*.toc`
+/// starting with `CDVN`, and the same kind of file in a folder that is not
+/// skipped by name.
+fn add_driver_cache(root: &Path) {
+    let cdvn = [&b"CDVN"[..], &[0, 0, 3, 0], &[0xC8; 24]].concat();
+    let cache = root.join("GLCache/a5006eb268eeda1b/1271864ec7dbc5c8");
+    fs::create_dir_all(&cache).unwrap();
+    fs::write(cache.join("483ab422c6120620.toc"), &cdvn).unwrap();
+    fs::write(cache.join("483ab422c6120620.bin"), [0u8; 32]).unwrap();
+    fs::create_dir_all(root.join("gf2/cache")).unwrap();
+    fs::write(root.join("gf2/cache/x.toc"), &cdvn).unwrap();
+}
+
+/// A mesh of another size than the original, so the tables of contents change too.
+fn bigger_mesh(byte: u8) -> Vec<u8> {
+    vec![byte; 500]
+}
+
+/// Every file below `dir` of the game, relative to it.
+fn files_below(root: &Path, dir: &str) -> Vec<String> {
+    fn walk(dir: &Path, rel: &str, out: &mut Vec<String>) {
+        let Ok(entries) = fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries {
+            let entry = entry.unwrap();
+            let name = entry.file_name().into_string().unwrap();
+            let rel = if rel.is_empty() {
+                name
+            } else {
+                format!("{rel}/{name}")
+            };
+            if entry.path().is_dir() {
+                walk(&entry.path(), &rel, out);
+            } else {
+                out.push(rel);
+            }
+        }
+    }
+    let mut out = Vec::new();
+    walk(&root.join(dir), "", &mut out);
+    out.sort();
+    out
+}
+
+fn level_size_matches_toc(root: &Path) -> bool {
+    let level = fs::read(root.join("gf2/level.str")).unwrap();
+    toc_size(root, LEVEL) as u64
+        == crate::container::ustream::StreamLayout::parse(&level)
+            .unwrap()
+            .total_data_size()
+}
+
+#[test]
+fn foreign_toc_files_do_not_stop_writing_mods() {
+    let (dir, _) = fake_game();
+    let root = dir.path();
+    add_driver_cache(root);
+    let game = GameInstance::open(root).unwrap();
+    assert_eq!(game.tocs().len(), 1);
+    assert_eq!(game.skipped().len(), 1, "{:?}", game.skipped());
+    let (_, errors) = game.build_index(|_| {});
+    assert!(errors.is_empty());
+    let pristine = snapshot(root);
+
+    let temp = tempfile::tempdir().unwrap();
+    let a = build_mod(&game, temp.path(), "a", vec![(MESH, bigger_mesh(1))]);
+    let mut mods = ModManager::open(&game).unwrap();
+    mods.install_file(&game, &a, true).unwrap();
+    mods.apply(&game, ModApplyOptions::default()).unwrap();
+    assert_eq!(game_data(&game, LEVEL, MESH), bigger_mesh(1));
+    assert!(level_size_matches_toc(root));
+    assert!(mods.interrupted(&game).unwrap().is_empty());
+    mods.unapply(&game, false).unwrap();
+    assert_eq!(snapshot(root), pristine, "the cache is never touched");
+}
+
+#[test]
+fn a_failed_write_puts_every_file_back() {
+    let (dir, game) = fake_game();
+    let root = dir.path();
+    let pristine = snapshot(root);
+    let temp = tempfile::tempdir().unwrap();
+    let a = build_mod(&game, temp.path(), "a", vec![(MESH, bigger_mesh(1))]);
+    let b = build_mod(
+        &game,
+        temp.path(),
+        "b",
+        vec![(MESH, mesh(2)), (STRINGS, strings(["B", "b"]))],
+    );
+    let mut mods = ModManager::open(&game).unwrap();
+    mods.install_file(&game, &a, true).unwrap();
+    let applied = manager::applied_path(root);
+
+    // The level stream and its table of contents are written: fail before
+    // the first and between the two.
+    for after in [0, 1] {
+        crate::game::FAIL_WRITE_AFTER.set(Some(after));
+        let result = mods.apply(&game, ModApplyOptions::default());
+        crate::game::FAIL_WRITE_AFTER.set(None);
+        let error = result.unwrap_err().to_string();
+        assert!(error.contains("nothing is changed"), "{error}");
+        assert_eq!(snapshot(root), pristine, "failing after {after} file(s)");
+        assert_eq!(Deployment::load(&applied).unwrap(), Deployment::default());
+        assert!(!mods.has_written());
+        assert!(files_below(root, crate::game::BACKUP_DIR).is_empty());
+        assert!(!root.join(crate::game::UNDO_DIR).exists());
+    }
+
+    // From a game with mods in it, a failed write goes back to that game.
+    mods.apply(&game, ModApplyOptions::default()).unwrap();
+    let with_a = snapshot(root);
+    let record = Deployment::load(&applied).unwrap();
+    let backups = files_below(root, crate::game::BACKUP_DIR);
+    assert_eq!(backups, ["gf2/level.str", "gf2/level.toc"]);
+    mods.install_file(&game, &b, true).unwrap();
+    crate::game::FAIL_WRITE_AFTER.set(Some(1));
+    let result = mods.apply(&game, ModApplyOptions::default());
+    crate::game::FAIL_WRITE_AFTER.set(None);
+    assert!(result.is_err());
+    assert_eq!(snapshot(root), with_a);
+    assert_eq!(Deployment::load(&applied).unwrap(), record);
+    assert_eq!(files_below(root, crate::game::BACKUP_DIR), backups);
+    assert_eq!(
+        mods.status(&game).unwrap().streams[0].state,
+        StreamState::Applied
+    );
+
+    // Nothing is left behind: the next write works, and restoring is exact.
+    mods.apply(&game, ModApplyOptions::default()).unwrap();
+    assert_eq!(game_data(&game, LEVEL, STRINGS), strings(["B", "b"]));
+    assert!(level_size_matches_toc(root));
+    mods.unapply(&game, false).unwrap();
+    assert_eq!(snapshot(root), pristine);
+}
+
+/// Leaves the game as a write that stopped after the stream was replaced and
+/// before the tables of contents were: the record notes the file about to
+/// be written, the stream holds it, the table still has the original size,
+/// the backup of the stream is there. Returns the original stream.
+fn interrupt_like_a_crash(root: &Path, game: &GameInstance, mods: &mut ModManager) -> Vec<u8> {
+    let original_level = fs::read(root.join("gf2/level.str")).unwrap();
+    let original_toc = fs::read(root.join("gf2/level.toc")).unwrap();
+    mods.apply(game, ModApplyOptions::default()).unwrap();
+    let written = fs::read(root.join("gf2/level.str")).unwrap();
+    assert_ne!(fs::read(root.join("gf2/level.toc")).unwrap(), original_toc);
+    fs::write(root.join("gf2/level.toc"), &original_toc).unwrap();
+    fs::remove_file(root.join(crate::game::BACKUP_DIR).join("gf2/level.toc")).unwrap();
+    let original = FileStamp::of_data(&original_level);
+    let mut record = Deployment::default();
+    record.streams.insert(
+        LEVEL.to_owned(),
+        AppliedStream {
+            path: "gf2/level.str".to_owned(),
+            original: original.clone(),
+            written: original,
+            in_flight: Some(FileStamp::of_data(&written)),
+            resources: Default::default(),
+            data_size: None,
+            new_stream: None,
+        },
+    );
+    record.save(&manager::applied_path(root)).unwrap();
+    original_level
+}
+
+#[test]
+fn restore_originals_mends_an_interrupted_write() {
+    let (dir, _) = fake_game();
+    let root = dir.path();
+    add_driver_cache(root);
+    let game = GameInstance::open(root).unwrap();
+    let pristine = snapshot(root);
+    let temp = tempfile::tempdir().unwrap();
+    let a = build_mod(&game, temp.path(), "a", vec![(MESH, bigger_mesh(1))]);
+    let mut mods = ModManager::open(&game).unwrap();
+    mods.install_file(&game, &a, true).unwrap();
+    let original_level = interrupt_like_a_crash(root, &game, &mut mods);
+    assert!(!level_size_matches_toc(root));
+
+    // Seen on opening, by the manager and for the editor.
+    let mut mods = ModManager::open(&game).unwrap();
+    assert_eq!(mods.interrupted(&game).unwrap(), [LEVEL]);
+    assert_eq!(
+        interrupted_writes(&game).unwrap(),
+        [(WriteOwner::ModManager, vec![LEVEL.to_owned()])]
+    );
+    assert!(mods.has_written());
+    assert!(!mods.status(&game).unwrap().streams[0].up_to_date);
+    // The workspace does not write over it.
+    assert!(ensure_mods_not_in_game(&game).is_err());
+
+    // Restore originals puts the stream back byte for byte.
+    let report = mods.unapply(&game, false).unwrap();
+    assert_eq!(report.streams, [(LEVEL.to_owned(), StreamAction::Restored)]);
+    assert_eq!(
+        fs::read(root.join("gf2/level.str")).unwrap(),
+        original_level
+    );
+    assert_eq!(snapshot(root), pristine);
+    assert!(mods.interrupted(&game).unwrap().is_empty());
+    assert!(interrupted_writes(&game).unwrap().is_empty());
+    assert_eq!(
+        Deployment::load(&manager::applied_path(root)).unwrap(),
+        Deployment::default()
+    );
+
+    // Writing the mods anew from there works as well.
+    interrupt_like_a_crash(root, &game, &mut mods);
+    let mut mods = ModManager::open(&game).unwrap();
+    mods.apply(&game, ModApplyOptions::default()).unwrap();
+    assert!(mods.interrupted(&game).unwrap().is_empty());
+    assert!(level_size_matches_toc(root));
+}
+
+#[test]
+fn restore_originals_does_not_need_the_tables_of_contents() {
+    let (dir, game) = fake_game();
+    let root = dir.path();
+    let temp = tempfile::tempdir().unwrap();
+    let a = build_mod(&game, temp.path(), "a", vec![(MESH, bigger_mesh(1))]);
+    let mut mods = ModManager::open(&game).unwrap();
+    mods.install_file(&game, &a, true).unwrap();
+    let original_level = interrupt_like_a_crash(root, &game, &mut mods);
+    // A table of contents that cannot be read any more.
+    let mut broken = crate::toc::MAGIC.to_le_bytes().to_vec();
+    broken.extend_from_slice(&[0xFF; 12]);
+    fs::write(root.join("gf2/level.toc"), &broken).unwrap();
+    let game = GameInstance::open(root).unwrap();
+    let mut mods = ModManager::open(&game).unwrap();
+    // Writing refuses before touching anything.
+    let before = snapshot(root);
+    assert!(mods.apply(&game, ModApplyOptions::default()).is_err());
+    assert_eq!(snapshot(root), before);
+    assert_eq!(mods.interrupted(&game).unwrap(), [LEVEL]);
+    // Restoring goes through and says what it left.
+    let report = mods.unapply(&game, false).unwrap();
+    assert_eq!(
+        fs::read(root.join("gf2/level.str")).unwrap(),
+        original_level
+    );
+    assert_eq!(fs::read(root.join("gf2/level.toc")).unwrap(), broken);
+    assert!(
+        report.warnings.iter().any(|w| w.contains("gf2/level.toc")),
+        "{:?}",
+        report.warnings
+    );
+    assert!(mods.interrupted(&game).unwrap().is_empty());
+    assert!(!mods.has_written());
+}
+
+/// A mod made on one edition of the game installs and writes on another
+/// (here a game whose executable is not a known build, as the retail DVD
+/// 1.0.764.0 is for a mod made on 1.0.789.0): only a note says so, the
+/// resources are checked one by one.
+#[test]
+fn a_mod_of_another_edition_is_only_noted() {
+    assert_eq!(
+        crate::edition::edition_name(
+            46_079_728,
+            "a5632356c94a270dab518e0e1fa569ad40fd6520c1013cf99b023e95252ad338"
+        ),
+        Some("PC 1.0.764.0, retail DVD (build of 2009-01-27)")
+    );
+    let (_dir, game) = fake_game();
+    let temp = tempfile::tempdir().unwrap();
+    let data = bigger_mesh(4);
+    let mut manifest = manifest_for(&game, &data);
+    manifest.id = "other-edition".into();
+    manifest.game.executable_size = Some(13_840_384);
+    manifest.game.executable_sha256 =
+        Some("31f579a80cfd14f42c0379bbfa5b5b7f151bb06ec5163593023ab5002b1f1286".into());
+    let path = temp.path().join("other.zip");
+    write_mod(&path, &manifest, std::slice::from_ref(&data));
+    let mut mods = ModManager::open(&game).unwrap();
+    let report = mods.install_file(&game, &path, true).unwrap();
+    assert!(report.issues.is_empty(), "{:?}", report.issues);
+    assert!(
+        report
+            .warnings
+            .iter()
+            .any(|w| w.contains("another edition") && w.contains("PC 1.0.789.0")),
+        "{:?}",
+        report.warnings
+    );
+    mods.apply(&game, ModApplyOptions::default()).unwrap();
+    assert_eq!(game_data(&game, LEVEL, MESH), data);
 }

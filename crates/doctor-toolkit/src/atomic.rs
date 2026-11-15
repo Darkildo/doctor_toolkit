@@ -35,6 +35,55 @@ pub fn copy(from: &Path, to: &Path) -> Result<()> {
 ///
 /// When `fill` fails, the temporary file is removed and `path` is left as it was.
 pub fn write_with(path: &Path, fill: impl FnOnce(&mut File) -> std::io::Result<()>) -> Result<()> {
+    stage_with(path, fill)?.commit()
+}
+
+/// New contents for a file, written and flushed to the temporary file next
+/// to it but not yet in place: [`Staged::commit`] renames it over the file.
+/// Dropped without a commit, the temporary file is removed.
+///
+/// Staging every file of an operation first and committing them afterwards
+/// leaves only the renames for the moment the game files change.
+#[derive(Debug)]
+pub struct Staged {
+    path: PathBuf,
+    temp: PathBuf,
+    placed: bool,
+}
+
+impl Staged {
+    /// The file the contents are for.
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    /// Puts the new contents in place.
+    pub fn commit(mut self) -> Result<()> {
+        fs::rename(&self.temp, &self.path).map_err(|e| Error::io(&self.path, e))?;
+        self.placed = true;
+        sync_dir(self.path.parent().unwrap_or(Path::new(".")));
+        Ok(())
+    }
+}
+
+impl Drop for Staged {
+    fn drop(&mut self) {
+        if !self.placed {
+            let _ = fs::remove_file(&self.temp);
+        }
+    }
+}
+
+/// Stages `contents` for `path`; see [`Staged`].
+pub fn stage(path: &Path, contents: &[u8]) -> Result<Staged> {
+    stage_with(path, |file| file.write_all(contents))
+}
+
+/// Stages whatever `fill` writes for `path`; see [`Staged`].
+pub fn stage_with(
+    path: &Path,
+    fill: impl FnOnce(&mut File) -> std::io::Result<()>,
+) -> Result<Staged> {
     let temp = temp_path(path)?;
     // A leftover of an earlier interrupted write; removing a link removes only the link.
     if fs::symlink_metadata(&temp).is_ok() {
@@ -60,12 +109,11 @@ pub fn write_with(path: &Path, fill: impl FnOnce(&mut File) -> std::io::Result<(
         let _ = fs::remove_file(&temp);
         return Err(Error::io(&temp, error));
     }
-    if let Err(error) = fs::rename(&temp, path) {
-        let _ = fs::remove_file(&temp);
-        return Err(Error::io(path, error));
-    }
-    sync_dir(path.parent().unwrap_or(Path::new(".")));
-    Ok(())
+    Ok(Staged {
+        path: path.to_owned(),
+        temp,
+        placed: false,
+    })
 }
 
 /// The temporary file used to replace `path`: same directory, hidden, with the

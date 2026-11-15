@@ -1177,6 +1177,14 @@ impl ModManager {
         self.deployment.held_streams(game)
     }
 
+    /// Streams whose last write into the game did not finish: the game is
+    /// not as the mods were written nor as it was, and its tables of
+    /// contents may not match. [`Self::unapply`] puts the originals back
+    /// from the backups; [`Self::apply`] writes the mods anew.
+    pub fn interrupted(&self, game: &GameInstance) -> Result<Vec<String>> {
+        self.deployment.interrupted(game)
+    }
+
     /// Whether the mod manager has written anything into the game that is still there.
     pub fn has_written(&self) -> bool {
         !self.deployment.streams.is_empty()

@@ -394,7 +394,23 @@ pub fn run(command: ModsCommand) -> Result<()> {
 fn open(game_dir: &Path) -> Result<(GameInstance, ModManager)> {
     let game = GameInstance::open(game_dir)?;
     let mods = ModManager::open(&game)?;
+    warn_interrupted(&game, &mods);
     Ok((game, mods))
+}
+
+/// Tells when the last write into the game did not finish.
+fn warn_interrupted(game: &GameInstance, mods: &ModManager) {
+    let streams = mods.interrupted(game).unwrap_or_default();
+    if streams.is_empty() {
+        return;
+    }
+    eprintln!(
+        "warning: the last write of the mods into the game did not finish ({}); the game files \
+         may not match each other. Run `doctor-toolkit mods unapply {}` to put the originals \
+         back from the backups, or `mods apply` to write the mods anew",
+        streams.join(", "),
+        quote(game.root())
+    );
 }
 
 fn open_workspace(game: &GameInstance, dir: Option<&Path>) -> Result<Workspace> {

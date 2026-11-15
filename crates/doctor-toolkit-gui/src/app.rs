@@ -489,6 +489,23 @@ impl BrowserApp {
                             ),
                         );
                     }
+                    let interrupted =
+                        doctor_toolkit::mods::interrupted_writes(&game).unwrap_or_default();
+                    for (owner, streams) in interrupted {
+                        let owner = match owner {
+                            doctor_toolkit::mods::WriteOwner::ModManager => tr("status.owner_mods"),
+                            doctor_toolkit::mods::WriteOwner::Workspace => {
+                                tr("status.owner_workspace")
+                            }
+                        };
+                        self.notify(
+                            Level::Error,
+                            trf(
+                                "status.interrupted",
+                                &[("owner", &owner), ("streams", &streams.join(", "))],
+                            ),
+                        );
+                    }
                     crate::profile::mark("game");
                     self.game_opened(game, index, ctx);
                 }
@@ -1276,7 +1293,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("gf2")).unwrap();
         std::fs::write(dir.join("godfather2.exe"), b"MZ").unwrap();
-        std::fs::write(dir.join("gf2/a.str"), b"stream").unwrap();
+        std::fs::write(dir.join("gf2/a.str"), b"3slo stream").unwrap();
         dir
     }
 
@@ -1286,7 +1303,11 @@ mod tests {
         let dir = fake_game("lock");
         // A backup that Restore originals would copy over the stream.
         std::fs::create_dir_all(dir.join("_doctor_toolkit/backups/gf2")).unwrap();
-        std::fs::write(dir.join("_doctor_toolkit/backups/gf2/a.str"), b"original").unwrap();
+        std::fs::write(
+            dir.join("_doctor_toolkit/backups/gf2/a.str"),
+            b"3slo original",
+        )
+        .unwrap();
         app.game = Some(Arc::new(GameInstance::open(&dir).unwrap()));
         frame(&ctx, &mut app, Vec::new());
         assert!(app.enabled(Command::Play));
@@ -1302,7 +1323,10 @@ mod tests {
             "the Mods window is locked too"
         );
         app.restore_originals();
-        assert_eq!(std::fs::read(dir.join("gf2/a.str")).unwrap(), b"stream");
+        assert_eq!(
+            std::fs::read(dir.join("gf2/a.str")).unwrap(),
+            b"3slo stream"
+        );
         assert!(app.status.starts_with("Not written"), "{}", app.status);
 
         app.play.set_running(Vec::new());
@@ -1310,7 +1334,10 @@ mod tests {
         assert!(app.enabled(Command::Play));
         assert!(app.mods.write_lock().is_none());
         app.restore_originals();
-        assert_eq!(std::fs::read(dir.join("gf2/a.str")).unwrap(), b"original");
+        assert_eq!(
+            std::fs::read(dir.join("gf2/a.str")).unwrap(),
+            b"3slo original"
+        );
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

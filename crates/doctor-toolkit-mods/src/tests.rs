@@ -381,3 +381,66 @@ fn a_card_moves_to_the_gap_it_is_dropped_in() {
     );
     assert!(is_mod_file(Path::new("a/b.ZIP")) && !is_mod_file(Path::new("a.txt")));
 }
+
+/// The game as a write left it that stopped after the stream and before the
+/// table of contents, with NVIDIA's shader cache next to it: the panel says
+/// so on opening, and Restore originals brings the stream back byte for byte.
+#[test]
+fn an_interrupted_write_is_told_and_restored() {
+    use doctor_toolkit::mods::manager::applied_path;
+    use doctor_toolkit::workspace::{AppliedStream, Deployment, FileStamp};
+
+    let (dir, _) = game(false);
+    let root = dir.path();
+    let cache = root.join("GLCache/a5006eb268eeda1b/1271864ec7dbc5c8");
+    std::fs::create_dir_all(&cache).unwrap();
+    std::fs::write(
+        cache.join("483ab422c6120620.toc"),
+        b"CDVN\0\0\x03\0 a shader",
+    )
+    .unwrap();
+    let game = Arc::new(GameInstance::open(root).unwrap());
+    let temp = tempfile::tempdir().unwrap();
+    let a = build(&game, temp.path(), "a", LEVEL, MESH, vec![1; 500]);
+    let level = root.join("gf2/level.str");
+    let toc = root.join("gf2/level.toc");
+    let (original_level, original_toc) =
+        (std::fs::read(&level).unwrap(), std::fs::read(&toc).unwrap());
+    let mut manager = ModManager::open(&game).unwrap();
+    manager.install_file(&game, &a, true).unwrap();
+    manager
+        .apply(
+            &game,
+            doctor_toolkit::mods::manager::ModApplyOptions::default(),
+        )
+        .unwrap();
+    let written = std::fs::read(&level).unwrap();
+    std::fs::write(&toc, &original_toc).unwrap();
+    let original = FileStamp::of_data(&original_level);
+    let mut record = Deployment::default();
+    record.streams.insert(
+        LEVEL.to_owned(),
+        AppliedStream {
+            path: "gf2/level.str".into(),
+            original: original.clone(),
+            written: original,
+            in_flight: Some(FileStamp::of_data(&written)),
+            resources: Default::default(),
+            data_size: None,
+            new_stream: None,
+        },
+    );
+    record.save(&applied_path(root)).unwrap();
+
+    let ctx = egui::Context::default();
+    let mut panel = panel(&game, &ctx);
+    assert_eq!(panel.overview.interrupted, [LEVEL]);
+    assert!(!panel.up_to_date());
+    frame(&ctx, &mut panel, &[]);
+    panel.unapply(&ctx);
+    panel.wait();
+    assert_eq!(std::fs::read(&level).unwrap(), original_level);
+    assert_eq!(std::fs::read(&toc).unwrap(), original_toc);
+    assert!(panel.overview.interrupted.is_empty());
+    assert!(!panel.manager().unwrap().has_written());
+}
