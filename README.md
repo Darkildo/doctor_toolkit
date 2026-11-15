@@ -523,7 +523,8 @@ together with other mods, install it as a mod (`mods install-workspace`).
 Details, the `.vpat` format and what was found about it: `docs/mods.md` (Russian).
 
 For players there is a separate program with only the mod manager,
-**Open Mod Manager** (`open-mod-manager`, `open-mod-manager.exe` on Windows;
+**Open Mod Manager** (each release also has it alone, without the editor:
+`open-mod-manager-<version>-<system>.zip` / `.tar.gz`; `open-mod-manager`, `open-mod-manager.exe` on Windows;
 "Powered by Doctor": it is part of doctor_toolkit). It finds the installed
 game by itself, installs mod files dropped on its window or opened from the
 system, shows each mod as a card with its picture and its state in words

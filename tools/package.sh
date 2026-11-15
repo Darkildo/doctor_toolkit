@@ -4,7 +4,8 @@
 #   dist/doctor_toolkit-<version>-macos-<arch>.tar.gz
 # with doctor-toolkit, doctor-toolkit-gui, open-mod-manager, README,
 # LICENSE, the documentation and BUILD-INFO.txt, plus a .sha256 file next to
-# it. Run on the system the package is for (the release workflow does);
+# it, and open-mod-manager-<version>-<os>-<arch> (.zip/.tar.gz) with Open
+# Mod Manager alone. Run on the system the package is for (the release workflow does);
 # Git Bash on Windows.
 #
 # Usage: tools/package.sh [--skip-build]
@@ -69,3 +70,19 @@ else
     (cd dist && shasum -a 256 "$name.tar.gz" >"$name.tar.gz.sha256")
 fi
 echo "built $archive ($(du -h "$archive" | cut -f1))"
+
+# Open Mod Manager alone, for players: the program, LICENSE and a short README.
+omm="open-mod-manager-$version-$os-$arch"
+mkdir -p "$stage/$omm"
+cp "$target_dir/dist/open-mod-manager$exe" LICENSE "$stage/$omm/"
+cp tools/open-mod-manager-README.txt "$stage/$omm/README.txt"
+if [[ $os == windows ]]; then
+    rm -f -- "dist/$omm.zip"
+    (cd "$stage" && 7z a -tzip -mx=9 "$root/dist/$omm.zip" "$omm" >/dev/null)
+    (cd dist && sha256sum "$omm.zip" >"$omm.zip.sha256")
+    echo "built dist/$omm.zip"
+else
+    tar -C "$stage" -czf "dist/$omm.tar.gz" "$omm"
+    (cd dist && shasum -a 256 "$omm.tar.gz" >"$omm.tar.gz.sha256")
+    echo "built dist/$omm.tar.gz"
+fi

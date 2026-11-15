@@ -163,6 +163,17 @@ tar --sort=name --owner=0 --group=0 --numeric-owner -C "$stage" -czf "$archive" 
 (cd dist && sha256sum "$name.tar.gz" >"$name.tar.gz.sha256")
 
 echo "built $archive ($(du -h "$archive" | cut -f1))"
+
+# Open Mod Manager alone, for players: the program, its menu entry, LICENSE
+# and a short README.
+omm="open-mod-manager-$version-linux-$arch"
+mkdir -p "$stage/$omm/desktop"
+cp "$bin_dir/open-mod-manager" LICENSE "$stage/$omm/"
+cp tools/open-mod-manager-README.txt "$stage/$omm/README.txt"
+cp tools/desktop/open-mod-manager.desktop tools/desktop/open-mod-manager.xml "$stage/$omm/desktop/"
+tar --sort=name --owner=0 --group=0 --numeric-owner -C "$stage" -czf "dist/$omm.tar.gz" "$omm"
+(cd dist && sha256sum "$omm.tar.gz" >"$omm.tar.gz.sha256")
+echo "built dist/$omm.tar.gz ($(du -h "dist/$omm.tar.gz" | cut -f1))"
 echo "minimum glibc: ${max_glibc#GLIBC_}"
 echo "libasound.so.2 symbol versions (editor): $alsa_versions"
 echo "Blender add-on: $addon"

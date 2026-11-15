@@ -107,4 +107,4 @@ jobs:
           ls -l dist
           gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" --draft \
             --title "doctor_toolkit $GITHUB_REF_NAME" \
-            --notes "Packages for Linux x86_64, Windows x86_64 and macOS, and the in-game modules: live link (doctor_live.asi) and graphics (doctor_render.asi). See README.md and docs/guide (Russian)."
+            --notes "Packages for Linux x86_64, Windows x86_64 and macOS, Open Mod Manager alone (open-mod-manager-*), and the in-game modules: live link (doctor_live.asi) and graphics (doctor_render.asi). See README.md and docs/guide (Russian)."
