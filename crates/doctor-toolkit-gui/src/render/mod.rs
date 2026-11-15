@@ -42,7 +42,7 @@ pub use gpu::{GpuContext, RenderStats, SceneRenderer, Viewport, adapter_rank, op
 #[allow(unused_imports)]
 pub use scene::{
     Environment, Instance, LineVertex, MaterialData, MeshData, MeshKey, Pick, Scene, SceneOptions,
-    Surface, SurfaceModel, TextureData, TextureKey, Vertex,
+    Surface, SurfaceModel, TextureData, TextureKey, Vertex, WorldParams,
 };
 
 static GAME_LOOK: AtomicBool = AtomicBool::new(true);

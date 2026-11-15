@@ -36,9 +36,14 @@ pub struct GameLook {
 
 /// Brightness of the sun's light at noon in the light buffer, and the
 /// share of the ambient matrices: not keys of the time of day (the game sets
-/// them in code); matched to frames of the game (`renderer.md` §10.6).
-const SUN_AT_NOON: f32 = 0.42;
-const AMBIENT_SCALE: f32 = 0.2;
+/// them in code); matched to frames of the game (`renderer.md` §10.6) once
+/// world surfaces had their tints and baked occlusion (§10.7). The sun
+/// saturates the 8-bit buffer on surfaces facing it, as in the game.
+const SUN_AT_NOON: f32 = 1.2;
+const AMBIENT_SCALE: f32 = 0.3;
+/// The studio light of the model and character viewers (their surfaces were
+/// matched with it before world surfaces were).
+const STUDIO_SUN: f32 = 0.42;
 
 fn luminance(c: [f32; 3]) -> f32 {
     0.299 * c[0] + 0.587 * c[1] + 0.114 * c[2]
@@ -77,7 +82,7 @@ impl GameLook {
         ambient[3 * 4 + 1] = 0.04;
         Self {
             sun: math::normalize_or([0.35, 0.9, 0.45], [0.0, 1.0, 0.0]),
-            sun_color: [SUN_AT_NOON, SUN_AT_NOON * 0.95, SUN_AT_NOON * 0.85],
+            sun_color: [STUDIO_SUN, STUDIO_SUN * 0.95, STUDIO_SUN * 0.85],
             wrap: 0.25,
             ambient: [ambient; 3],
             ambient_scale: 1.0,

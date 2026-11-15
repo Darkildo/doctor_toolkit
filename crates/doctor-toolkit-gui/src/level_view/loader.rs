@@ -11,14 +11,18 @@ use std::time::{Duration, Instant};
 use doctor_toolkit::game::{GameInstance, ResourceIndex};
 use doctor_toolkit::level::{Found, Level, LevelAssets, LevelSource, Lookup, Overrides, Scope};
 use doctor_toolkit::resource::material::TextureRole;
-use doctor_toolkit::resource::mesh::Model;
+use doctor_toolkit::resource::mesh::{Model, RENDER_FLAG_ALPHA_SORT, RENDER_FLAG_NO_DEPTH};
 use doctor_toolkit::resource::texture::Texture;
 use doctor_toolkit::resource::tg4::{Format, Kind};
 use doctor_toolkit::resource::treemodel::TreeModel;
+use doctor_toolkit::resource::world_shading::{WorldModel, WorldShading};
 use rayon::prelude::*;
 
 use crate::render::tree::{TreeMaterial, tree_mesh, tree_part_material};
-use crate::render::{MaterialData, MeshData, MeshKey, TextureData, TextureKey, Vertex};
+use crate::render::{
+    MaterialData, MeshData, MeshKey, Surface, SurfaceModel, TextureData, TextureKey, Vertex,
+    WorldParams,
+};
 
 /// Meshes converted per batch.
 const BATCH: usize = 32;
@@ -232,7 +236,7 @@ fn convert(
     started: Instant,
 ) {
     total.store(meshes.len(), Ordering::Relaxed);
-    let materials: Mutex<HashMap<u32, (Option<u32>, bool)>> = Mutex::default();
+    let materials: Mutex<HashMap<u32, Arc<LevelMaterial>>> = Mutex::default();
     let tree_materials: Mutex<HashMap<u32, Option<TreeMaterial>>> = Mutex::default();
     let mut sent_textures: HashSet<u32> = HashSet::new();
     let (mut mesh_count, mut texture_count, mut triangles) = (0, 0, 0);
@@ -304,13 +308,145 @@ fn convert(
     ctx.request_repaint();
 }
 
-/// One part per texture (draw records of one texture are merged); returns
-/// the texture hashes the parts use.
+/// What the level view draws of a material: its base texture (all the
+/// simple shading uses), whether it is the sky dome, and how the game shades
+/// it (world surfaces, `docs/analysis/renderer.md` §10.7).
+#[derive(Debug, Default)]
+struct LevelMaterial {
+    diffuse: Option<u32>,
+    sky: bool,
+    world: Option<WorldShading>,
+}
+
+impl LevelMaterial {
+    fn of(material: Option<&doctor_toolkit::resource::material::Material>) -> Self {
+        let Some(m) = material else {
+            return Self::default();
+        };
+        Self {
+            diffuse: m.texture(TextureRole::Diffuse),
+            sky: m.shaders.iter().any(|s| is_sky(s.0)),
+            world: WorldShading::from_material(m),
+        }
+    }
+}
+
+/// The renderer's surface of a world material.
+fn world_surface(w: &WorldShading) -> Surface {
+    let key = |t: Option<u32>| t.map(texture_key);
+    let model = match w.model {
+        WorldModel::Basic => SurfaceModel::WorldBasic,
+        WorldModel::Building => SurfaceModel::Building,
+        WorldModel::Detail => SurfaceModel::Detail,
+        WorldModel::Panorama => SurfaceModel::Panorama,
+        WorldModel::Overlay => SurfaceModel::Overlay,
+        WorldModel::Window => SurfaceModel::Window,
+        WorldModel::Glass => SurfaceModel::Glass,
+        WorldModel::Water => SurfaceModel::Water,
+    };
+    let identity = [1.0, 1.0, 0.0, 0.0];
+    // Windows bind their front map, panoramas their tint mask, as the
+    // detail texture at the base UV.
+    let (detail, detail_uv) = match w.model {
+        WorldModel::Window | WorldModel::Glass => (w.base, identity),
+        WorldModel::Panorama => (w.detail, identity),
+        _ => (w.detail, w.detail_uv),
+    };
+    let mut surface = Surface {
+        model,
+        blend: w.model == WorldModel::Overlay,
+        normal: key(w.normal),
+        gloss: key(w.gloss),
+        detail_normal: key(w.detail_normal),
+        detail: key(detail),
+        mask: key(w.mask),
+        exponent_map: key(w.exponent_map),
+        tint: w.tint,
+        detail_uv,
+        detail_mask_uv: w.mask_uv,
+        specular: w.specular,
+        base_tint: w.base_tint,
+        detail_tint: w.detail_tint,
+        world: WorldParams {
+            mask_scale: w.mask_scale,
+            normal_scale: w.normal_scale,
+            exponent: w.exponent,
+            overlay: w.overlay,
+            reflection: w.reflection,
+            specular_masked: w.specular_masked,
+            specular_lit: w.specular_lit,
+            reflection_masked: w.reflection_masked,
+            alpha_test: w.alpha_test,
+        },
+        ..Surface::default()
+    };
+    settle(&mut surface, w.model);
+    surface
+}
+
+/// Clears what the world shader does not use for this surface (`scene.wgsl`,
+/// `world_fragment`), so that records that look the same share a part and a
+/// bind group: each part is a draw call and each bind group change costs
+/// CPU time (`docs/analysis/editor-performance.md` §10).
+fn settle(s: &mut Surface, model: WorldModel) {
+    let identity = [1.0, 1.0, 0.0, 0.0];
+    let w = &mut s.world;
+    // A highlight masked by a missing (black) gloss map is none.
+    if w.specular_masked && s.gloss.is_none() {
+        s.specular = [0.0; 3];
+    }
+    if s.specular == [0.0; 3] {
+        w.specular_masked = false;
+        w.specular_lit = false;
+        w.exponent = 0.0;
+        s.exponent_map = None;
+    }
+    if w.reflection_masked && s.gloss.is_none() {
+        w.reflection = [0.0; 2];
+    }
+    if w.reflection == [0.0; 2] {
+        w.reflection_masked = false;
+    }
+    let gloss_used = (s.specular != [0.0; 3] && (w.specular_masked || s.exponent_map.is_some()))
+        || w.reflection_masked;
+    if !gloss_used {
+        s.gloss = None;
+        s.exponent_map = None;
+    }
+    if s.normal.is_none() && s.detail_normal.is_none() {
+        w.normal_scale = 1.0;
+    }
+    if s.detail.is_none() && s.detail_normal.is_none() {
+        s.detail_uv = identity;
+    }
+    if s.mask.is_none() {
+        s.detail_mask_uv = identity;
+    }
+    // Only the two-layer model reads the detail tint and the mask; only the
+    // tinted models the base tint; only the overlay its strength.
+    if model != WorldModel::Detail {
+        s.detail_tint = [1.0; 4];
+        s.mask = None;
+        s.detail_mask_uv = identity;
+        w.mask_scale = 1.0;
+    }
+    if !matches!(
+        model,
+        WorldModel::Building | WorldModel::Detail | WorldModel::Panorama | WorldModel::Water
+    ) {
+        s.base_tint = [1.0; 4];
+    }
+    // The world shader reads only the alpha of `g_Tint`.
+    s.tint = [1.0, 1.0, 1.0, s.tint[3]];
+}
+
+/// One part per material as the renderer sees it (draw records that look
+/// the same are merged); returns the texture hashes the parts use.
 fn mesh_data(
     model: &Model,
     source: &LevelSource,
     assets: &LevelAssets,
-    materials: &Mutex<HashMap<u32, (Option<u32>, bool)>>,
+    materials: &Mutex<HashMap<u32, Arc<LevelMaterial>>>,
 ) -> Result<(MeshData, Vec<u32>), String> {
     let mut data = MeshData::default();
     let mut textures = Vec::new();
@@ -338,44 +474,62 @@ fn mesh_data(
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .get(&record.material_hash)
-            .copied();
-        let (diffuse, sky) = match cached {
-            Some(d) => d,
+            .cloned();
+        let material = match cached {
+            Some(m) => m,
             None => {
-                let material = assets.material(source, record.material_hash);
-                let d = (
-                    material
-                        .as_ref()
-                        .and_then(|m| m.texture(TextureRole::Diffuse)),
-                    material
-                        .as_ref()
-                        .is_some_and(|m| m.shaders.iter().any(|s| is_sky(s.0))),
-                );
+                let m = Arc::new(LevelMaterial::of(
+                    assets.material(source, record.material_hash).as_ref(),
+                ));
                 materials
                     .lock()
                     .unwrap_or_else(|e| e.into_inner())
-                    .insert(record.material_hash, d);
-                d
+                    .insert(record.material_hash, m.clone());
+                m
             }
         };
-        let texture = diffuse.filter(|_| vertices.uv0.is_some());
-        if let Some(t) = texture
-            && !textures.contains(&t)
-        {
-            textures.push(t);
+        let has_uv = vertices.uv0.is_some();
+        let texture = material.diffuse.filter(|_| has_uv);
+        // Overlay layers (decals, `*_ov_N`) and sorted glass are blended
+        // over what is drawn before them (`docs/formats/geometry.md`).
+        let layer = record.overlay_id > 0
+            || record.render_flags & (RENDER_FLAG_NO_DEPTH | RENDER_FLAG_ALPHA_SORT) != 0;
+        let surface = material.world.as_ref().map(|w| {
+            let mut s = world_surface(w);
+            s.blend |= layer;
+            s
+        });
+        let used = texture.into_iter().chain(
+            material
+                .world
+                .iter()
+                .flat_map(|w| w.textures())
+                .filter(|_| has_uv),
+        );
+        for t in used {
+            if !textures.contains(&t) {
+                textures.push(t);
+            }
         }
-        // Records with the same texture become one part: one draw call.
-        let group = match groups
-            .iter()
-            .position(|(t, s, ..)| *t == texture && *s == sky)
-        {
+        let material = MaterialData {
+            texture: texture.map(texture_key),
+            color: if texture.is_some() {
+                [1.0; 4]
+            } else {
+                MaterialData::default().color
+            },
+            surface: surface.map(Box::new),
+            sky: material.sky,
+        };
+        // Records that look the same become one part: one draw call.
+        let group = match groups.iter().position(|(m, ..)| *m == material) {
             Some(g) => g,
             None => {
-                groups.push((texture, sky, String::new(), Vec::new(), Vec::new()));
+                groups.push((material, String::new(), Vec::new(), Vec::new()));
                 groups.len() - 1
             }
         };
-        let (_, _, names, vertices_out, indices_out) = &mut groups[group];
+        let (_, names, vertices_out, indices_out) = &mut groups[group];
         if !names.is_empty() {
             names.push('+');
         }
@@ -384,19 +538,27 @@ fn mesh_data(
         vertices_out.extend(out);
         indices_out.extend(indices.iter().map(|i| i + base));
     }
-    for (texture, sky, names, vertices, indices) in groups {
-        let material = MaterialData {
-            texture: texture.map(texture_key),
-            color: if texture.is_some() {
-                [1.0; 4]
-            } else {
-                MaterialData::default().color
-            },
-            surface: None,
-            sky,
-        };
-        data.push_part(names, vertices, &indices, material);
+    // Parts of one base texture next to each other, in the order the
+    // texture first appears: the simple look draws them with one material,
+    // in the order it drew the records of a texture before world surfaces.
+    let first: Vec<usize> = groups
+        .iter()
+        .map(|(m, ..)| {
+            groups
+                .iter()
+                .position(|(o, ..)| o.texture == m.texture && o.sky == m.sky)
+                .unwrap_or(0)
+        })
+        .collect();
+    let mut order: Vec<usize> = (0..groups.len()).collect();
+    order.sort_by_key(|&i| first[i]);
+    let mut groups: Vec<Option<PartGroup>> = groups.into_iter().map(Some).collect();
+    for i in order {
+        if let Some((material, names, vertices, indices)) = groups[i].take() {
+            data.push_part(names, vertices, &indices, material);
+        }
     }
+    data.layer_coplanar_parts();
     Ok((data, textures))
 }
 
@@ -436,9 +598,8 @@ fn tree_data(
     (data, textures)
 }
 
-/// Records of one texture: the texture, part names, vertices, indices.
-/// Texture, sky dome, names of the records, vertices, indices.
-type PartGroup = (Option<u32>, bool, String, Vec<Vertex>, Vec<u32>);
+/// Records drawn alike: material, names of the records, vertices, indices.
+type PartGroup = (MaterialData, String, Vec<Vertex>, Vec<u32>);
 
 /// Whether a material's colour pass is one of the sky's shaders (`sky_dome`,
 /// `sky_clouds`): shading as in the game draws its own sky instead.
@@ -481,6 +642,48 @@ pub(crate) fn texture_data(texture: &Texture, limit: u32) -> Option<TextureData>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn world_surfaces_bind_their_layers() {
+        use doctor_toolkit::hash::crc32;
+        use doctor_toolkit::resource::material::{Material, Param, ParamValue};
+        let param = |name: &str, value| Param {
+            hash: crc32(name.as_bytes()),
+            name: name.into(),
+            source: String::new(),
+            value,
+        };
+        let material = |lit: &str, params: Vec<Param>| Material {
+            version: 19,
+            name: "test".into(),
+            name_hash: 0,
+            flags: 0,
+            shaders: [
+                (0, 0, 0),
+                (crc32(lit.as_bytes()), 0, params.len() as u8),
+                (0, 0, 0),
+                (0, 0, 0),
+            ],
+            shadow_shader: 0,
+            params,
+        };
+        let window = material(
+            "windowglow",
+            vec![param("g_FrontMap", ParamValue::Texture(9))],
+        );
+        let level = LevelMaterial::of(Some(&window));
+        let surface = world_surface(level.world.as_ref().unwrap());
+        assert_eq!(surface.model, SurfaceModel::Window);
+        assert_eq!(level.diffuse, None, "the simple look keeps no texture");
+        assert_eq!(surface.detail, Some(texture_key(9)), "front map");
+        assert_eq!(surface.detail_uv, [1.0, 1.0, 0.0, 0.0]);
+
+        let overlay = material("gf_overlay_vertex_ao", Vec::new());
+        let surface = world_surface(LevelMaterial::of(Some(&overlay)).world.as_ref().unwrap());
+        assert!(surface.blend && surface.model == SurfaceModel::Overlay);
+        let trunk = material("treetrunk", Vec::new());
+        assert!(LevelMaterial::of(Some(&trunk)).world.is_none());
+    }
 
     #[test]
     fn keys_do_not_collide() {

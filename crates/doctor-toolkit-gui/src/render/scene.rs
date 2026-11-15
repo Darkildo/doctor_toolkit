@@ -92,6 +92,9 @@ impl MaterialData {
                         s.detail_normal,
                         s.detail_mask,
                         s.detail_gloss,
+                        s.detail,
+                        s.exponent_map,
+                        s.mask,
                     ]
                 })
                 .flatten(),
@@ -119,6 +122,24 @@ pub enum SurfaceModel {
     /// Eyes: the base colour tinted by the eye colour where the base
     /// texture's alpha (the iris) is set; opaque.
     Eye = 5,
+    /// World surfaces, shaded only as in the game (simple shading draws
+    /// their base texture): the models of
+    /// [`doctor_toolkit::resource::world_shading::WorldModel`].
+    WorldBasic = 6,
+    Building = 7,
+    Detail = 8,
+    Panorama = 9,
+    Overlay = 10,
+    Window = 11,
+    Glass = 12,
+    Water = 13,
+}
+
+impl SurfaceModel {
+    /// A world surface (`docs/analysis/renderer.md` §10.7).
+    pub fn is_world(self) -> bool {
+        self as u32 >= SurfaceModel::WorldBasic as u32
+    }
 }
 
 /// Game-like shading inputs of a part. Colours are linear.
@@ -151,6 +172,60 @@ pub struct Surface {
     /// Weight of the base texture where the detail mask's blue is set (tint mask).
     pub detail_mask_strength: f32,
     pub detail_normal_strength: f32,
+    /// World surfaces: the second colour layer (windows: the front map,
+    /// panoramas: the map whose blue masks the tint), at `detail_uv`.
+    pub detail: Option<TextureKey>,
+    /// World surfaces: R weighs the base layer over the detail layer, at
+    /// `detail_mask_uv`.
+    pub mask: Option<TextureKey>,
+    /// World surfaces: blue is the sharpness of the sun's highlight.
+    pub exponent_map: Option<TextureKey>,
+    /// World surfaces: tint of the base layer where its alpha is set
+    /// (water: its colour); w: alpha. Linear.
+    pub base_tint: [f32; 4],
+    /// World surfaces: tint of the detail layer; w: its alpha.
+    pub detail_tint: [f32; 4],
+    pub world: WorldParams,
+}
+
+/// Parameters of world surfaces (`docs/analysis/renderer.md` §10.7).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct WorldParams {
+    /// Multiplies the mask.
+    pub mask_scale: f32,
+    /// How far the normal map tilts the normal.
+    pub normal_scale: f32,
+    /// Sharpness `s` of the highlight (`pow(n·h, s³·255)`), or the factor
+    /// on the exponent map's blue.
+    pub exponent: f32,
+    /// How much the overlay darkens (`Overlay`).
+    pub overlay: f32,
+    /// Reflection of the sky: facing the camera and the extra at grazing angles.
+    pub reflection: [f32; 2],
+    /// The highlight is masked by the gloss map's red.
+    pub specular_masked: bool,
+    /// The highlight is multiplied by the light.
+    pub specular_lit: bool,
+    /// The reflection is masked by the gloss map's green.
+    pub reflection_masked: bool,
+    /// Cut where the base texture's alpha is below one half.
+    pub alpha_test: bool,
+}
+
+impl Default for WorldParams {
+    fn default() -> Self {
+        Self {
+            mask_scale: 1.0,
+            normal_scale: 1.0,
+            exponent: 0.0,
+            overlay: 0.0,
+            reflection: [0.0; 2],
+            specular_masked: false,
+            specular_lit: false,
+            reflection_masked: false,
+            alpha_test: false,
+        }
+    }
 }
 
 impl Default for Surface {
@@ -173,6 +248,12 @@ impl Default for Surface {
             specular_power: 16.0,
             detail_mask_strength: 0.0,
             detail_normal_strength: 0.0,
+            detail: None,
+            mask: None,
+            exponent_map: None,
+            base_tint: [1.0; 4],
+            detail_tint: [1.0; 4],
+            world: WorldParams::default(),
         }
     }
 }
@@ -185,6 +266,9 @@ pub struct PartData {
     pub index_count: u32,
     pub material: MaterialData,
     pub bounds: Aabb,
+    /// Draw-order layer ([`MeshData::layer_coplanar_parts`]); `None`: the
+    /// part's index (the parts keep their order).
+    pub layer: Option<u32>,
 }
 
 /// Geometry of one mesh: one vertex and one index buffer shared by its parts.
@@ -228,7 +312,61 @@ impl MeshData {
             index_count: indices.len() as u32,
             material,
             bounds,
+            layer: None,
         });
+    }
+
+    /// Gives every part a draw-order layer: 0, or one above the highest
+    /// layer of the earlier parts it shares a plane with (a sign on a wall,
+    /// a patch on the ground — surfaces in one plane take the colour of the
+    /// part drawn last). The game look groups the parts of one layer of all
+    /// meshes by material (`batch::Order::Layers`).
+    pub fn layer_coplanar_parts(&mut self) {
+        use std::collections::HashSet;
+        // Planes of a part's triangles, quantised (normal to 1/1000, offset
+        // to 1 cm), the normal turned to one side.
+        let planes = |part: &PartData| -> HashSet<[i32; 4]> {
+            let range = part.first_index as usize..(part.first_index + part.index_count) as usize;
+            let mut out = HashSet::new();
+            for t in self.indices[range].chunks_exact(3) {
+                let [a, b, c] = [t[0], t[1], t[2]].map(|i| self.vertices[i as usize].position);
+                let n = math::cross(math::sub(b, a), math::sub(c, a));
+                let len = math::length(n);
+                if len < 1e-12 {
+                    continue;
+                }
+                let mut n = math::scale(n, 1.0 / len);
+                let flip = n.iter().find(|x| x.abs() > 1e-4).is_some_and(|x| *x < 0.0);
+                if flip {
+                    n = math::scale(n, -1.0);
+                }
+                let d = math::dot(n, a);
+                out.insert([
+                    (n[0] * 1000.0).round() as i32,
+                    (n[1] * 1000.0).round() as i32,
+                    (n[2] * 1000.0).round() as i32,
+                    (d * 100.0).round() as i32,
+                ]);
+            }
+            out
+        };
+        let sets: Vec<HashSet<[i32; 4]>> = self.parts.iter().map(planes).collect();
+        let mut layers: Vec<u32> = Vec::with_capacity(self.parts.len());
+        for i in 0..self.parts.len() {
+            let layer = (0..i)
+                .filter(|&j| {
+                    let (a, b) = (&self.parts[i].bounds, &self.parts[j].bounds);
+                    (0..3).all(|k| a.min[k] <= b.max[k] + 0.01 && b.min[k] <= a.max[k] + 0.01)
+                        && !sets[i].is_disjoint(&sets[j])
+                })
+                .map(|j| layers[j] + 1)
+                .max()
+                .unwrap_or(0);
+            layers.push(layer);
+        }
+        for (part, layer) in self.parts.iter_mut().zip(layers) {
+            part.layer = Some(layer);
+        }
     }
 
     pub fn bounds(&self) -> Aabb {
@@ -524,6 +662,43 @@ pub(crate) mod tests {
             mesh.push_part(name.to_owned(), vertices, &indices, MaterialData::default());
         }
         mesh
+    }
+
+    #[test]
+    fn parts_in_one_plane_keep_their_order() {
+        // The cube (top, sides), a patch on its top, a box beside it.
+        let mut mesh = cube();
+        let quad = |y: f32, x: f32| -> Vec<Vertex> {
+            [
+                [-0.2, y, -0.2],
+                [0.2, y, -0.2],
+                [0.2, y, 0.2],
+                [-0.2, y, 0.2],
+            ]
+            .map(|p| Vertex {
+                position: [p[0] + x, p[1], p[2]],
+                ..Vertex::default()
+            })
+            .to_vec()
+        };
+        let indices = [0, 1, 2, 0, 2, 3];
+        mesh.push_part(
+            "patch".into(),
+            quad(0.5, 0.0),
+            &indices,
+            MaterialData::default(),
+        );
+        mesh.push_part(
+            "away".into(),
+            quad(0.5, 5.0),
+            &indices,
+            MaterialData::default(),
+        );
+        mesh.layer_coplanar_parts();
+        let layers: Vec<Option<u32>> = mesh.parts.iter().map(|p| p.layer).collect();
+        // The patch lies on the top: above it; the far quad shares the plane
+        // but not the place; the sides touch the top only at its edges.
+        assert_eq!(layers, [Some(0), Some(0), Some(1), Some(0)]);
     }
 
     #[test]

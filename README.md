@@ -766,7 +766,10 @@ cargo run --release -p doctor-toolkit-gui -- "$GAME" gf2/frontend   # open a str
   **Add object** (a copy of the selected object with another metamodel, or a
   clone of one in this zone) record their edit in the workspace; undo works
   as everywhere. Trees and palms (`treemodel`) are drawn as in the game, leaves
-  turned to the camera. Filters hide markers, trees, AI points and object
+  turned to the camera; buildings, roads and ground, shaded as in the game,
+  get the game's materials: tints, a second texture layer blended by a mask
+  (dirt and patches), baked occlusion, normal maps and highlights, decals over
+  the ground and the sky reflected in windows and metal. Filters hide markers, trees, AI points and object
   classes; **Markers** over the view hides spawn points, triggers and other
   editor markers (hidden by default when shading as in the game).
   New objects have the

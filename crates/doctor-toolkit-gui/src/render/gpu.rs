@@ -45,8 +45,22 @@ const HAS_DETAIL_MASK: u32 = 8;
 const HAS_DETAIL_GLOSS: u32 = 16;
 /// The game's sky dome mesh (`MaterialData::sky`).
 const IS_SKY: u32 = 32;
+/// World surfaces (`WorldParams`): an exponent map is bound, the highlight
+/// is masked by the gloss map, multiplied by the light, the reflection
+/// masked, the base texture's alpha cuts.
+const HAS_EXPONENT: u32 = 64;
+const SPEC_MASKED: u32 = 128;
+const SPEC_LIT: u32 = 256;
+const REFLECT_MASKED: u32 = 512;
+const ALPHA_CUT: u32 = 1024;
+/// The base and detail textures are sampled as sRGB (already linear).
+const BASE_SRGB: u32 = 2048;
+const DETAIL_SRGB: u32 = 4096;
 /// Texture bindings of a material after the uniform: base, normal, gloss,
-/// detail normal, detail mask, detail gloss (the sampler is binding 2).
+/// detail normal, detail mask (world surfaces: their mask), detail gloss
+/// (world surfaces: the detail layer); the sampler is binding 2. Every
+/// texture of a bind group costs CPU time each time the group is set, so
+/// world surfaces use the slots of characters (`editor-performance.md` §10).
 const MATERIAL_TEXTURES: [u32; 6] = [1, 3, 4, 5, 6, 7];
 
 #[repr(C)]
@@ -87,10 +101,21 @@ struct MaterialUniform {
     spec: [f32; 4],
     /// x: base weight under the detail mask, y: detail normal weight.
     params: [f32; 4],
+    /// World surfaces: tint of the base layer (w: alpha).
+    base_tint: [f32; 4],
+    /// World surfaces: tint of the detail layer (w: alpha).
+    detail_tint: [f32; 4],
+    /// World surfaces: x mask scale, y normal scale, z exponent, w overlay.
+    world: [f32; 4],
+    /// World surfaces: x reflection facing the camera, y extra at grazing angles.
+    reflection: [f32; 4],
 }
 
 impl MaterialUniform {
-    fn new(material: &MaterialData, has: impl Fn(Option<TextureKey>) -> bool) -> Self {
+    /// `srgb` tells whether a texture is uploaded and sampled as sRGB
+    /// (`None`: not uploaded).
+    fn new(material: &MaterialData, srgb: impl Fn(Option<TextureKey>) -> Option<bool>) -> Self {
+        let has = |k| srgb(k).is_some();
         let mut u = Self {
             color: material.color,
             flags: [has(material.texture) as u32, 0, 0, 0],
@@ -101,6 +126,10 @@ impl MaterialUniform {
             mask_uv: [1.0, 1.0, 0.0, 0.0],
             spec: [0.0, 0.0, 0.0, 16.0],
             params: [0.0; 4],
+            base_tint: [1.0; 4],
+            detail_tint: [1.0; 4],
+            world: [1.0, 1.0, 0.0, 0.0],
+            reflection: [0.0; 4],
         };
         if material.sky {
             u.flags[2] |= IS_SKY;
@@ -137,6 +166,32 @@ impl MaterialUniform {
                 0.0,
                 0.0,
             ];
+            if surface.model.is_world() {
+                let w = &surface.world;
+                let bits = [
+                    // The exponent map is the gloss map in every world
+                    // material of the cities (corpus test): its blue.
+                    (
+                        has(surface.exponent_map) && surface.exponent_map == surface.gloss,
+                        HAS_EXPONENT,
+                    ),
+                    (w.specular_masked, SPEC_MASKED),
+                    (w.specular_lit, SPEC_LIT),
+                    (w.reflection_masked, REFLECT_MASKED),
+                    (w.alpha_test, ALPHA_CUT),
+                    (srgb(material.texture) == Some(true), BASE_SRGB),
+                    (srgb(surface.detail) == Some(true), DETAIL_SRGB),
+                ];
+                for (on, bit) in bits {
+                    if on {
+                        u.flags[2] |= bit;
+                    }
+                }
+                u.base_tint = surface.base_tint;
+                u.detail_tint = surface.detail_tint;
+                u.world = [w.mask_scale, w.normal_scale, w.exponent, w.overlay];
+                u.reflection = [w.reflection[0], w.reflection[1], 0.0, 0.0];
+            }
         }
         u
     }
@@ -230,6 +285,8 @@ impl GpuContext {
 struct GpuTexture {
     view: wgpu::TextureView,
     bytes: usize,
+    /// Sampled as sRGB: the shader gets linear colour.
+    srgb: bool,
     /// Unique per upload: materials made with this texture name it.
     serial: u64,
 }
@@ -244,10 +301,16 @@ struct MaterialBind {
 
 struct GpuPart {
     material: Arc<MaterialBind>,
+    /// World surfaces: the material of the simple look (base texture and
+    /// colour, opaque, as before world surfaces): parts that differ only in
+    /// the game look share it, so their draws merge again.
+    simple: Option<Arc<MaterialBind>>,
     first_index: u32,
     index_count: u32,
     /// Drawn in the alpha-blended pass.
     blend: bool,
+    /// Draw-order layer ([`PartData::layer`], else the part's index).
+    layer: u32,
 }
 
 struct GpuMesh {
@@ -690,6 +753,9 @@ impl SceneRenderer {
         let mesh_buffers = [Some(vertex_layout.clone()), Some(instance_layout.clone())];
         let line_buffers = [Some(line_vertex_layout), Some(instance_layout)];
         let alpha = Some(wgpu::BlendState::ALPHA_BLENDING);
+        // Blended meshes write premultiplied colour: the game's glass adds
+        // its reflection over what it lets through.
+        let premultiplied = Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING);
         let mesh_pipelines = [None, Some(wgpu::Face::Back)].map(|cull| {
             pipeline(
                 "mesh",
@@ -716,7 +782,7 @@ impl SceneRenderer {
                 depth(false, LessEqual),
                 COLOR_FORMAT,
                 sample_count,
-                alpha,
+                premultiplied,
                 cull,
             )
         });
@@ -988,6 +1054,7 @@ impl SceneRenderer {
             GpuTexture {
                 view: texture.create_view(&Default::default()),
                 bytes,
+                srgb: data.srgb,
                 serial: self.next_texture,
             },
         );
@@ -1072,8 +1139,22 @@ impl SceneRenderer {
         let parts = data
             .parts
             .iter()
-            .map(|part| GpuPart {
+            .enumerate()
+            .map(|(index, part)| GpuPart {
+                layer: part.layer.unwrap_or(index as u32),
                 material: self.material(&part.material, &part.name),
+                simple: part
+                    .material
+                    .surface
+                    .as_ref()
+                    .is_some_and(|s| s.model.is_world())
+                    .then(|| {
+                        let plain = MaterialData {
+                            surface: None,
+                            ..part.material.clone()
+                        };
+                        self.material(&plain, &part.name)
+                    }),
                 first_index: part.first_index,
                 index_count: part.index_count,
                 blend: part.material.blended(),
@@ -1145,15 +1226,15 @@ impl SceneRenderer {
     /// The bind group of a material: one per uniform and set of textures.
     fn material(&mut self, material: &MaterialData, label: &str) -> Arc<MaterialBind> {
         let view = |key: Option<TextureKey>| key.and_then(|k| self.textures.get(&k));
-        let uniform = MaterialUniform::new(material, |k| view(k).is_some());
+        let uniform = MaterialUniform::new(material, |k| view(k).map(|t| t.srgb));
         let surface = material.surface.as_deref();
         let keys = [
             material.texture,
             surface.and_then(|s| s.normal),
             surface.and_then(|s| s.gloss),
             surface.and_then(|s| s.detail_normal),
-            surface.and_then(|s| s.detail_mask),
-            surface.and_then(|s| s.detail_gloss),
+            surface.and_then(|s| s.detail_mask.or(s.mask)),
+            surface.and_then(|s| s.detail_gloss.or(s.detail)),
         ];
         let mut cache_key = bytemuck::bytes_of(&uniform).to_vec();
         for &k in &keys {
@@ -1439,21 +1520,25 @@ impl SceneRenderer {
             };
             let Some(slot) = mesh.slot else { continue };
             for (index, part) in mesh.parts.iter().enumerate() {
+                // World surfaces in the simple look: their base texture, opaque.
+                let (material, blend) = match &part.simple {
+                    Some(simple) if scene.options.game.is_none() => (simple, false),
+                    _ => (&part.material, part.blend),
+                };
                 if part.index_count == 0
-                    || blended.is_some_and(|b| b != part.blend)
+                    || blended.is_some_and(|b| b != blend)
                     || (!scene.hidden_parts.is_empty()
                         && scene.hidden_parts.contains(&(draw.mesh, index as u32)))
                 {
                     continue;
                 }
-                binds
-                    .entry(part.material.id)
-                    .or_insert_with(|| part.material.clone());
+                binds.entry(material.id).or_insert_with(|| material.clone());
                 out.push(DrawCmd {
+                    layer: part.layer,
                     key: DrawKey {
                         blend: blended == Some(true),
                         page: slot.page,
-                        material: part.material.id,
+                        material: material.id,
                     },
                     args: wgpu::util::DrawIndexedIndirectArgs {
                         index_count: part.index_count,
@@ -1480,7 +1565,16 @@ impl SceneRenderer {
         for &blended in passes {
             self.draw_commands(scene, draws, blended, &mut cmds, &mut binds);
         }
-        let runs = batch::batches(&mut cmds, self.batching.sort);
+        // The game look draws far more distinct materials (world surfaces):
+        // its opaque parts are grouped by layer, keeping each mesh's order.
+        let order = if self.batching.sort {
+            batch::Order::Sorted
+        } else if self.batching.layers && scene.options.game.is_some() {
+            batch::Order::Layers
+        } else {
+            batch::Order::Given
+        };
+        let runs = batch::batches(&mut cmds, order);
         if self.batching.indirect && runs.iter().any(|r| r.count > 1) {
             let args: Vec<wgpu::util::DrawIndexedIndirectArgs> =
                 cmds.iter().map(|c| c.args).collect();
@@ -2053,6 +2147,79 @@ mod tests {
     }
 
     #[test]
+    fn world_surfaces_mix_their_layers_by_the_mask_only_in_the_game_look() {
+        use super::super::scene::{Surface, SurfaceModel, WorldParams};
+        let Some(context) = GpuContext::headless() else {
+            eprintln!("no wgpu adapter; GPU test skipped");
+            return;
+        };
+        let mut renderer = SceneRenderer::new(context);
+        let solid = |c: [u8; 3]| TextureData {
+            name: "solid".into(),
+            width: 1,
+            height: 1,
+            srgb: false,
+            mips: vec![vec![c[0], c[1], c[2], 255]],
+        };
+        renderer.upload_texture(1, &solid([255, 0, 0]));
+        renderer.upload_texture(2, &solid([0, 0, 255]));
+        // The base layer (red) where the mask is set, the detail layer (blue)
+        // where the mask scale takes it away.
+        let mesh = |mask_scale: f32| {
+            let mut m = cube();
+            for v in &mut m.vertices {
+                v.color = [255; 4];
+            }
+            for part in &mut m.parts {
+                part.material = MaterialData {
+                    texture: Some(1),
+                    color: [1.0; 4],
+                    surface: Some(Box::new(Surface {
+                        model: SurfaceModel::Detail,
+                        detail: Some(2),
+                        specular: [0.0; 3],
+                        world: WorldParams {
+                            mask_scale,
+                            ..WorldParams::default()
+                        },
+                        ..Surface::default()
+                    })),
+                    sky: false,
+                };
+            }
+            Arc::new(m)
+        };
+        renderer.upload_mesh(10, mesh(1.0));
+        renderer.upload_mesh(11, mesh(0.0));
+        let mut camera = OrbitCamera::framing(&cube().bounds());
+        camera.yaw = 0.3;
+        camera.pitch = 0.5;
+        let size = [64, 48];
+        let view = camera.view(size[0] as f32 / size[1] as f32);
+        let mut viewport = Viewport::new();
+        let mut centre = |renderer: &mut SceneRenderer, mesh, game| {
+            let mut scene = Scene::single(mesh);
+            scene.options.background = [0.0, 0.0, 0.0, 1.0];
+            scene.options.game = game;
+            renderer.render(&mut viewport, size, &scene, &view);
+            let (w, _, pixels) = renderer.read_pixels(&viewport).unwrap();
+            let at = (24 * w as usize + 32) * 4;
+            [pixels[at], pixels[at + 1], pixels[at + 2]]
+        };
+        let game = Some(super::super::GameLook::studio());
+        let base = centre(&mut renderer, 10, game);
+        assert!(base[0] > 100 && base[2] < 20, "base layer: {base:?}");
+        let detail = centre(&mut renderer, 11, game);
+        assert!(
+            detail[2] > 100 && detail[0] < 20,
+            "detail layer: {detail:?}"
+        );
+        // The simple look draws the base texture.
+        let simple = centre(&mut renderer, 11, None);
+        assert!(simple[0] > 100 && simple[2] < 20, "simple: {simple:?}");
+    }
+
+    #[test]
     fn renders_and_picks_on_the_gpu() {
         let Some(context) = GpuContext::headless() else {
             eprintln!("no wgpu adapter; GPU test skipped");
@@ -2246,7 +2413,11 @@ mod tests {
         let size = [160, 120];
         let mut pictures = Vec::new();
         for (indirect, sort) in [(false, false), (true, false), (true, true), (false, true)] {
-            renderer.set_batching(Batching { indirect, sort });
+            renderer.set_batching(Batching {
+                indirect,
+                sort,
+                layers: true,
+            });
             let mut viewport = Viewport::new();
             renderer.render(&mut viewport, size, &scene, &view);
             let stats = renderer.stats;
@@ -2289,6 +2460,7 @@ mod tests {
         renderer.set_batching(Batching {
             indirect: false,
             sort: false,
+            layers: true,
         });
         renderer.render(&mut viewport, size, &scene, &view);
         let picks: Vec<_> = targets
@@ -2302,6 +2474,7 @@ mod tests {
         renderer.set_batching(Batching {
             indirect: true,
             sort: false,
+            layers: true,
         });
         let again: Vec<_> = targets
             .iter()

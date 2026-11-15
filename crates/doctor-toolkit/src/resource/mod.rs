@@ -45,3 +45,4 @@ pub mod treemodel;
 pub mod trinity;
 pub mod variabledictionary;
 pub mod video;
+pub mod world_shading;

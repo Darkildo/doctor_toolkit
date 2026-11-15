@@ -266,6 +266,8 @@ pub struct DrawKey {
 pub struct DrawCmd {
     pub key: DrawKey,
     pub args: wgpu::util::DrawIndexedIndirectArgs,
+    /// Draw-order layer of the part (`PartData::layer`).
+    pub layer: u32,
 }
 
 /// Commands `first..first + count` of a sorted list, drawn with one call.
@@ -276,20 +278,47 @@ pub struct Run {
     pub count: u32,
 }
 
-/// Cuts the commands (given in the order the renderer draws them) into
-/// runs of one key. With `sort` the opaque parts are first grouped by
-/// buffer and material, otherwise in their order; alpha-blended parts
-/// always keep their order, since it decides how they mix.
-pub fn batches(cmds: &mut [DrawCmd], sort: bool) -> Vec<Run> {
-    if sort {
-        // A stable sort: the order within a key stays.
-        cmds.sort_by_key(|c| {
-            if c.key.blend {
-                (true, 0, 0)
-            } else {
-                (false, c.key.page, c.key.material)
-            }
-        });
+/// In what order the opaque parts of a frame are drawn.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Order {
+    /// As the renderer gives them: by mesh, then by part.
+    Given,
+    /// Grouped by layer (`PartData::layer`), then by buffer and material:
+    /// parts of one mesh that lie in one plane (a sign on a wall, a patch on
+    /// the ground) still cover each other in their order (stage 69, the
+    /// game look).
+    Layers,
+    /// Grouped by buffer and material (`Batching::sort`).
+    Sorted,
+}
+
+/// Cuts the commands (given in the order the renderer draws them, the
+/// parts of one mesh one after another) into runs of one key, after
+/// putting the opaque parts in `order`; alpha-blended parts always keep
+/// their order, since it decides how they mix.
+pub fn batches(cmds: &mut [DrawCmd], order: Order) -> Vec<Run> {
+    match order {
+        Order::Given => {}
+        Order::Layers => {
+            // A stable sort: the order within a key stays.
+            cmds.sort_by_key(|c| {
+                if c.key.blend {
+                    (true, 0, 0, 0)
+                } else {
+                    (false, c.layer, c.key.page, c.key.material)
+                }
+            });
+        }
+        Order::Sorted => {
+            // A stable sort: the order within a key stays.
+            cmds.sort_by_key(|c| {
+                if c.key.blend {
+                    (true, 0, 0)
+                } else {
+                    (false, c.key.page, c.key.material)
+                }
+            });
+        }
     }
     let mut runs: Vec<Run> = Vec::new();
     for (i, cmd) in cmds.iter().enumerate() {
@@ -315,6 +344,9 @@ pub struct Batching {
     /// Opaque parts are grouped by buffer and material (fewer calls, but
     /// pixels where surfaces lie in one plane may change).
     pub sort: bool,
+    /// In the game look, opaque parts are grouped by layer, buffer and
+    /// material ([`Order::Layers`]).
+    pub layers: bool,
 }
 
 impl Batching {
@@ -331,13 +363,15 @@ impl Batching {
 
     /// The best the device can do in the order of the parts, unless
     /// `DOCTOR_TOOLKIT_GUI_BATCHING` says otherwise: comma-separated
-    /// `direct` (no indirect calls), `sorted` (group opaque parts).
+    /// `direct` (no indirect calls), `sorted` (group opaque parts), `given`
+    /// (the parts' own order in the game look too).
     pub fn for_device(device: &wgpu::Device, adapter: &wgpu::Adapter) -> Self {
         let spec = std::env::var("DOCTOR_TOOLKIT_GUI_BATCHING").unwrap_or_default();
         let has = |word: &str| spec.split(',').any(|w| w.trim() == word);
         Self {
             indirect: Self::device_can_draw_indirect(device, adapter) && !has("direct"),
             sort: has("sorted"),
+            layers: !has("given"),
         }
     }
 }
@@ -405,6 +439,7 @@ mod tests {
 
     fn cmd(blend: bool, page: u32, material: u32, first_index: u32) -> DrawCmd {
         DrawCmd {
+            layer: 0,
             key: DrawKey {
                 blend,
                 page,
@@ -421,6 +456,27 @@ mod tests {
     }
 
     #[test]
+    fn layers_keep_the_order_of_each_mesh() {
+        // Two meshes (instances 0 and 1): materials 1, 2 and 2, 1.
+        let at = |c: DrawCmd, layer| DrawCmd { layer, ..c };
+        // Two meshes whose second parts lie on their first: materials 1, 2
+        // and 1, 2; a third mesh with one part.
+        let mut cmds = vec![
+            at(cmd(false, 0, 1, 0), 0),
+            at(cmd(false, 0, 2, 1), 1),
+            at(cmd(false, 0, 1, 2), 0),
+            at(cmd(false, 0, 2, 3), 1),
+            at(cmd(false, 0, 3, 4), 0),
+            at(cmd(true, 0, 4, 5), 0),
+        ];
+        let runs = batches(&mut cmds, Order::Layers);
+        let order: Vec<u32> = cmds.iter().map(|c| c.args.first_index).collect();
+        // First parts of all meshes, grouped; then the second parts.
+        assert_eq!(order, [0, 2, 4, 1, 3, 5]);
+        assert_eq!(runs.len(), 4);
+    }
+
+    #[test]
     fn opaque_parts_are_grouped_and_blended_ones_keep_their_order() {
         let mut cmds = vec![
             cmd(false, 0, 2, 0),
@@ -431,7 +487,7 @@ mod tests {
             cmd(true, 0, 4, 5),
             cmd(false, 1, 1, 6),
         ];
-        let runs = batches(&mut cmds, true);
+        let runs = batches(&mut cmds, Order::Sorted);
         let order: Vec<u32> = cmds.iter().map(|c| c.args.first_index).collect();
         assert_eq!(order, [2, 0, 4, 6, 1, 3, 5]);
         let shape: Vec<(bool, u32, u32, u32)> = runs
@@ -454,7 +510,8 @@ mod tests {
             cmd(false, 0, 2, 1),
             cmd(false, 0, 1, 2),
         ];
-        assert_eq!(batches(&mut cmds, false).len(), 2);
-        assert!(batches(&mut [], true).is_empty());
+        assert_eq!(batches(&mut cmds, Order::Given).len(), 2);
+        assert!(batches(&mut [], Order::Sorted).is_empty());
+        assert!(batches(&mut [], Order::Layers).is_empty());
     }
 }

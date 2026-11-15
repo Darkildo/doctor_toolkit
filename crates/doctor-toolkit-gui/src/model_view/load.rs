@@ -223,6 +223,7 @@ fn surface(
         specular_power: shading.specular_power,
         detail_mask_strength: shading.detail_mask_strength,
         detail_normal_strength: shading.detail_normal_strength,
+        ..Surface::default()
     }
 }
 

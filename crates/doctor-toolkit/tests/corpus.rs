@@ -1963,6 +1963,114 @@ fn every_tree_model_parses_writes_back_and_finds_its_materials() {
     assert_eq!(empty.len(), 3, "{empty:?}");
 }
 
+/// World materials of the three cities (stage 69, `renderer.md` §10.7):
+/// every material the cities' meshes draw with a world shader finds every
+/// texture it samples; the textures it does not find are the engine's
+/// built-in ones, named by hash or by their source.
+#[test]
+fn every_world_material_of_the_cities_finds_its_textures() {
+    use doctor_toolkit::level::{
+        Catalog, Level, LevelAssets, LevelSource, Lookup, Overrides, Scope,
+    };
+    use doctor_toolkit::resource::material::ParamValue;
+    use doctor_toolkit::resource::world_shading::{Builtin, WorldModel, WorldShading};
+    use std::collections::{BTreeMap, HashSet};
+    use std::sync::Arc;
+
+    let Some(dir) = game_dir() else { return };
+    let game = Arc::new(GameInstance::open(&dir).unwrap());
+    let (index, errors) = game.build_index(|_| {});
+    assert!(errors.is_empty());
+    let catalog = Catalog::new(&game, &index);
+    let lookup = Arc::new(Lookup::new(&index));
+    let parents = game.stream_parents().unwrap();
+    let failures = Failures::default();
+    let mut models: BTreeMap<String, usize> = BTreeMap::new();
+    let mut world = 0;
+    for city in ["gf2/cuba/local", "gf2/queens/local", "gf2/miami/local"] {
+        let streams: Vec<usize> = catalog.under(city).map(|z| z.stream).collect();
+        let scope = Scope::new(&game, &parents, &streams);
+        let source = Arc::new(LevelSource::new(
+            game.clone(),
+            lookup.clone(),
+            Overrides::default(),
+            scope,
+        ));
+        let level = Level::load(source.clone(), &streams).unwrap();
+        let assets = LevelAssets::new(&source, &index);
+        let hashes: HashSet<u32> = level
+            .meshes
+            .par_iter()
+            .filter(|m| m.found.is_some())
+            .flat_map_iter(|m| {
+                source
+                    .mesh(m.id)
+                    .map(|model| model.records.iter().map(|r| r.material_hash).collect())
+                    .unwrap_or_else(|_| Vec::new())
+            })
+            .collect();
+        for hash in hashes {
+            let Some(material) = assets.material(&source, hash) else {
+                failures.push(format!("{city}: material {hash:08x} not found"));
+                continue;
+            };
+            let Some(shading) = WorldShading::from_material(&material) else {
+                continue;
+            };
+            world += 1;
+            *models.entry(format!("{:?}", shading.model)).or_default() += 1;
+            for texture in shading.textures() {
+                if assets.texture(&source, texture).is_none() {
+                    failures.push(format!(
+                        "{city}: `{}` ({}): texture {texture:08x} not found",
+                        material.name, shading.shader
+                    ));
+                }
+            }
+            for p in &material.params {
+                let ParamValue::Texture(h) = p.value else {
+                    continue;
+                };
+                let by_hash = Builtin::of(h);
+                let by_name = Builtin::named(&p.source);
+                if by_hash.is_some() && by_name.is_some() && by_hash != by_name {
+                    failures.push(format!(
+                        "{city}: `{}`: {h:08x} is {by_hash:?}, its source `{}`",
+                        material.name, p.source
+                    ));
+                }
+                if by_hash.is_none() && by_name.is_none() && assets.texture(&source, h).is_none() {
+                    failures.push(format!(
+                        "{city}: `{}`: `{}` = {h:08x} ({}) not found",
+                        material.name, p.name, p.source
+                    ));
+                }
+            }
+            // The renderer reads the highlight's sharpness from the gloss map.
+            if shading.exponent_map.is_some() && shading.exponent_map != shading.gloss {
+                failures.push(format!(
+                    "{city}: `{}`: exponent map {:08x?} is not the gloss map {:08x?}",
+                    material.name, shading.exponent_map, shading.gloss
+                ));
+            }
+            if shading.model == WorldModel::Detail && shading.base.is_none() {
+                failures.push(format!("{city}: `{}` has no base layer", material.name));
+            }
+        }
+    }
+    failures.assert_empty();
+    // Per city (a material shared by two cities counts twice).
+    assert_eq!(world, 8_020, "{models:?}");
+    assert_eq!(models["Detail"], 4_251);
+    assert_eq!(models["Building"], 1_933);
+    assert_eq!(models["Basic"], 1_508);
+    assert_eq!(models["Window"] + models["Glass"], 284);
+    assert_eq!(
+        (models["Panorama"], models["Water"], models["Overlay"]),
+        (37, 4, 3)
+    );
+}
+
 #[test]
 fn every_point_table_parses() {
     use doctor_toolkit::resource::points::PointTable;

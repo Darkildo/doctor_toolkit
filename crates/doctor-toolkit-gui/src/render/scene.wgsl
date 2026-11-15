@@ -60,6 +60,15 @@ const MODEL_TINT_MASK: u32 = 2u;
 const MODEL_HAIR: u32 = 3u;
 const MODEL_SKIN: u32 = 4u;
 const MODEL_EYE: u32 = 5u;
+// World surfaces, shaded only as in the game (docs/analysis/renderer.md §10.7).
+const MODEL_WORLD_BASIC: u32 = 6u;
+const MODEL_BUILDING: u32 = 7u;
+const MODEL_DETAIL: u32 = 8u;
+const MODEL_PANORAMA: u32 = 9u;
+const MODEL_OVERLAY: u32 = 10u;
+const MODEL_WINDOW: u32 = 11u;
+const MODEL_GLASS: u32 = 12u;
+const MODEL_WATER: u32 = 13u;
 
 // Textures a surface has (Material.flags.z).
 const HAS_NORMAL: u32 = 1u;
@@ -68,6 +77,17 @@ const HAS_DETAIL_NORMAL: u32 = 4u;
 const HAS_DETAIL_MASK: u32 = 8u;
 const HAS_DETAIL_GLOSS: u32 = 16u;
 const IS_SKY: u32 = 32u;
+// World surfaces: an exponent map is bound; the highlight is masked by the
+// gloss map's red, multiplied by the light; the reflection is masked by the
+// gloss map's green; the base texture's alpha cuts; base and detail textures
+// are sampled as sRGB (already linear).
+const HAS_EXPONENT: u32 = 64u;
+const SPEC_MASKED: u32 = 128u;
+const SPEC_LIT: u32 = 256u;
+const REFLECT_MASKED: u32 = 512u;
+const ALPHA_CUT: u32 = 1024u;
+const BASE_SRGB: u32 = 2048u;
+const DETAIL_SRGB: u32 = 4096u;
 
 struct Material {
     color: vec4<f32>,
@@ -85,6 +105,15 @@ struct Material {
     spec: vec4<f32>,
     // x: base weight under the detail mask, y: detail normal weight.
     params: vec4<f32>,
+    // World surfaces: tint of the base layer where its alpha is set (water:
+    // its colour), w: alpha; tint of the detail layer, w: its alpha.
+    base_tint: vec4<f32>,
+    detail_tint: vec4<f32>,
+    // x: mask scale, y: normal map scale, z: highlight sharpness (or factor
+    // on the exponent map's blue), w: how much the overlay darkens.
+    world: vec4<f32>,
+    // x: reflection facing the camera, y: extra at grazing angles.
+    reflection: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> globals: Globals;
@@ -94,7 +123,9 @@ struct Material {
 @group(1) @binding(3) var normal_map: texture_2d<f32>;
 @group(1) @binding(4) var gloss_map: texture_2d<f32>;
 @group(1) @binding(5) var detail_normal_map: texture_2d<f32>;
+// World surfaces: their mask.
 @group(1) @binding(6) var detail_mask_map: texture_2d<f32>;
+// World surfaces: the detail layer.
 @group(1) @binding(7) var detail_gloss_map: texture_2d<f32>;
 
 struct InstanceIn {
@@ -201,7 +232,12 @@ fn has(bit: u32) -> bool {
 
 fn uses_surface() -> bool {
     return (globals.params.x & FLAG_SURFACES) != 0u && material.flags.y != 0u
-        && (globals.params.x & FLAG_TEXTURES) != 0u;
+        && (globals.params.x & FLAG_TEXTURES) != 0u
+        && (material.flags.y < MODEL_WORLD_BASIC || (globals.params.x & FLAG_GAME) != 0u);
+}
+
+fn is_world() -> bool {
+    return material.flags.y >= MODEL_WORLD_BASIC;
 }
 
 // Colour and alpha of a surface the way the game's pixel shaders form them
@@ -284,6 +320,33 @@ fn fs_mesh(v: VertexOut, @builtin(front_facing) front: bool) -> @location(0) vec
     let detail_normal_texel = textureSample(detail_normal_map, diffuse_sampler, detail_uv);
     let mask_texel = textureSample(detail_mask_map, diffuse_sampler, mask_uv);
     let detail_gloss_texel = textureSample(detail_gloss_map, diffuse_sampler, detail_uv);
+    if ((globals.params.x & FLAG_GAME) != 0u && (globals.params.x & FLAG_BONE_WEIGHTS) == 0u
+        && uses_surface() && is_world()) {
+        let w = world_fragment(
+            v,
+            base,
+            normal_texel,
+            gloss_texel,
+            detail_normal_texel,
+            mask_texel,
+            detail_gloss_texel,
+        );
+        var lit = w.rgb;
+        if (is_highlighted(v)) {
+            lit = mix(lit, vec3<f32>(1.0, 0.35, 0.02), 0.45);
+        }
+        let out = pow(clamp(lit, vec3<f32>(0.0), vec3<f32>(1.0)), vec3<f32>(1.0 / 2.2));
+        if (material.flags.w == 0u) {
+            return vec4<f32>(out, 1.0);
+        }
+        // Blended (premultiplied): glass gives its colour and how much it
+        // covers; the others colour × alpha.
+        let alpha = clamp(w.a, 0.0, 1.0);
+        if (material.flags.y == MODEL_GLASS) {
+            return vec4<f32>(out, alpha);
+        }
+        return vec4<f32>(out * alpha, alpha);
+    }
     var geometric = normalize(v.normal);
     if (!front) {
         geometric = -geometric;
@@ -401,17 +464,142 @@ fn fs_mesh(v: VertexOut, @builtin(front_facing) front: bool) -> @location(0) vec
     if (blended) {
         alpha = clamp(color.a, 0.0, 1.0);
     }
+    // Blended parts are drawn premultiplied.
     if (game) {
         // The lit pass ends with pow(x, 1/2.2), not the sRGB curve.
-        return vec4<f32>(pow(clamp(lit, vec3<f32>(0.0), vec3<f32>(1.0)), vec3<f32>(1.0 / 2.2)), alpha);
+        return vec4<f32>(pow(clamp(lit, vec3<f32>(0.0), vec3<f32>(1.0)), vec3<f32>(1.0 / 2.2)) * alpha, alpha);
     }
-    return vec4<f32>(linear_to_srgb(lit), alpha);
+    return vec4<f32>(linear_to_srgb(lit) * alpha, alpha);
+}
+
+// Colour of a world texture in linear space: the game raises it to 2.2; a
+// texture sampled as sRGB is linear already.
+fn to_linear(c: vec3<f32>, srgb: bool) -> vec3<f32> {
+    if (srgb) {
+        return c;
+    }
+    return pow(max(c, vec3<f32>(0.0)), vec3<f32>(2.2));
+}
+
+// A world surface as the game's normal, light and lit passes draw it
+// (docs/analysis/renderer.md §10.7): linear colour before the gamma, alpha.
+// The textures are the ones fs_mesh samples: the mask is bound as the detail
+// mask (at the mask UV), the detail layer as the detail gloss map (at the
+// detail UV), the exponent map is the gloss map.
+fn world_fragment(
+    v: VertexOut,
+    base: vec4<f32>,
+    normal_texel: vec4<f32>,
+    gloss_texel: vec4<f32>,
+    detail_normal_texel: vec4<f32>,
+    mask: vec4<f32>,
+    detail: vec4<f32>,
+) -> vec4<f32> {
+    let model = material.flags.y;
+    // Weight of the base layer over the detail layer (and of the normal map
+    // over the detail normal map).
+    let m = mask.r * material.world.x;
+    // Vertex colour: green is the baked occlusion, alpha multiplies the alpha.
+    let ao = v.color.g;
+    let b = to_linear(base.rgb, has(BASE_SRGB));
+    let tinted = mix(b, b * material.base_tint.rgb, base.a);
+    let d = to_linear(detail.rgb, has(DETAIL_SRGB));
+    var albedo = b;
+    var alpha = base.a * v.color.a;
+    if (model == MODEL_BUILDING) {
+        albedo = tinted;
+        alpha = material.base_tint.a * v.color.a;
+    } else if (model == MODEL_DETAIL) {
+        let layer = mix(d, d * material.detail_tint.rgb, detail.a);
+        albedo = mix(layer, tinted, m);
+        alpha = mix(material.detail_tint.a, material.base_tint.a, m) * v.color.a;
+    } else if (model == MODEL_PANORAMA) {
+        albedo = mix(b, b * material.base_tint.rgb, detail.b);
+        alpha = base.a;
+    } else if (model == MODEL_WINDOW || model == MODEL_GLASS) {
+        // The front map is bound as the detail texture.
+        albedo = d;
+        alpha = 1.0;
+    } else if (model == MODEL_WATER) {
+        albedo = material.base_tint.rgb;
+        alpha = 1.0;
+    }
+    alpha = alpha * material.tint.a;
+    if (has(ALPHA_CUT) && base.a < 0.5) {
+        discard;
+    }
+
+    // The normal pass: the vertex normal tilted by the normal map (the
+    // detail normal map where the mask is low).
+    var n = normalize(v.normal);
+    if (has(HAS_NORMAL) || has(HAS_DETAIL_NORMAL)) {
+        var xy = normal_texel.xy * 2.0 - 1.0;
+        if (has(HAS_DETAIL_NORMAL)) {
+            xy = mix(detail_normal_texel.xy * 2.0 - 1.0, xy, m);
+        }
+        n = perturb(n, v.world, v.uv, vec3<f32>(xy * material.world.y, 1.0));
+    }
+    var s = material.world.z;
+    if (has(HAS_EXPONENT)) {
+        s = gloss_texel.b * s;
+    }
+    let light = game_light_power(n, v.world, s * s * s * 255.0 + 1.5e-5);
+    let lit_light = light.rgb * globals.game.params.x;
+
+    // The lit pass.
+    var spec_mask = 1.0;
+    if (has(SPEC_MASKED)) {
+        spec_mask = select(0.0, gloss_texel.r, has(HAS_GLOSS));
+    }
+    var spec = material.spec.rgb * spec_mask * light.a;
+    if (has(SPEC_LIT)) {
+        spec = spec * lit_light;
+    }
+    var colour = (albedo * lit_light + spec) * ao;
+    // Reflection of the environment (the game's run-time cube map; here the sky).
+    var env = vec3<f32>(0.0);
+    let window = model == MODEL_WINDOW || model == MODEL_GLASS;
+    if (material.reflection.x > 0.0 || material.reflection.y > 0.0) {
+        let view = normalize(v.world - globals.eye.xyz);
+        let vn = dot(view, n);
+        var dir = view - 2.0 * vn * n;
+        if (window) {
+            // Windows look the sky up mirrored above the horizon.
+            dir.y = abs(dir.y);
+        }
+        var k = material.reflection.x + (1.0 - abs(vn)) * material.reflection.y;
+        if (has(REFLECT_MASKED)) {
+            k = k * select(0.0, gloss_texel.g, has(HAS_GLOSS));
+        }
+        env = pow(sky_colour(dir), vec3<f32>(2.2)) * k;
+    }
+    if (model == MODEL_GLASS) {
+        // Not lit; blended premultiplied, letting (1 − front.a) · tint.w through.
+        colour = d * detail.a + env;
+        alpha = 1.0 - (1.0 - detail.a) * material.tint.a;
+    } else if (model == MODEL_WINDOW) {
+        colour = d * lit_light + clamp(env * detail.a, vec3<f32>(0.0), vec3<f32>(1.0))
+            + material.spec.rgb * light.a;
+    } else if (model == MODEL_OVERLAY) {
+        // Darkens what is below towards the fog: black without fog.
+        colour = vec3<f32>(0.0);
+        alpha = 1.0 - material.world.w * ao;
+    } else {
+        colour = colour + env;
+    }
+    return vec4<f32>(game_fog(colour, v.world), alpha);
 }
 
 // The game's light buffer at a point: the sun, wrapped (saturate(n·l + wrap)),
 // and the ambient light of the three matrices, clamped to 0..1 like the 8-bit
 // buffer; alpha: the sun's highlight.
 fn game_light(n: vec3<f32>, world: vec3<f32>) -> vec4<f32> {
+    return game_light_power(n, world, 24.0);
+}
+
+// game_light with the highlight's exponent (the game: s³·255 from the normal
+// pass, renderer.md §10.7).
+fn game_light_power(n: vec3<f32>, world: vec3<f32>, power: f32) -> vec4<f32> {
     let g = globals.game;
     let l = normalize(globals.light.xyz);
     let ndl = dot(n, l);
@@ -425,7 +613,7 @@ fn game_light(n: vec3<f32>, world: vec3<f32>) -> vec4<f32> {
     let h = normalize(l + view_dir);
     var highlight = 0.0;
     if (ndl > 0.0) {
-        highlight = pow(max(dot(n, h), 0.0), 24.0) * clamp(ndl + g.sun.w, 0.0, 1.0);
+        highlight = pow(max(dot(n, h), 0.0), power) * clamp(ndl + g.sun.w, 0.0, 1.0);
     }
     return vec4<f32>(min(sun + ambient, vec3<f32>(1.0)), highlight);
 }
@@ -470,6 +658,14 @@ fn fs_sky(v: SkyOut) -> @location(0) vec4<f32> {
     let a = g.inv_view_proj * vec4<f32>(v.ndc, 0.5, 1.0);
     let b = g.inv_view_proj * vec4<f32>(v.ndc, 0.0, 1.0);
     let dir = normalize(a.xyz / a.w - b.xyz / b.w);
+    return vec4<f32>(sky_colour(dir), 1.0);
+}
+
+// Colour of the sky dome in a direction (gamma-encoded, as the game stores
+// it); world surfaces reflect it in place of the environment map the game
+// renders at run time.
+fn sky_colour(dir: vec3<f32>) -> vec3<f32> {
+    let g = globals.game;
     let horizontal = length(dir.xz);
     let elevation = atan2(dir.y, max(horizontal, 1e-5));
     let h = clamp(elevation / max(g.sky_params.x, 1e-3), 0.0, 1.0);
@@ -479,7 +675,7 @@ fn fs_sky(v: SkyOut) -> @location(0) vec4<f32> {
     let to_sun = normalize(globals.light.xyz);
     let glow = pow(clamp(dot(dir, to_sun), 0.0, 1.0), max(power, 1e-3)) * g.sky_params.y;
     let colour = sky + mix(g.glow_low.rgb, g.glow_high.rgb, h) * glow;
-    return vec4<f32>(clamp(colour, vec3<f32>(0.0), vec3<f32>(1.0)), 1.0);
+    return clamp(colour, vec3<f32>(0.0), vec3<f32>(1.0));
 }
 
 fn linear_to_srgb(c: vec3<f32>) -> vec3<f32> {

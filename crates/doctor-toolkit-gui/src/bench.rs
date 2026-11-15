@@ -404,6 +404,23 @@ fn level(renderer: &mut SceneRenderer, dir: &Path, zones: &str) -> Result<(), St
         ..FlyCamera::default()
     };
     street.far = overview.far;
+    // `DOCTOR_TOOLKIT_GUI_BENCH_LOOK=game[:hours]`: shade as in the game, at
+    // noon by default (the frames are otherwise drawn with the simple look).
+    let look = std::env::var("DOCTOR_TOOLKIT_GUI_BENCH_LOOK")
+        .ok()
+        .and_then(|spec| {
+            let mut words = spec.split(':');
+            (words.next() == Some("game")).then_some(())?;
+            let hours = words.next().and_then(|h| h.parse().ok()).unwrap_or(12.0);
+            let stream = streams
+                .iter()
+                .map(|&s| game.streams()[s].stream_name())
+                .find(|n| doctor_toolkit::time_of_day::city_of(n).is_some())?;
+            crate::game_light::look(&game, &stream, hours)
+        });
+    if look.is_some() {
+        println!("shading as in the game");
+    }
     for (title, camera, filter) in [
         ("overview, LOD by distance", overview, Filter::default()),
         ("street level, LOD by distance", street, Filter::default()),
@@ -416,7 +433,15 @@ fn level(renderer: &mut SceneRenderer, dir: &Path, zones: &str) -> Result<(), St
             },
         ),
     ] {
-        measure_level(renderer, &items, camera, &filter, bounds.center(), title);
+        measure_level(
+            renderer,
+            &items,
+            camera,
+            &filter,
+            bounds.center(),
+            title,
+            look,
+        );
     }
     Ok(())
 }
@@ -428,12 +453,14 @@ fn measure_level(
     filter: &crate::level_view::scene::Filter,
     pivot: math::Vec3,
     title: &str,
+    look: Option<crate::render::GameLook>,
 ) {
     use crate::level_view::scene;
     println!("-- {title}");
     let mut viewport = Viewport::new();
     let aspect = SIZE[0] as f32 / SIZE[1] as f32;
     let mut scene = Scene::default();
+    scene.options.game = look;
     let street = title.starts_with("street");
     let distance = if street {
         200.0
