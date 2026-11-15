@@ -235,6 +235,11 @@ impl LevelView {
                         }),
                 )
                 .on_hover_text(tr("view.time_of_day_hint"));
+                let o = &mut self.scene.options;
+                ui.checkbox(&mut o.shadows, tr("view.shadows"))
+                    .on_hover_text(tr("view.shadows_hint"));
+                ui.checkbox(&mut o.lamps, tr("view.lamps"))
+                    .on_hover_text(tr("view.lamps_hint"));
             }
             ui.label(RichText::new(tr("view.shading_hint")).weak().small());
             ui.separator();

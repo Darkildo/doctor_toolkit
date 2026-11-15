@@ -181,6 +181,13 @@ pub struct WorldShading {
     pub alpha_test: bool,
     /// `g_VertexAOParams.y`: how much the overlay darkens.
     pub overlay: f32,
+    /// Light the surface gives off by day and at night (`g_NightControl`
+    /// blends them; stage 70): panoramas `g_DayGlowColor` and
+    /// `g_NightGlowColor` (rgb times w, where the detail map's green is set;
+    /// at night also the mask's green), lit windows, lamps and signs
+    /// `m_LightColor` at night only (where the front map's alpha is set).
+    /// Added to the light before it multiplies the colour.
+    pub glow: [[f32; 4]; 2],
 }
 
 const IDENTITY_UV: [f32; 4] = [1.0, 1.0, 0.0, 0.0];
@@ -285,6 +292,7 @@ impl WorldShading {
             reflection_masked: false,
             alpha_test: material.flags & FLAG_ALPHA_TEST != 0,
             overlay: 0.0,
+            glow: [[0.0; 4]; 2],
         };
         // The normal pass: normal map and the highlight's sharpness.
         match normal_pass {
@@ -361,6 +369,19 @@ impl WorldShading {
             }
             WorldModel::Panorama => {
                 out.detail = texture(colour, &["g_DetailMapSampler"]);
+                // The night glow's mask, at `(uv − zw) · xy`.
+                out.mask = texture(colour, &["g_DetailMaskSampler"]);
+                if let Some(v) =
+                    floats(colour, "g_DetailMaskUVScaleOffset").filter(|v| v.len() >= 4)
+                {
+                    out.mask_uv = [v[0], v[1], -v[2] * v[0], -v[3] * v[1]];
+                }
+                let glow = |name: &str| {
+                    floats(colour, name)
+                        .filter(|v| v.len() >= 4)
+                        .map_or([0.0; 4], |v| [v[0], v[1], v[2], v[3]])
+                };
+                out.glow = [glow("g_DayGlowColor"), glow("g_NightGlowColor")];
             }
             WorldModel::Overlay => {
                 out.overlay = floats(colour, "g_VertexAOParams")
@@ -375,6 +396,11 @@ impl WorldShading {
                     range.get(1).copied().unwrap_or(0.0),
                 ];
                 out.specular = [first("g_SpecScale", 0.0); 3];
+                if model == WorldModel::Window
+                    && let Some(c) = floats(colour, "m_LightColor").filter(|v| v.len() >= 3)
+                {
+                    out.glow[1] = [c[0], c[1], c[2], 1.0];
+                }
             }
             WorldModel::Water => {
                 out.base_tint = tint_color("WaterColor");
@@ -536,6 +562,7 @@ mod tests {
             param("ReflectionRange", ParamValue::Floats(vec![0.1, 0.03])),
             param("g_FrontMap", ParamValue::Texture(9)),
             param("g_SpecScale", ParamValue::Floats(vec![0.25])),
+            param("m_LightColor", ParamValue::Floats(vec![0.7, 0.6, 0.5, 1.0])),
         ];
         let m = material("DeferredNormalsFast", "WindowGlow", Vec::new(), colour);
         let s = WorldShading::from_material(&m).unwrap();
@@ -543,6 +570,40 @@ mod tests {
         assert_eq!(s.base, Some(9));
         assert_eq!(s.reflection, [0.1, 0.03]);
         assert_eq!(s.specular, [0.25; 3]);
+        assert_eq!(
+            s.glow,
+            [[0.0; 4], [0.7, 0.6, 0.5, 1.0]],
+            "lit only at night"
+        );
+    }
+
+    #[test]
+    fn panoramas_glow_by_day_and_night() {
+        let colour = vec![
+            param("g_BaseSampler", ParamValue::Texture(1)),
+            param("g_DetailMapSampler", ParamValue::Texture(2)),
+            param("g_DetailMaskSampler", ParamValue::Texture(3)),
+            param(
+                "g_DetailMaskUVScaleOffset",
+                ParamValue::Floats(vec![2.0, 4.0, 0.5, 0.25]),
+            ),
+            param(
+                "g_DayGlowColor",
+                ParamValue::Floats(vec![0.5, 0.5, 0.5, 0.4]),
+            ),
+            param(
+                "g_NightGlowColor",
+                ParamValue::Floats(vec![1.0, 0.9, 0.7, 1.0]),
+            ),
+        ];
+        let m = material("DeferredNormalsFast", "gf_pano", Vec::new(), colour);
+        let s = WorldShading::from_material(&m).unwrap();
+        assert_eq!(s.model, WorldModel::Panorama);
+        assert_eq!((s.detail, s.mask), (Some(2), Some(3)));
+        // (uv − zw) · xy as uv · xy + zw.
+        assert_eq!(s.mask_uv, [2.0, 4.0, -1.0, -1.0]);
+        assert_eq!(s.glow[0], [0.5, 0.5, 0.5, 0.4]);
+        assert_eq!(s.glow[1][2], 0.7);
     }
 
     #[test]

@@ -419,8 +419,16 @@ fn level(renderer: &mut SceneRenderer, dir: &Path, zones: &str) -> Result<(), St
             crate::game_light::look(&game, &stream, hours)
         });
     if look.is_some() {
-        println!("shading as in the game");
+        println!(
+            "shading as in the game{}",
+            if renderer.has_game_path() {
+                " (binding arrays: shadows and lamps)"
+            } else {
+                ""
+            }
+        );
     }
+    let lights = scene::build_lights(&level);
     for (title, camera, filter) in [
         ("overview, LOD by distance", overview, Filter::default()),
         ("street level, LOD by distance", street, Filter::default()),
@@ -440,7 +448,7 @@ fn level(renderer: &mut SceneRenderer, dir: &Path, zones: &str) -> Result<(), St
             &filter,
             bounds.center(),
             title,
-            look,
+            (look, &lights),
         );
     }
     Ok(())
@@ -453,7 +461,10 @@ fn measure_level(
     filter: &crate::level_view::scene::Filter,
     pivot: math::Vec3,
     title: &str,
-    look: Option<crate::render::GameLook>,
+    (look, lights): (
+        Option<crate::render::GameLook>,
+        &[crate::level_view::scene::WorldLight],
+    ),
 ) {
     use crate::level_view::scene;
     println!("-- {title}");
@@ -461,6 +472,16 @@ fn measure_level(
     let aspect = SIZE[0] as f32 / SIZE[1] as f32;
     let mut scene = Scene::default();
     scene.options.game = look;
+    // `DOCTOR_TOOLKIT_GUI_BENCH_SWITCHES=noshadows,nolamps`: the game look
+    // without the sun's shadows or the lights of lamps.
+    let switches = std::env::var("DOCTOR_TOOLKIT_GUI_BENCH_SWITCHES").unwrap_or_default();
+    scene.options.shadows = !switches.contains("noshadows");
+    scene.options.lamps = !switches.contains("nolamps");
+    if let Some(look) = &look
+        && scene.options.lamps
+    {
+        scene.lights = scene::scene_lights(lights, look.night);
+    }
     let street = title.starts_with("street");
     let distance = if street {
         200.0

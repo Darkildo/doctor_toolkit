@@ -15,7 +15,8 @@
 //!   `0xCDB9D42B`, [`crate::resource::treemodel`]) at `TreeModelPart.CMD_LoadMatrix`;
 //!   `MinimapPart.Model` (the map icon) is skipped;
 //!   `CollisionHavok4Part.CollisionModel` is the collision (`hkx`) of the
-//!   object, in the same space as its meshes.
+//!   object, in the same space as its meshes; `EARSLight` and
+//!   `TODEARSLight` parts are lights ([`Light`], `renderer.md` §10.9).
 //!
 //! Every reference is resolved by its GUID
 //! ([`metamodel::ResourceRef::target_id`]), as the game and `check-refs`
@@ -79,10 +80,134 @@ pub struct Marker {
     pub matrix: RowMatrix,
 }
 
+/// How a light of a model shines (`EARSLight.CMD_Set_t_Light_Type`, by
+/// the parameters each type sets and the names of the parts).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LightKind {
+    /// Types 3 and 11 (`*_pointlight`, lamps): all round.
+    Point,
+    /// Types 4 and 14 (`*_spot`, street lights): a cone along the part's
+    /// third axis.
+    Spot,
+    /// Types 6, 8, 10, 12, 13 (signs, strips): a cone; drawn as spots.
+    Area,
+    /// Type 9 (`*_inv_bulb`): lights the inside of a small sphere, the
+    /// glow of the bulb itself.
+    Bulb,
+    /// Other types (1, 7: lights of faces in cut-scenes).
+    Other,
+}
+
+impl LightKind {
+    pub fn of(kind: i32) -> Self {
+        match kind {
+            3 | 11 => Self::Point,
+            4 | 14 => Self::Spot,
+            6 | 8 | 10 | 12 | 13 => Self::Area,
+            9 => Self::Bulb,
+            _ => Self::Other,
+        }
+    }
+}
+
+/// A light of a model (`EARSLight` part; `TODEARSLight` with its day and
+/// night strengths). Distances in metres, angles in degrees.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Light {
+    pub kind: LightKind,
+    /// Placement relative to the object; spots shine along row 2.
+    pub matrix: RowMatrix,
+    /// `CMD_Set_t_color`, `0xAABBGGRR` as the time-of-day colours: RGB 0..1.
+    pub color: [f32; 3],
+    /// `CMD_Set_t_intensity`.
+    pub intensity: f32,
+    /// `CMD_Set_t_radius`: no light beyond it.
+    pub radius: f32,
+    /// `CMD_Set_t_fullbrightRadius`: full light within it.
+    pub full_radius: f32,
+    /// `CMD_Set_t_LightConeAngle` and `CMD_Set_t_fullbrightAngle`.
+    pub cone: f32,
+    pub full_cone: f32,
+    /// `CMD_Set_t_diffuseAmbient`: wraps the light round (`g_diffuseAmbient`).
+    pub wrap: f32,
+    /// `TODEARSLight`: the strength by day and at night (`CMD_SetDayIntensity`,
+    /// `CMD_SetNightIntensity`); `None` for lights that do not follow the time.
+    pub day_night: Option<[f32; 2]>,
+    /// `CMD_Set_t_insideOutside`: 1 inside, 2 outside, 0 unset.
+    pub inside_outside: i32,
+    pub lod: Option<LodRange>,
+}
+
+impl Light {
+    /// The strength at night share `night` (0 day .. 1 night).
+    pub fn strength(&self, night: f32) -> f32 {
+        match self.day_night {
+            Some([day, night_strength]) => day + (night_strength - day) * night.clamp(0.0, 1.0),
+            None => self.intensity,
+        }
+    }
+}
+
+/// The light of a part's properties, if it is one.
+fn light_of(mm: &MetaModel, part: &metamodel::Part, matrix: RowMatrix) -> Option<Light> {
+    if !part.type_name.ends_with("EARSLight") || part.type_name == "MobfaceEARSLight" {
+        return None;
+    }
+    let mut light = Light {
+        kind: LightKind::Point,
+        matrix,
+        color: [1.0; 3],
+        intensity: 1.0,
+        radius: 5.0,
+        full_radius: 0.0,
+        cone: 45.0,
+        full_cone: 0.0,
+        wrap: 0.0,
+        day_night: None,
+        inside_outside: 0,
+        lod: None,
+    };
+    let mut day = None;
+    let mut night = None;
+    for &p in &part.properties {
+        let Some(prop) = mm.properties.get(p) else {
+            continue;
+        };
+        let float = match &prop.value {
+            PropValue::Float(v) => Some(*v),
+            PropValue::Int(v) => Some(*v as f32),
+            _ => None,
+        };
+        match (prop.name.as_str(), &prop.value) {
+            ("CMD_Set_t_Light_Type", PropValue::Int(v)) => light.kind = LightKind::of(*v),
+            ("CMD_Set_t_color", PropValue::Color(c)) => {
+                light.color =
+                    [c.0 & 0xFF, (c.0 >> 8) & 0xFF, (c.0 >> 16) & 0xFF].map(|v| v as f32 / 255.0);
+            }
+            ("CMD_Set_t_intensity", _) => light.intensity = float.unwrap_or(light.intensity),
+            ("CMD_Set_t_radius", _) => light.radius = float.unwrap_or(light.radius),
+            ("CMD_Set_t_fullbrightRadius", _) => light.full_radius = float.unwrap_or(0.0),
+            ("CMD_Set_t_LightConeAngle", _) => light.cone = float.unwrap_or(light.cone),
+            ("CMD_Set_t_fullbrightAngle", _) => light.full_cone = float.unwrap_or(0.0),
+            ("CMD_Set_t_diffuseAmbient", _) => light.wrap = float.unwrap_or(0.0),
+            ("CMD_Set_t_insideOutside", PropValue::Int(v)) => light.inside_outside = *v,
+            ("CMD_SetDayIntensity", _) => day = float,
+            ("CMD_SetNightIntensity", _) => night = float,
+            _ => {}
+        }
+    }
+    if part.type_name == "TODEARSLight" {
+        light.day_night = Some([day.unwrap_or(0.0), night.unwrap_or(light.intensity)]);
+    }
+    Some(light)
+}
+
 /// A metamodel expanded into meshes.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct ModelDesc {
     pub pieces: Vec<Piece>,
+    /// Lights of the model ([`Light`]).
+    pub lights: Vec<Light>,
     pub trees: Vec<Marker>,
     /// Collision packfiles (`hkx` ids) with their placement.
     pub collisions: Vec<Marker>,
@@ -170,6 +295,10 @@ fn expand_into(
             }
             let local = matrix.unwrap_or(IDENTITY);
             let placed = compose(&local, parent);
+            if let Some(mut light) = light_of(&mm, part, placed) {
+                light.lod = lod;
+                out.lights.push(light);
+            }
             if let Some(r) = mesh {
                 // Model parts have no matrix of their own in the game.
                 out.pieces.push(Piece {

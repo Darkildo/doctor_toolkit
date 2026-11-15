@@ -22,10 +22,12 @@
 //! unchanged view cost nothing per frame.
 
 mod batch;
+mod bindless;
 mod camera;
 mod game_look;
 mod gpu;
 pub mod math;
+mod post;
 mod scene;
 mod timing;
 pub mod tree;
@@ -36,13 +38,16 @@ use std::sync::{Arc, Mutex, MutexGuard};
 #[allow(unused_imports)]
 pub use batch::Batching;
 pub use camera::{OrbitCamera, View};
-pub use game_look::GameLook;
-pub use gpu::{GpuContext, RenderStats, SceneRenderer, Viewport, adapter_rank, optional_features};
+pub use game_look::{GameLook, register_tables};
+pub use gpu::{
+    GpuContext, RenderStats, SceneRenderer, Viewport, adapter_rank, device_limits,
+    optional_features,
+};
 // The whole scene API is public for the level view, even parts the model viewer does not use.
 #[allow(unused_imports)]
 pub use scene::{
-    Environment, Instance, LineVertex, MaterialData, MeshData, MeshKey, Pick, Scene, SceneOptions,
-    Surface, SurfaceModel, TextureData, TextureKey, Vertex, WorldParams,
+    Environment, Instance, LineVertex, MaterialData, MeshData, MeshKey, Pick, PointLight, Scene,
+    SceneOptions, Surface, SurfaceModel, TextureData, TextureKey, Vertex, WorldParams,
 };
 
 static GAME_LOOK: AtomicBool = AtomicBool::new(true);

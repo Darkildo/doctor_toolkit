@@ -9,9 +9,36 @@
 //! horizon with a glow around the sun. The values come from the time-of-day
 //! keys of the city ([`doctor_toolkit::time_of_day`]).
 
-use doctor_toolkit::time_of_day::{self, Look};
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
+
+use doctor_toolkit::time_of_day::{self, ColourTable, Look};
 
 use super::math::{self, Vec3};
+
+/// Colour tables of the grading by key (the `vfx` id of the time-of-day
+/// key), registered when a city's light is read; the renderer uploads a
+/// table the first time a look names it.
+static TABLES: Mutex<Option<HashMap<u32, Arc<ColourTable>>>> = Mutex::new(None);
+
+/// Makes colour tables known to every renderer.
+pub fn register_tables(tables: impl IntoIterator<Item = (u32, ColourTable)>) {
+    let mut lock = TABLES.lock().unwrap_or_else(|e| e.into_inner());
+    let map = lock.get_or_insert_with(HashMap::new);
+    for (key, table) in tables {
+        map.entry(key).or_insert_with(|| Arc::new(table));
+    }
+}
+
+/// A registered colour table.
+pub fn table(key: u32) -> Option<Arc<ColourTable>> {
+    TABLES
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .as_ref()?
+        .get(&key)
+        .cloned()
+}
 
 /// Light and air of the game at one moment, ready for the renderer.
 /// Colours of light are linear; fog and sky colours as the game stores them
@@ -32,6 +59,14 @@ pub struct GameLook {
     pub exposure: f32,
     pub fog: Option<time_of_day::Fog>,
     pub sky: Option<time_of_day::Sky>,
+    /// `g_NightControl`: lit windows and panoramas (0 day, 1 night).
+    pub night: f32,
+    /// Share of the sun left in the shadow of the sun (`1 −` the
+    /// `LightingTODMessage` shadow).
+    pub shadow: f32,
+    /// The colour grading: colour tables ([`register_tables`]) and weights.
+    pub grading: [(u32, f32); 2],
+    pub grading_count: usize,
 }
 
 /// Brightness of the sun's light at noon in the light buffer, and the
@@ -39,8 +74,13 @@ pub struct GameLook {
 /// them in code); matched to frames of the game (`renderer.md` §10.6) once
 /// world surfaces had their tints and baked occlusion (§10.7). The sun
 /// saturates the 8-bit buffer on surfaces facing it, as in the game.
-const SUN_AT_NOON: f32 = 1.2;
+/// Matched again with the colour grading (stage 70, `renderer.md` §10.9).
+const SUN_AT_NOON: f32 = 1.1;
 const AMBIENT_SCALE: f32 = 0.3;
+/// How much the sun dims with the sky by day (1: as much as the sky).
+const DAY_EXPONENT: f32 = 0.6;
+const SUN_TINT: [f32; 3] = [1.0, 0.85, 0.6];
+const MOON_TINT: [f32; 3] = [0.6, 0.85, 1.0];
 /// The studio light of the model and character viewers (their surfaces were
 /// matched with it before world surfaces were).
 const STUDIO_SUN: f32 = 0.42;
@@ -56,11 +96,20 @@ impl GameLook {
         // noon, the dim moon at night.
         let sky = look.sky.high.map(|c| c.powf(2.2));
         let noon_sky = 0.75;
-        let strength = (luminance(sky) / noon_sky).clamp(0.08, 1.2);
-        let warm = [1.0, 0.85, 0.6];
-        let sun_color = warm.map(|c| c * SUN_AT_NOON * strength);
+        // By day the sun hardly dims with a paler sky (New York and Miami
+        // have paler noon skies than Havana); the moon follows the sky.
+        let exponent = DAY_EXPONENT + (1.0 - DAY_EXPONENT) * look.night;
+        let strength = (luminance(sky) / noon_sky).clamp(0.08, 1.2).powf(exponent);
+        // A warm sun, a cool moon (the night's colour table warms it again).
+        let tint: [f32; 3] =
+            std::array::from_fn(|i| SUN_TINT[i] + (MOON_TINT[i] - SUN_TINT[i]) * look.night);
+        let sun_color = tint.map(|c| c * SUN_AT_NOON * strength);
         Self {
-            sun: math::normalize_or(math::scale(look.sun, -1.0), [0.0, 1.0, 0.0]),
+            // Towards the sun. The shadows of characters in the game's
+            // frames fall the other way round than the horizontal part of
+            // the measured light vector (renderer.md §10.9): up stays up,
+            // the bearing turns by half a circle.
+            sun: math::normalize_or([look.sun[0], -look.sun[1], look.sun[2]], [0.0, 1.0, 0.0]),
             sun_color,
             wrap: look.lighting.wrap,
             ambient: look.ambient.0,
@@ -68,7 +117,16 @@ impl GameLook {
             exposure: 2.0,
             fog: Some(look.fog),
             sky: Some(look.sky),
+            night: look.night,
+            shadow: (1.0 - look.lighting.shadow).clamp(0.0, 1.0),
+            grading: look.grading.tables,
+            grading_count: look.grading.count,
         }
+    }
+
+    /// The colour tables and their weights.
+    pub fn grading(&self) -> &[(u32, f32)] {
+        &self.grading[..self.grading_count]
     }
 
     /// The light of the viewers of single models and characters: the game's
@@ -89,6 +147,10 @@ impl GameLook {
             exposure: 2.0,
             fog: None,
             sky: None,
+            night: 0.0,
+            shadow: 1.0,
+            grading: [(0, 0.0); 2],
+            grading_count: 0,
         }
     }
 
@@ -124,6 +186,14 @@ pub(super) struct GameUniform {
     pub glow_high: [f32; 4],
     /// x: haze band (rad), y: glow strength, z: glow exponent above the band, w: at the horizon.
     pub sky_params: [f32; 4],
+    /// x: night, y: the sun left in shadow, z: shadow cascades, w: lights on.
+    pub extra: [f32; 4],
+    /// x: tile size in pixels, y: tiles across, z: tiles down, w: lights per tile.
+    pub tiles: [f32; 4],
+    /// World to each cascade's shadow map.
+    pub shadow: [[f32; 16]; 3],
+    /// Far end of each cascade; w: depth bias.
+    pub splits: [f32; 4],
 }
 
 fn rgba(c: [f32; 3], w: f32) -> [f32; 4] {
@@ -167,6 +237,7 @@ impl GameUniform {
             out.glow_high = rgba(s.glow_high, 1.0);
             out.sky_params = [s.haze, s.glow_strength, s.glow_power_high, s.glow_power_low];
         }
+        out.extra = [look.night, look.shadow, 0.0, 0.0];
         out
     }
 }
@@ -186,6 +257,8 @@ mod tests {
             lighting: Lighting::default(),
             ambient: Ambient::default(),
             sun: [0.0, -1.0, 0.0],
+            night: 0.0,
+            grading: Default::default(),
         }
     }
 

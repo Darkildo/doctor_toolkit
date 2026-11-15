@@ -37,8 +37,8 @@ pub use assets::LevelAssets;
 pub use catalog::{Catalog, Zone};
 pub use collision::PlacedCollision;
 pub use model::{
-    IDENTITY, LodRange, Marker, ModelDesc, Piece, RowMatrix, TYPE_MESH, TYPE_METAMODEL, TYPE_TREE,
-    compose,
+    IDENTITY, Light, LightKind, LodRange, Marker, ModelDesc, Piece, RowMatrix, TYPE_MESH,
+    TYPE_METAMODEL, TYPE_TREE, compose,
 };
 
 /// Type id of `simgroup`.

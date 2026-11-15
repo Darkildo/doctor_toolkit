@@ -119,6 +119,82 @@ pub fn flatten(m: &RowMatrix) -> Mat4 {
     *m.as_flattened().first_chunk::<16>().expect("16 values")
 }
 
+/// A light of a placed object (stage 70, `docs/analysis/renderer.md` §10.9).
+#[derive(Debug, Clone)]
+pub struct WorldLight {
+    pub light: doctor_toolkit::level::Light,
+    pub position: Vec3,
+    /// Spots: the axis they shine along.
+    pub axis: Vec3,
+}
+
+/// The lights of the level's objects that light the streets: lights of
+/// interiors (`insideOutside` 1), of faces in cut-scenes and of finer levels
+/// of detail than the nearest are left out.
+pub fn build_lights(level: &Level) -> Vec<WorldLight> {
+    use doctor_toolkit::level::LightKind;
+    let mut out = Vec::new();
+    for group in &level.groups {
+        for object in &group.objects {
+            let Some(transform) = object.transform else {
+                continue;
+            };
+            let Some(model) = object.model.and_then(|id| level.models.get(&id)) else {
+                continue;
+            };
+            for light in &model.desc.lights {
+                if light.inside_outside == 1
+                    || light.kind == LightKind::Other
+                    || light.radius <= 0.0
+                    || light.lod.is_some_and(|l| l[0] > 0.0)
+                {
+                    continue;
+                }
+                let m = compose(&light.matrix, &transform);
+                out.push(WorldLight {
+                    light: light.clone(),
+                    position: [m[3][0], m[3][1], m[3][2]],
+                    axis: math::normalize_or([m[2][0], m[2][1], m[2][2]], [0.0, -1.0, 0.0]),
+                });
+            }
+        }
+    }
+    out
+}
+
+/// The renderer's lights at night share `night`: colours to linear light,
+/// times the strength of the time of day; lights that are off are left out.
+pub fn scene_lights(lights: &[WorldLight], night: f32) -> Vec<crate::render::PointLight> {
+    use doctor_toolkit::level::LightKind;
+    lights
+        .iter()
+        .filter_map(|w| {
+            let l = &w.light;
+            let strength = l.strength(night);
+            if strength <= 1e-3 {
+                return None;
+            }
+            let spot = matches!(l.kind, LightKind::Spot | LightKind::Area).then(|| {
+                let cone = l.cone.clamp(1.0, 89.0).to_radians().cos();
+                let full = l
+                    .full_cone
+                    .clamp(0.0, l.cone.clamp(1.0, 89.0))
+                    .to_radians()
+                    .cos();
+                (w.axis, cone, full.max(cone + 1e-3))
+            });
+            Some(crate::render::PointLight {
+                position: w.position,
+                radius: l.radius,
+                full_radius: l.full_radius,
+                color: l.color.map(|c| c.powf(2.2) * strength),
+                spot,
+                wrap: l.wrap,
+            })
+        })
+        .collect()
+}
+
 /// Every drawable item of the level; meshes not found are left out.
 pub fn build_items(level: &Level) -> (Vec<Item>, HashMap<ObjRef, Vec<usize>>) {
     let mut items = Vec::new();

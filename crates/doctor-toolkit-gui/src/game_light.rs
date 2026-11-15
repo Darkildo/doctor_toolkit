@@ -24,10 +24,12 @@ pub fn city(game: &GameInstance, city: &str) -> Option<Arc<CityLight>> {
     cache
         .entry(key)
         .or_insert_with(|| {
-            CityLight::read(game, city)
+            let light = CityLight::read(game, city)
                 .ok()
-                .filter(|l| !l.outdoor.is_empty())
-                .map(Arc::new)
+                .filter(|l| !l.outdoor.is_empty())?;
+            // The colour tables of its grading, for every renderer (stage 70).
+            crate::render::register_tables(light.colour_tables(game));
+            Some(Arc::new(light))
         })
         .clone()
 }

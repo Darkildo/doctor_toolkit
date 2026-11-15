@@ -14,6 +14,13 @@
 //! | `SetSkyMessage` (`0x0D0F12E8`) | 2, 3 colours of the sky above the haze band and at the horizon, 6, 7 colours of the glow around the sun above and at the horizon, 1 its strength, 8, 10 its exponents, 12 height of the haze band (rad) | `g_SkyColorLow`, `g_SkyColor`, `g_DiffusionColor*`, `g_DiffusionControl*`, `g_HazeBandElevationAngle` |
 //! | `LightingTODMessage` | 0 how dark shadows are, 1 light that wraps around the shaded side | `g_shadowDensity`, `g_diffuseAmbient` |
 //! | `GlobalSHTODMessage` | 0–2: 4×4 matrices of the ambient light (R, G, B) | `g_SHMatrixR/G/B` |
+//! | `NightDayControlTODMessage` | 0 night (1) or day (0, also when unset) | `g_NightControl`: lit windows and panoramas |
+//! | `LUTTODMessage` | 0 a `vfx` of the colour grading, 1 its weight | `gLUTTexture1…6`, `gLUT_params1/2` (stage 70) |
+//!
+//! The colour grading is a blend of 32³ colour tables (`lutcolor_*` volume
+//! textures): between two keys the game weighs the table of the earlier key
+//! by `1 − t` and of the later one by `t`, the same `t` as of the other keys
+//! (`live peek` of `0x0121930C`, `renderer.md` §10.9).
 //!
 //! The direction of the sun is not a key of these: the game turns it along
 //! a path of its own; [`sun_direction`] gives the path measured in the game.
@@ -31,6 +38,8 @@ const CLASS_SET_FOG: u32 = sdbm_lower(b"SetFogMessage");
 const CLASS_SET_SKY: u32 = sdbm_lower(b"SetSkyMessage");
 const CLASS_LIGHTING: u32 = sdbm_lower(b"LightingTODMessage");
 const CLASS_GLOBAL_SH: u32 = sdbm_lower(b"GlobalSHTODMessage");
+const CLASS_NIGHT_DAY: u32 = sdbm_lower(b"NightDayControlTODMessage");
+const CLASS_LUT: u32 = sdbm_lower(b"LUTTODMessage");
 const SIMGROUP: u32 = crate::hash::sdbm(b"simgroup");
 
 /// SDBM of a class name in lower case: the hash SimGroups store for a class.
@@ -109,6 +118,28 @@ impl Ambient {
     }
 }
 
+/// A key of the colour grading: the `vfx` resource naming a colour table
+/// (`LUTTODMessage` attribute 0) and its weight (attribute 1).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Grading {
+    pub vfx: u32,
+    pub weight: f32,
+}
+
+/// The colour grading of a moment: up to two tables and their weights
+/// (`vfx` ids; the same table twice is merged into one).
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct GradingMix {
+    pub tables: [(u32, f32); 2],
+    pub count: usize,
+}
+
+impl GradingMix {
+    pub fn tables(&self) -> &[(u32, f32)] {
+        &self.tables[..self.count]
+    }
+}
+
 /// Everything of one moment.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Look {
@@ -118,6 +149,11 @@ pub struct Look {
     pub ambient: Ambient,
     /// Direction the sun (or moon) light travels: from the sky downwards.
     pub sun: [f32; 3],
+    /// `g_NightControl`: 0 by day, 1 at night (lit windows, glowing
+    /// panoramas, street lights).
+    pub night: f32,
+    /// The colour grading; empty when the city has no keys of it.
+    pub grading: GradingMix,
 }
 
 /// Keys of one sequencer.
@@ -128,6 +164,8 @@ pub struct Sequence {
     pub sky: Vec<(u32, Sky)>,
     pub lighting: Vec<(u32, Lighting)>,
     pub ambient: Vec<(u32, Ambient)>,
+    pub night: Vec<(u32, f32)>,
+    pub grading: Vec<(u32, Grading)>,
 }
 
 /// The two sequencers of a city.
@@ -187,6 +225,12 @@ impl Lerp for Lighting {
     }
 }
 
+impl Lerp for f32 {
+    fn lerp(&self, o: &Self, t: f32) -> Self {
+        mix(*self, *o, t)
+    }
+}
+
 impl Lerp for Ambient {
     fn lerp(&self, o: &Self, t: f32) -> Self {
         Self(std::array::from_fn(|c| {
@@ -195,10 +239,9 @@ impl Lerp for Ambient {
     }
 }
 
-/// The value at `time` (seconds from midnight) of keys sorted by time: linear
-/// between the key before and the key after, around midnight too
-/// (`0x0082DF70`).
-fn at<T: Lerp>(keys: &[(u32, T)], time: u32) -> Option<T> {
+/// The key before `time` (seconds from midnight), the key after it and how
+/// far between them `time` is (0..1), around midnight too (`0x0082DF70`).
+fn around<T>(keys: &[(u32, T)], time: u32) -> Option<(&T, &T, f32)> {
     let time = time % DAY;
     let n = keys.len();
     if n == 0 {
@@ -211,10 +254,34 @@ fn at<T: Lerp>(keys: &[(u32, T)], time: u32) -> Option<T> {
     let (t1, b) = &keys[j];
     let span = (t1 + DAY - t0) % DAY;
     if span == 0 {
-        return Some(*a);
+        return Some((a, a, 0.0));
     }
     let into = (time + DAY - t0) % DAY;
-    Some(a.lerp(b, into as f32 / span as f32))
+    Some((a, b, into as f32 / span as f32))
+}
+
+/// The value at `time` (seconds from midnight) of keys sorted by time: linear
+/// between the key before and the key after.
+fn at<T: Lerp>(keys: &[(u32, T)], time: u32) -> Option<T> {
+    around(keys, time).map(|(a, b, t)| a.lerp(b, t))
+}
+
+/// The colour tables at `time`: the earlier key's weighed by `1 − t`, the
+/// later one's by `t`.
+fn grading_at(keys: &[(u32, Grading)], time: u32) -> GradingMix {
+    let mut out = GradingMix::default();
+    let Some((a, b, t)) = around(keys, time) else {
+        return out;
+    };
+    for (vfx, w) in [(a.vfx, a.weight * (1.0 - t)), (b.vfx, b.weight * t)] {
+        if let Some(slot) = out.tables[..out.count].iter_mut().find(|s| s.0 == vfx) {
+            slot.1 += w;
+        } else if w > 0.0 {
+            out.tables[out.count] = (vfx, w);
+            out.count += 1;
+        }
+    }
+    out
 }
 
 impl Default for Fog {
@@ -275,6 +342,8 @@ impl Sequence {
             lighting: at(&self.lighting, time).unwrap_or_default(),
             ambient: at(&self.ambient, time).unwrap_or_default(),
             sun: sun_direction(city, time),
+            night: at(&self.night, time).unwrap_or(0.0),
+            grading: grading_at(&self.grading, time),
         }
     }
 
@@ -283,6 +352,15 @@ impl Sequence {
             && self.sky.is_empty()
             && self.lighting.is_empty()
             && self.ambient.is_empty()
+    }
+
+    fn sort(&mut self) {
+        self.fog.sort_by_key(|k| k.0);
+        self.sky.sort_by_key(|k| k.0);
+        self.lighting.sort_by_key(|k| k.0);
+        self.ambient.sort_by_key(|k| k.0);
+        self.night.sort_by_key(|k| k.0);
+        self.grading.sort_by_key(|k| k.0);
     }
 }
 
@@ -369,6 +447,8 @@ impl CityLight {
                     CLASS_SET_SKY,
                     CLASS_LIGHTING,
                     CLASS_GLOBAL_SH,
+                    CLASS_NIGHT_DAY,
+                    CLASS_LUT,
                 ]
                 .contains(&o.class)
                 {
@@ -424,6 +504,22 @@ impl CityLight {
                             },
                         ));
                     }
+                    CLASS_NIGHT_DAY => {
+                        seq.night.push((time, float(a(0)).unwrap_or(0.0)));
+                    }
+                    CLASS_LUT => {
+                        if let Some(Value::Guid(g)) = a(0)
+                            && let Some(vfx) = g.resource_id()
+                        {
+                            seq.grading.push((
+                                time,
+                                Grading {
+                                    vfx,
+                                    weight: float(a(1)).unwrap_or(1.0),
+                                },
+                            ));
+                        }
+                    }
                     _ => {
                         let m = [matrix(a(0)), matrix(a(1)), matrix(a(2))];
                         if let [Some(r), Some(g), Some(b)] = m {
@@ -438,10 +534,7 @@ impl CityLight {
             ..Self::default()
         };
         for (guid, mut seq) in sequences {
-            seq.fog.sort_by_key(|k| k.0);
-            seq.sky.sort_by_key(|k| k.0);
-            seq.lighting.sort_by_key(|k| k.0);
-            seq.ambient.sort_by_key(|k| k.0);
+            seq.sort();
             seq.name = names.get(&guid).cloned().unwrap_or_default();
             let indoor = seq.name.to_ascii_lowercase().contains("_int");
             let slot = if indoor {
@@ -450,8 +543,9 @@ impl CityLight {
                 &mut out.outdoor
             };
             // Two outdoor sequencers would be odd; keep the one with more keys.
-            let count =
-                |s: &Sequence| s.fog.len() + s.sky.len() + s.lighting.len() + s.ambient.len();
+            let count = |s: &Sequence| {
+                s.fog.len() + s.sky.len() + s.lighting.len() + s.ambient.len() + s.grading.len()
+            };
             if count(&seq) > count(slot) {
                 *slot = seq;
             }
@@ -463,6 +557,154 @@ impl CityLight {
     pub fn at(&self, time: u32) -> Look {
         self.outdoor.at(&self.city, time)
     }
+
+    /// The colour tables of the city's outdoor grading by `vfx` id (see
+    /// [`colour_table`]); keys whose table is not found are left out.
+    pub fn colour_tables(&self, game: &GameInstance) -> HashMap<u32, ColourTable> {
+        let wanted: Vec<u32> = self.outdoor.grading.iter().map(|(_, g)| g.vfx).collect();
+        let streams = [format!("gf2/{}/local", self.city), GLOBALS.to_owned()];
+        let mut names: HashMap<u32, String> = HashMap::new();
+        for stream in &streams {
+            let Some(file) = game
+                .find_stream(stream)
+                .and_then(|i| game.open_stream(i).ok())
+            else {
+                continue;
+            };
+            for (i, entry) in file.layout().resources.iter().enumerate() {
+                let id = entry.header.ids[3];
+                if entry.header.type_id != TYPE_VFX
+                    || !wanted.contains(&id)
+                    || names.contains_key(&id)
+                {
+                    continue;
+                }
+                if let Some(tail) = file
+                    .resource_data(i)
+                    .ok()
+                    .as_deref()
+                    .and_then(vfx_name_tail)
+                {
+                    names.insert(id, tail);
+                }
+            }
+        }
+        let Ok(tables) = colour_table_textures(game) else {
+            return HashMap::new();
+        };
+        names
+            .into_iter()
+            .filter_map(|(id, tail)| {
+                // The shortest name that ends with the readable tail.
+                let table = tables
+                    .iter()
+                    .filter(|t| t.name.ends_with(&tail))
+                    .min_by_key(|t| t.name.len())?;
+                Some((id, table.clone()))
+            })
+            .collect()
+    }
+}
+
+/// Type id of `vfx` resources (effects; the colour grading is one).
+const TYPE_VFX: u32 = crate::hash::sdbm(b"vfx");
+const GLOBALS: &str = "gf2/globals_global";
+
+/// A colour table of the grading: `size`³ RGBA texels, red along x, green
+/// along y, blue across slices (the game reads it at
+/// `c · (size − 1) / size + 1 / (2 · size)`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct ColourTable {
+    /// Texture name, e.g. `lutcolor_miami_day`.
+    pub name: String,
+    pub size: usize,
+    /// `size` slices of `size × size` RGBA texels.
+    pub rgba: Vec<u8>,
+}
+
+impl ColourTable {
+    /// The table at texel `(r, g, b)`.
+    pub fn texel(&self, r: usize, g: usize, b: usize) -> [u8; 4] {
+        let at = 4 * ((b * self.size + g) * self.size + r);
+        self.rgba[at..at + 4].try_into().expect("4 bytes")
+    }
+
+    /// `c` (0..1) graded by the table, trilinear.
+    pub fn grade(&self, c: [f32; 3]) -> [f32; 3] {
+        let n = self.size as f32 - 1.0;
+        let p = c.map(|v| v.clamp(0.0, 1.0) * n);
+        let i = p.map(|v| (v as usize).min(self.size - 2));
+        let f: [f32; 3] = std::array::from_fn(|k| p[k] - i[k] as f32);
+        let mut out = [0.0; 3];
+        for corner in 0..8 {
+            let d = [corner & 1, (corner >> 1) & 1, (corner >> 2) & 1];
+            let w: f32 = (0..3)
+                .map(|k| if d[k] == 1 { f[k] } else { 1.0 - f[k] })
+                .product();
+            let t = self.texel(i[0] + d[0], i[1] + d[1], i[2] + d[2]);
+            for k in 0..3 {
+                out[k] += w * t[k] as f32 / 255.0;
+            }
+        }
+        out
+    }
+}
+
+/// The readable start of the name in the `rcs.` block of a colour grading
+/// `vfx` (12 bytes after the tag): the end of its colour table's name
+/// (`r_miami_day` for `lutcolor_miami_day`; the 16-byte field is cut at its
+/// start).
+fn vfx_name_tail(data: &[u8]) -> Option<String> {
+    let tag = data.windows(4).position(|w| w == b"rcs.")?;
+    let field = data.get(tag + 12..tag + 28)?;
+    let len = field
+        .iter()
+        .position(|b| !(b.is_ascii_alphanumeric() || *b == b'_'))
+        .unwrap_or(16);
+    (len > 0).then(|| String::from_utf8_lossy(&field[..len]).into_owned())
+}
+
+/// The colour tables of the game (`lutcolor_*` volume textures of
+/// `gf2/globals_global`).
+pub fn colour_table_textures(game: &GameInstance) -> Result<Vec<ColourTable>> {
+    use crate::resource::texture::{Texture, pairs};
+    use crate::resource::tg4::{Kind, Tg4Header};
+    let index = game
+        .find_stream(GLOBALS)
+        .ok_or_else(|| Error::InvalidArgument(format!("no stream `{GLOBALS}`")))?;
+    let file = game.open_stream(index)?;
+    let mut out = Vec::new();
+    for pair in pairs(file.layout()) {
+        let Ok(header) = Tg4Header::parse(&file.resource_data(pair.header)?) else {
+            continue;
+        };
+        if !header.name.starts_with("lutcolor_") || header.kind() != Kind::Volume {
+            continue;
+        }
+        let texture = Texture::load(file.data(), file.layout(), pair)?;
+        let size = header.width as usize;
+        if size < 2 || header.height as usize != size || header.layer_count() != size {
+            continue;
+        }
+        let mut rgba = Vec::with_capacity(size * size * size * 4);
+        for layer in 0..size {
+            let (w, h, pixels) = texture.rgba(layer)?;
+            if w != size || h != size {
+                return Err(Error::malformed(
+                    "tg4d",
+                    0,
+                    "slices of a colour table differ",
+                ));
+            }
+            rgba.extend_from_slice(&pixels);
+        }
+        out.push(ColourTable {
+            name: header.name.clone(),
+            size,
+            rgba,
+        });
+    }
+    Ok(out)
 }
 
 /// Direction of the sun's light (unit vector, Y up) every hour from
@@ -610,6 +852,52 @@ mod tests {
                 prev = d;
             }
         }
+    }
+
+    #[test]
+    fn grading_weighs_the_tables_of_two_keys() {
+        let g = |vfx| Grading { vfx, weight: 1.0 };
+        // As in the cities: 11:01:34 a, 12:06:34 b, 15:30:34 a again.
+        let keys = vec![
+            ((11 * 60 + 1) * 60 + 34, g(1)),
+            ((12 * 60 + 6) * 60 + 34, g(2)),
+            ((15 * 60 + 30) * 60 + 34, g(1)),
+        ];
+        // At 12:03 the game weighs 0.0549 and 0.9451 (`live peek`).
+        let m = grading_at(&keys, 12 * 3600 + 180);
+        assert_eq!(m.count, 2);
+        assert_eq!(m.tables()[0].0, 1);
+        assert!((m.tables()[0].1 - 0.0549).abs() < 1e-3, "{m:?}");
+        assert!((m.tables()[1].1 - 0.9451).abs() < 1e-3, "{m:?}");
+        // The same table on both sides is one table.
+        let m = grading_at(&keys[2..], 3600);
+        assert_eq!(m.tables(), &[(1, 1.0)]);
+        assert_eq!(grading_at(&[], 5).count, 0);
+    }
+
+    #[test]
+    fn colour_grading_vfx_names_end_their_tables_names() {
+        let mut data = b"r_miami_day\x8c\xf5\x15\xaf_####rcs.\x03\0\0\0\x01\0\0\0".to_vec();
+        data.extend_from_slice(b"r_miami_day\x8c\xf5\x15\xaf_");
+        data.extend_from_slice(&[0; 16]);
+        assert_eq!(vfx_name_tail(&data).as_deref(), Some("r_miami_day"));
+        assert_eq!(vfx_name_tail(&[0x8c; 40]), None);
+        let table = ColourTable {
+            name: "lutcolor_test".into(),
+            size: 2,
+            rgba: (0..8)
+                .flat_map(|i: u8| {
+                    let c = |bit: u8| if i & bit != 0 { 255 } else { 0 };
+                    [c(1), c(2), c(4), 255]
+                })
+                .collect(),
+        };
+        // The identity table gives the colour back.
+        let c = table.grade([0.25, 0.5, 0.75]);
+        assert!(
+            (c[0] - 0.25).abs() < 1e-4 && (c[2] - 0.75).abs() < 1e-4,
+            "{c:?}"
+        );
     }
 
     #[test]

@@ -1,4 +1,16 @@
 // Scene shader: lit, textured meshes, an id pass for picking and lines.
+//
+// Two variants come from this text (gpu.rs, `shader_source`): lines between
+// `//#if game` and `//#else` or `//#endif` are only in the game variant,
+// lines between `//#else` and `//#endif` only in the plain one. The game
+// variant draws "as in the game" where the device has binding arrays: the
+// materials in a storage buffer and every texture in one array, the sun's
+// shadow and the lights of lamps (stage 70); the plain variant is the
+// renderer before, one bind group per material.
+//#if game
+enable wgpu_binding_array;
+diagnostic(off, derivative_uniformity);
+//#endif
 
 struct Globals {
     view_proj: mat4x4<f32>,
@@ -44,6 +56,15 @@ struct Game {
     glow_high: vec4<f32>,
     // x: haze band (rad), y: glow strength, z: glow exponent above the band, w: at the horizon.
     sky_params: vec4<f32>,
+    // x: night (g_NightControl), y: the sun left in shadow, z: cascades of
+    // the sun's shadow (0: none), w: lights on.
+    extra: vec4<f32>,
+    // x: tile size in pixels, y: tiles across, z: tiles down, w: lights per tile.
+    tiles: vec4<f32>,
+    // World to the shadow map of each cascade (x, y in -1..1, z in 0..1).
+    shadow: array<mat4x4<f32>, 3>,
+    // Far end of each cascade (metres from the eye); w: depth bias.
+    splits: vec4<f32>,
 };
 
 const FLAG_TEXTURES: u32 = 1u;
@@ -114,9 +135,68 @@ struct Material {
     world: vec4<f32>,
     // x: reflection facing the camera, y: extra at grazing angles.
     reflection: vec4<f32>,
+    // World surfaces: light given off by day and at night (rgb times w).
+    glow_day: vec4<f32>,
+    glow_night: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> globals: Globals;
+//#if game
+// A material of the table and the slots of its textures in the array: base,
+// normal, gloss, detail normal; detail mask (world: mask), detail gloss
+// (world: detail layer).
+struct GameMaterial {
+    m: Material,
+    textures: array<vec4<u32>, 2>,
+};
+
+// A light of a lamp (stage 70).
+struct Light {
+    // xyz: position, w: radius (no light beyond).
+    position: vec4<f32>,
+    // rgb: colour times strength, w: radius of full light.
+    color: vec4<f32>,
+    // xyz: axis of a spot, w: cosine of the full light's cone (-2: all round).
+    direction: vec4<f32>,
+    // x: cosine of the cone, y: wrap, z: 1 / (radius - full radius),
+    // w: 1 / (cos full - cos cone).
+    params: vec4<f32>,
+};
+
+@group(0) @binding(1) var shadow_map: texture_depth_2d_array;
+@group(0) @binding(2) var shadow_sampler: sampler_comparison;
+@group(0) @binding(3) var<storage, read> lights: array<Light>;
+// Per tile of the screen: offset and count, then the light indices.
+@group(0) @binding(4) var<storage, read> light_grid: array<u32>;
+@group(1) @binding(0) var<storage, read> materials: array<GameMaterial>;
+// Per mesh part (from the instance's table offset and the vertex's part).
+@group(1) @binding(1) var<storage, read> part_materials: array<u32>;
+@group(1) @binding(2) var diffuse_sampler: sampler;
+@group(1) @binding(3) var textures: binding_array<texture_2d<f32>>;
+
+var<private> material: Material;
+var<private> slots: array<vec4<u32>, 2>;
+var<private> frag_xy: vec2<f32>;
+
+fn sample_base(uv: vec2<f32>) -> vec4<f32> {
+    return textureSample(textures[slots[0].x], diffuse_sampler, uv);
+}
+fn sample_normal(uv: vec2<f32>) -> vec4<f32> {
+    return textureSample(textures[slots[0].y], diffuse_sampler, uv);
+}
+fn sample_gloss(uv: vec2<f32>) -> vec4<f32> {
+    return textureSample(textures[slots[0].z], diffuse_sampler, uv);
+}
+fn sample_detail_normal(uv: vec2<f32>) -> vec4<f32> {
+    return textureSample(textures[slots[0].w], diffuse_sampler, uv);
+}
+fn sample_mask(uv: vec2<f32>) -> vec4<f32> {
+    return textureSample(textures[slots[1].x], diffuse_sampler, uv);
+}
+fn sample_detail(uv: vec2<f32>) -> vec4<f32> {
+    return textureSample(textures[slots[1].y], diffuse_sampler, uv);
+}
+//#else
 @group(1) @binding(0) var<uniform> material: Material;
 @group(1) @binding(1) var diffuse: texture_2d<f32>;
 @group(1) @binding(2) var diffuse_sampler: sampler;
@@ -127,6 +207,26 @@ struct Material {
 @group(1) @binding(6) var detail_mask_map: texture_2d<f32>;
 // World surfaces: the detail layer.
 @group(1) @binding(7) var detail_gloss_map: texture_2d<f32>;
+
+fn sample_base(uv: vec2<f32>) -> vec4<f32> {
+    return textureSample(diffuse, diffuse_sampler, uv);
+}
+fn sample_normal(uv: vec2<f32>) -> vec4<f32> {
+    return textureSample(normal_map, diffuse_sampler, uv);
+}
+fn sample_gloss(uv: vec2<f32>) -> vec4<f32> {
+    return textureSample(gloss_map, diffuse_sampler, uv);
+}
+fn sample_detail_normal(uv: vec2<f32>) -> vec4<f32> {
+    return textureSample(detail_normal_map, diffuse_sampler, uv);
+}
+fn sample_mask(uv: vec2<f32>) -> vec4<f32> {
+    return textureSample(detail_mask_map, diffuse_sampler, uv);
+}
+fn sample_detail(uv: vec2<f32>) -> vec4<f32> {
+    return textureSample(detail_gloss_map, diffuse_sampler, uv);
+}
+//#endif
 
 struct InstanceIn {
     @location(8) m0: vec4<f32>,
@@ -158,6 +258,10 @@ struct VertexOut {
     @location(5) @interpolate(flat) ids: vec2<u32>,
     @location(6) @interpolate(flat) part: u32,
     @location(7) bone_weight: f32,
+//#if game
+    // Index of the part's material in the table.
+    @location(8) @interpolate(flat) material: u32,
+//#endif
 };
 
 // Vertex.part bit: a corner of a leaf card turned to the camera (trees,
@@ -211,12 +315,15 @@ fn vs_mesh(v: VertexIn, inst: InstanceIn) -> VertexOut {
         }
     }
     out.bone_weight = weight;
+//#if game
+    out.material = part_materials[inst.ids.y + out.part];
+//#endif
     return out;
 }
 
 fn base_color(v: VertexOut) -> vec4<f32> {
     var color = material.color;
-    let texel = textureSample(diffuse, diffuse_sampler, v.uv);
+    let texel = sample_base(v.uv);
     if ((globals.params.x & FLAG_TEXTURES) != 0u && material.flags.x != 0u) {
         color = color * texel;
     }
@@ -306,20 +413,26 @@ fn is_highlighted(v: VertexOut) -> bool {
 
 @fragment
 fn fs_mesh(v: VertexOut, @builtin(front_facing) front: bool) -> @location(0) vec4<f32> {
+//#if game
+    let entry = materials[v.material];
+    material = entry.m;
+    slots = entry.textures;
+    frag_xy = v.clip.xy;
+//#endif
     // Every texture is sampled in uniform control flow.
     let detail_uv = v.uv * material.detail_uv.xy + material.detail_uv.zw;
     let mask_uv = v.uv * material.mask_uv.xy + material.mask_uv.zw;
-    let base = textureSample(diffuse, diffuse_sampler, v.uv);
+    let base = sample_base(v.uv);
     // Alpha-tested plain surfaces (leaves of trees, most of the world) are
     // cut before the other maps are read: the same test as below.
     if (!uses_surface() && (globals.params.x & FLAG_ALPHA_TEST) != 0u && base_color(v).a < 0.5) {
         discard;
     }
-    let normal_texel = textureSample(normal_map, diffuse_sampler, v.uv);
-    let gloss_texel = textureSample(gloss_map, diffuse_sampler, v.uv);
-    let detail_normal_texel = textureSample(detail_normal_map, diffuse_sampler, detail_uv);
-    let mask_texel = textureSample(detail_mask_map, diffuse_sampler, mask_uv);
-    let detail_gloss_texel = textureSample(detail_gloss_map, diffuse_sampler, detail_uv);
+    let normal_texel = sample_normal(v.uv);
+    let gloss_texel = sample_gloss(v.uv);
+    let detail_normal_texel = sample_detail_normal(detail_uv);
+    let mask_texel = sample_mask(mask_uv);
+    let detail_gloss_texel = sample_detail(detail_uv);
     if ((globals.params.x & FLAG_GAME) != 0u && (globals.params.x & FLAG_BONE_WEIGHTS) == 0u
         && uses_surface() && is_world()) {
         let w = world_fragment(
@@ -544,7 +657,18 @@ fn world_fragment(
         s = gloss_texel.b * s;
     }
     let light = game_light_power(n, v.world, s * s * s * 255.0 + 1.5e-5);
-    let lit_light = light.rgb * globals.game.params.x;
+    var lit_light = light.rgb * globals.game.params.x;
+    // Light the surface gives off (stage 70): panoramas by day and at night,
+    // lit windows, lamps and signs at night (g_NightControl).
+    let night = globals.game.extra.x;
+    if (model == MODEL_PANORAMA) {
+        let glow = mix(material.glow_day.rgb * material.glow_day.w,
+            material.glow_night.rgb * material.glow_night.w, night);
+        // A missing mask is white.
+        lit_light = lit_light + glow * mix(detail.g, detail.g * mask.g, night);
+    } else if (model == MODEL_WINDOW) {
+        lit_light = lit_light + material.glow_night.rgb * night * detail.a;
+    }
 
     // The lit pass.
     var spec_mask = 1.0;
@@ -615,8 +739,122 @@ fn game_light_power(n: vec3<f32>, world: vec3<f32>, power: f32) -> vec4<f32> {
     if (ndl > 0.0) {
         highlight = pow(max(dot(n, h), 0.0), power) * clamp(ndl + g.sun.w, 0.0, 1.0);
     }
+//#if game
+    // The sun's shadow takes part of the sun away; the lights of lamps add
+    // theirs (the game's light buffer adds every light, clamped to 1).
+    let lit = sun_shadow(world, n);
+    let left = mix(g.extra.y, 1.0, lit);
+    return vec4<f32>(min(sun * left + ambient + lamp_light(n, world), vec3<f32>(1.0)),
+        highlight * left);
+//#else
     return vec4<f32>(min(sun + ambient, vec3<f32>(1.0)), highlight);
+//#endif
 }
+
+//#if game
+// How much of the sun reaches a point (1 lit, 0 in shadow): the cascade of
+// its distance, four comparisons of the shadow map around it.
+fn sun_shadow(world: vec3<f32>, n: vec3<f32>) -> f32 {
+    let g = globals.game;
+    let cascades = u32(g.extra.z);
+    if (cascades == 0u) {
+        return 1.0;
+    }
+    let d = length(world - globals.eye.xyz);
+    var c = 0u;
+    while (c < cascades && d > g.splits[c]) {
+        c = c + 1u;
+    }
+    if (c >= cascades) {
+        return 1.0;
+    }
+    // Pushed off the surface along its normal against acne.
+    let p = g.shadow[c] * vec4<f32>(world + n * (0.04 * f32(c + 1u)), 1.0);
+    let uv = vec2<f32>(p.x * 0.5 + 0.5, 0.5 - p.y * 0.5);
+    if (any(uv < vec2<f32>(0.0)) || any(uv > vec2<f32>(1.0)) || p.z > 1.0) {
+        return 1.0;
+    }
+    let texel = 1.0 / f32(textureDimensions(shadow_map).x);
+    let z = p.z - g.splits.w;
+    var sum = 0.0;
+    for (var i = 0; i < 4; i++) {
+        let o = (vec2<f32>(f32(i & 1), f32(i >> 1u)) - 0.5) * texel;
+        sum += textureSampleCompareLevel(shadow_map, shadow_sampler, uv + o, i32(c), z);
+    }
+    return sum * 0.25;
+}
+
+// The lights of lamps at a point: those of its tile of the screen
+// (DeferredPointLight, DeferredSpotLight: full light within the full
+// radius, none beyond the radius, wrapped round by g_diffuseAmbient).
+fn lamp_light(n: vec3<f32>, world: vec3<f32>) -> vec3<f32> {
+    let g = globals.game;
+    if (g.extra.w == 0.0) {
+        return vec3<f32>(0.0);
+    }
+    let tile = vec2<u32>(frag_xy / g.tiles.x);
+    let across = u32(g.tiles.y);
+    if (tile.x >= across || tile.y >= u32(g.tiles.z)) {
+        return vec3<f32>(0.0);
+    }
+    let at = (tile.y * across + tile.x) * 2u;
+    let first = light_grid[at];
+    let count = light_grid[at + 1u];
+    var sum = vec3<f32>(0.0);
+    for (var i = 0u; i < count; i++) {
+        let light = lights[light_grid[first + i]];
+        let to = light.position.xyz - world;
+        let d = length(to);
+        if (d >= light.position.w) {
+            continue;
+        }
+        let l = to / max(d, 1e-4);
+        let reach = 1.0 - clamp((d - light.color.w) * light.params.z, 0.0, 1.0);
+        let lambert = clamp(dot(n, l) + light.params.y, 0.0, 1.0);
+        var cone = 1.0;
+        if (light.direction.w > -1.5) {
+            let c = dot(-l, light.direction.xyz);
+            cone = 1.0 - clamp((light.direction.w - c) * light.params.w, 0.0, 1.0);
+        }
+        sum += light.color.rgb * reach * lambert * cone;
+    }
+    return sum;
+}
+
+// The shadow map: depth of every opaque part seen from the sun; parts that
+// cut by their alpha (leaves) cut here too.
+struct ShadowPass {
+    view_proj: mat4x4<f32>,
+};
+@group(2) @binding(0) var<uniform> shadow_pass: ShadowPass;
+
+struct ShadowOut {
+    @builtin(position) clip: vec4<f32>,
+    @location(0) uv: vec2<f32>,
+    @location(1) @interpolate(flat) material: u32,
+};
+
+@vertex
+fn vs_shadow(v: VertexIn, inst: InstanceIn) -> ShadowOut {
+    let model = mat4x4<f32>(inst.m0, inst.m1, inst.m2, inst.m3);
+    var out: ShadowOut;
+    out.clip = shadow_pass.view_proj * place(v, model).world;
+    // Casters behind the near plane still cast.
+    out.clip.z = max(out.clip.z, 0.0);
+    out.uv = v.uv;
+    out.material = part_materials[inst.ids.y + (v.part & ~BILLBOARD)];
+    return out;
+}
+
+@fragment
+fn fs_shadow(v: ShadowOut) {
+    let entry = materials[v.material];
+    slots = entry.textures;
+    if (sample_base(v.uv).a * entry.m.color.a < 0.5) {
+        discard;
+    }
+}
+//#endif
 
 // m_FogColor → m_FogEndColor over the fog's range; how much it hides goes from
 // the amount at the start to the amount at the end, none before the start.

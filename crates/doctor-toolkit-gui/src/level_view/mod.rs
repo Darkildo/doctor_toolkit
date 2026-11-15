@@ -316,6 +316,8 @@ pub struct LevelView {
     uploaded: HashSet<u64>,
     failed: Vec<(u32, String)>,
     items: Vec<Item>,
+    /// Lights of the objects (game look, stage 70).
+    lights: Vec<scene::WorldLight>,
     by_object: HashMap<ObjRef, Vec<usize>>,
     classes: Vec<(u32, String, usize)>,
     filter: Filter,
@@ -452,6 +454,7 @@ impl LevelView {
             uploaded: HashSet::new(),
             failed: Vec::new(),
             items: Vec::new(),
+            lights: Vec::new(),
             by_object: HashMap::new(),
             classes: Vec::new(),
             filter: Filter::default(),
@@ -603,6 +606,8 @@ impl LevelView {
                     }
                 }
                 "shading" => crate::render::set_game_look(value != "simple"),
+                "shadows" => self.scene.options.shadows = value != "off",
+                "lamps" => self.scene.options.lamps = value != "off",
                 _ => {}
             }
         }
@@ -615,6 +620,7 @@ impl LevelView {
         self.walk.reset();
         self.level = None;
         self.items.clear();
+        self.lights.clear();
         self.scene.instances.clear();
         self.clear_selection();
         self.catalog = Arc::new(Catalog::new(&game, &index));
@@ -656,6 +662,7 @@ impl LevelView {
         input.overrides = overrides(&input.game, ws, &self.chosen_locations(&input));
         self.level = None;
         self.items.clear();
+        self.lights.clear();
         self.by_object.clear();
         self.scene.instances.clear();
         self.visible.clear();
@@ -843,6 +850,7 @@ impl LevelView {
     fn rebuild_items(&mut self) {
         let Some(level) = &self.level else { return };
         let (items, by_object) = scene::build_items(level);
+        self.lights = scene::build_lights(level);
         let mut classes: HashMap<u32, (String, usize)> = HashMap::new();
         for g in &level.groups {
             for o in g.objects.iter().filter(|o| o.transform.is_some()) {
@@ -2341,6 +2349,10 @@ impl LevelView {
         };
         let cine_revision = self.cine_scene();
         self.scene.options.game = self.game_look();
+        self.scene.lights = match &self.scene.options.game {
+            Some(look) if self.scene.options.lamps => scene::scene_lights(&self.lights, look.night),
+            _ => Vec::new(),
+        };
         match self.gpu.clone() {
             Some(gpu) => {
                 let key = RenderKey {

@@ -210,6 +210,9 @@ pub struct WorldParams {
     pub reflection_masked: bool,
     /// Cut where the base texture's alpha is below one half.
     pub alpha_test: bool,
+    /// Light given off by day and at night (rgb times w; stage 70):
+    /// panoramas, lit windows, lamps and signs.
+    pub glow: [[f32; 4]; 2],
 }
 
 impl Default for WorldParams {
@@ -224,6 +227,7 @@ impl Default for WorldParams {
             specular_lit: false,
             reflection_masked: false,
             alpha_test: false,
+            glow: [[0.0; 4]; 2],
         }
     }
 }
@@ -521,6 +525,26 @@ pub struct SceneOptions {
     /// Shade as the game does (its light, sky and fog); `None`: the simple
     /// shading above.
     pub game: Option<super::GameLook>,
+    /// In the game look: the sun casts shadows (stage 70).
+    pub shadows: bool,
+    /// In the game look: the lights of lamps ([`Scene::lights`]) shine.
+    pub lamps: bool,
+}
+
+/// A light of a lamp in the world (game look, `docs/analysis/renderer.md`
+/// §10.9). Colours are linear and include the strength.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PointLight {
+    pub position: Vec3,
+    /// No light beyond it.
+    pub radius: f32,
+    /// Full light within it.
+    pub full_radius: f32,
+    pub color: [f32; 3],
+    /// A spot: its axis and the cosines of its cone and of its full light.
+    pub spot: Option<(Vec3, f32, f32)>,
+    /// Added to `n·l` before clamping.
+    pub wrap: f32,
 }
 
 /// Light and air of an outdoor scene (the cut-scene preview's time of day).
@@ -558,6 +582,8 @@ impl Default for SceneOptions {
             surfaces: true,
             environment: None,
             game: None,
+            shadows: true,
+            lamps: true,
         }
     }
 }
@@ -574,6 +600,8 @@ pub struct Scene {
     pub hidden_parts: HashSet<(MeshKey, u32)>,
     pub highlight: Option<Pick>,
     pub options: SceneOptions,
+    /// Lights of lamps (game look, [`SceneOptions::lamps`]).
+    pub lights: Vec<PointLight>,
 }
 
 impl Scene {

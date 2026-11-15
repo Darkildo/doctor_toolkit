@@ -377,6 +377,7 @@ fn world_surface(w: &WorldShading) -> Surface {
             specular_lit: w.specular_lit,
             reflection_masked: w.reflection_masked,
             alpha_test: w.alpha_test,
+            glow: w.glow,
         },
         ..Surface::default()
     };

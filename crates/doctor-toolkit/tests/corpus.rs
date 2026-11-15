@@ -1963,6 +1963,81 @@ fn every_tree_model_parses_writes_back_and_finds_its_materials() {
     assert_eq!(empty.len(), 3, "{empty:?}");
 }
 
+/// Stage 70: the colour grading of every city finds its colour tables and
+/// the city's lamps are lights of their models, most of them lit only at night.
+#[test]
+fn every_city_grades_its_colours_and_lights_its_lamps() {
+    use doctor_toolkit::level::{Catalog, Level, LevelSource, LightKind, Lookup, Overrides, Scope};
+    use doctor_toolkit::time_of_day::CityLight;
+    use std::sync::Arc;
+
+    let Some(dir) = game_dir() else { return };
+    let game = Arc::new(GameInstance::open(&dir).unwrap());
+    let (index, errors) = game.build_index(|_| {});
+    assert!(errors.is_empty());
+    let catalog = Catalog::new(&game, &index);
+    let lookup = Arc::new(Lookup::new(&index));
+    let parents = game.stream_parents().unwrap();
+    for city in ["cuba", "queens", "miami"] {
+        let light = CityLight::read(&game, city).unwrap();
+        let tables = light.colour_tables(&game);
+        for (_, key) in &light.outdoor.grading {
+            assert!(
+                tables.contains_key(&key.vfx),
+                "{city}: no colour table for vfx {:08x}",
+                key.vfx
+            );
+        }
+        // Noon is mostly the day table, midnight the night table; the
+        // night table warms a mid grey.
+        let noon = light.at(12 * 3600 + 180);
+        let main = noon
+            .grading
+            .tables()
+            .iter()
+            .max_by(|a, b| a.1.total_cmp(&b.1))
+            .unwrap();
+        assert_eq!(tables[&main.0].name, "lutcolor_miami_day", "{city}");
+        let night = light.at(180);
+        assert_eq!(night.grading.count, 1);
+        let table = &tables[&night.grading.tables()[0].0];
+        assert_eq!(table.name, "lutcolor_miami_night");
+        let grey = table.grade([0.5; 3]);
+        assert!(grey[0] > grey[2], "{city}: {grey:?}");
+        assert_eq!(night.night, 1.0, "{city}: windows lit at night");
+        assert_eq!(noon.night, 0.0, "{city}");
+
+        let name = format!("gf2/{city}/local");
+        let streams: Vec<usize> = catalog.under(&name).map(|z| z.stream).collect();
+        let scope = Scope::new(&game, &parents, &streams);
+        let source = Arc::new(LevelSource::new(
+            game.clone(),
+            lookup.clone(),
+            Overrides::default(),
+            scope,
+        ));
+        let level = Level::load(source, &streams).unwrap();
+        let lights: Vec<_> = level
+            .models
+            .values()
+            .flat_map(|m| m.desc.lights.iter())
+            .collect();
+        let night_only = lights
+            .iter()
+            .filter(|l| l.day_night.is_some_and(|dn| dn[0] == 0.0 && dn[1] > 0.0))
+            .count();
+        let spots = lights.iter().filter(|l| l.kind == LightKind::Spot).count();
+        assert!(
+            lights.len() > 100 && night_only > 50 && spots > 20,
+            "{city}: {} lights, {night_only} lit only at night, {spots} spots",
+            lights.len()
+        );
+        for l in &lights {
+            assert!(l.radius >= 0.0 && l.radius < 200.0, "{city}: {l:?}");
+        }
+    }
+}
+
 /// World materials of the three cities (stage 69, `renderer.md` §10.7):
 /// every material the cities' meshes draw with a world shader finds every
 /// texture it samples; the textures it does not find are the engine's

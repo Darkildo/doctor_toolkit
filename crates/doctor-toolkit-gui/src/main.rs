@@ -137,6 +137,8 @@ fn main() -> eframe::Result {
         setup.device_descriptor = std::sync::Arc::new(move |adapter| {
             let mut descriptor = base(adapter);
             descriptor.required_features |= adapter.features() & features;
+            descriptor.required_limits =
+                render::device_limits(adapter, descriptor.required_limits.clone());
             descriptor
         });
     }

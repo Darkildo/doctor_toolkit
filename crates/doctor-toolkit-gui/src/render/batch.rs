@@ -78,6 +78,19 @@ impl FreeList {
         }
     }
 
+    /// More room at the end: `capacity` elements in all.
+    pub fn grow(&mut self, capacity: u32) {
+        if capacity > self.capacity {
+            let old = self.capacity;
+            self.capacity = capacity;
+            self.free(old, capacity - old);
+        }
+    }
+
+    pub fn capacity(&self) -> u32 {
+        self.capacity
+    }
+
     /// Whether nothing is allocated.
     pub fn is_empty(&self) -> bool {
         self.capacity == 0 || self.ranges == [(0, self.capacity)]

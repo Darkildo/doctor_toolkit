@@ -11,8 +11,10 @@ use eframe::wgpu;
 use eframe::wgpu::util::DeviceExt;
 
 use super::batch::{self, Arena, Batching, DrawCmd, DrawKey, Run, Slot};
+use super::bindless::{self, Bindless, Frame, GameMaterial, frustum_planes, sphere_visible};
 use super::camera::View;
 use super::math::{self, Aabb, Mat4};
+use super::post::Post;
 use super::scene::{
     Instance, LineVertex, MaterialData, MeshData, MeshKey, Pick, Scene, TextureData, TextureKey,
     Vertex,
@@ -87,7 +89,7 @@ struct Globals {
 
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
-struct MaterialUniform {
+pub(super) struct MaterialUniform {
     color: [f32; 4],
     /// x: base texture present, y: surface model (0 = plain), z: `HAS_*` bits.
     flags: [u32; 4],
@@ -109,6 +111,8 @@ struct MaterialUniform {
     world: [f32; 4],
     /// World surfaces: x reflection facing the camera, y extra at grazing angles.
     reflection: [f32; 4],
+    /// World surfaces: light given off by day and at night (rgb times w).
+    glow: [[f32; 4]; 2],
 }
 
 impl MaterialUniform {
@@ -130,6 +134,7 @@ impl MaterialUniform {
             detail_tint: [1.0; 4],
             world: [1.0, 1.0, 0.0, 0.0],
             reflection: [0.0; 4],
+            glow: [[0.0; 4]; 2],
         };
         if material.sky {
             u.flags[2] |= IS_SKY;
@@ -191,6 +196,7 @@ impl MaterialUniform {
                 u.detail_tint = surface.detail_tint;
                 u.world = [w.mask_scale, w.normal_scale, w.exponent, w.overlay];
                 u.reflection = [w.reflection[0], w.reflection[1], 0.0, 0.0];
+                u.glow = w.glow;
             }
         }
         u
@@ -260,10 +266,13 @@ impl GpuContext {
                 label: Some("doctor_toolkit headless"),
                 // Batched draws; benchmarks time the scene pass (stage 67).
                 required_features: adapter.features() & optional_features(true),
-                required_limits: wgpu::Limits {
-                    max_texture_dimension_2d: 8192,
-                    ..limits
-                },
+                required_limits: bindless::limits(
+                    &adapter,
+                    wgpu::Limits {
+                        max_texture_dimension_2d: 8192,
+                        ..limits
+                    },
+                ),
                 ..Default::default()
             };
             let (device, queue) = pollster::block_on(adapter.request_device(&descriptor)).ok()?;
@@ -297,6 +306,8 @@ struct MaterialBind {
     /// Unique per bind group: parts are sorted and batched by it.
     id: u32,
     bind_group: wgpu::BindGroup,
+    /// Its entry in the material table of the game look (binding arrays).
+    slot: u32,
 }
 
 struct GpuPart {
@@ -311,6 +322,10 @@ struct GpuPart {
     blend: bool,
     /// Draw-order layer ([`PartData::layer`], else the part's index).
     layer: u32,
+    /// Drawn into the sun's shadow map (opaque, not the sky); `cut`: by
+    /// its base texture's alpha.
+    casts: bool,
+    cut: bool,
 }
 
 struct GpuMesh {
@@ -324,6 +339,9 @@ struct GpuMesh {
     /// Normal lines, built on first use.
     normals: Option<(wgpu::Buffer, u32)>,
     last_used: u64,
+    /// The parts' material slots in the part table of the game look:
+    /// offset and count.
+    table: Option<(u32, usize)>,
 }
 
 /// Offscreen targets of one on-screen view.
@@ -333,6 +351,8 @@ pub struct Viewport {
     color_view: Option<wgpu::TextureView>,
     msaa_view: Option<wgpu::TextureView>,
     depth_view: Option<wgpu::TextureView>,
+    /// The game look's frame before its colour grading.
+    graded: Option<(wgpu::Texture, wgpu::TextureView)>,
     pick: Option<PickTargets>,
     texture_id: Option<egui::TextureId>,
     egui: Option<Arc<egui::mutex::RwLock<egui_wgpu::Renderer>>>,
@@ -359,6 +379,7 @@ impl Viewport {
             color_view: None,
             msaa_view: None,
             depth_view: None,
+            graded: None,
             pick: None,
             texture_id: None,
             egui: None,
@@ -423,6 +444,7 @@ impl Viewport {
             .create_view(&Default::default()),
         );
         self.pick = None;
+        self.graded = None;
         if let Some(egui) = &renderer.context.egui {
             let mut egui_renderer = egui.write();
             match self.texture_id {
@@ -446,6 +468,29 @@ impl Viewport {
         self.color_view = Some(color_view);
         self.size = size;
         true
+    }
+
+    /// The frame of the game look before its colour grading.
+    fn ensure_graded(&mut self, device: &wgpu::Device) {
+        if self.graded.is_some() {
+            return;
+        }
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("game look frame"),
+            size: wgpu::Extent3d {
+                width: self.size[0],
+                height: self.size[1],
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: COLOR_FORMAT,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        let view = texture.create_view(&Default::default());
+        self.graded = Some((texture, view));
     }
 
     fn pick_targets(&mut self, device: &wgpu::Device) -> &PickTargets {
@@ -524,6 +569,26 @@ struct Commands {
     cmds: Vec<DrawCmd>,
     runs: Vec<Run>,
     binds: HashMap<u32, Arc<MaterialBind>>,
+    /// Where the arguments start in the frame's indirect buffer.
+    base: u32,
+}
+
+/// The game look's pipelines on devices with binding arrays (stage 70).
+struct GamePath {
+    bindless: Bindless,
+    /// Without and with back-face culling.
+    mesh: [wgpu::RenderPipeline; 2],
+    blend: [wgpu::RenderPipeline; 2],
+    /// The shadow map: opaque parts, and parts cut by their alpha.
+    shadow: [wgpu::RenderPipeline; 2],
+}
+
+/// The instances of a frame after culling, for the scene and for each
+/// cascade of the sun's shadow.
+struct Prepared {
+    draws: Vec<DrawGroup>,
+    shadows: Vec<Vec<DrawGroup>>,
+    frame: Option<Frame>,
 }
 
 /// One mesh with the slice of the instance buffer holding its instances.
@@ -557,12 +622,17 @@ pub struct SceneRenderer {
     overlay_pipeline: wgpu::RenderPipeline,
     /// The game's sky dome behind the scene (a full-screen triangle).
     sky_pipeline: wgpu::RenderPipeline,
+    /// The game look with binding arrays, where the device has them.
+    game: Option<GamePath>,
+    /// Colour grading of the game look.
+    post: Post,
     meshes: HashMap<MeshKey, GpuMesh>,
     textures: HashMap<TextureKey, GpuTexture>,
     /// Shared vertex and index buffers of the meshes.
     arena: Arena,
-    /// Bind groups of materials by uniform and texture serials.
-    materials: HashMap<Vec<u8>, Weak<MaterialBind>>,
+    /// Bind groups of materials by uniform and texture serials, with their
+    /// slots in the material table of the game look.
+    materials: HashMap<Vec<u8>, (Weak<MaterialBind>, u32)>,
     next_material: u32,
     next_texture: u64,
     batching: Batching,
@@ -594,7 +664,7 @@ impl SceneRenderer {
         };
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("scene shader"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("scene.wgsl").into()),
+            source: wgpu::ShaderSource::Wgsl(shader_source(false).into()),
         });
         let globals = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("globals"),
@@ -702,22 +772,28 @@ impl SceneRenderer {
                 bias: wgpu::DepthBiasState::default(),
             })
         };
-        let pipeline = |label: &str,
-                        layout: &wgpu::PipelineLayout,
-                        vs: &str,
-                        fs: &str,
-                        buffers: &[Option<wgpu::VertexBufferLayout<'_>>],
-                        topology,
-                        depth_stencil,
-                        format,
-                        samples,
-                        blend: Option<wgpu::BlendState>,
-                        cull_mode: Option<wgpu::Face>| {
+        let pipeline_of = |shader: &wgpu::ShaderModule,
+                           label: &str,
+                           layout: &wgpu::PipelineLayout,
+                           vs: &str,
+                           fs: Option<&str>,
+                           buffers: &[Option<wgpu::VertexBufferLayout<'_>>],
+                           topology,
+                           depth_stencil,
+                           format,
+                           samples,
+                           blend: Option<wgpu::BlendState>,
+                           cull_mode: Option<wgpu::Face>| {
+            let color_target = [Some(wgpu::ColorTargetState {
+                format,
+                blend,
+                write_mask: wgpu::ColorWrites::ALL,
+            })];
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some(label),
                 layout: Some(layout),
                 vertex: wgpu::VertexState {
-                    module: &shader,
+                    module: shader,
                     entry_point: Some(vs),
                     buffers,
                     compilation_options: Default::default(),
@@ -734,19 +810,46 @@ impl SceneRenderer {
                     mask: !0,
                     alpha_to_coverage_enabled: false,
                 },
-                fragment: Some(wgpu::FragmentState {
-                    module: &shader,
+                fragment: fs.map(|fs| wgpu::FragmentState {
+                    module: shader,
                     entry_point: Some(fs),
-                    targets: &[Some(wgpu::ColorTargetState {
-                        format,
-                        blend,
-                        write_mask: wgpu::ColorWrites::ALL,
-                    })],
+                    // A depth-only pass (the shadow map) has no colour.
+                    targets: if format == DEPTH_FORMAT {
+                        &[]
+                    } else {
+                        &color_target
+                    },
                     compilation_options: Default::default(),
                 }),
                 multiview_mask: None,
                 cache: None,
             })
+        };
+        let pipeline = |label: &str,
+                        layout: &wgpu::PipelineLayout,
+                        vs: &str,
+                        fs: &str,
+                        buffers: &[Option<wgpu::VertexBufferLayout<'_>>],
+                        topology,
+                        depth_stencil,
+                        format,
+                        samples,
+                        blend: Option<wgpu::BlendState>,
+                        cull_mode: Option<wgpu::Face>| {
+            pipeline_of(
+                &shader,
+                label,
+                layout,
+                vs,
+                Some(fs),
+                buffers,
+                topology,
+                depth_stencil,
+                format,
+                samples,
+                blend,
+                cull_mode,
+            )
         };
         use wgpu::CompareFunction::{Always, LessEqual};
         use wgpu::PrimitiveTopology::{LineList, TriangleList};
@@ -895,6 +998,86 @@ impl SceneRenderer {
         };
         let flat_normal = pixel("flat normal", [128, 128, 255, 255]);
         let white = pixel("white", [255; 4]);
+        // The game look with binding arrays (stage 70).
+        let game = bindless::supported(device).then(|| {
+            let bindless = Bindless::new(
+                device,
+                sampler.clone(),
+                white.clone(),
+                flat_normal.clone(),
+                std::mem::size_of::<Globals>() as u64,
+            );
+            let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some("game scene shader"),
+                source: wgpu::ShaderSource::Wgsl(shader_source(true).into()),
+            });
+            let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("game mesh layout"),
+                bind_group_layouts: &[
+                    Some(&bindless.globals_layout),
+                    Some(&bindless.material_layout),
+                ],
+                immediate_size: 0,
+            });
+            let shadow_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("shadow layout"),
+                bind_group_layouts: &[
+                    Some(&globals_layout),
+                    Some(&bindless.material_layout),
+                    Some(&bindless.shadow_layout),
+                ],
+                immediate_size: 0,
+            });
+            let mesh = |write: bool, blend, cull| {
+                pipeline_of(
+                    &shader,
+                    "game mesh",
+                    &layout,
+                    "vs_mesh",
+                    Some("fs_mesh"),
+                    &mesh_buffers,
+                    TriangleList,
+                    depth(write, LessEqual),
+                    COLOR_FORMAT,
+                    sample_count,
+                    blend,
+                    cull,
+                )
+            };
+            let shadow = |fs| {
+                pipeline_of(
+                    &shader,
+                    "shadow",
+                    &shadow_layout,
+                    "vs_shadow",
+                    fs,
+                    &mesh_buffers,
+                    TriangleList,
+                    Some(wgpu::DepthStencilState {
+                        format: DEPTH_FORMAT,
+                        depth_write_enabled: Some(true),
+                        depth_compare: Some(LessEqual),
+                        stencil: wgpu::StencilState::default(),
+                        bias: wgpu::DepthBiasState {
+                            constant: 2,
+                            slope_scale: 2.0,
+                            clamp: 0.0,
+                        },
+                    }),
+                    DEPTH_FORMAT,
+                    1,
+                    None,
+                    None,
+                )
+            };
+            GamePath {
+                mesh: [None, Some(wgpu::Face::Back)].map(|cull| mesh(true, None, cull)),
+                blend: [None, Some(wgpu::Face::Back)].map(|cull| mesh(false, premultiplied, cull)),
+                shadow: [shadow(None), shadow(Some("fs_shadow"))],
+                bindless,
+            }
+        });
+        let post = Post::new(device, &context.queue, COLOR_FORMAT);
         let identity = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("identity instance"),
             contents: bytemuck::bytes_of(&InstanceRaw::new(&Instance::new(0, math::IDENTITY), 0)),
@@ -927,6 +1110,8 @@ impl SceneRenderer {
             line_pipeline,
             overlay_pipeline,
             sky_pipeline,
+            game,
+            post,
             meshes: HashMap::new(),
             textures: HashMap::new(),
             arena,
@@ -1049,10 +1234,14 @@ impl SceneRenderer {
             bytes += pixels.len();
         }
         self.next_texture += 1;
+        let view = texture.create_view(&Default::default());
+        if let Some(game) = &mut self.game {
+            game.bindless.add_texture(key, view.clone());
+        }
         self.textures.insert(
             key,
             GpuTexture {
-                view: texture.create_view(&Default::default()),
+                view,
                 bytes,
                 srgb: data.srgb,
                 serial: self.next_texture,
@@ -1084,8 +1273,35 @@ impl SceneRenderer {
     fn material_count(&self) -> usize {
         self.materials
             .values()
-            .filter(|m| m.strong_count() > 0)
+            .filter(|m| m.0.strong_count() > 0)
             .count()
+    }
+
+    /// Whether the game look draws with binding arrays on this device.
+    pub fn has_game_path(&self) -> bool {
+        self.game.is_some()
+    }
+
+    /// Forgets the materials no mesh uses; their table slots are free again.
+    fn forget_materials(&mut self) {
+        let game = &mut self.game;
+        self.materials.retain(|_, (m, slot)| {
+            let alive = m.strong_count() > 0;
+            if !alive && let Some(game) = game.as_mut() {
+                game.bindless.free_material(*slot);
+            }
+            alive
+        });
+    }
+
+    /// Frees a mesh's slot in the buffers and its part table entries.
+    fn drop_mesh(&mut self, mesh: GpuMesh) {
+        if let Some(slot) = mesh.slot {
+            self.arena.free(slot);
+        }
+        if let (Some(game), Some((start, len))) = (&mut self.game, mesh.table) {
+            game.bindless.free_parts(start, len);
+        }
     }
 
     /// Where a mesh lives in the shared buffers.
@@ -1116,10 +1332,8 @@ impl SceneRenderer {
         if self.update_in_place(key, &data) {
             return;
         }
-        if let Some(old) = self.meshes.remove(&key)
-            && let Some(slot) = old.slot
-        {
-            self.arena.free(slot);
+        if let Some(old) = self.meshes.remove(&key) {
+            self.drop_mesh(old);
         }
         let device = self.context.device.clone();
         let slot = if vertex_count == 0 || index_count == 0 {
@@ -1136,12 +1350,29 @@ impl SceneRenderer {
             }
             slot
         };
-        let parts = data
+        let parts: Vec<GpuPart> = data
             .parts
             .iter()
             .enumerate()
             .map(|(index, part)| GpuPart {
                 layer: part.layer.unwrap_or(index as u32),
+                casts: !part.material.blended()
+                    && !part.material.sky
+                    && part.material.surface.as_ref().is_none_or(|s| {
+                        // Panoramas stand far away (rings round the city),
+                        // water lies below everything.
+                        !matches!(
+                            s.model,
+                            super::scene::SurfaceModel::Overlay
+                                | super::scene::SurfaceModel::Glass
+                                | super::scene::SurfaceModel::Panorama
+                                | super::scene::SurfaceModel::Water
+                        )
+                    }),
+                cut: match &part.material.surface {
+                    Some(s) if s.model.is_world() => s.world.alpha_test,
+                    _ => part.material.texture.is_some(),
+                },
                 material: self.material(&part.material, &part.name),
                 simple: part
                     .material
@@ -1161,6 +1392,10 @@ impl SceneRenderer {
             })
             .collect();
         let bounds = data.bounds();
+        let table = self.game.as_mut().map(|game| {
+            let slots: Vec<u32> = parts.iter().map(|p| p.material.slot).collect();
+            (game.bindless.add_parts(&slots), slots.len())
+        });
         self.meshes.insert(
             key,
             GpuMesh {
@@ -1171,6 +1406,7 @@ impl SceneRenderer {
                 edges: None,
                 normals: None,
                 last_used: self.frame,
+                table,
             },
         );
         self.evict();
@@ -1241,7 +1477,7 @@ impl SceneRenderer {
             let serial = view(k).map_or(0, |t| t.serial);
             cache_key.extend_from_slice(&serial.to_le_bytes());
         }
-        if let Some(bind) = self.materials.get(&cache_key).and_then(Weak::upgrade) {
+        if let Some(bind) = self.materials.get(&cache_key).and_then(|m| m.0.upgrade()) {
             return bind;
         }
         let device = &self.context.device;
@@ -1281,16 +1517,46 @@ impl SceneRenderer {
             layout: &self.material_layout,
             entries: &entries,
         });
+        // The same material in the table of the game look: its uniform and
+        // the slots of its textures in the array.
+        let slot = match &mut self.game {
+            Some(game) => {
+                let b = &game.bindless;
+                let slots: Vec<u32> = keys
+                    .iter()
+                    .enumerate()
+                    .map(|(i, &k)| {
+                        k.filter(|k| self.textures.contains_key(k))
+                            .and_then(|k| b.texture_slot(k))
+                            .unwrap_or(if i == 1 || i == 3 {
+                                bindless::FLAT_NORMAL
+                            } else {
+                                bindless::WHITE
+                            })
+                    })
+                    .collect();
+                game.bindless.add_material(GameMaterial {
+                    material: uniform,
+                    textures: [
+                        [slots[0], slots[1], slots[2], slots[3]],
+                        [slots[4], slots[5], 0, 0],
+                    ],
+                })
+            }
+            None => 0,
+        };
         self.next_material += 1;
         let bind = Arc::new(MaterialBind {
             id: self.next_material,
             bind_group,
+            slot,
         });
         // Forget the materials no mesh uses any more now and then.
         if self.materials.len() >= 64 && self.materials.len().is_power_of_two() {
-            self.materials.retain(|_, m| m.strong_count() > 0);
+            self.forget_materials();
         }
-        self.materials.insert(cache_key, Arc::downgrade(&bind));
+        self.materials
+            .insert(cache_key, (Arc::downgrade(&bind), slot));
         bind
     }
 
@@ -1305,23 +1571,41 @@ impl SceneRenderer {
         order.sort();
         let excess = self.meshes.len() - self.mesh_budget;
         for (_, key) in order.into_iter().take(excess) {
-            if let Some(slot) = self.meshes.remove(&key).and_then(|m| m.slot) {
-                self.arena.free(slot);
+            if let Some(mesh) = self.meshes.remove(&key) {
+                self.drop_mesh(mesh);
             }
         }
-        self.materials.retain(|_, m| m.strong_count() > 0);
+        self.forget_materials();
         let used: std::collections::HashSet<TextureKey> = self
             .meshes
             .values()
             .flat_map(|m| m.data.parts.iter().flat_map(|p| p.material.textures()))
             .collect();
-        self.textures.retain(|key, _| used.contains(key));
+        let game = &mut self.game;
+        self.textures.retain(|key, _| {
+            let keep = used.contains(key);
+            if !keep && let Some(game) = game.as_mut() {
+                game.bindless.remove_texture(*key);
+            }
+            keep
+        });
+    }
+
+    /// Whether a scene is drawn by the game look with binding arrays.
+    fn game_path(&self, scene: &Scene) -> bool {
+        self.game.is_some()
+            && scene.options.lighting
+            && scene.options.game.is_some()
+            && scene.options.bone_weights.is_none()
     }
 
     /// Writes the per-frame uniforms and the instance and line buffers;
-    /// returns the draw groups after frustum culling.
-    fn prepare(&mut self, scene: &Scene, view: &View, aspect: f32) -> Vec<DrawGroup> {
+    /// returns the draw groups after frustum culling (and, for the game look
+    /// with binding arrays, those of the shadow's cascades and the frame's
+    /// lights). `pick`: for the id pass (no shadows, no lights).
+    fn prepare(&mut self, scene: &Scene, view: &View, size: [u32; 2], pick: bool) -> Prepared {
         self.frame += 1;
+        let aspect = size[0] as f32 / size[1].max(1) as f32;
         let view_proj = view.view_projection();
         let options = &scene.options;
         let mut flags = 0;
@@ -1369,6 +1653,28 @@ impl SceneRenderer {
         if let Some(game) = options.game.as_ref().filter(|_| options.lighting) {
             light = math::normalize_or(game.sun, [0.0, 1.0, 0.0]);
         }
+        // The game look with binding arrays: the sun's shadow (while the sun
+        // or moon is above the horizon) and the lights of lamps.
+        let game_path = self.game_path(scene) && !pick;
+        let frame = game_path.then(|| {
+            let shadows = options.shadows && light[1] > 0.05;
+            let lights: &[super::scene::PointLight] =
+                if options.lamps { &scene.lights } else { &[] };
+            Frame::new(view, size, shadows.then_some(light), lights)
+        });
+        let mut game_uniform = super::game_look::GameUniform::new(
+            options.game.as_ref().filter(|_| options.lighting),
+            &view_proj,
+        );
+        if let Some(frame) = &frame {
+            game_uniform.extra[2] = frame.cascades.len() as f32;
+            game_uniform.extra[3] = frame.has_lights() as u32 as f32;
+            game_uniform.tiles = frame.tiles;
+            game_uniform.splits = frame.splits;
+            for (o, m) in game_uniform.shadow.iter_mut().zip(&frame.cascades) {
+                *o = *m;
+            }
+        }
         let globals = Globals {
             view_proj,
             eye: [view.eye[0], view.eye[1], view.eye[2], 1.0],
@@ -1385,52 +1691,74 @@ impl SceneRenderer {
             fog_color,
             fog,
             camera: camera_axes(&view.view),
-            game: super::game_look::GameUniform::new(
-                options.game.as_ref().filter(|_| options.lighting),
-                &view_proj,
-            ),
+            game: game_uniform,
         };
         self.context
             .queue
             .write_buffer(&self.globals, 0, bytemuck::bytes_of(&globals));
 
         let planes = frustum_planes(&view_proj);
-        // Visible instances by mesh key, each mesh's in the scene's order.
+        let caster_planes: Vec<[[f32; 4]; 6]> = frame
+            .as_ref()
+            .map(|f| f.cascades.iter().map(bindless::caster_planes).collect())
+            .unwrap_or_default();
+        // Visible instances by mesh key, each mesh's in the scene's order;
+        // casters of each cascade likewise.
         let mut visible: Vec<(MeshKey, u32)> = Vec::with_capacity(scene.instances.len());
+        let mut casters: Vec<Vec<(MeshKey, u32)>> = vec![Vec::new(); caster_planes.len()];
         let mut culled = 0;
-        let frame = self.frame;
+        let frame_number = self.frame;
         for (index, instance) in scene.instances.iter().enumerate() {
             let Some(mesh) = self.meshes.get_mut(&instance.mesh) else {
                 continue;
             };
-            mesh.last_used = frame;
-            if options.frustum_culling {
-                let centre = math::transform_point(&instance.transform, mesh.bounds.center());
-                let radius = mesh.bounds.radius() * math::max_scale(&instance.transform);
-                if !sphere_visible(&planes, centre, radius) {
-                    culled += 1;
-                    continue;
+            mesh.last_used = frame_number;
+            let centre = math::transform_point(&instance.transform, mesh.bounds.center());
+            let radius = mesh.bounds.radius() * math::max_scale(&instance.transform);
+            for ((planes, list), smallest) in caster_planes
+                .iter()
+                .zip(&mut casters)
+                .zip(bindless::SMALLEST_CASTER)
+            {
+                if radius >= smallest && sphere_visible(planes, centre, radius) {
+                    list.push((instance.mesh, index as u32));
                 }
+            }
+            if options.frustum_culling && !sphere_visible(&planes, centre, radius) {
+                culled += 1;
+                continue;
             }
             visible.push((instance.mesh, index as u32));
         }
-        visible.sort_unstable();
         let mut raw = Vec::with_capacity(visible.len());
-        let mut draws: Vec<DrawGroup> = Vec::new();
-        for &(key, index) in &visible {
-            match draws.last_mut() {
-                Some(group) if group.mesh == key => group.count += 1,
-                _ => draws.push(DrawGroup {
-                    mesh: key,
-                    first: raw.len() as u32,
-                    count: 1,
-                }),
+        let groups = |list: &mut Vec<(MeshKey, u32)>, raw: &mut Vec<InstanceRaw>| {
+            list.sort_unstable();
+            let mut draws: Vec<DrawGroup> = Vec::new();
+            for &(key, index) in list.iter() {
+                match draws.last_mut() {
+                    Some(group) if group.mesh == key => group.count += 1,
+                    _ => draws.push(DrawGroup {
+                        mesh: key,
+                        first: raw.len() as u32,
+                        count: 1,
+                    }),
+                }
+                let table = self
+                    .meshes
+                    .get(&key)
+                    .and_then(|m| m.table)
+                    .map_or(0, |t| t.0);
+                let mut instance = InstanceRaw::new(&scene.instances[index as usize], index + 1);
+                instance.ids[1] = table;
+                raw.push(instance);
             }
-            raw.push(InstanceRaw::new(
-                &scene.instances[index as usize],
-                index + 1,
-            ));
-        }
+            draws
+        };
+        let draws = groups(&mut visible, &mut raw);
+        let shadows: Vec<Vec<DrawGroup>> = casters
+            .iter_mut()
+            .map(|list| groups(list, &mut raw))
+            .collect();
         if !raw.is_empty() {
             let bytes: &[u8] = bytemuck::cast_slice(&raw);
             let buffer = grow_buffer(
@@ -1458,11 +1786,15 @@ impl SceneRenderer {
             self.context.queue.write_buffer(buffer, 0, &bytes);
         }
         self.stats = RenderStats {
-            instances: raw.len(),
+            instances: visible.len(),
             culled,
             ..RenderStats::default()
         };
-        draws
+        Prepared {
+            draws,
+            shadows,
+            frame,
+        }
     }
 
     /// Builds the wireframe and normal buffers the options need.
@@ -1505,12 +1837,14 @@ impl SceneRenderer {
     /// The parts of every group to draw, as the unbatched renderer drew
     /// them: by mesh, then by part. `blended`: `Some(false)` only opaque
     /// parts, `Some(true)` only alpha-blended parts, `None` every part (as
-    /// opaque ones, for the id pass).
+    /// opaque ones, for the id pass). `table`: the game look with binding
+    /// arrays, where the material is not part of the key.
     fn draw_commands(
         &self,
         scene: &Scene,
         draws: &[DrawGroup],
         blended: Option<bool>,
+        table: bool,
         out: &mut Vec<DrawCmd>,
         binds: &mut HashMap<u32, Arc<MaterialBind>>,
     ) {
@@ -1532,13 +1866,15 @@ impl SceneRenderer {
                 {
                     continue;
                 }
-                binds.entry(material.id).or_insert_with(|| material.clone());
+                if !table {
+                    binds.entry(material.id).or_insert_with(|| material.clone());
+                }
                 out.push(DrawCmd {
                     layer: part.layer,
                     key: DrawKey {
                         blend: blended == Some(true),
                         page: slot.page,
-                        material: material.id,
+                        material: if table { 0 } else { material.id },
                     },
                     args: wgpu::util::DrawIndexedIndirectArgs {
                         index_count: part.index_count,
@@ -1552,18 +1888,18 @@ impl SceneRenderer {
         }
     }
 
-    /// The commands of a pass, sorted and cut into runs, with the indirect
-    /// arguments written for the GPU.
+    /// The commands of a pass, sorted and cut into runs.
     fn prepare_commands(
-        &mut self,
+        &self,
         scene: &Scene,
         draws: &[DrawGroup],
         passes: &[Option<bool>],
+        table: bool,
     ) -> Commands {
         let mut cmds = Vec::new();
         let mut binds = HashMap::new();
         for &blended in passes {
-            self.draw_commands(scene, draws, blended, &mut cmds, &mut binds);
+            self.draw_commands(scene, draws, blended, table, &mut cmds, &mut binds);
         }
         // The game look draws far more distinct materials (world surfaces):
         // its opaque parts are grouped by layer, keeping each mesh's order.
@@ -1575,31 +1911,98 @@ impl SceneRenderer {
             batch::Order::Given
         };
         let runs = batch::batches(&mut cmds, order);
-        if self.batching.indirect && runs.iter().any(|r| r.count > 1) {
-            let args: Vec<wgpu::util::DrawIndexedIndirectArgs> =
-                cmds.iter().map(|c| c.args).collect();
-            let bytes: &[u8] = bytemuck::cast_slice(&args);
-            let buffer = grow_buffer(
-                &self.context.device,
-                &mut self.indirect,
-                bytes.len() as u64,
-                "indirect draws",
-                wgpu::BufferUsages::INDIRECT,
-            );
-            self.context.queue.write_buffer(buffer, 0, bytes);
+        Commands {
+            cmds,
+            runs,
+            binds,
+            base: 0,
         }
-        Commands { cmds, runs, binds }
+    }
+
+    /// The commands of a cascade of the shadow map: the casting parts of its
+    /// groups, by buffer and by whether they cut by alpha (the key's material).
+    fn shadow_commands(&self, scene: &Scene, draws: &[DrawGroup]) -> Commands {
+        let mut cmds = Vec::new();
+        for draw in draws {
+            let Some(mesh) = self.meshes.get(&draw.mesh) else {
+                continue;
+            };
+            let Some(slot) = mesh.slot else { continue };
+            for (index, part) in mesh.parts.iter().enumerate() {
+                if part.index_count == 0
+                    || !part.casts
+                    || (!scene.hidden_parts.is_empty()
+                        && scene.hidden_parts.contains(&(draw.mesh, index as u32)))
+                {
+                    continue;
+                }
+                cmds.push(DrawCmd {
+                    layer: 0,
+                    key: DrawKey {
+                        blend: false,
+                        page: slot.page,
+                        material: part.cut as u32,
+                    },
+                    args: wgpu::util::DrawIndexedIndirectArgs {
+                        index_count: part.index_count,
+                        instance_count: draw.count,
+                        first_index: slot.first_index + part.first_index,
+                        base_vertex: slot.first_vertex as i32,
+                        first_instance: draw.first,
+                    },
+                });
+            }
+        }
+        let runs = batch::batches(&mut cmds, batch::Order::Sorted);
+        Commands {
+            cmds,
+            runs,
+            binds: HashMap::new(),
+            base: 0,
+        }
+    }
+
+    /// Writes the indirect arguments of every list of commands of a frame
+    /// into one buffer and notes where each list starts.
+    fn upload_indirect(&mut self, lists: &mut [&mut Commands]) {
+        if !self.batching.indirect || !lists.iter().any(|c| c.runs.iter().any(|r| r.count > 1)) {
+            return;
+        }
+        let mut args: Vec<wgpu::util::DrawIndexedIndirectArgs> = Vec::new();
+        for list in lists.iter_mut() {
+            list.base = args.len() as u32;
+            args.extend(list.cmds.iter().map(|c| c.args));
+        }
+        let bytes: &[u8] = bytemuck::cast_slice(&args);
+        let buffer = grow_buffer(
+            &self.context.device,
+            &mut self.indirect,
+            bytes.len() as u64,
+            "indirect draws",
+            wgpu::BufferUsages::INDIRECT,
+        );
+        self.context.queue.write_buffer(buffer, 0, bytes);
     }
 
     /// Draws runs of commands; `pipelines` gives the pipeline of the opaque
-    /// and of the blended runs. Returns (draw calls, parts, triangles).
+    /// and of the blended runs (of the shadow map: of parts that do not cut
+    /// and that cut by alpha, by the key's material). `table`: the material
+    /// bind group is the one of the game look, already set. Returns (draw
+    /// calls, parts, triangles).
     fn draw_runs(
         &self,
         pass: &mut wgpu::RenderPass<'_>,
         commands: &Commands,
         pipelines: [&wgpu::RenderPipeline; 2],
+        table: bool,
+        shadow: bool,
     ) -> (usize, usize, usize) {
-        let Commands { cmds, runs, binds } = commands;
+        let Commands {
+            cmds,
+            runs,
+            binds,
+            base,
+        } = commands;
         let Some((instances, _)) = &self.instances else {
             return (0, 0, 0);
         };
@@ -1609,11 +2012,16 @@ impl SceneRenderer {
         pass.set_vertex_buffer(1, instances.slice(..));
         let stride = std::mem::size_of::<wgpu::util::DrawIndexedIndirectArgs>() as u64;
         let (mut calls, mut triangles) = (0, 0);
-        let mut bound: (Option<bool>, Option<u32>, Option<u32>) = (None, None, None);
+        let mut bound: (Option<usize>, Option<u32>, Option<u32>) = (None, None, None);
         for run in runs.iter() {
-            if bound.0 != Some(run.key.blend) {
-                pass.set_pipeline(pipelines[run.key.blend as usize]);
-                bound.0 = Some(run.key.blend);
+            let pipeline = if shadow {
+                (run.key.material != 0) as usize
+            } else {
+                run.key.blend as usize
+            };
+            if bound.0 != Some(pipeline) {
+                pass.set_pipeline(pipelines[pipeline]);
+                bound.0 = Some(pipeline);
             }
             if bound.1 != Some(run.key.page) {
                 let Some(page) = self.arena.page(run.key.page) else {
@@ -1623,7 +2031,7 @@ impl SceneRenderer {
                 pass.set_index_buffer(page.indices.slice(..), wgpu::IndexFormat::Uint32);
                 bound.1 = Some(run.key.page);
             }
-            if bound.2 != Some(run.key.material) {
+            if !table && bound.2 != Some(run.key.material) {
                 let Some(bind) = binds.get(&run.key.material) else {
                     continue;
                 };
@@ -1636,7 +2044,11 @@ impl SceneRenderer {
             }
             match &self.indirect {
                 Some((buffer, _)) if self.batching.indirect && run.count > 1 => {
-                    pass.multi_draw_indexed_indirect(buffer, run.first as u64 * stride, run.count);
+                    pass.multi_draw_indexed_indirect(
+                        buffer,
+                        (*base + run.first) as u64 * stride,
+                        run.count,
+                    );
                     calls += 1;
                 }
                 _ if self.batching.indirect => {
@@ -1678,34 +2090,136 @@ impl SceneRenderer {
     pub fn render(&mut self, viewport: &mut Viewport, size: [u32; 2], scene: &Scene, view: &View) {
         let started = Instant::now();
         viewport.ensure(self, size);
-        let aspect = viewport.size[0] as f32 / viewport.size[1] as f32;
-        let draws = {
+        let size = viewport.size;
+        let game_path = self.game_path(scene);
+        let prepared = {
             let _profile = profile::scope("render: instances");
-            self.prepare(scene, view, aspect)
+            self.prepare(scene, view, size, false)
         };
-        self.build_overlays(scene, &draws);
-        let commands = {
+        self.build_overlays(scene, &prepared.draws);
+        let (mut commands, mut shadow_commands) = {
             let _profile = profile::scope("render: commands");
-            self.prepare_commands(scene, &draws, &[Some(false), Some(true)])
+            let commands = self.prepare_commands(
+                scene,
+                &prepared.draws,
+                &[Some(false), Some(true)],
+                game_path,
+            );
+            let shadows: Vec<Commands> = prepared
+                .shadows
+                .iter()
+                .map(|draws| self.shadow_commands(scene, draws))
+                .collect();
+            (commands, shadows)
         };
-        let prepared = started.elapsed();
-        profile::record("render: prepare", prepared);
-        let timestamps = self.timer.as_mut().and_then(|t| t.begin());
+        {
+            let mut lists: Vec<&mut Commands> = vec![&mut commands];
+            lists.extend(shadow_commands.iter_mut());
+            self.upload_indirect(&mut lists);
+        }
+        // The game look's bind groups: tables and texture array, lights and
+        // the shadow map.
+        if game_path && let Some(frame) = &prepared.frame {
+            let device = self.context.device.clone();
+            let queue = self.context.queue.clone();
+            let globals = self.globals.clone();
+            let game = self.game.as_mut().expect("game path");
+            game.bindless.material_group(&device, &queue);
+            game.bindless.frame_group(&device, &queue, &globals, frame);
+        }
+        let prepared_time = started.elapsed();
+        profile::record("render: prepare", prepared_time);
+        // The game look draws into a frame of its own, graded into the view.
+        let graded = scene.options.game.is_some() && scene.options.lighting;
+        if graded {
+            viewport.ensure_graded(&self.context.device);
+        }
+        let mut timer = self.timer.take();
+        let timestamps = timer.as_mut().and_then(|t| t.begin());
         let device = &self.context.device;
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("scene"),
         });
         let (Some(color_view), Some(depth_view)) = (&viewport.color_view, &viewport.depth_view)
         else {
+            self.timer = timer;
             return;
         };
+        let target = match (&viewport.graded, graded) {
+            (Some((_, view)), true) => view,
+            _ => color_view,
+        };
+        let (begin_writes, end_writes) = match &timestamps {
+            Some(t) if !shadow_commands.is_empty() => (
+                Some(wgpu::RenderPassTimestampWrites {
+                    query_set: t.query_set,
+                    beginning_of_pass_write_index: t.beginning_of_pass_write_index,
+                    end_of_pass_write_index: None,
+                }),
+                Some(wgpu::RenderPassTimestampWrites {
+                    query_set: t.query_set,
+                    beginning_of_pass_write_index: None,
+                    end_of_pass_write_index: t.end_of_pass_write_index,
+                }),
+            ),
+            Some(t) => (
+                None,
+                Some(wgpu::RenderPassTimestampWrites {
+                    query_set: t.query_set,
+                    beginning_of_pass_write_index: t.beginning_of_pass_write_index,
+                    end_of_pass_write_index: t.end_of_pass_write_index,
+                }),
+            ),
+            None => (None, None),
+        };
+        let mut shadow_calls = 0;
+        if let Some(game) = &self.game
+            && game_path
+        {
+            let groups = game.bindless.groups();
+            let mut begin_writes = begin_writes;
+            for (c, commands) in shadow_commands.iter().enumerate() {
+                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("shadow cascade"),
+                    color_attachments: &[],
+                    depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                        view: &game.bindless.shadow_layers[c],
+                        depth_ops: Some(wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(1.0),
+                            store: wgpu::StoreOp::Store,
+                        }),
+                        stencil_ops: None,
+                    }),
+                    occlusion_query_set: None,
+                    timestamp_writes: begin_writes.take(),
+                    multiview_mask: None,
+                });
+                pass.set_bind_group(0, &self.globals_bind_group, &[]);
+                if let Some(materials) = groups.0 {
+                    pass.set_bind_group(1, materials, &[]);
+                }
+                pass.set_bind_group(
+                    2,
+                    &game.bindless.shadow_group,
+                    &[Bindless::cascade_offset(c)],
+                );
+                let (calls, _, _) = self.draw_runs(
+                    &mut pass,
+                    commands,
+                    [&game.shadow[0], &game.shadow[1]],
+                    true,
+                    true,
+                );
+                shadow_calls += calls;
+            }
+        }
         let bg = scene.options.background;
         let (draw_calls, parts, triangles) = {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("scene"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: viewport.msaa_view.as_ref().unwrap_or(color_view),
-                    resolve_target: viewport.msaa_view.as_ref().map(|_| color_view),
+                    view: viewport.msaa_view.as_ref().unwrap_or(target),
+                    resolve_target: viewport.msaa_view.as_ref().map(|_| target),
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color {
                             r: bg[0] as f64,
@@ -1726,7 +2240,7 @@ impl SceneRenderer {
                     stencil_ops: None,
                 }),
                 occlusion_query_set: None,
-                timestamp_writes: timestamps,
+                timestamp_writes: end_writes,
                 multiview_mask: None,
             });
             pass.set_bind_group(0, &self.globals_bind_group, &[]);
@@ -1735,31 +2249,66 @@ impl SceneRenderer {
                 pass.draw(0..3, 0..1);
             }
             let cull = scene.options.backface_culling as usize;
-            let (mut calls, parts, triangles) = self.draw_runs(
-                &mut pass,
-                &commands,
-                [&self.mesh_pipelines[cull], &self.blend_pipelines[cull]],
-            );
-            calls += self.draw_overlays(&mut pass, scene, &draws);
+            let (mut calls, parts, triangles) = match &self.game {
+                Some(game) if game_path => {
+                    let (materials, frame) = game.bindless.groups();
+                    if let (Some(materials), Some(frame)) = (materials, frame) {
+                        pass.set_bind_group(0, frame, &[]);
+                        pass.set_bind_group(1, materials, &[]);
+                    }
+                    let drawn = self.draw_runs(
+                        &mut pass,
+                        &commands,
+                        [&game.mesh[cull], &game.blend[cull]],
+                        true,
+                        false,
+                    );
+                    pass.set_bind_group(0, &self.globals_bind_group, &[]);
+                    drawn
+                }
+                _ => self.draw_runs(
+                    &mut pass,
+                    &commands,
+                    [&self.mesh_pipelines[cull], &self.blend_pipelines[cull]],
+                    false,
+                    false,
+                ),
+            };
+            calls += self.draw_overlays(&mut pass, scene, &prepared.draws);
             let _profile = profile::scope("render: end of the pass");
             drop(pass);
-            (calls, parts, triangles)
+            (calls + shadow_calls, parts, triangles)
         };
-        if let Some(timer) = &self.timer {
+        if graded && let Some((_, source)) = &viewport.graded {
+            let grading = scene.options.game.as_ref().map_or(&[][..], |g| g.grading());
+            self.post.run(
+                &self.context.device,
+                &self.context.queue,
+                &mut encoder,
+                source,
+                color_view,
+                grading,
+            );
+        }
+        if let Some(timer) = &timer {
             timer.resolve(&mut encoder);
         }
         let submit = profile::scope("render: finish and submit");
         self.context.queue.submit([encoder.finish()]);
         drop(submit);
-        if let Some(timer) = &mut self.timer {
+        if let Some(timer) = &mut timer {
             timer.submitted();
         }
+        self.timer = timer;
         self.stats.draw_calls = draw_calls;
         self.stats.parts = parts;
         self.stats.triangles = triangles;
         self.stats.cpu_time = started.elapsed();
         self.stats.gpu_time = self.timer.as_ref().and_then(|t| t.last);
-        profile::record("render: record and submit", self.stats.cpu_time - prepared);
+        profile::record(
+            "render: record and submit",
+            self.stats.cpu_time - prepared_time,
+        );
         if let Some(gpu) = self.stats.gpu_time {
             profile::record("render: GPU scene pass", gpu);
         }
@@ -1847,10 +2396,10 @@ impl SceneRenderer {
         {
             return None;
         }
-        let aspect = viewport.size[0] as f32 / viewport.size[1] as f32;
         let stats = self.stats;
-        let draws = self.prepare(scene, view, aspect);
-        let commands = self.prepare_commands(scene, &draws, &[None]);
+        let draws = self.prepare(scene, view, viewport.size, true).draws;
+        let mut commands = self.prepare_commands(scene, &draws, &[None], false);
+        self.upload_indirect(&mut [&mut commands]);
         self.stats = stats;
         let device = self.context.device.clone();
         let targets = viewport.pick_targets(&device);
@@ -1884,7 +2433,7 @@ impl SceneRenderer {
             pass.set_scissor_rect(pixel[0], pixel[1], 1, 1);
             pass.set_bind_group(0, &self.globals_bind_group, &[]);
             let pick = &self.pick_pipelines[scene.options.backface_culling as usize];
-            self.draw_runs(&mut pass, &commands, [pick, pick]);
+            self.draw_runs(&mut pass, &commands, [pick, pick], false, false);
         }
         encoder.copy_texture_to_buffer(
             wgpu::TexelCopyTextureInfo {
@@ -1984,6 +2533,28 @@ impl SceneRenderer {
     }
 }
 
+/// The scene shader's text for one variant: `game` keeps the lines between
+/// `//#if game` and `//#else` (or `//#endif`), the plain variant those
+/// between `//#else` and `//#endif` (`scene.wgsl`).
+fn shader_source(game: bool) -> String {
+    let mut out = String::new();
+    // Inside a block: whether its lines are kept.
+    let mut keep: Option<bool> = None;
+    for line in include_str!("scene.wgsl").lines() {
+        match line.trim() {
+            "//#if game" => keep = Some(game),
+            "//#else" => keep = keep.map(|_| !game),
+            "//#endif" => keep = None,
+            _ if keep.unwrap_or(true) => {
+                out.push_str(line);
+                out.push('\n');
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
 /// Preference order of adapters, lowest first: discrete over integrated over
 /// other GPUs over software rasterisers; Vulkan, Metal and DirectX 12 over OpenGL.
 /// A filterable 2D texture binding of the material layout.
@@ -2000,11 +2571,18 @@ fn texture_entry(binding: u32) -> wgpu::BindGroupLayoutEntry {
     }
 }
 
+/// The limits to ask of a device: `limits` with room for the game look's
+/// texture array where the adapter has binding arrays.
+pub fn device_limits(adapter: &wgpu::Adapter, limits: wgpu::Limits) -> wgpu::Limits {
+    bindless::limits(adapter, limits)
+}
+
 /// Device features the renderer uses where the adapter has them: indirect
-/// draws with a first instance (batches, stage 67) and, for `timing`,
-/// timestamps of passes (the profiler).
+/// draws with a first instance (batches, stage 67), binding arrays (the game
+/// look, stage 70) and, for `timing`, timestamps of passes (the profiler).
 pub fn optional_features(timing: bool) -> wgpu::Features {
-    let mut features = wgpu::Features::INDIRECT_FIRST_INSTANCE;
+    // Binding arrays: the game look's materials and textures (stage 70).
+    let mut features = wgpu::Features::INDIRECT_FIRST_INSTANCE | bindless::FEATURES;
     if timing {
         features |= wgpu::Features::TIMESTAMP_QUERY;
     }
@@ -2044,35 +2622,12 @@ fn grow_buffer<'a>(
     &slot.as_ref().unwrap().0
 }
 
-/// The six clip planes `(normal, distance)` of a view-projection matrix with depth 0..1.
 /// Right, up and forward of a view matrix (column-major, camera looking
 /// down −z) in world space.
 fn camera_axes(view: &Mat4) -> [[f32; 4]; 3] {
     let row = |r: usize| [view[r], view[4 + r], view[8 + r], 0.0];
     let back = row(2);
     [row(0), row(1), [-back[0], -back[1], -back[2], 0.0]]
-}
-
-fn frustum_planes(m: &Mat4) -> [[f32; 4]; 6] {
-    let row = |r: usize| [m[r], m[4 + r], m[8 + r], m[12 + r]];
-    let (r0, r1, r2, r3) = (row(0), row(1), row(2), row(3));
-    let add = |a: [f32; 4], b: [f32; 4]| [a[0] + b[0], a[1] + b[1], a[2] + b[2], a[3] + b[3]];
-    let sub = |a: [f32; 4], b: [f32; 4]| [a[0] - b[0], a[1] - b[1], a[2] - b[2], a[3] - b[3]];
-    [
-        add(r3, r0),
-        sub(r3, r0),
-        add(r3, r1),
-        sub(r3, r1),
-        r2,
-        sub(r3, r2),
-    ]
-}
-
-fn sphere_visible(planes: &[[f32; 4]; 6], centre: [f32; 3], radius: f32) -> bool {
-    planes.iter().all(|p| {
-        let len = (p[0] * p[0] + p[1] * p[1] + p[2] * p[2]).sqrt();
-        p[0] * centre[0] + p[1] * centre[1] + p[2] * centre[2] + p[3] >= -radius * len
-    })
 }
 
 #[cfg(test)]
