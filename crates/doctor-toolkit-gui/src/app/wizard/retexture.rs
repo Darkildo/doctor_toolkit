@@ -327,52 +327,6 @@ impl Retexture {
     fn textures_step(&mut self, ui: &mut egui::Ui, app: &mut BrowserApp) {
         ui.label(tr("wizard.retexture.choose"));
         let mut open = None;
-        egui::Grid::new("retexture-list")
-            .num_columns(6)
-            .striped(true)
-            .show(ui, |ui| {
-                for title in [
-                    "wizard.retexture.col.change",
-                    "wizard.retexture.col.texture",
-                    "wizard.retexture.col.role",
-                    "wizard.retexture.col.size",
-                    "wizard.retexture.col.copies",
-                    "wizard.retexture.col.materials",
-                ] {
-                    ui.strong(tr(title));
-                }
-                ui.end_row();
-                for (i, s) in self.slots.iter_mut().enumerate() {
-                    let t = &s.texture;
-                    ui.add_enabled(
-                        !t.copies.is_empty(),
-                        egui::Checkbox::without_text(&mut s.chosen),
-                    );
-                    let name = if t.name.is_empty() {
-                        format!("{:08x}", t.hash)
-                    } else {
-                        t.name.clone()
-                    };
-                    ui.horizontal(|ui| {
-                        ui.label(name);
-                        if !t.copies.is_empty()
-                            && ui.small_button(tr("wizard.retexture.edit")).clicked()
-                        {
-                            open = Some(i);
-                        }
-                    });
-                    ui.label(format!("{} ({})", lib::role_name(t.role), t.sampler));
-                    ui.label(format!("{}×{}", t.size.0, t.size.1));
-                    ui.label(t.copies.len().to_string());
-                    ui.label(RichText::new(t.materials.join(", ")).small());
-                    ui.end_row();
-                }
-            });
-        if let Some(i) = open {
-            self.slots[i].chosen = true;
-            self.open_editor(app, i);
-        }
-        ui.add_space(8.0);
         ui.horizontal_wrapped(|ui| {
             if ui
                 .button(tr("wizard.retexture.export"))
@@ -402,6 +356,58 @@ impl Retexture {
         });
         if let Some(message) = &self.message {
             ui.label(RichText::new(message).weak());
+        }
+        ui.add_space(4.0);
+        // The list is longer than the page and the materials column is wider than it.
+        egui::ScrollArea::both()
+            .id_salt("retexture-list")
+            .auto_shrink(false)
+            .show(ui, |ui| {
+                egui::Grid::new("retexture-list")
+                    .num_columns(6)
+                    .striped(true)
+                    .show(ui, |ui| {
+                        for title in [
+                            "wizard.retexture.col.change",
+                            "wizard.retexture.col.texture",
+                            "wizard.retexture.col.role",
+                            "wizard.retexture.col.size",
+                            "wizard.retexture.col.copies",
+                            "wizard.retexture.col.materials",
+                        ] {
+                            ui.strong(tr(title));
+                        }
+                        ui.end_row();
+                        for (i, s) in self.slots.iter_mut().enumerate() {
+                            let t = &s.texture;
+                            ui.add_enabled(
+                                !t.copies.is_empty(),
+                                egui::Checkbox::without_text(&mut s.chosen),
+                            );
+                            let name = if t.name.is_empty() {
+                                format!("{:08x}", t.hash)
+                            } else {
+                                t.name.clone()
+                            };
+                            ui.horizontal(|ui| {
+                                ui.label(name);
+                                if !t.copies.is_empty()
+                                    && ui.small_button(tr("wizard.retexture.edit")).clicked()
+                                {
+                                    open = Some(i);
+                                }
+                            });
+                            ui.label(format!("{} ({})", lib::role_name(t.role), t.sampler));
+                            ui.label(format!("{}×{}", t.size.0, t.size.1));
+                            ui.label(t.copies.len().to_string());
+                            ui.label(RichText::new(t.materials.join(", ")).small());
+                            ui.end_row();
+                        }
+                    });
+            });
+        if let Some(i) = open {
+            self.slots[i].chosen = true;
+            self.open_editor(app, i);
         }
     }
 
