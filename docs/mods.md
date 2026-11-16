@@ -153,7 +153,7 @@ SHA-256 его содержимого; одинаковые данные хра�
     "executable_sha256": "31f579a8…",
     "editions": ["1.0.789.0"]
   },
-  "requires_manager": ">=0.0.4",
+  "requires_manager": ">=0.0.5",
   "depends": { "new-new-york": ">=1.1 <2" },
   "recommends": { "hd-textures": "*" },
   "incompatible": {
@@ -170,7 +170,7 @@ SHA-256 его содержимого; одинаковые данные хра�
 |---|---|
 | `version` | обязательна семантическая версия: `1`, `1.2`, `1.2.3`, с суффиксом пред-выпуска `-beta`, `-rc.1` (и сборки `+…`, в сравнениях не участвует). Недостающие числа — нули: `1.2` = `1.2.0`. Порядок как в semver: `1.2.0-beta` < `1.2.0-rc.1` < `1.2.0` |
 | `game.editions` | издания, на которых мод проверен: версия известной сборки (`1.0.789.0`, `1.0.764.0`; `doctor_toolkit::edition`, `KnownEdition::version`) или полный id сборки (`1.0.789.0-2009-10-05`). Пусто или нет поля — любое издание (как в версии 2); при сборке по умолчанию пусто: мод данных подходит любому изданию, где совпадают ресурсы, — это решает побайтная сверка оригиналов |
-| `requires_manager` | условие на версию менеджера модов (`>=0.0.4`): версия Open Mod Manager и `doctor-toolkit` общая |
+| `requires_manager` | условие на версию менеджера модов (`>=0.0.5`): версия Open Mod Manager и `doctor-toolkit` общая |
 | `depends` | `id → условие`: моды, без которых этот не работает (жёсткие зависимости) |
 | `recommends` | `id → условие`: подсказка, с чем мод лучше |
 | `incompatible` | `id → {"versions": условие, "reason": текст}` или кратко `id → условие`; `versions` по умолчанию `*` |
@@ -267,7 +267,7 @@ doctor-toolkit mods build "$GAME" -o night.zip --name "NNY night" --mod-version 
     --depends "new-new-york=>=1.1 <2" --recommends hd-textures \
     --incompatible "old-nights=<3:меняет те же фонари" \
     --load-after hd-textures --load-before final-touches \
-    --edition 1.0.789.0 --requires-manager ">=0.0.4"
+    --edition 1.0.789.0 --requires-manager ">=0.0.5"
 ```
 
 | Ключ | Поле |
