@@ -172,8 +172,8 @@ def test_mods_from_the_workspace(sample, tmp_path):
     assert built["added"] == 0 and built["new_streams"] == 0
     info = dt.mod_info(package)
     assert info["kind"] == "mod"
-    # A mod that only replaces resources is still format version 1.
-    assert info["format_version"] == 1 and "streams" not in info
+    # A mod built now is of format version 3: it names the mod manager it needs.
+    assert info["format_version"] == 3 and "streams" not in info
     assert info["name"] == "Yes Mod" and info["version"] == "2.0"
     assert info["resources"][0]["key"] == keys["text"]
 

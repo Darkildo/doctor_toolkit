@@ -48,6 +48,7 @@ fn build(
         author: "tester".into(),
         description: "A test mod.\n\nMore.".into(),
         url: None,
+        relations: Default::default(),
     };
     let path = out.join(format!("{id}.zip"));
     build_from_workspace(&ws, &info, None, None, &path).unwrap();
@@ -177,6 +178,7 @@ fn an_update_shows_the_picture_of_the_new_version() {
         author: "tester".into(),
         description: "A test mod.".into(),
         url: None,
+        relations: Default::default(),
     };
     let png = doctor_toolkit::resource::pixels::encode_png(2, 1, &[255; 8]).unwrap();
     let preview = doctor_toolkit::mods::Preview::from_image(png).unwrap();
@@ -443,4 +445,131 @@ fn an_interrupted_write_is_told_and_restored() {
     assert_eq!(std::fs::read(&toc).unwrap(), original_toc);
     assert!(panel.overview.interrupted.is_empty());
     assert!(!panel.manager().unwrap().has_written());
+}
+
+/// A mod `id` of version `version` that needs the mods `depends` (id,
+/// condition) and sets resource `index` of `gf2/level` to `data`.
+fn build_needing(
+    game: &GameInstance,
+    out: &Path,
+    id: &str,
+    version: &str,
+    depends: &[(&str, &str)],
+    index: usize,
+    data: Vec<u8>,
+) -> PathBuf {
+    let mut ws = Workspace::create(out.join(format!("ws-{id}-{version}")), game).unwrap();
+    let edit = ResourceEdit {
+        index,
+        data,
+        storage: StorageChoice::Keep,
+    };
+    ws.set_resources(game, "edit", game.find_stream(LEVEL).unwrap(), &[edit])
+        .unwrap();
+    let info = ModInfo {
+        id: id.to_owned(),
+        name: format!("Mod {id}"),
+        version: version.into(),
+        relations: doctor_toolkit::mods::Relations {
+            depends: depends
+                .iter()
+                .map(|(d, c)| ((*d).to_owned(), (*c).to_owned()))
+                .collect(),
+            ..Default::default()
+        },
+        ..ModInfo::default()
+    };
+    let path = out.join(format!("{id}-{version}.zip"));
+    build_from_workspace(&ws, &info, None, None, &path).unwrap();
+    path
+}
+
+#[test]
+fn cards_tell_what_a_mod_needs_and_the_order_keeps_it() {
+    let (_dir, game) = game(false);
+    let temp = tempfile::tempdir().unwrap();
+    let ctx = egui::Context::default();
+    let mut panel = panel(&game, &ctx);
+    let base = build_needing(&game, temp.path(), "base", "1.0", &[], MESH, vec![1; 300]);
+    let patch = build_needing(
+        &game,
+        temp.path(),
+        "patch",
+        "1.0",
+        &[("base", ">=1.1")],
+        MESH + 1,
+        vec![2; 64],
+    );
+    // The patch first: the base, installed later, goes above it.
+    panel.install_files(&ctx, vec![patch, base]);
+    panel.wait();
+    assert_eq!(order(&panel), pairs(&[("base", true), ("patch", true)]));
+    let Some(ModState::NeedsMods(needs)) = panel.state_of("patch") else {
+        panic!("{:?}", panel.state_of("patch"));
+    };
+    assert_eq!(needs[0].kind, state::NeedKind::Version("1.0".into()));
+    assert_eq!(needs[0].label(), "Mod base ≥1.1");
+    let state = panel.state_of("patch").unwrap();
+    assert!(state.text().contains("Mod base") && state.hint().contains("1.0"));
+
+    // Dragging the base below the patch is refused, with the reason.
+    panel.move_mod(&ctx, "base", 1);
+    panel.wait();
+    assert_eq!(order(&panel)[0].0, "base");
+    let (message, error) = panel.message().unwrap();
+    assert!(error && message.contains("Mod base"), "{message}");
+
+    // Turning the base off asks first; so does turning the patch on alone.
+    let base_2 = build_needing(
+        &game,
+        &temp.path().join("2"),
+        "base",
+        "1.2",
+        &[],
+        MESH,
+        vec![3; 300],
+    );
+    panel.install_files(&ctx, vec![base_2]);
+    panel.wait();
+    assert_eq!(panel.state_of("patch"), Some(ModState::NotWritten));
+    panel.set_enabled(&ctx, "base", false);
+    assert!(matches!(
+        panel.dialog,
+        Some(dialogs::Dialog::DisableNeeded { .. })
+    ));
+    panel.dialog = None;
+    panel.switch(&ctx, "patch", false);
+    panel.wait();
+    panel.switch(&ctx, "base", false);
+    panel.wait();
+    panel.set_enabled(&ctx, "patch", true);
+    assert!(matches!(
+        panel.dialog,
+        Some(dialogs::Dialog::EnableNeeded { .. })
+    ));
+    panel.dialog = None;
+    panel.enable_with_dependencies(&ctx, "patch");
+    panel.wait();
+    assert_eq!(order(&panel), pairs(&[("base", true), ("patch", true)]));
+
+    // Sorting puts a mod moved by hand above what it needs back below it.
+    let mut manager = panel.manager.take().unwrap();
+    let entry = |id: &str| doctor_toolkit::mods::manager::SetEntry {
+        id: id.into(),
+        enabled: true,
+    };
+    manager.arrange(&[entry("patch"), entry("base")]).unwrap();
+    panel.manager = Some(manager);
+    panel.refresh(&ctx);
+    panel.wait();
+    assert!(matches!(
+        panel.state_of("patch"),
+        Some(ModState::NeedsMods(n)) if n[0].kind == state::NeedKind::Later
+    ));
+    panel.sort(&ctx);
+    panel.wait();
+    assert_eq!(order(&panel), pairs(&[("base", true), ("patch", true)]));
+    assert_eq!(panel.state_of("patch"), Some(ModState::NotWritten));
+    panel.select("patch");
+    frame(&ctx, &mut panel, &[]);
 }

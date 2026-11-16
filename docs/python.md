@@ -69,7 +69,7 @@ id (`"0xcdb9d42b"`) или число.
 | `Sound` | `sample_rate`, `channels`, `duration`; `to_wav()`, `pcm()`, `to_snu()` |
 | `Index` | `search(query, limit)`, `count(query)`, `record(key)`, `refs(key)`, `keys(type, stream)`, `lookup(hash)`, `refresh()` |
 | `Workspace` | `changes`, `history`, `read`/`data`/`original_data`, `set_data`, `set_many`, `import_texture`, `import_model`, `export_model`, `import_animation`, `set_clip_events`, `set_animation_graph`, `string_table`, `set_string_table`, `edit_strings`, `revert`, `undo`/`redo`, `status()`, `diff()`, `apply()`, `unapply()`, `build_mod()` |
-| `ModManager` | `mods`, `install`, `install_workspace`, `uninstall`, `enable`, `move`, `conflicts`, `clashes`, `check`, `status`, `apply`, `unapply`, `export` |
+| `ModManager` | `mods`, `install`, `install_workspace`, `uninstall`, `enable`, `move`, `sort` (порядок по зависимостям и правилам модов, этап 71), `dependents`, `conflicts`, `clashes`, `check`, `status`, `apply`, `unapply`, `export` |
 
 Функции модуля: `sdbm`, `crc32`, `fnv1a` (строка или байты), `hash_all(text)`,
 `type_id(tag)`, `type_name(id)`, `lookup(hash)` (встроенные списки имён),

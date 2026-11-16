@@ -11,7 +11,9 @@ use doctor_toolkit::game::GameInstance;
 use doctor_toolkit::mods::integrity::{self, Condition, IntegrityOptions};
 use doctor_toolkit::mods::manager::{InstallReport, ModApplyOptions};
 use doctor_toolkit::mods::vpat::{self, VpatPatch};
-use doctor_toolkit::mods::{self, ModArchive, ModInfo, ModManager, Preview};
+use doctor_toolkit::mods::{
+    self, Incompatible, ModArchive, ModInfo, ModManager, Preview, Relations,
+};
 use doctor_toolkit::workspace::{ApplyReport, ResourceKey, StreamAction, Workspace};
 
 macro_rules! out {
@@ -41,10 +43,85 @@ pub struct MetaArgs {
     /// Home page, http:// or https://
     #[arg(long)]
     url: Option<String>,
+    /// A mod this one needs: `ID` or `ID=CONDITION` such as `nny=">=1.1 <2"`
+    /// (repeat for more). Mods the game has written that the changes were
+    /// made on are added by themselves
+    #[arg(long = "depends", value_name = "ID[=CONDITION]")]
+    depends: Vec<String>,
+    /// A mod that goes well with this one: `ID` or `ID=CONDITION` (a hint)
+    #[arg(long = "recommends", value_name = "ID[=CONDITION]")]
+    recommends: Vec<String>,
+    /// A mod this one does not work with: `ID`, `ID=CONDITION` or
+    /// `ID=CONDITION:REASON`
+    #[arg(long = "incompatible", value_name = "ID[=CONDITION][:REASON]")]
+    incompatible: Vec<String>,
+    /// Load this mod after mod ID when it is installed (a soft rule)
+    #[arg(long = "load-after", value_name = "ID")]
+    load_after: Vec<String>,
+    /// Load this mod before mod ID when it is installed (a soft rule)
+    #[arg(long = "load-before", value_name = "ID")]
+    load_before: Vec<String>,
+    /// An edition of the game the mod is tested on, e.g. 1.0.789.0, or
+    /// `this` for the edition of this game (repeat for more). On another
+    /// edition the mod does not fit unless compatibility is ignored
+    /// [default: none, any edition: the resources are checked one by one]
+    #[arg(long = "edition", value_name = "EDITION")]
+    editions: Vec<String>,
+    /// Versions of the mod manager the mod needs, e.g. ">=0.0.5"; `none`
+    /// for no condition [default: this program's version or newer]
+    #[arg(long = "requires-manager", value_name = "CONDITION")]
+    requires_manager: Option<String>,
+}
+
+/// `ID` or `ID=CONDITION`.
+fn id_condition(text: &str) -> (String, String) {
+    match text.split_once('=') {
+        Some((id, condition)) => (id.trim().to_owned(), condition.trim().to_owned()),
+        None => (text.trim().to_owned(), "*".to_owned()),
+    }
 }
 
 impl MetaArgs {
     fn info(&self) -> ModInfo {
+        let editions = self
+            .editions
+            .iter()
+            .filter(|e| e.as_str() != "any")
+            .cloned()
+            .collect();
+        let requires_manager = self.requires_manager.as_ref().map(|r| {
+            if r.trim() == "none" {
+                String::new()
+            } else {
+                r.clone()
+            }
+        });
+        let relations = Relations {
+            depends: self.depends.iter().map(|d| id_condition(d)).collect(),
+            recommends: self.recommends.iter().map(|d| id_condition(d)).collect(),
+            incompatible: self
+                .incompatible
+                .iter()
+                .map(|text| {
+                    let (id, rest) = id_condition(text);
+                    let (versions, reason) = match rest.split_once(':') {
+                        Some((v, r)) => (v.trim().to_owned(), r.trim().to_owned()),
+                        None => (rest, String::new()),
+                    };
+                    let versions = if versions.is_empty() {
+                        "*".to_owned()
+                    } else {
+                        versions
+                    };
+                    (id, Incompatible { versions, reason })
+                })
+                .collect(),
+            load_after: self.load_after.clone(),
+            load_before: self.load_before.clone(),
+            editions,
+            requires_manager,
+            made_on: Default::default(),
+        };
         ModInfo {
             id: self
                 .id
@@ -55,7 +132,34 @@ impl MetaArgs {
             author: self.author.clone(),
             description: self.description.replace("\\n", "\n"),
             url: self.url.clone(),
+            relations,
         }
+    }
+
+    /// [`Self::info`] with the dependencies on the mods in the game that the
+    /// changes were made on; tells which were added.
+    fn info_for(
+        &self,
+        game: &GameInstance,
+        ws: &Workspace,
+        keys: Option<&[ResourceKey]>,
+    ) -> Result<ModInfo> {
+        let mut info = self.info();
+        for edition in &mut info.relations.editions {
+            if edition == "this" {
+                *edition =
+                    doctor_toolkit::edition::game_edition(game.root()).with_context(|| {
+                        "`--edition this`: the edition of this game is not known".to_owned()
+                    })?;
+            }
+        }
+        for id in mods::add_suggested_dependencies(&mut info, game, ws, keys)? {
+            out!(
+                "depends on {id} {}: the changes are made on what it wrote into the game",
+                info.relations.depends[&id]
+            );
+        }
+        Ok(info)
     }
 }
 
@@ -96,6 +200,14 @@ pub enum ModsCommand {
         #[arg(long)]
         disabled: bool,
     },
+    /// Sort the load order by the rules of the mods (dependencies first,
+    /// then load_after/load_before), keeping the present order where they allow
+    Sort {
+        game_dir: PathBuf,
+        /// Only show the order, do not change it
+        #[arg(long)]
+        dry_run: bool,
+    },
     /// Install the changes of a workspace as a mod, last in the load order
     InstallWorkspace {
         game_dir: PathBuf,
@@ -113,18 +225,27 @@ pub enum ModsCommand {
         /// Remove every mod
         #[arg(long, conflicts_with = "ids")]
         all: bool,
+        /// Remove a mod even though enabled mods need it
+        #[arg(long)]
+        force: bool,
     },
     /// Enable mods
     Enable {
         game_dir: PathBuf,
         #[arg(required = true)]
         ids: Vec<String>,
+        /// Also enable the installed mods they need
+        #[arg(long)]
+        with_deps: bool,
     },
     /// Disable mods
     Disable {
         game_dir: PathBuf,
         #[arg(required = true)]
         ids: Vec<String>,
+        /// Disable a mod even though enabled mods need it
+        #[arg(long)]
+        force: bool,
     },
     /// Move a mod in the load order (1 is applied first; the last one wins)
     Move {
@@ -208,14 +329,15 @@ pub fn run(command: ModsCommand) -> Result<()> {
                     Ok::<_, anyhow::Error>(Preview::from_image(data)?)
                 })
                 .transpose()?;
-            let info = meta.info();
+            let info = meta.info_for(&game, &ws, keys.as_deref())?;
             let report =
                 mods::build_from_workspace(&ws, &info, keys.as_deref(), preview.as_ref(), &output)?;
             out!(
-                "built {} ({} {}): {} resource(s){}, {} byte(s) of data, file {} byte(s)",
+                "built {} ({} {}, format {}): {} resource(s){}, {} byte(s) of data, file {} byte(s)",
                 output.display(),
                 info.id,
                 info.version,
+                report.format_version,
                 report.resources,
                 adds_note(report.added, report.new_streams),
                 report.payload_bytes,
@@ -252,25 +374,52 @@ pub fn run(command: ModsCommand) -> Result<()> {
         } => {
             let (game, mut mods) = open(&game_dir)?;
             let ws = open_workspace(&game, dir.as_deref())?;
-            let report = mods.install_workspace(&game, &ws, &meta.info(), None)?;
+            let info = meta.info_for(&game, &ws, None)?;
+            let report = mods.install_workspace(&game, &ws, &info, None)?;
             print_install(&report);
             Ok(())
         }
-        ModsCommand::Uninstall { game_dir, ids, all } => {
+        ModsCommand::Uninstall {
+            game_dir,
+            ids,
+            all,
+            force,
+        } => {
             let (game, mut mods) = open(&game_dir)?;
             let ids = if all {
                 mods.mods().iter().map(|m| m.id.clone()).collect()
             } else {
                 ids
             };
+            if !force {
+                refuse_needed(&mods, &ids, "uninstall")?;
+            }
             for id in &ids {
                 mods.uninstall(id)?;
                 out!("uninstalled {id}");
             }
             hint_apply(&game, &mods)
         }
-        ModsCommand::Enable { game_dir, ids } => set_enabled(&game_dir, &ids, true),
-        ModsCommand::Disable { game_dir, ids } => set_enabled(&game_dir, &ids, false),
+        ModsCommand::Enable {
+            game_dir,
+            ids,
+            with_deps,
+        } => enable(&game_dir, &ids, with_deps),
+        ModsCommand::Disable {
+            game_dir,
+            ids,
+            force,
+        } => {
+            let (game, mut mods) = open(&game_dir)?;
+            if !force {
+                refuse_needed(&mods, &ids, "disable")?;
+            }
+            for id in &ids {
+                mods.set_enabled(id, false)?;
+                out!("disabled {id}");
+            }
+            hint_apply(&game, &mods)
+        }
         ModsCommand::Move {
             game_dir,
             id,
@@ -280,7 +429,29 @@ pub fn run(command: ModsCommand) -> Result<()> {
             if position == 0 {
                 bail!("positions start at 1");
             }
-            mods.move_mod(&id, position - 1)?;
+            for warning in mods.move_mod(&id, position - 1)? {
+                out!("warning: {warning}");
+            }
+            list(&mods);
+            hint_apply(&game, &mods)
+        }
+        ModsCommand::Sort { game_dir, dry_run } => {
+            let (game, mut mods) = open(&game_dir)?;
+            let report = mods.sort(dry_run)?;
+            for rule in &report.dropped {
+                out!("cannot keep: {rule} (it would close a circle of rules)");
+            }
+            if !report.changed {
+                out!("the load order already follows the rules");
+                return Ok(());
+            }
+            if dry_run {
+                out!("the sorted order would be:");
+                for (i, id) in report.order.iter().enumerate() {
+                    out!("{:>3}  {id}", i + 1);
+                }
+                return Ok(());
+            }
             list(&mods);
             hint_apply(&game, &mods)
         }
@@ -307,6 +478,8 @@ pub fn run(command: ModsCommand) -> Result<()> {
                     conflict.winner(),
                     if conflict.same_data {
                         " (same data)"
+                    } else if conflict.patch {
+                        " (a patch on top of the others)"
                     } else {
                         ""
                     }
@@ -455,13 +628,46 @@ fn quote(path: &Path) -> String {
     }
 }
 
-fn set_enabled(game_dir: &Path, ids: &[String], enabled: bool) -> Result<()> {
+fn enable(game_dir: &Path, ids: &[String], with_deps: bool) -> Result<()> {
     let (game, mut mods) = open(game_dir)?;
     for id in ids {
-        mods.set_enabled(id, enabled)?;
-        out!("{} {id}", if enabled { "enabled" } else { "disabled" });
+        if with_deps {
+            for dep in mods.enable_with_dependencies(id)? {
+                out!("enabled {dep} (needed by {id})");
+            }
+        } else {
+            mods.set_enabled(id, true)?;
+            let off = mods.disabled_dependencies(id);
+            if !off.is_empty() {
+                out!(
+                    "note: {id} needs {}, which {} switched off; `mods enable --with-deps` \
+                     enables them too",
+                    off.join(", "),
+                    if off.len() == 1 { "is" } else { "are" }
+                );
+            }
+        }
+        out!("enabled {id}");
     }
     hint_apply(&game, &mods)
+}
+
+/// Refuses to switch off or remove mods that other enabled mods need.
+fn refuse_needed(mods: &ModManager, ids: &[String], verb: &str) -> Result<()> {
+    for id in ids {
+        let needed_by: Vec<String> = mods
+            .dependents(id)
+            .into_iter()
+            .filter(|d| !ids.contains(d))
+            .collect();
+        if !needed_by.is_empty() {
+            bail!(
+                "{id} is needed by the enabled mod(s) {}; {verb} them too, or use --force",
+                needed_by.join(", ")
+            );
+        }
+    }
+    Ok(())
 }
 
 fn hint_apply(game: &GameInstance, mods: &ModManager) -> Result<()> {
@@ -532,6 +738,7 @@ fn info(file: &Path, resources: bool) -> Result<()> {
         out!("  {line}");
     }
     out!("format   {}", m.format_version);
+    relations(&m);
     out!(
         "{} resource(s){} in {} stream(s), {} byte(s) of data; every payload checked",
         m.resources.len(),
@@ -577,10 +784,40 @@ fn info(file: &Path, resources: bool) -> Result<()> {
             }
         }
     }
-    for warning in archive.warnings() {
+    for warning in archive.warnings().iter().chain(&m.warnings()) {
         out!("warning: {warning}");
     }
     Ok(())
+}
+
+/// The fields of format version 3 of a manifest.
+fn relations(m: &mods::ModManifest) {
+    if !m.game.editions.is_empty() {
+        out!("editions {}", m.game.editions.join(", "));
+    }
+    if let Some(required) = &m.requires_manager {
+        out!("needs mod manager {required}");
+    }
+    for (id, condition) in &m.depends {
+        out!("depends on   {id} {condition}");
+    }
+    for (id, condition) in &m.recommends {
+        out!("recommends   {id} {condition}");
+    }
+    for (id, inc) in &m.incompatible {
+        let reason = if inc.reason.is_empty() {
+            String::new()
+        } else {
+            format!(": {}", inc.reason)
+        };
+        out!("incompatible with {id} {}{reason}", inc.versions);
+    }
+    if !m.load_after.is_empty() {
+        out!("load after   {}", m.load_after.join(", "));
+    }
+    if !m.load_before.is_empty() {
+        out!("load before  {}", m.load_before.join(", "));
+    }
 }
 
 fn list(mods: &ModManager) {
@@ -642,7 +879,11 @@ fn print_install(report: &InstallReport) {
         out!("  warning: {warning}");
     }
     for issue in &report.issues {
-        out!("  does not fit: {}", issue.describe());
+        if issue.problem.is_notice() {
+            out!("  note: {}", issue.describe());
+        } else {
+            out!("  does not fit: {}", issue.describe());
+        }
     }
 }
 

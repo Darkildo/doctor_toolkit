@@ -376,3 +376,172 @@ fn play_writes_cmd_txt_for_the_launch_only() {
     );
     assert!(!bad.status.success(), "{bad:?}");
 }
+
+/// `doctor-toolkit ARGS…`: whether it succeeded, and stdout with stderr.
+fn mods_run(args: &[&str], logs: &Path) -> (bool, String) {
+    let args: Vec<&std::ffi::OsStr> = args.iter().map(|a| a.as_ref()).collect();
+    let out = run(&args, logs);
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    (out.status.success(), text)
+}
+
+#[test]
+fn mods_of_format_3_build_install_order_and_switch() {
+    use doctor_toolkit::testing::{self, MESH, STRINGS};
+    use doctor_toolkit::workspace::{ResourceEdit, StorageChoice, Workspace};
+
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("game");
+    let logs = dir.path().join("logs");
+    testing::write_game(&root).unwrap();
+    let game = doctor_toolkit::game::GameInstance::open(&root).unwrap();
+    let level = game.find_stream(testing::LEVEL).unwrap();
+    let edit = |ws: &mut Workspace, index: usize, data: Vec<u8>| {
+        let edit = ResourceEdit {
+            index,
+            data,
+            storage: StorageChoice::Keep,
+        };
+        ws.set_resources(&game, "edit", level, &[edit]).unwrap();
+    };
+    let ws_dir = Workspace::default_dir(&root);
+    let mut ws = Workspace::create(&ws_dir, &game).unwrap();
+    edit(&mut ws, MESH, vec![1; 300]);
+    let r = root.to_str().unwrap();
+    let base = dir.path().join("base.zip");
+    let b = base.to_str().unwrap();
+    let (ok, text) = mods_run(
+        &[
+            "mods",
+            "build",
+            r,
+            "-o",
+            b,
+            "--name",
+            "Base",
+            "--mod-version",
+            "1.1",
+        ],
+        &logs,
+    );
+    assert!(ok && text.contains("format 3"), "{text}");
+    // No edition by default: the mod fits any edition whose resources match.
+    let (ok, text) = mods_run(&["mods", "info", b], &logs);
+    assert!(ok && !text.contains("editions"), "{text}");
+    // `--edition this` needs a game of a known edition.
+    let other = dir.path().join("other.zip");
+    let (ok, text) = mods_run(
+        &[
+            "mods",
+            "build",
+            r,
+            "-o",
+            other.to_str().unwrap(),
+            "--name",
+            "Other",
+            "--edition",
+            "this",
+        ],
+        &logs,
+    );
+    assert!(!ok && text.contains("is not known"), "{text}");
+    // A version that is no version number is refused in format 3.
+    let (ok, text) = mods_run(
+        &[
+            "mods",
+            "build",
+            r,
+            "-o",
+            b,
+            "--name",
+            "Base",
+            "--mod-version",
+            "beta",
+        ],
+        &logs,
+    );
+    assert!(!ok && text.contains("is not a version"), "{text}");
+
+    std::fs::remove_dir_all(&ws_dir).unwrap();
+    let mut ws = Workspace::create(&ws_dir, &game).unwrap();
+    edit(
+        &mut ws,
+        STRINGS,
+        testing::sample_table(["Patch", "Text"]).to_bytes().unwrap(),
+    );
+    let patch = dir.path().join("patch.zip");
+    let p = patch.to_str().unwrap();
+    let (ok, text) = mods_run(
+        &[
+            "mods",
+            "build",
+            r,
+            "-o",
+            p,
+            "--name",
+            "Patch",
+            "--depends",
+            "base=>=1.1 <2",
+            "--incompatible",
+            "old=<3:changes the same lamps",
+            "--load-after",
+            "hd",
+            "--edition",
+            "1.0.789.0",
+            "--requires-manager",
+            "none",
+        ],
+        &logs,
+    );
+    assert!(ok, "{text}");
+    let (ok, text) = mods_run(&["mods", "info", p], &logs);
+    assert!(ok, "{text}");
+    for line in [
+        "format   3",
+        "editions 1.0.789.0",
+        "depends on   base >=1.1 <2",
+        "incompatible with old <3: changes the same lamps",
+        "load after   hd",
+    ] {
+        assert!(text.contains(line), "{line}: {text}");
+    }
+    assert!(!text.contains("needs mod manager"), "{text}");
+
+    // Installed: the patch is of another edition than this (unknown) game.
+    let (ok, text) = mods_run(&["mods", "install", r, p, b], &logs);
+    assert!(ok, "{text}");
+    assert!(text.contains("tested on the editions 1.0.789.0"), "{text}");
+    let (_, list) = mods_run(&["mods", "list", r], &logs);
+    let base_at = list.find("base").unwrap();
+    assert!(base_at < list.find("patch").unwrap(), "{list}");
+
+    // The base cannot go below the patch, nor be switched off while it is on.
+    let (ok, text) = mods_run(&["mods", "move", r, "base", "2"], &logs);
+    assert!(!ok && text.contains("`patch` needs `base`"), "{text}");
+    let (ok, text) = mods_run(&["mods", "disable", r, "base"], &logs);
+    assert!(
+        !ok && text.contains("needed by the enabled mod(s) patch"),
+        "{text}"
+    );
+    let (ok, text) = mods_run(&["mods", "uninstall", r, "base"], &logs);
+    assert!(!ok && text.contains("--force"), "{text}");
+    let (ok, text) = mods_run(&["mods", "disable", r, "base", "patch"], &logs);
+    assert!(ok, "{text}");
+    let (ok, text) = mods_run(&["mods", "enable", r, "patch"], &logs);
+    assert!(ok && text.contains("--with-deps"), "{text}");
+    let (ok, text) = mods_run(&["mods", "check", r], &logs);
+    assert!(ok && text.contains("switched off"), "{text}");
+    let (ok, text) = mods_run(&["mods", "enable", r, "patch", "--with-deps"], &logs);
+    assert!(
+        ok && text.contains("enabled base (needed by patch)"),
+        "{text}"
+    );
+    let (ok, text) = mods_run(&["mods", "sort", r, "--dry-run"], &logs);
+    assert!(ok && text.contains("already follows"), "{text}");
+    let (ok, text) = mods_run(&["mods", "disable", r, "base", "--force"], &logs);
+    assert!(ok, "{text}");
+}

@@ -417,6 +417,7 @@ impl VpatPatch {
                     .map_or_else(String::new, |n| n.to_string_lossy().into_owned())
             ),
             url: None,
+            relations: Default::default(),
         };
         let mut manifest = ModManifest::new(
             &info,
@@ -424,6 +425,7 @@ impl VpatPatch {
                 profile: game.profile().name.to_owned(),
                 executable_size: None,
                 executable_sha256: None,
+                editions: Vec::new(),
             },
         );
         manifest.converted_from = Some("vpat".to_owned());

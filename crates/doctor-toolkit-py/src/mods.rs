@@ -153,7 +153,20 @@ impl ModManager {
     /// Moves a mod to `position` in the load order (0 is applied first).
     #[pyo3(name = "move")]
     fn move_mod(&mut self, id: &str, position: usize) -> PyResult<()> {
-        self.manager.move_mod(id, position).py()
+        self.manager.move_mod(id, position).map(|_| ()).py()
+    }
+
+    /// Sorts the load order by the mods' rules (dependencies first, then
+    /// `load_after`/`load_before`), keeping the present order where they
+    /// allow. Returns the ids in the sorted order; `dry_run` only tells it.
+    #[pyo3(signature = (dry_run = false))]
+    fn sort(&mut self, dry_run: bool) -> PyResult<Vec<String>> {
+        self.manager.sort(dry_run).map(|r| r.order).py()
+    }
+
+    /// The enabled mods that need mod `id`, directly or through others.
+    fn dependents(&self, id: &str) -> Vec<String> {
+        self.manager.dependents(id)
     }
 
     /// Resources replaced by more than one mod, as dicts: `key`, `mods` (load
@@ -178,7 +191,7 @@ impl ModManager {
     }
 
     /// Clashes between mods that add resources or create streams, as dicts:
-    /// `kind` (`stream`, `stream_hash`, `guid`, `shared_stream`), `mods`
+    /// `kind` (`stream`, `stream_hash`, `guid`, `shared_stream`, `incompatible`), `mods`
     /// (load order), `fatal` (`apply` refuses while such mods are enabled),
     /// `description`.
     #[pyo3(signature = (enabled_only = true))]
@@ -197,6 +210,7 @@ impl ModManager {
                     Clash::StreamHash { .. } => "stream_hash",
                     Clash::Guid { .. } => "guid",
                     Clash::SharedStream { .. } => "shared_stream",
+                    Clash::Incompatible { .. } => "incompatible",
                 };
                 dict.set_item("kind", kind)?;
                 dict.set_item("mods", c.mods())?;

@@ -44,7 +44,8 @@ original files are never lost.
 - **Media:** VP6 movie player and encoder, sound banks and streamed sounds,
   textures to and from DDS and PNG, interface text in every language.
 - **Safe changes:** a workspace with undo, redo and compare; mods as packages
-  that players install and remove; integrity checks; atomic writes.
+  that players install and remove, with dependencies, editions and a load
+  order that sorts itself; integrity checks; atomic writes.
 - **Play and debug:** start the game from the editor straight into a city or
   at a point, see it in an editor tab (with DXVK under Wine), and talk to the
   running game through a live link: player, camera, objects, teleport,

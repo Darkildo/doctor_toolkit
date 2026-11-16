@@ -16,9 +16,10 @@ use crate::state::{ToolError, ToolResult, Toolkit, fail};
 
 #[derive(Debug, Default, Deserialize, JsonSchema)]
 pub struct ModsParams {
-    /// `list` (default: installed mods in load order), `status` (what the
-    /// game has of them), `conflicts` (resources changed by several mods),
-    /// `check` (whether the enabled mods fit this game).
+    /// `list` (default: installed mods in load order, with what each needs,
+    /// recommends and does not work with), `status` (what the game has of
+    /// them), `conflicts` (resources changed by several mods), `check`
+    /// (whether the enabled mods fit this game).
     #[serde(default)]
     pub action: Option<String>,
 }
@@ -26,9 +27,10 @@ pub struct ModsParams {
 #[derive(Debug, Default, Deserialize, JsonSchema)]
 pub struct ModsManageParams {
     /// `install` (mod files `files`), `uninstall`, `enable`, `disable`
-    /// (`ids`), `move` (`ids` with one id, `position` from 1), `apply`
-    /// (write the enabled mods into the game, originals backed up) or
-    /// `unapply` (put the originals back).
+    /// (`ids`), `move` (`ids` with one id, `position` from 1), `sort` (the
+    /// load order by the mods' rules: dependencies first, then
+    /// load_after/load_before), `apply` (write the enabled mods into the
+    /// game, originals backed up) or `unapply` (put the originals back).
     pub action: String,
     /// Mod files to install (absolute paths: `.zip` mods of mod_build, old `.vpat` patches).
     #[serde(default)]
@@ -43,9 +45,16 @@ pub struct ModsManageParams {
     #[serde(default)]
     pub disabled: Option<bool>,
     /// With `apply`/`unapply`: overwrite streams another program changed
-    /// (their changes are lost).
+    /// (their changes are lost). With `disable`/`uninstall`: also when
+    /// enabled mods need the mod.
     #[serde(default)]
     pub force: Option<bool>,
+    /// With `enable`: also enable the installed mods it needs.
+    #[serde(default)]
+    pub with_deps: Option<bool>,
+    /// With `sort`: only tell the sorted order.
+    #[serde(default)]
+    pub dry_run: Option<bool>,
 }
 
 #[derive(Debug, Default, Deserialize, JsonSchema)]
@@ -73,6 +82,13 @@ fn list(mods: &ModManager) -> Value {
                 "enabled": m.enabled,
                 "source": m.source,
                 "problem": m.problem,
+                "relations": mods.relations(&m.id).iter().map(|r| json!({
+                    "kind": format!("{:?}", r.kind),
+                    "mod": r.id,
+                    "versions": r.versions,
+                    "reason": r.reason,
+                    "state": format!("{:?}", r.state),
+                })).collect::<Vec<_>>(),
             }))
             .collect::<Vec<_>>()
     )
@@ -111,6 +127,7 @@ pub fn mods(kit: &Toolkit, p: ModsParams) -> ToolResult<Output> {
                 "mods": c.mods,
                 "winner": c.winner(),
                 "same_data": c.same_data,
+                "patch": c.patch,
             })).collect::<Vec<_>>(),
             "clashes": mods.clashes(true).iter().map(|c| json!({
                 "fatal": c.is_fatal(),
@@ -183,14 +200,54 @@ pub fn mods_manage(kit: &Toolkit, p: ModsManageParams) -> ToolResult<Output> {
             if p.ids.is_empty() {
                 return fail("give `ids` of installed mods (`mods` lists them)");
             }
+            if p.action != "enable" && !p.force.unwrap_or(false) {
+                for id in &p.ids {
+                    let needed: Vec<String> = mods
+                        .dependents(id)
+                        .into_iter()
+                        .filter(|d| !p.ids.contains(d))
+                        .collect();
+                    if !needed.is_empty() {
+                        return fail(format!(
+                            "{id} is needed by the enabled mod(s) {}; {} them too, or give \
+                             `force: true`",
+                            needed.join(", "),
+                            p.action
+                        ));
+                    }
+                }
+            }
+            let mut also = Vec::new();
+            let mut notes = Vec::new();
             for id in &p.ids {
                 match p.action.as_str() {
                     "uninstall" => mods.uninstall(id)?,
-                    "enable" => mods.set_enabled(id, true)?,
+                    "enable" if p.with_deps.unwrap_or(false) => {
+                        also.extend(mods.enable_with_dependencies(id)?);
+                    }
+                    "enable" => {
+                        mods.set_enabled(id, true)?;
+                        let off = mods.disabled_dependencies(id);
+                        if !off.is_empty() {
+                            notes.push(format!(
+                                "{id} needs {}, switched off: `with_deps: true` enables them",
+                                off.join(", ")
+                            ));
+                        }
+                    }
                     _ => mods.set_enabled(id, false)?,
                 }
             }
-            json!({ p.action.clone(): p.ids })
+            json!({ p.action.clone(): p.ids, "also_enabled": also, "notes": notes })
+        }
+        "sort" => {
+            let r = mods.sort(p.dry_run.unwrap_or(false))?;
+            json!({
+                "changed": r.changed,
+                "order": r.order,
+                "dropped_rules": r.dropped,
+                "dry_run": p.dry_run.unwrap_or(false),
+            })
         }
         "move" => {
             let [id] = p.ids.as_slice() else {
@@ -200,8 +257,8 @@ pub fn mods_manage(kit: &Toolkit, p: ModsManageParams) -> ToolResult<Output> {
                 .position
                 .filter(|&n| n > 0)
                 .ok_or_else(|| ToolError("give `position`, 1 for the first place".into()))?;
-            mods.move_mod(id, position - 1)?;
-            json!({ "moved": id, "position": position })
+            let warnings = mods.move_mod(id, position - 1)?;
+            json!({ "moved": id, "position": position, "warnings": warnings })
         }
         "apply" | "unapply" => {
             if !running.is_empty() {
@@ -223,7 +280,7 @@ pub fn mods_manage(kit: &Toolkit, p: ModsManageParams) -> ToolResult<Output> {
         }
         other => {
             return fail(format!(
-                "`action` is install, uninstall, enable, disable, move, apply or unapply, not `{other}`"
+                "`action` is install, uninstall, enable, disable, move, sort, apply or unapply, not `{other}`"
             ));
         }
     };

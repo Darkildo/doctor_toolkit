@@ -1407,7 +1407,8 @@ impl Server {
 impl Server {
     #[tool(
         description = "Change the mod manager: install mod files, uninstall, enable, disable, \
-                       move in the load order (later mods win), `apply` the enabled mods to the \
+                       move in the load order (later mods win), `sort` the order by the \
+                       mods' dependencies and load rules, `apply` the enabled mods to the \
                        game files (originals backed up; refused while the game runs) or \
                        `unapply` them. Mods reach a game started by play with `mods: true` \
                        without apply. Ask the user before changing their mods.",

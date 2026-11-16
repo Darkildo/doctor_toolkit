@@ -51,6 +51,26 @@ pub const KNOWN: &[KnownEdition] = &[
     },
 ];
 
+impl KnownEdition {
+    /// The version of the build, `1.0.789.0`: how mods name the edition
+    /// (`game.editions` of `mod.json`).
+    pub fn version(&self) -> &'static str {
+        self.id.split('-').next().unwrap_or(self.id)
+    }
+}
+
+/// The edition of the game in `root` as mods name it: the version of a
+/// known build (`1.0.789.0`), or the version in the executable of an
+/// unknown one; `None` without an executable or a version.
+pub fn game_edition(root: &Path) -> Option<String> {
+    let profile = GameProfile::detect(root).unwrap_or(GameProfile::GF2_PC);
+    let exe = find_file(root, profile.executable).and_then(|p| executable_info(&p))?;
+    match known_edition(exe.size, &exe.sha256) {
+        Some(known) => Some(known.version().to_owned()),
+        None => exe.version,
+    }
+}
+
 /// What the executable says about itself.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ExecutableInfo {

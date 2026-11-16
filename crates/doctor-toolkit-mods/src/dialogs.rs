@@ -18,8 +18,24 @@ pub(crate) enum Dialog {
     Write,
     /// Put the originals back?
     Restore,
-    /// Remove this mod?
-    Remove { id: String, name: String },
+    /// Remove this mod? `needed_by`: names of the enabled mods that need it.
+    Remove {
+        id: String,
+        name: String,
+        needed_by: String,
+    },
+    /// Turn on the mods (`names`) this one needs too?
+    EnableNeeded {
+        id: String,
+        name: String,
+        names: String,
+    },
+    /// Turn off this mod, which enabled mods (`names`) need?
+    DisableNeeded {
+        id: String,
+        name: String,
+        names: String,
+    },
     /// The name to save the set of mods under.
     SaveSet(String),
     /// Forget this set?
@@ -36,6 +52,9 @@ enum Answer {
     Remove(String),
     SaveSet(String),
     DeleteSet(String),
+    /// Switch a mod on (with what it needs when `true`) or off.
+    Switch(String, bool),
+    EnableWith(String),
 }
 
 /// The heading and the text of a question.
@@ -132,15 +151,67 @@ impl ModsPanel {
                     }
                     keep &= !(yes || no);
                 }
-                Dialog::Remove { id, name } => {
-                    question(
-                        ui,
-                        &trf("mods.ask_remove_title", &[("name", name)]),
-                        tr("mods.ask_remove_text"),
-                    );
+                Dialog::Remove {
+                    id,
+                    name,
+                    needed_by,
+                } => {
+                    let mut text = tr("mods.ask_remove_text").to_owned();
+                    if !needed_by.is_empty() {
+                        text += "\n\n";
+                        text += &trf("mods.ask_remove_needed", &[("mods", needed_by)]);
+                    }
+                    question(ui, &trf("mods.ask_remove_title", &[("name", name)]), &text);
                     let (yes, no) = buttons(ui, tr("mods.remove_now"), !busy);
                     if yes {
                         answer = Some(Answer::Remove(id.clone()));
+                    }
+                    keep &= !(yes || no);
+                }
+                Dialog::EnableNeeded { id, name, names } => {
+                    question(
+                        ui,
+                        &trf("mods.ask_enable_needed_title", &[("name", name)]),
+                        &trf(
+                            "mods.ask_enable_needed_text",
+                            &[("name", name), ("mods", names)],
+                        ),
+                    );
+                    let mut only = false;
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if action_button(ui, !busy, tr("mods.enable_with"), Prominence::Main)
+                            .clicked()
+                        {
+                            answer = Some(Answer::EnableWith(id.clone()));
+                            keep = false;
+                        }
+                        if ui
+                            .add_enabled(!busy, egui::Button::new(tr("mods.enable_only")))
+                            .clicked()
+                        {
+                            only = true;
+                        }
+                        if ui.button(tr("mods.cancel")).clicked() {
+                            keep = false;
+                        }
+                    });
+                    if only {
+                        answer = Some(Answer::Switch(id.clone(), true));
+                        keep = false;
+                    }
+                }
+                Dialog::DisableNeeded { id, name, names } => {
+                    question(
+                        ui,
+                        &trf("mods.ask_disable_needed_title", &[("name", name)]),
+                        &trf(
+                            "mods.ask_disable_needed_text",
+                            &[("name", name), ("mods", names)],
+                        ),
+                    );
+                    let (yes, no) = buttons(ui, tr("mods.disable_now"), !busy);
+                    if yes {
+                        answer = Some(Answer::Switch(id.clone(), false));
                     }
                     keep &= !(yes || no);
                 }
@@ -212,6 +283,8 @@ impl ModsPanel {
             Some(Answer::Remove(id)) => self.remove(ctx, &id),
             Some(Answer::SaveSet(name)) => self.save_set(ctx, &name),
             Some(Answer::DeleteSet(name)) => self.delete_set(ctx, &name),
+            Some(Answer::Switch(id, on)) => self.switch(ctx, &id, on),
+            Some(Answer::EnableWith(id)) => self.enable_with_dependencies(ctx, &id),
             None => {}
         }
     }

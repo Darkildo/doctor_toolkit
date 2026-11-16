@@ -7,6 +7,7 @@ use std::path::PathBuf;
 
 use doctor_toolkit::mods::{self, ModInfo, Preview, manager::ModManager};
 use doctor_toolkit::workspace::ResourceKey;
+use doctor_toolkit_mods::RelationsForm;
 use doctor_toolkit_mods::i18n::{tr, trf, trn};
 use egui::{Color32, RichText};
 
@@ -32,6 +33,8 @@ pub(crate) struct Checked {
 pub(crate) struct Package {
     pub items: Vec<Item>,
     pub info: ModInfo,
+    /// Dependencies, editions and the load order, as typed (format 3).
+    pub relations: RelationsForm,
     /// The id follows the name until it is edited.
     pub id_edited: bool,
     pub preview: Option<PathBuf>,
@@ -52,6 +55,7 @@ impl Package {
                 version: "1.0".into(),
                 ..Default::default()
             },
+            relations: RelationsForm::default(),
             id_edited: false,
             preview: None,
             preview_error: None,
@@ -122,6 +126,21 @@ impl Package {
         self.preview = Some(path);
     }
 
+    /// The metadata with the relations typed and the dependencies on the
+    /// mods written into the game that the chosen changes were made on;
+    /// also the ids of those added by themselves.
+    fn full_info(&self, app: &BrowserApp) -> Result<(ModInfo, Vec<String>), String> {
+        let mut info = self.info.clone();
+        info.relations = self.relations.relations();
+        let mut added = Vec::new();
+        if let (Some(game), Some(ws)) = (&app.game, &app.workspace) {
+            let keys = self.keys();
+            added = mods::add_suggested_dependencies(&mut info, game, ws, keys.as_deref())
+                .map_err(|e| e.to_string())?;
+        }
+        Ok((info, added))
+    }
+
     /// Checks the package: the manifest, the game it was made for, the
     /// state of the changes and the installed mods that change the same
     /// resources.
@@ -133,8 +152,26 @@ impl Package {
             return;
         };
         let keys = self.keys();
-        match mods::manifest_from_workspace(ws, &self.info, keys.as_deref()) {
+        let info = match self.full_info(app) {
+            Ok((info, added)) => {
+                for id in added {
+                    c.notes.push(trf(
+                        "wizard.package.depends_added",
+                        &[("id", &id), ("versions", &info.relations.depends[&id])],
+                    ));
+                }
+                info
+            }
+            Err(error) => {
+                c.warnings.push(error);
+                let mut info = self.info.clone();
+                info.relations = self.relations.relations();
+                info
+            }
+        };
+        match mods::manifest_from_workspace(ws, &info, keys.as_deref()) {
             Ok(manifest) => {
+                c.warnings.extend(manifest.warnings());
                 c.notes.push(trf(
                     "wizard.package.contents",
                     &[
@@ -237,7 +274,7 @@ impl Package {
             });
     }
 
-    fn details_step(&mut self, ui: &mut egui::Ui) {
+    fn details_step(&mut self, ui: &mut egui::Ui, edition: Option<String>) {
         egui::Grid::new("package-info")
             .num_columns(2)
             .show(ui, |ui| {
@@ -293,6 +330,12 @@ impl Package {
         if let Some(error) = &self.preview_error {
             ui.colored_label(Color32::from_rgb(230, 90, 80), error);
         }
+        egui::CollapsingHeader::new(tr("mods.relations_title"))
+            .id_salt("package-relations")
+            .show(ui, |ui| {
+                ui.label(RichText::new(tr("mods.relations_hint")).weak().small());
+                self.relations.ui(ui, edition.as_deref());
+            });
     }
 
     fn check_step(&mut self, ui: &mut egui::Ui, app: &mut BrowserApp) {
@@ -329,9 +372,9 @@ impl Package {
             None => None,
         };
         let keys = self.keys();
-        let report =
-            mods::build_from_workspace(ws, &self.info, keys.as_deref(), preview.as_ref(), out)
-                .map_err(|e| e.to_string())?;
+        let (info, _) = self.full_info(app)?;
+        let report = mods::build_from_workspace(ws, &info, keys.as_deref(), preview.as_ref(), out)
+            .map_err(|e| e.to_string())?;
         Ok(report.file_size)
     }
 
@@ -402,7 +445,13 @@ impl Task for Package {
     fn ui(&mut self, step: usize, ui: &mut egui::Ui, app: &mut BrowserApp, _tx: &mut Tx) {
         match step {
             0 => self.changes_step(ui, app),
-            1 => self.details_step(ui),
+            1 => {
+                let edition = app
+                    .game
+                    .as_ref()
+                    .and_then(|g| doctor_toolkit::edition::game_edition(g.root()));
+                self.details_step(ui, edition);
+            }
             _ => self.check_step(ui, app),
         }
     }

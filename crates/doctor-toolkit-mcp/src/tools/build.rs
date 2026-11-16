@@ -1,15 +1,15 @@
 //! Building and checking (`--allow-edits`): the project into the workspace,
-//! a mod (format 2) from the workspace, and the checks of the workspace's
-//! edits that the toolkit has.
+//! a mod (format 3, `docs/mods.md`) from the workspace, and the checks of
+//! the workspace's edits that the toolkit has.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
 use doctor_toolkit::create::{self, Provided, ReferenceChecker, Target};
-use doctor_toolkit::mods::{self, ModInfo};
+use doctor_toolkit::mods::{self, Incompatible, ModInfo, Relations};
 use doctor_toolkit::project::{BuildOptions, EntryState, Project};
 use doctor_toolkit::resource::graph::{Graph, TYPE_GRAPH};
 use doctor_toolkit::resource::lh2::StringTable;
@@ -59,6 +59,31 @@ pub struct ModBuildParams {
     /// [default: the project's changes with a project, else all].
     #[serde(default)]
     pub changes: Vec<String>,
+    /// Mods this one needs: id → condition on the version (`>=1.1 <2`,
+    /// `^1.2`, `*`). Mods written into the game whose data the changes were
+    /// made on are added by themselves.
+    #[serde(default)]
+    pub depends: BTreeMap<String, String>,
+    /// Mods that go well with this one: id → condition (a hint).
+    #[serde(default)]
+    pub recommends: BTreeMap<String, String>,
+    /// Mods this one does not work with: id → condition.
+    #[serde(default)]
+    pub incompatible: BTreeMap<String, String>,
+    /// Ids of mods to load this one after / before when installed (soft rules).
+    #[serde(default)]
+    pub load_after: Vec<String>,
+    #[serde(default)]
+    pub load_before: Vec<String>,
+    /// Editions of the game the mod is tested on, e.g. `1.0.789.0`; on
+    /// another edition it does not fit unless compatibility is ignored
+    /// [default: none, any edition: the resources are checked one by one].
+    #[serde(default)]
+    pub editions: Vec<String>,
+    /// Condition on the version of the mod manager; empty for none
+    /// [default: this program's version or newer].
+    #[serde(default)]
+    pub requires_manager: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize, JsonSchema)]
@@ -188,7 +213,30 @@ pub fn mod_build(kit: &Toolkit, p: ModBuildParams) -> ToolResult<Output> {
             .clone()
             .or_else(|| base.as_ref().and_then(|b| b.url.clone())),
         name,
+        relations: Relations {
+            depends: p.depends.clone(),
+            recommends: p.recommends.clone(),
+            incompatible: p
+                .incompatible
+                .iter()
+                .map(|(id, versions)| {
+                    (
+                        id.clone(),
+                        Incompatible {
+                            versions: versions.clone(),
+                            reason: String::new(),
+                        },
+                    )
+                })
+                .collect(),
+            load_after: p.load_after.clone(),
+            load_before: p.load_before.clone(),
+            editions: p.editions.clone(),
+            requires_manager: p.requires_manager.clone(),
+            made_on: BTreeMap::new(),
+        },
     };
+    let mut info = info;
     let preview = match &p.preview {
         Some(path) => {
             let path = super::create::input_file(path)?;
@@ -206,6 +254,7 @@ pub fn mod_build(kit: &Toolkit, p: ModBuildParams) -> ToolResult<Output> {
     if keys.as_ref().is_some_and(Vec::is_empty) {
         return fail("the workspace has no changes of the project; build it first (project_build)");
     }
+    let suggested = mods::add_suggested_dependencies(&mut info, &kit.game, &ws, keys.as_deref())?;
     // The mod goes next to the workspace, never to a path from the client.
     let dir = ws.dir().join("mods");
     std::fs::create_dir_all(&dir)
@@ -218,7 +267,9 @@ pub fn mod_build(kit: &Toolkit, p: ModBuildParams) -> ToolResult<Output> {
         "name": info.name,
         "version": info.version,
         "preview": preview.as_ref().map(|p| p.name.clone()),
-        "format": 2,
+        "format": report.format_version,
+        "depends": info.relations.depends,
+        "depends_added": suggested,
         "resources": report.resources,
         "added_resources": report.added,
         "new_streams": report.new_streams,

@@ -236,6 +236,7 @@ fn enabled_mods_of_format_2_are_staged() {
         author: "tester".into(),
         description: String::new(),
         url: None,
+        relations: Default::default(),
     };
     crate::mods::build_from_workspace(&ws, &info, None, None, &package).unwrap();
     let mut mods = ModManager::open(&game).unwrap();

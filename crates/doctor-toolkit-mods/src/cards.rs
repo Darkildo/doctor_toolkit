@@ -204,6 +204,10 @@ impl ModsPanel {
                             | ModState::Clash(_)
                             | ModState::Misfit(_)
                             | ModState::Damaged(_)
+                            | ModState::NeedsUpdate(_)
+                            | ModState::NeedsMods(_)
+                            | ModState::WrongEdition { .. }
+                            | ModState::Incompatible(_)
                     ) {
                         widgets::warning_icon(ui, color).on_hover_text(card.state.hint());
                     }

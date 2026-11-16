@@ -23,6 +23,15 @@ fn info(id: &str) -> ModInfo {
         author: "tester".to_owned(),
         description: "A test mod.\nSecond line.".to_owned(),
         url: Some("https://example.org/mod".to_owned()),
+        relations: Default::default(),
+    }
+}
+
+/// Metadata of a mod without relations, written in format version 1 or 2.
+fn old_info(id: &str) -> ModInfo {
+    ModInfo {
+        relations: Relations::none(),
+        ..info(id)
     }
 }
 
@@ -125,7 +134,7 @@ fn manifest_validation_rejects_bad_fields() {
     json["resources"] = "something new".into();
     let error = ModManifest::parse(json.to_string().as_bytes()).unwrap_err();
     assert!(
-        error.to_string().contains("Update doctor_toolkit"),
+        error.to_string().contains("Update Open Mod Manager"),
         "{error}"
     );
     assert!(ModManifest::parse(b"{\"format\":\"other\"}").is_err());
@@ -256,6 +265,7 @@ fn manifest_for(game: &GameInstance, data: &[u8]) -> ModManifest {
             profile: game.profile().name.to_owned(),
             executable_size: None,
             executable_sha256: None,
+            editions: Vec::new(),
         },
     );
     manifest.resources.push(ModResource {
@@ -1431,7 +1441,7 @@ fn version_2_manifests_round_trip_and_version_1_still_reads() {
         vec![new_stream_def(PROPS, 0x0777_0000, true)],
         vec![first, added(PROPS, b"mesh", 0x5678, &[5u8; 64])],
     );
-    let manifest = manifest_from_workspace(&ws, &info("adds"), None).unwrap();
+    let manifest = manifest_from_workspace(&ws, &old_info("adds"), None).unwrap();
     assert_eq!(manifest.format_version, 2);
     assert_eq!(manifest.added().count(), 2);
     assert_eq!(manifest.streams.len(), 1);
@@ -1444,12 +1454,12 @@ fn version_2_manifests_round_trip_and_version_1_still_reads() {
 
     // Selecting only the resource of the new stream takes the stream along.
     let only = [key_of(&manifest, PROPS)];
-    let part = manifest_from_workspace(&ws, &info("part"), Some(&only)).unwrap();
+    let part = manifest_from_workspace(&ws, &old_info("part"), Some(&only)).unwrap();
     assert_eq!(part.resources.len(), 1);
     assert_eq!(part.streams.len(), 1);
     // A mod that only replaces is still written as version 1, without new fields.
     let replacing = workspace_with(&game, &temp.path().join("ws1"), vec![(MESH, mesh(1))]);
-    let v1 = manifest_from_workspace(&replacing, &info("v1"), None).unwrap();
+    let v1 = manifest_from_workspace(&replacing, &old_info("v1"), None).unwrap();
     assert_eq!(v1.format_version, 1);
     let text = String::from_utf8(v1.to_json().unwrap()).unwrap();
     assert!(
@@ -2330,4 +2340,757 @@ fn a_mod_of_another_edition_is_only_noted() {
     );
     mods.apply(&game, ModApplyOptions::default()).unwrap();
     assert_eq!(game_data(&game, LEVEL, MESH), data);
+}
+
+// ------------------------------------------- format version 3: relations
+
+/// Metadata of a mod of format version 3 with `relations`.
+fn v3_info(id: &str, version: &str, relations: Relations) -> ModInfo {
+    ModInfo {
+        version: version.to_owned(),
+        relations,
+        ..info(id)
+    }
+}
+
+/// Builds a mod of format version 3 with the given edits of `gf2/level`.
+fn build_v3(
+    game: &GameInstance,
+    out_dir: &Path,
+    info: &ModInfo,
+    edits: Vec<(usize, Vec<u8>)>,
+) -> PathBuf {
+    let ws = workspace_with(game, &out_dir.join(format!("ws-{}", info.id)), edits);
+    let out = out_dir.join(format!("{}-{}.zip", info.id, info.version));
+    build_from_workspace(&ws, info, None, None, &out).unwrap();
+    out
+}
+
+fn depends(list: &[(&str, &str)]) -> Relations {
+    Relations {
+        depends: list
+            .iter()
+            .map(|(id, c)| ((*id).to_owned(), (*c).to_owned()))
+            .collect(),
+        ..Relations::default()
+    }
+}
+
+fn ids(mods: &ModManager) -> Vec<&str> {
+    mods.mods().iter().map(|m| m.id.as_str()).collect()
+}
+
+fn problems_of<'a>(issues: &'a [manager::CompatIssue], id: &str) -> Vec<&'a Problem> {
+    issues
+        .iter()
+        .filter(|i| i.mod_id == id)
+        .map(|i| &i.problem)
+        .collect()
+}
+
+const V3_EXAMPLE: &str = r#"{
+  "format": "doctor-toolkit-mod",
+  "format_version": 3,
+  "id": "nny-patch",
+  "name": "New New York: night patch",
+  "version": "1.2.0-beta",
+  "author": "someone",
+  "description": "A patch on top of New New York.",
+  "game": {
+    "profile": "The Godfather II (PC)",
+    "editions": ["1.0.789.0"]
+  },
+  "requires_manager": ">=0.0.4",
+  "depends": { "new-new-york": ">=1.1 <2" },
+  "recommends": { "hd-textures": "*" },
+  "incompatible": {
+    "old-nights": { "versions": "<3", "reason": "changes the same lamps" },
+    "dark-city": "^1.0"
+  },
+  "load_after": ["hd-textures"],
+  "load_before": ["final-touches"],
+  "resources": [
+    {
+      "key": "gf2/level:mesh:00000003.00000003.00000003.00000003",
+      "payload": { "sha256": "1136e8cf83c904fc13a46e912fd92f662f54ade417080d502088065da68c5750", "size": 16 },
+      "original": { "sha256": "5fa303d0c7487254f0382018cc70326c73b1bd5765336f040befefa47831e424", "size": 29 }
+    }
+  ]
+}"#;
+
+#[test]
+fn version_3_manifests_parse_and_write_back() {
+    let m = ModManifest::parse(V3_EXAMPLE.as_bytes()).unwrap();
+    // The seed of the fuzzer is a valid manifest too.
+    let seed = include_bytes!("../../../../fuzz/seeds/mod_manifest/manifest_v3.json");
+    let seed = ModManifest::parse(seed).unwrap();
+    assert_eq!(seed.incompatible["noversions"].versions, "*");
+    assert_eq!(m.format_version, 3);
+    assert_eq!(m.required_version(), 3);
+    assert_eq!(m.semver().unwrap().to_string(), "1.2.0-beta");
+    assert_eq!(m.game.editions, ["1.0.789.0"]);
+    assert_eq!(m.depends["new-new-york"], ">=1.1 <2");
+    assert_eq!(
+        m.incompatible["old-nights"].reason,
+        "changes the same lamps"
+    );
+    assert_eq!(m.incompatible["dark-city"].versions, "^1.0");
+    assert!(m.incompatible["dark-city"].reason.is_empty());
+    assert_eq!(m.load_after, ["hd-textures"]);
+    assert!(m.warnings().is_empty(), "{:?}", m.warnings());
+    let json = m.to_json().unwrap();
+    let text = String::from_utf8(json.clone()).unwrap();
+    // The short form stays short, the long one long.
+    assert!(text.contains("\"dark-city\": \"^1.0\""), "{text}");
+    assert!(
+        text.contains("\"reason\": \"changes the same lamps\""),
+        "{text}"
+    );
+    let again = ModManifest::parse(&json).unwrap();
+    assert_eq!(again, m);
+    assert_eq!(again.to_json().unwrap(), json);
+    // An edition is also named by the full id of a known build.
+    assert!(edition_matches("1.0.789.0-2009-10-05", "1.0.789.0"));
+    assert!(!edition_matches("1.0.764.0", "1.0.789.0"));
+    assert!(m.game.fits_edition(Some("1.0.789.0")));
+    assert!(!m.game.fits_edition(Some("1.0.764.0")));
+    assert!(!m.game.fits_edition(None));
+    let mut any = m.game.clone();
+    any.editions.clear();
+    assert!(any.fits_edition(None));
+    // An unknown edition is only a warning.
+    let mut unknown = m.clone();
+    unknown.game.editions.push("2.0.1.0".into());
+    unknown.validate().unwrap();
+    assert!(unknown.warnings()[0].contains("2.0.1.0"));
+}
+
+#[test]
+fn version_2_manifests_are_written_back_byte_for_byte() {
+    let (_dir, game) = fake_game();
+    let temp = tempfile::tempdir().unwrap();
+    let ws = adding_workspace(
+        &game,
+        &temp.path().join("ws"),
+        vec![new_stream_def(PROPS, 0x0777_0000, true)],
+        vec![added(PROPS, b"mesh", 0x5678, &[5u8; 64])],
+    );
+    let v2 = manifest_from_workspace(&ws, &old_info("adds"), None).unwrap();
+    assert_eq!(v2.format_version, 2);
+    let json = v2.to_json().unwrap();
+    let text = String::from_utf8(json.clone()).unwrap();
+    for field in [
+        "editions",
+        "requires_manager",
+        "depends",
+        "recommends",
+        "incompatible",
+        "load_after",
+        "load_before",
+    ] {
+        assert!(!text.contains(field), "{field}: {text}");
+    }
+    let parsed = ModManifest::parse(&json).unwrap();
+    assert_eq!(parsed.to_json().unwrap(), json);
+    // A version 2 mod keeps a free-text version and has no relations.
+    let mut free: serde_json::Value = serde_json::from_slice(&json).unwrap();
+    free["version"] = "beta two".into();
+    let free = ModManifest::parse(free.to_string().as_bytes()).unwrap();
+    assert!(free.semver().is_none());
+    assert!(!free.has_relations());
+
+    // Built by default, a mod is of version 3: it needs this mod manager.
+    let v3 = manifest_from_workspace(&ws, &info("adds"), None).unwrap();
+    assert_eq!(v3.format_version, 3);
+    assert_eq!(
+        v3.requires_manager.as_deref(),
+        Some(default_requires_manager().as_str())
+    );
+    // No edition is listed by default, even when the mod is made on a known
+    // build: a mod of data fits any edition whose resources match.
+    assert!(v3.game.editions.is_empty());
+    let mut on_known = v3.clone();
+    on_known.game.executable_size = Some(13_840_384);
+    on_known.game.executable_sha256 =
+        Some("31f579a80cfd14f42c0379bbfa5b5b7f151bb06ec5163593023ab5002b1f1286".into());
+    on_known.set_relations(&Relations::default());
+    assert!(on_known.game.editions.is_empty());
+    assert_eq!(on_known.game.made_on_edition(), Some("1.0.789.0"));
+    // A version 3 field in a version 2 manifest is refused.
+    let mut stamped = v3.clone();
+    stamped.format_version = 2;
+    let error = stamped.validate().unwrap_err().to_string();
+    assert!(error.contains("version 3 is needed"), "{error}");
+    // A program that reads up to version 2 says to update.
+    let mut newer: serde_json::Value = serde_json::from_slice(&v3.to_json().unwrap()).unwrap();
+    newer["format_version"] = 4.into();
+    let error = ModManifest::parse(newer.to_string().as_bytes()).unwrap_err();
+    assert!(
+        error.to_string().contains("Update Open Mod Manager"),
+        "{error}"
+    );
+}
+
+#[test]
+fn version_3_manifests_with_bad_relations_are_refused() {
+    let good = ModManifest::parse(V3_EXAMPLE.as_bytes()).unwrap();
+    let mut cases: Vec<(&str, ModManifest)> = Vec::new();
+    let mut m = good.clone();
+    m.version = "one".into();
+    cases.push(("`version`", m));
+    let mut m = good.clone();
+    m.version = "1.2.3.4".into();
+    cases.push(("`version`", m));
+    let mut m = good.clone();
+    m.depends.insert("nny-patch".into(), "*".into());
+    cases.push(("names the mod itself", m));
+    let mut m = good.clone();
+    m.load_after.push("nny-patch".into());
+    cases.push(("names the mod itself", m));
+    let mut m = good.clone();
+    m.depends.insert("other".into(), ">=1,<2".into());
+    cases.push(("not a version condition", m));
+    let mut m = good.clone();
+    m.depends.insert("Bad Id".into(), "*".into());
+    cases.push(("bad mod id", m));
+    let mut m = good.clone();
+    m.recommends.insert("x".into(), "=>1".into());
+    cases.push(("recommends.x", m));
+    let mut m = good.clone();
+    m.incompatible
+        .insert("new-new-york".into(), Incompatible::default());
+    cases.push(("both a dependency and incompatible", m));
+    let mut m = good.clone();
+    m.incompatible.get_mut("old-nights").unwrap().reason = "a\u{7}".into();
+    cases.push(("control characters", m));
+    let mut m = good.clone();
+    m.load_before.push("hd-textures".into());
+    cases.push(("both in `load_after` and in `load_before`", m));
+    let mut m = good.clone();
+    m.load_before.push("new-new-york".into());
+    cases.push(("is a dependency", m));
+    let mut m = good.clone();
+    m.load_after.push("hd-textures".into());
+    cases.push(("twice", m));
+    let mut m = good.clone();
+    m.game.editions.push("1.0.789.0".into());
+    cases.push(("listed twice", m));
+    let mut m = good.clone();
+    m.game.editions.push("a b".into());
+    cases.push(("bad edition", m));
+    let mut m = good.clone();
+    m.requires_manager = Some("newest".into());
+    cases.push(("requires_manager", m));
+    let mut m = good.clone();
+    m.load_after = (0..300).map(|i| format!("m{i}")).collect();
+    cases.push(("more than", m));
+    for (expected, manifest) in cases {
+        let error = manifest.validate().unwrap_err().to_string();
+        assert!(error.contains(expected), "{expected}: {error}");
+    }
+    // The JSON forms of `incompatible`.
+    let mut json: serde_json::Value = serde_json::from_str(V3_EXAMPLE).unwrap();
+    json["incompatible"]["dark-city"] = serde_json::json!({ "reason": "no versions given" });
+    let m = ModManifest::parse(json.to_string().as_bytes()).unwrap();
+    assert_eq!(m.incompatible["dark-city"].versions, "*");
+    json["incompatible"]["dark-city"] = 7.into();
+    assert!(ModManifest::parse(json.to_string().as_bytes()).is_err());
+}
+
+/// The heart of format version 3: a mod made on top of another one. The
+/// base mod replaces the mesh and creates a stream; the patch, made in a
+/// workspace on the game with the base mod written, changes the mesh
+/// again, replaces a resource of the created stream and adds one to it.
+/// The patch depends on the base (filled in by itself), is checked
+/// against the game with the base applied, and installing, applying and
+/// taking out give the exact files.
+#[test]
+fn a_patch_on_top_of_a_mod_installs_applies_and_restores_byte_for_byte() {
+    let (dir, game) = fake_game();
+    let root = dir.path();
+    let pristine = snapshot(root);
+    let temp = tempfile::tempdir().unwrap();
+
+    // The base mod: version 1.1.
+    let ws = adding_workspace(
+        &game,
+        &temp.path().join("ws-base"),
+        vec![new_stream_def(PROPS, 0x0777_0000, true)],
+        vec![added(PROPS, b"mesh", 0xBB, &[5u8; 1000])],
+    );
+    let mut ws = ws;
+    ws.set_resources(&game, "edit", stream(&game, LEVEL), &[edit(MESH, mesh(1))])
+        .unwrap();
+    let base_path = temp.path().join("base.zip");
+    build_from_workspace(
+        &ws,
+        &v3_info("base", "1.1", Relations::default()),
+        None,
+        None,
+        &base_path,
+    )
+    .unwrap();
+    let mut mods = ModManager::open(&game).unwrap();
+    mods.install_file(&game, &base_path, true).unwrap();
+    mods.apply(&game, ModApplyOptions::default()).unwrap();
+    let with_base = snapshot(root);
+
+    // The patch, made on the game with the base written.
+    let game_now = GameInstance::open(root).unwrap();
+    let mut patch_ws = Workspace::create(temp.path().join("ws-patch"), &game_now).unwrap();
+    patch_ws
+        .set_resources(
+            &game_now,
+            "edit",
+            stream(&game_now, LEVEL),
+            &[edit(MESH, mesh(2))],
+        )
+        .unwrap();
+    patch_ws
+        .set_resources(
+            &game_now,
+            "edit",
+            stream(&game_now, PROPS),
+            &[edit(0, vec![6u8; 900])],
+        )
+        .unwrap();
+    patch_ws
+        .add_resources(
+            &game_now,
+            "add",
+            &[added(PROPS, b"lh2", 0xCC, &strings(["On", "Top"]))],
+        )
+        .unwrap();
+    let suggested = suggested_dependencies(&game_now, &patch_ws, None, "patch").unwrap();
+    assert_eq!(
+        suggested.depends,
+        BTreeMap::from([("base".to_owned(), ">=1.1.0".to_owned())])
+    );
+    // The mesh was edited as the base mod left it (the workspace keeps the
+    // game's original): the mod records the base's data as its original.
+    let mesh_key = key(&game, LEVEL, MESH);
+    assert_eq!(
+        suggested.made_on[&mesh_key],
+        (Blob::of(&mesh(1)), "base".to_owned())
+    );
+    assert_eq!(
+        patch_ws.change(&mesh_key).unwrap().original,
+        Blob::of(&[7u8; 300])
+    );
+    let mut patch_info = v3_info("patch", "0.1-beta", Relations::default());
+    let added_deps =
+        add_suggested_dependencies(&mut patch_info, &game_now, &patch_ws, None).unwrap();
+    assert_eq!(added_deps, ["base"]);
+    let patch_path = temp.path().join("patch.zip");
+    build_from_workspace(&patch_ws, &patch_info, None, None, &patch_path).unwrap();
+    let manifest = ModArchive::open(&patch_path).unwrap().manifest().clone();
+    assert_eq!(manifest.format_version, 3);
+    assert_eq!(manifest.depends["base"], ">=1.1.0");
+
+    // Installed while the base is in the game: it fits on top of it.
+    let report = mods.install_file(&game_now, &patch_path, true).unwrap();
+    assert!(report.issues.is_empty(), "{:?}", report.issues);
+    assert_eq!(ids(&mods), ["base", "patch"]);
+    // The patch wins its resources on purpose: no conflict to warn about.
+    let conflicts = mods.conflicts(true);
+    assert_eq!(conflicts.len(), 2, "{conflicts:?}");
+    assert!(conflicts.iter().all(|c| c.patch && c.winner() == "patch"));
+    assert!(
+        mods.clashes(true).iter().all(|c| !c.is_fatal()),
+        "{:?}",
+        mods.clashes(true)
+    );
+    mods.apply(&game_now, ModApplyOptions::default()).unwrap();
+    let game_now = GameInstance::open(root).unwrap();
+    assert_eq!(game_data(&game_now, LEVEL, MESH), mesh(2));
+    let props = game_now.open_stream(stream(&game_now, PROPS)).unwrap();
+    assert_eq!(props.layout().resources.len(), 2);
+    assert_eq!(props.resource_data(0).unwrap(), vec![6u8; 900]);
+    assert_eq!(props.layout().resources[1].header.ids, [0xCC; 4]);
+    drop(props);
+    assert!(mods.check(&game_now).unwrap().is_empty());
+    assert!(
+        mods.status(&game_now)
+            .unwrap()
+            .streams
+            .iter()
+            .all(|s| s.up_to_date)
+    );
+
+    // The base cannot go below the patch; switched off, the patch does
+    // not fit at all, even ignoring compatibility.
+    let error = mods.move_mod("base", 1).unwrap_err().to_string();
+    assert!(error.contains("`patch` needs `base`"), "{error}");
+    assert_eq!(mods.dependents("base"), ["patch"]);
+    mods.set_enabled("base", false).unwrap();
+    let issues = mods.check(&game_now).unwrap();
+    assert!(
+        problems_of(&issues, "patch").iter().any(|p| matches!(
+            p,
+            Problem::DependencyDisabled { id, .. } if id == "base"
+        )),
+        "{issues:?}"
+    );
+    let ignore = ModApplyOptions {
+        ignore_compatibility: true,
+        ..ModApplyOptions::default()
+    };
+    let error = mods.apply(&game_now, ignore).unwrap_err().to_string();
+    assert!(error.contains("needs mod `base`"), "{error}");
+    assert_eq!(mods.disabled_dependencies("patch"), ["base"]);
+    assert_eq!(mods.enable_with_dependencies("patch").unwrap(), ["base"]);
+    assert!(mods.check(&game_now).unwrap().is_empty());
+
+    // The patch alone off: the game is as with the base only.
+    mods.set_enabled("patch", false).unwrap();
+    mods.apply(&game_now, ModApplyOptions::default()).unwrap();
+    assert_eq!(snapshot(root), with_base);
+    mods.set_enabled("patch", true).unwrap();
+    let game_now = GameInstance::open(root).unwrap();
+    mods.apply(&game_now, ModApplyOptions::default()).unwrap();
+    // Restoring the originals, and taking both out, give the game back.
+    mods.unapply(&game_now, false).unwrap();
+    assert_eq!(snapshot(root), pristine);
+    let game_now = GameInstance::open(root).unwrap();
+    mods.apply(&game_now, ModApplyOptions::default()).unwrap();
+    assert_ne!(snapshot(root), pristine);
+    mods.uninstall("patch").unwrap();
+    mods.uninstall("base").unwrap();
+    let game_now = GameInstance::open(root).unwrap();
+    mods.apply(&game_now, ModApplyOptions::default()).unwrap();
+    assert_eq!(snapshot(root), pristine);
+    assert!(!mods.has_written());
+}
+
+#[test]
+fn dependencies_versions_and_recommendations_are_checked() {
+    let (_dir, game) = fake_game();
+    let temp = tempfile::tempdir().unwrap();
+    let base = build_v3(
+        &game,
+        temp.path(),
+        &v3_info("base", "1.0", Relations::default()),
+        vec![(MESH, mesh(1))],
+    );
+    let needs_new = build_v3(
+        &game,
+        temp.path(),
+        &v3_info("needs-new", "1.0", depends(&[("base", ">=2")])),
+        vec![(STRINGS, strings(["N", "n"]))],
+    );
+    let needs_missing = build_v3(
+        &game,
+        &temp.path().join("m"),
+        &v3_info("needs-missing", "1.0", depends(&[("nowhere", "*")])),
+        vec![(STRINGS, strings(["M", "m"]))],
+    );
+    let mut mods = ModManager::open(&game).unwrap();
+    // Installed before its dependency: the dependency goes above it.
+    mods.install_file(&game, &needs_new, true).unwrap();
+    mods.install_file(&game, &base, true).unwrap();
+    assert_eq!(ids(&mods), ["base", "needs-new"]);
+
+    // A wrong version stops applying unless compatibility is ignored.
+    let issues = mods.check(&game).unwrap();
+    let problems = problems_of(&issues, "needs-new");
+    assert!(
+        matches!(problems[..], [Problem::DependencyVersion { found, .. }] if found == "1.0"),
+        "{problems:?}"
+    );
+    assert!(!problems[0].is_fatal());
+    assert!(
+        issues[0].describe().contains("version >=2"),
+        "{}",
+        issues[0].describe()
+    );
+    assert!(mods.apply(&game, ModApplyOptions::default()).is_err());
+    let ignore = ModApplyOptions {
+        ignore_compatibility: true,
+        ..ModApplyOptions::default()
+    };
+    mods.apply(&game, ignore).unwrap();
+
+    // A missing dependency cannot be ignored.
+    let report = mods.install_file(&game, &needs_missing, true).unwrap();
+    assert!(
+        matches!(&report.issues[..], [i] if matches!(&i.problem, Problem::DependencyMissing { id, .. } if id == "nowhere")),
+        "{:?}",
+        report.issues
+    );
+    assert!(report.issues[0].is_fatal());
+    assert!(mods.apply(&game, ignore).is_err());
+    mods.uninstall("needs-missing").unwrap();
+
+    // Recommendations are only a hint; the relations list tells them all.
+    let mut rec = Relations::default();
+    rec.recommends.insert("base".into(), ">=1".into());
+    rec.recommends.insert("shiny".into(), "*".into());
+    rec.load_after.push("needs-new".into());
+    let hinted = build_v3(
+        &game,
+        &temp.path().join("h"),
+        &v3_info("hinted", "2.0", rec),
+        vec![(TEX_DATA, vec![1u8; 64])],
+    );
+    mods.install_file(&game, &hinted, true).unwrap();
+    let issues = mods.check(&game).unwrap();
+    let hints = problems_of(&issues, "hinted");
+    assert!(
+        matches!(hints[..], [Problem::Recommended { id, .. }] if id == "shiny"),
+        "{hints:?}"
+    );
+    assert!(hints[0].is_notice());
+    let relations = mods.relations("hinted");
+    let state = |kind, id: &str| {
+        relations
+            .iter()
+            .find(|r| r.kind == kind && r.id == id)
+            .map(|r| r.state.clone())
+    };
+    use manager::{RelationKind, RelationState};
+    assert_eq!(
+        state(RelationKind::Recommends, "base"),
+        Some(RelationState::Fine)
+    );
+    assert_eq!(
+        state(RelationKind::Recommends, "shiny"),
+        Some(RelationState::Missing)
+    );
+    assert_eq!(
+        state(RelationKind::LoadAfter, "needs-new"),
+        Some(RelationState::Fine)
+    );
+    let base_relations = mods.relations("base");
+    assert!(
+        base_relations
+            .iter()
+            .any(|r| r.kind == RelationKind::NeededBy && r.id == "needs-new"),
+        "{base_relations:?}"
+    );
+    mods.apply(&game, ignore).unwrap();
+}
+
+#[test]
+fn editions_the_mod_manager_and_incompatible_mods_are_checked() {
+    let (_dir, game) = fake_game();
+    let temp = tempfile::tempdir().unwrap();
+    let tested = Relations {
+        editions: vec!["1.0.789.0".into()],
+        ..Relations::default()
+    };
+    let path = build_v3(
+        &game,
+        temp.path(),
+        &v3_info("tested", "1.0", tested),
+        vec![(MESH, mesh(1))],
+    );
+    let mut mods = ModManager::open(&game).unwrap();
+    let report = mods.install_file(&game, &path, true).unwrap();
+    // The fake game is of no known edition: the mod does not fit, unless
+    // compatibility is ignored.
+    assert!(
+        matches!(&report.issues[..], [i] if matches!(&i.problem, Problem::Edition { game: None, tested } if tested == &["1.0.789.0"])),
+        "{:?}",
+        report.issues
+    );
+    assert!(!report.issues[0].is_fatal());
+    let error = mods
+        .apply(&game, ModApplyOptions::default())
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.contains("tested on the editions 1.0.789.0"),
+        "{error}"
+    );
+    let ignore = ModApplyOptions {
+        ignore_compatibility: true,
+        ..ModApplyOptions::default()
+    };
+    mods.apply(&game, ignore).unwrap();
+    mods.uninstall("tested").unwrap();
+
+    // A newer mod manager needed: cannot be ignored.
+    let newer = Relations {
+        requires_manager: Some(">=99".into()),
+        ..Relations::default()
+    };
+    let path = build_v3(
+        &game,
+        &temp.path().join("n"),
+        &v3_info("newer", "1.0", newer),
+        vec![(MESH, mesh(2))],
+    );
+    let report = mods.install_file(&game, &path, true).unwrap();
+    assert!(
+        matches!(&report.issues[..], [i] if matches!(i.problem, Problem::ManagerTooOld { .. })),
+        "{:?}",
+        report.issues
+    );
+    assert!(
+        report.issues[0]
+            .describe()
+            .contains("update Open Mod Manager")
+    );
+    assert!(mods.apply(&game, ignore).is_err());
+    mods.uninstall("newer").unwrap();
+
+    // Incompatible mods: a clash while both are enabled and the version matches.
+    let mut against = Relations::default();
+    against.incompatible.insert(
+        "rival".into(),
+        Incompatible {
+            versions: ">=2".into(),
+            reason: "both repaint the mesh".into(),
+        },
+    );
+    let picky = build_v3(
+        &game,
+        &temp.path().join("p"),
+        &v3_info("picky", "1.0", against),
+        vec![(MESH, mesh(3))],
+    );
+    let rival_1 = build_v3(
+        &game,
+        &temp.path().join("r1"),
+        &v3_info("rival", "1.5", Relations::default()),
+        vec![(STRINGS, strings(["R", "r"]))],
+    );
+    let rival_2 = build_v3(
+        &game,
+        &temp.path().join("r2"),
+        &v3_info("rival", "2.0", Relations::default()),
+        vec![(STRINGS, strings(["R", "2"]))],
+    );
+    mods.install_file(&game, &picky, true).unwrap();
+    mods.install_file(&game, &rival_1, true).unwrap();
+    assert!(mods.clashes(true).is_empty());
+    mods.install_file(&game, &rival_2, true).unwrap();
+    let clashes = mods.clashes(true);
+    assert!(
+        matches!(&clashes[..], [c @ Clash::Incompatible { declared_by, other, .. }] if declared_by == "picky" && other == "rival" && c.is_fatal()),
+        "{clashes:?}"
+    );
+    assert!(clashes[0].describe().contains("both repaint the mesh"));
+    let error = mods.apply(&game, ignore).unwrap_err().to_string();
+    assert!(error.contains("does not work with rival"), "{error}");
+    mods.set_enabled("rival", false).unwrap();
+    assert!(mods.clashes(true).is_empty());
+    assert_eq!(mods.clashes(false).len(), 1);
+    mods.apply(&game, ModApplyOptions::default()).unwrap();
+}
+
+#[test]
+fn the_load_order_follows_the_rules() {
+    let (_dir, game) = fake_game();
+    let temp = tempfile::tempdir().unwrap();
+    let plain = |id: &str| v3_info(id, "1.0", Relations::default());
+    let mut paths = Vec::new();
+    for (i, id) in ["a", "b", "c"].into_iter().enumerate() {
+        paths.push(build_v3(
+            &game,
+            &temp.path().join(id),
+            &plain(id),
+            vec![(MESH, mesh(i as u8 + 1))],
+        ));
+    }
+    let mut mods = ModManager::open(&game).unwrap();
+    for path in &paths {
+        mods.install_file(&game, path, true).unwrap();
+    }
+    assert_eq!(ids(&mods), ["a", "b", "c"]);
+    // `d` wants to be after `c` and before `a`. Installed last, it stays
+    // there (the nearest place keeping both does not exist); sorting
+    // finds the order that keeps both.
+    let mut soft = Relations::default();
+    soft.load_after.push("c".into());
+    soft.load_before.push("a".into());
+    let d = build_v3(
+        &game,
+        &temp.path().join("d"),
+        &v3_info("d", "1", soft),
+        vec![(STRINGS, strings(["D", "d"]))],
+    );
+    mods.install_file(&game, &d, true).unwrap();
+    assert_eq!(ids(&mods), ["a", "b", "c", "d"]);
+    assert_eq!(mods.rules().len(), 2);
+    let report = mods.sort(true).unwrap();
+    assert!(report.changed && report.dropped.is_empty(), "{report:?}");
+    assert_eq!(report.order, ["b", "c", "d", "a"]);
+    assert_eq!(
+        ids(&mods),
+        ["a", "b", "c", "d"],
+        "a dry run changes nothing"
+    );
+    mods.sort(false).unwrap();
+    assert_eq!(ids(&mods), ["b", "c", "d", "a"]);
+    assert!(
+        !mods.sort(true).unwrap().changed,
+        "sorting twice moves nothing"
+    );
+    // The order survives reopening.
+    let mut mods = ModManager::open(&game).unwrap();
+    assert_eq!(ids(&mods), ["b", "c", "d", "a"]);
+    // Moving `d` first breaks a soft rule: done, with a warning.
+    let warnings = mods.move_mod("d", 0).unwrap();
+    assert_eq!(ids(&mods), ["d", "b", "c", "a"]);
+    assert!(
+        warnings.len() == 1 && warnings[0].contains("`d` asks to be loaded after `c`"),
+        "{warnings:?}"
+    );
+    mods.sort(false).unwrap();
+    assert_eq!(ids(&mods), ["b", "c", "d", "a"]);
+
+    // `e` needs `b`: enabled, it goes after `b` if it is not there yet.
+    let e = build_v3(
+        &game,
+        &temp.path().join("e"),
+        &v3_info("e", "1", depends(&[("b", "*")])),
+        vec![(STRINGS, strings(["E", "e"]))],
+    );
+    mods.install_file(&game, &e, false).unwrap();
+    let entry = |id: &str, enabled| manager::SetEntry {
+        id: id.into(),
+        enabled,
+    };
+    mods.arrange(&[
+        entry("e", false),
+        entry("b", true),
+        entry("c", true),
+        entry("d", true),
+        entry("a", true),
+    ])
+    .unwrap();
+    assert_eq!(ids(&mods), ["e", "b", "c", "d", "a"]);
+    mods.set_enabled("e", true).unwrap();
+    assert_eq!(ids(&mods), ["b", "e", "c", "d", "a"]);
+    let error = mods.move_mod("e", 0).unwrap_err().to_string();
+    assert!(error.contains("`e` needs `b`"), "{error}");
+
+    // A circle of dependencies cannot be sorted.
+    let f = build_v3(
+        &game,
+        &temp.path().join("f"),
+        &v3_info("f", "1", depends(&[("g", "*")])),
+        vec![(TEX_DATA, vec![2u8; 64])],
+    );
+    let g = build_v3(
+        &game,
+        &temp.path().join("g"),
+        &v3_info("g", "1", depends(&[("f", "*")])),
+        vec![(TEX_DATA, vec![3u8; 64])],
+    );
+    mods.install_file(&game, &f, true).unwrap();
+    mods.install_file(&game, &g, true).unwrap();
+    let error = mods.sort(false).unwrap_err().to_string();
+    assert!(
+        error.contains("in a circle") && error.contains('f') && error.contains('g'),
+        "{error}"
+    );
+    let issues = mods.check(&game).unwrap();
+    assert!(
+        issues
+            .iter()
+            .any(|i| matches!(i.problem, Problem::DependencyLater { .. })),
+        "{issues:?}"
+    );
 }

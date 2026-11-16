@@ -1,13 +1,186 @@
 //! Building a mod from the workspace: the section of the editor's Mods
-//! window only.
+//! window only, and the fields of format version 3 ([`RelationsForm`]),
+//! which the editor's "Package a mod" wizard shows too.
 
 use std::path::PathBuf;
 
-use doctor_toolkit::mods::{self, ModInfo, Preview};
-use doctor_toolkit::workspace::Workspace;
+use doctor_toolkit::game::GameInstance;
+use doctor_toolkit::mods::{self, Incompatible, ModInfo, Preview, Relations};
+use doctor_toolkit::workspace::{ResourceKey, Workspace};
 
 use crate::ModsPanel;
 use crate::i18n::{tr, trf, trn};
+
+/// The relations of a mod being built, as typed: one mod per line in the
+/// lists (`id condition`, for incompatible mods `id condition: reason`),
+/// ids separated by commas or spaces in the rules of the order.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RelationsForm {
+    pub depends: String,
+    pub recommends: String,
+    pub incompatible: String,
+    pub load_after: String,
+    pub load_before: String,
+    /// Editions separated by commas; empty (or `any`): any edition.
+    pub editions: String,
+    /// Empty: this program's version or newer; `none`: no condition.
+    pub requires_manager: String,
+}
+
+/// `id condition` lines.
+fn id_lines(text: &str) -> Vec<(String, String)> {
+    text.lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .map(|line| match line.split_once(char::is_whitespace) {
+            Some((id, rest)) if !rest.trim().is_empty() => (id.to_owned(), rest.trim().to_owned()),
+            _ => (
+                line.split_whitespace().next().unwrap_or(line).to_owned(),
+                "*".to_owned(),
+            ),
+        })
+        .collect()
+}
+
+/// Ids separated by commas or spaces.
+fn id_list(text: &str) -> Vec<String> {
+    text.split(|c: char| c == ',' || c.is_whitespace())
+        .filter(|s| !s.is_empty())
+        .map(str::to_owned)
+        .collect()
+}
+
+impl RelationsForm {
+    /// The relations typed; the manifest checks them when the mod is built.
+    pub fn relations(&self) -> Relations {
+        let editions = id_list(&self.editions)
+            .into_iter()
+            .filter(|e| e != "any")
+            .collect();
+        let requires_manager = match self.requires_manager.trim() {
+            "" => None,
+            "none" => Some(String::new()),
+            condition => Some(condition.to_owned()),
+        };
+        Relations {
+            depends: id_lines(&self.depends).into_iter().collect(),
+            recommends: id_lines(&self.recommends).into_iter().collect(),
+            incompatible: id_lines(&self.incompatible)
+                .into_iter()
+                .map(|(id, rest)| {
+                    let (versions, reason) = match rest.split_once(':') {
+                        Some((v, r)) => (v.trim().to_owned(), r.trim().to_owned()),
+                        None => (rest, String::new()),
+                    };
+                    let versions = if versions.is_empty() {
+                        "*".to_owned()
+                    } else {
+                        versions
+                    };
+                    (id, Incompatible { versions, reason })
+                })
+                .collect(),
+            load_after: id_list(&self.load_after),
+            load_before: id_list(&self.load_before),
+            editions,
+            requires_manager,
+            made_on: Default::default(),
+        }
+    }
+
+    /// Adds to the dependencies the mods written into `game` that the
+    /// changes of `ws` were made on; returns how many were added.
+    pub fn fill_suggested(
+        &mut self,
+        game: &GameInstance,
+        ws: &Workspace,
+        keys: Option<&[ResourceKey]>,
+        own_id: &str,
+    ) -> Result<usize, String> {
+        let suggested =
+            mods::suggested_dependencies(game, ws, keys, own_id).map_err(|e| e.to_string())?;
+        let have: Vec<String> = id_lines(&self.depends)
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect();
+        let mut added = 0;
+        for (id, condition) in suggested.depends {
+            if have.contains(&id) {
+                continue;
+            }
+            if !self.depends.is_empty() && !self.depends.ends_with('\n') {
+                self.depends.push('\n');
+            }
+            self.depends += &format!("{id} {condition}");
+            added += 1;
+        }
+        Ok(added)
+    }
+
+    /// The fields in a grid of two columns; `edition` is this game's
+    /// edition, which a button puts in the list of editions.
+    pub fn ui(&mut self, ui: &mut egui::Ui, edition: Option<&str>) {
+        let lines = |ui: &mut egui::Ui, text: &mut String, hint: &str| {
+            ui.add(
+                egui::TextEdit::multiline(text)
+                    .desired_rows(2)
+                    .hint_text(hint)
+                    .font(egui::TextStyle::Monospace),
+            );
+        };
+        egui::Grid::new("mod-relations-form")
+            .num_columns(2)
+            .spacing([8.0, 4.0])
+            .show(ui, |ui| {
+                ui.label(tr("mods.field_depends"))
+                    .on_hover_text(tr("mods.field_depends_hint"));
+                lines(ui, &mut self.depends, "new-new-york >=1.1 <2");
+                ui.end_row();
+                ui.label(tr("mods.field_recommends"));
+                lines(ui, &mut self.recommends, "hd-textures *");
+                ui.end_row();
+                ui.label(tr("mods.field_incompatible"))
+                    .on_hover_text(tr("mods.field_incompatible_hint"));
+                lines(ui, &mut self.incompatible, "old-nights <3: …");
+                ui.end_row();
+                ui.label(tr("mods.field_load_after"))
+                    .on_hover_text(tr("mods.field_order_hint"));
+                ui.add(egui::TextEdit::singleline(&mut self.load_after).hint_text("id, id"));
+                ui.end_row();
+                ui.label(tr("mods.field_load_before"))
+                    .on_hover_text(tr("mods.field_order_hint"));
+                ui.add(egui::TextEdit::singleline(&mut self.load_before).hint_text("id, id"));
+                ui.end_row();
+                ui.label(tr("mods.field_editions"))
+                    .on_hover_text(tr("mods.field_editions_hint"));
+                ui.horizontal(|ui| {
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.editions)
+                            .hint_text(tr("mods.edition_any")),
+                    );
+                    if let Some(edition) = edition
+                        && ui
+                            .small_button(tr("mods.only_this_edition"))
+                            .on_hover_text(trf(
+                                "mods.only_this_edition_hint",
+                                &[("edition", &edition)],
+                            ))
+                            .clicked()
+                    {
+                        self.editions = edition.to_owned();
+                    }
+                });
+                ui.end_row();
+                ui.label(tr("mods.field_requires_manager"))
+                    .on_hover_text(tr("mods.field_requires_manager_hint"));
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.requires_manager)
+                        .hint_text(mods::default_requires_manager()),
+                );
+                ui.end_row();
+            });
+    }
+}
 
 /// Metadata typed into the build form.
 pub(crate) struct BuildForm {
@@ -18,6 +191,7 @@ pub(crate) struct BuildForm {
     pub description: String,
     pub url: String,
     pub preview: Option<PathBuf>,
+    pub relations: RelationsForm,
 }
 
 impl Default for BuildForm {
@@ -30,6 +204,7 @@ impl Default for BuildForm {
             description: String::new(),
             url: String::new(),
             preview: None,
+            relations: RelationsForm::default(),
         }
     }
 }
@@ -52,7 +227,19 @@ impl BuildForm {
             author: self.author.trim().to_owned(),
             description: self.description.clone(),
             url: Some(self.url.trim().to_owned()).filter(|u| !u.is_empty()),
+            relations: self.relations.relations(),
         }
+    }
+
+    /// [`Self::info`] with the dependencies on the mods written into the
+    /// game that the changes were made on.
+    fn info_for(&self, game: Option<&GameInstance>, ws: &Workspace) -> Result<ModInfo, String> {
+        let mut info = self.info();
+        if let Some(game) = game {
+            mods::add_suggested_dependencies(&mut info, game, ws, None)
+                .map_err(|e| e.to_string())?;
+        }
+        Ok(info)
     }
 }
 
@@ -119,6 +306,34 @@ impl ModsPanel {
                         });
                         ui.end_row();
                     });
+                let edition = self
+                    .game
+                    .as_ref()
+                    .and_then(|g| doctor_toolkit::edition::game_edition(g.root()));
+                egui::CollapsingHeader::new(tr("mods.relations_title"))
+                    .id_salt("mods-build-relations")
+                    .show(ui, |ui| {
+                        ui.label(
+                            egui::RichText::new(tr("mods.relations_hint"))
+                                .weak()
+                                .small(),
+                        );
+                        self.build.relations.ui(ui, edition.as_deref());
+                        if let Some(game) = self.game.clone()
+                            && ui
+                                .button(tr("mods.fill_depends"))
+                                .on_hover_text(tr("mods.fill_depends_hint"))
+                                .clicked()
+                        {
+                            let own = self.build.info().id;
+                            self.message = Some(
+                                match self.build.relations.fill_suggested(&game, ws, None, &own) {
+                                    Ok(n) => (trf("mods.filled_depends", &[("count", &n)]), false),
+                                    Err(e) => (e, true),
+                                },
+                            );
+                        }
+                    });
                 let ready = !self.build.name.trim().is_empty() && self.running.is_none();
                 ui.horizontal(|ui| {
                     if ui
@@ -158,7 +373,10 @@ impl ModsPanel {
     }
 
     fn build_file(&self, ws: &Workspace, out: &std::path::Path) -> Result<String, String> {
-        let info = self.build.info();
+        let info = self
+            .build
+            .info_for(self.game.as_deref(), ws)
+            .map_err(|e| trf("mods.cannot_build", &[("error", &e)]))?;
         let preview = self.load_preview()?;
         let report = mods::build_from_workspace(ws, &info, None, preview.as_ref(), out)
             .map_err(|e| trf("mods.cannot_build", &[("error", &e)]))?;
@@ -195,7 +413,10 @@ impl ModsPanel {
         let (Some(game), Some(manager)) = (self.game.clone(), self.manager.as_mut()) else {
             return Err(tr("mods.no_game_open").to_owned());
         };
-        let info = self.build.info();
+        let info = self
+            .build
+            .info_for(Some(&game), ws)
+            .map_err(|e| trf("mods.cannot_install_workspace", &[("error", &e)]))?;
         let report = manager
             .install_workspace(&game, ws, &info, None)
             .map_err(|e| trf("mods.cannot_install_workspace", &[("error", &e)]))?;
@@ -231,5 +452,42 @@ mod tests {
         assert_eq!(info.version, "1.0");
         assert_eq!(info.url, None);
         mods::validate_id(&info.id).unwrap();
+        assert_eq!(info.relations, Relations::default());
+    }
+
+    #[test]
+    fn the_relations_form_reads_what_is_typed() {
+        let form = RelationsForm {
+            depends: "new-new-york >=1.1 <2\n\n  base\n".into(),
+            recommends: "hd *".into(),
+            incompatible: "old-nights <3: changes the same lamps\ndark ^1.0\nugly".into(),
+            load_after: "a, b c".into(),
+            load_before: String::new(),
+            editions: "1.0.789.0, 1.0.764.0".into(),
+            requires_manager: "none".into(),
+        };
+        let r = form.relations();
+        assert_eq!(r.depends["new-new-york"], ">=1.1 <2");
+        assert_eq!(r.depends["base"], "*");
+        assert_eq!(r.recommends["hd"], "*");
+        assert_eq!(r.incompatible["old-nights"].versions, "<3");
+        assert_eq!(
+            r.incompatible["old-nights"].reason,
+            "changes the same lamps"
+        );
+        assert_eq!(r.incompatible["dark"].versions, "^1.0");
+        assert_eq!(r.incompatible["ugly"].versions, "*");
+        assert_eq!(r.load_after, ["a", "b", "c"]);
+        assert!(r.load_before.is_empty());
+        assert_eq!(r.editions, ["1.0.789.0", "1.0.764.0"]);
+        assert_eq!(r.requires_manager.as_deref(), Some(""));
+        let empty = RelationsForm::default().relations();
+        assert!(empty.editions.is_empty(), "any edition by default");
+        assert_eq!(empty.requires_manager, None);
+        let any = RelationsForm {
+            editions: "any".into(),
+            ..RelationsForm::default()
+        };
+        assert!(any.relations().editions.is_empty());
     }
 }

@@ -4,17 +4,128 @@
 
 use egui::RichText;
 
+use egui::Color32;
+
+use doctor_toolkit::mods::ModManager;
 use doctor_toolkit::mods::integrity::Condition;
-use doctor_toolkit::mods::manager::CompatIssue;
+use doctor_toolkit::mods::manager::{
+    CompatIssue, InstalledMod, Relation, RelationKind, RelationState,
+};
+use doctor_toolkit::mods::version::Condition as Versions;
 
 use crate::i18n::{tr, trf, trn};
-use crate::state::ModState;
+use crate::state::{ModState, versions_text};
 use crate::{BAD, GOOD, ModsPanel, WARN, cards, condition_text, widgets};
 
 /// What the buttons of the selected mod ask for.
 enum Ask {
     Toggle(String, bool),
     Remove(String),
+    EnableWith(String),
+}
+
+/// A relation of a mod in words, with the colour of its state.
+pub(crate) fn relation_words(r: &Relation) -> (String, Color32) {
+    let mut name = r.name.clone().unwrap_or_else(|| r.id.clone());
+    if let Ok(c) = Versions::parse(&r.versions)
+        && !c.is_any()
+    {
+        name = format!("{name} {}", versions_text(&c));
+    }
+    let kind = tr(match r.kind {
+        RelationKind::Depends => "mods.rel_depends",
+        RelationKind::Recommends => "mods.rel_recommends",
+        RelationKind::Incompatible => "mods.rel_incompatible",
+        RelationKind::LoadAfter => "mods.rel_load_after",
+        RelationKind::LoadBefore => "mods.rel_load_before",
+        RelationKind::NeededBy => "mods.rel_needed_by",
+    });
+    let gray = Color32::GRAY;
+    let (state, color) = match (&r.kind, &r.state) {
+        (RelationKind::Incompatible, RelationState::Clashing) => {
+            (tr("mods.rel_both_on").to_owned(), BAD)
+        }
+        (RelationKind::Incompatible, RelationState::Version(found)) => {
+            (trf("mods.rel_other_version", &[("version", found)]), GOOD)
+        }
+        (RelationKind::Incompatible, _) => (tr("mods.rel_not_on").to_owned(), GOOD),
+        (RelationKind::NeededBy, RelationState::Off) => (tr("mods.rel_off").to_owned(), gray),
+        (RelationKind::NeededBy, _) => (tr("mods.rel_on").to_owned(), GOOD),
+        (_, RelationState::Fine) => (tr("mods.rel_fine").to_owned(), GOOD),
+        (RelationKind::LoadAfter | RelationKind::LoadBefore, RelationState::Missing) => {
+            (tr("mods.rel_rule_idle").to_owned(), gray)
+        }
+        (kind, state) => {
+            let color = if *kind == RelationKind::Depends {
+                BAD
+            } else {
+                WARN
+            };
+            let text = match state {
+                RelationState::Missing => tr("mods.rel_missing").to_owned(),
+                RelationState::Off => tr("mods.rel_off").to_owned(),
+                RelationState::Version(found) => trf("mods.rel_version", &[("version", found)]),
+                _ => tr("mods.rel_out_of_order").to_owned(),
+            };
+            (text, color)
+        }
+    };
+    let mut text = format!("{kind} {name}: {state}");
+    if !r.reason.is_empty() {
+        text += &format!(" ({})", r.reason);
+    }
+    (text, color)
+}
+
+/// The "Dependencies" part of the selected mod: what it needs, recommends,
+/// does not work with, the rules of its order, the mods that need it, the
+/// editions and the mod manager it is made for. Returns whether a button
+/// to turn on what it needs was pressed.
+fn dependencies(ui: &mut egui::Ui, manager: &ModManager, m: &InstalledMod, idle: bool) -> bool {
+    let relations = manager.relations(&m.id);
+    let editions = &m.manifest.game.editions;
+    let required = m.manifest.requires_manager.as_deref();
+    if relations.is_empty() && editions.is_empty() && required.is_none() {
+        return false;
+    }
+    ui.add_space(6.0);
+    ui.label(RichText::new(tr("mods.dependencies")).strong());
+    for r in &relations {
+        let (text, color) = relation_words(r);
+        ui.horizontal_wrapped(|ui| {
+            ui.colored_label(color, "●");
+            ui.add(egui::Label::new(text).wrap());
+        });
+    }
+    if !editions.is_empty() {
+        ui.label(
+            RichText::new(trf("mods.tested_on", &[("editions", &editions.join(", "))])).weak(),
+        );
+    }
+    if let Some(required) = required {
+        let shown =
+            Versions::parse(required).map_or_else(|_| required.to_owned(), |c| versions_text(&c));
+        ui.label(RichText::new(trf("mods.needs_manager", &[("versions", &shown)])).weak());
+    }
+    let off = manager.disabled_dependencies(&m.id);
+    !off.is_empty()
+        && ui
+            .add_enabled(idle, egui::Button::new(tr("mods.enable_needed")))
+            .on_hover_text(trf(
+                "mods.enable_needed_hint",
+                &[(
+                    "mods",
+                    &off.iter()
+                        .map(|id| {
+                            manager
+                                .get(id)
+                                .map_or(id.as_str(), |x| x.manifest.name.as_str())
+                        })
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                )],
+            ))
+            .clicked()
 }
 
 impl ModsPanel {
@@ -79,6 +190,9 @@ impl ModsPanel {
                             ui.add_space(4.0);
                             ui.add(egui::Label::new(&m.manifest.description).wrap());
                         }
+                        if dependencies(ui, manager, m, idle) {
+                            ask = Some(Ask::EnableWith(id.clone()));
+                        }
                         ui.add_space(6.0);
                         ui.horizontal(|ui| {
                             let label = if m.enabled {
@@ -107,6 +221,7 @@ impl ModsPanel {
         match ask {
             Some(Ask::Toggle(id, on)) => self.set_enabled(&ctx, &id, on),
             Some(Ask::Remove(id)) => self.ask_remove(&id),
+            Some(Ask::EnableWith(id)) => self.enable_with_dependencies(&ctx, &id),
             None => {}
         }
     }

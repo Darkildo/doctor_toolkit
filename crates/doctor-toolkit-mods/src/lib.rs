@@ -25,6 +25,8 @@ mod cards;
 mod details;
 mod dialogs;
 
+pub use build::RelationsForm;
+
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, channel};
@@ -40,6 +42,7 @@ use doctor_toolkit::mods::integrity::{self, Condition, IntegrityOptions, Integri
 use doctor_toolkit::mods::manager::{
     Clash, CompatIssue, Conflict, ModApplyOptions, RemovedMod, SetEntry,
 };
+use doctor_toolkit::mods::order::{self, Rule, Strength};
 use doctor_toolkit::workspace::{ApplyReport, DeployStatus, StreamAction, StreamState, Workspace};
 
 pub const GOOD: Color32 = Color32::from_rgb(0x60, 0xc0, 0x60);
@@ -567,6 +570,14 @@ impl ModsPanel {
             .map_or_else(|| id.to_owned(), |m| m.manifest.name.clone())
     }
 
+    /// The names of mods `ids`, joined by commas.
+    fn names_of(&self, ids: &[String]) -> String {
+        ids.iter()
+            .map(|id| self.name_of(id))
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+
     // ------------------------------------------------------------- actions
 
     /// Installs mod files (`.zip`, `.vpat`) at once.
@@ -723,12 +734,13 @@ impl ModsPanel {
         );
     }
 
-    /// A change of the order or the enabled mods that can be undone.
+    /// A change of the order or the enabled mods that can be undone. `work`
+    /// gives the message and whether it warns of something.
     fn rearrange(
         &mut self,
         ctx: &egui::Context,
         label: String,
-        work: impl FnOnce(&mut ModManager) -> doctor_toolkit::Result<String> + Send + 'static,
+        work: impl FnOnce(&mut ModManager) -> doctor_toolkit::Result<(String, bool)> + Send + 'static,
     ) {
         let Some(before) = self.manager.as_ref().map(ModManager::arrangement) else {
             return;
@@ -739,9 +751,10 @@ impl ModsPanel {
             false,
             JobKind::Quiet,
             move |_, manager, _| {
-                let message = work(manager).map_err(|e| e.to_string())?;
+                let (message, warning) = work(manager).map_err(|e| e.to_string())?;
                 Ok(Outcome {
                     message,
+                    warning,
                     undo: Some(Undo {
                         label,
                         kind: UndoKind::Arrangement(before),
@@ -752,8 +765,32 @@ impl ModsPanel {
         );
     }
 
-    /// Turns mod `id` on or off.
+    /// Turns mod `id` on or off. Turning on a mod that needs mods which are
+    /// off asks whether to turn them on too; turning off a mod that enabled
+    /// mods need asks first.
     pub fn set_enabled(&mut self, ctx: &egui::Context, id: &str, on: bool) {
+        if let Some(manager) = &self.manager {
+            let list = if on {
+                manager.disabled_dependencies(id)
+            } else {
+                manager.dependents(id)
+            };
+            if !list.is_empty() {
+                let (id, name) = (id.to_owned(), self.name_of(id));
+                let names = self.names_of(&list);
+                self.dialog = Some(if on {
+                    dialogs::Dialog::EnableNeeded { id, name, names }
+                } else {
+                    dialogs::Dialog::DisableNeeded { id, name, names }
+                });
+                return;
+            }
+        }
+        self.switch(ctx, id, on);
+    }
+
+    /// Turns mod `id` on or off without asking.
+    pub(crate) fn switch(&mut self, ctx: &egui::Context, id: &str, on: bool) {
         let name = self.name_of(id);
         let label = if on {
             trf("mods.undo_on", &[("name", &name)])
@@ -762,16 +799,124 @@ impl ModsPanel {
         };
         let id = id.to_owned();
         self.rearrange(ctx, label, move |m| {
-            m.set_enabled(&id, on).map(|()| String::new())
+            m.set_enabled(&id, on).map(|()| (String::new(), false))
         });
     }
 
-    /// Moves mod `id` to `position` in the load order.
+    /// Turns on mod `id` and the installed mods it needs.
+    pub fn enable_with_dependencies(&mut self, ctx: &egui::Context, id: &str) {
+        let name = self.name_of(id);
+        let label = trf("mods.undo_on", &[("name", &name)]);
+        let id = id.to_owned();
+        self.rearrange(ctx, label, move |m| {
+            let deps = m.enable_with_dependencies(&id)?;
+            let names: Vec<String> = deps
+                .iter()
+                .map(|d| m.get(d).map_or(d.clone(), |x| x.manifest.name.clone()))
+                .collect();
+            Ok((
+                trf(
+                    "mods.enabled_with",
+                    &[("name", &name), ("mods", &names.join(", "))],
+                ),
+                false,
+            ))
+        });
+    }
+
+    /// Moves mod `id` to `position` in the load order. A move that would put
+    /// a mod before a mod it needs is refused with the reason; one against
+    /// a soft rule (`load_after`, `load_before`) is made with a warning.
     pub fn move_mod(&mut self, ctx: &egui::Context, id: &str, position: usize) {
+        let mut warning = String::new();
+        if let Some(manager) = &self.manager {
+            let rules = manager.rules();
+            let ids: Vec<&str> = manager.mods().iter().map(|m| m.id.as_str()).collect();
+            let before = order::broken(&ids, &rules);
+            let broken: Vec<&Rule> = order::broken_by_move(&ids, &rules, id, position)
+                .into_iter()
+                .filter(|r| !before.contains(r))
+                .collect();
+            if let Some(rule) = broken.iter().find(|r| r.strength == Strength::Hard) {
+                self.message = Some((
+                    trf(
+                        "mods.move_refused",
+                        &[
+                            ("first", &self.name_of(&rule.first)),
+                            ("then", &self.name_of(&rule.then)),
+                        ],
+                    ),
+                    true,
+                ));
+                return;
+            }
+            warning = broken
+                .iter()
+                .map(|r| self.rule_words(r))
+                .collect::<Vec<_>>()
+                .join(" ");
+        }
         let label = trf("mods.undo_move", &[("name", &self.name_of(id))]);
         let id = id.to_owned();
         self.rearrange(ctx, label, move |m| {
-            m.move_mod(&id, position).map(|()| String::new())
+            m.move_mod(&id, position)?;
+            let warns = !warning.is_empty();
+            let text = if warns {
+                trf("mods.move_soft", &[("rules", &warning)])
+            } else {
+                String::new()
+            };
+            Ok((text, warns))
+        });
+    }
+
+    /// A soft rule in words.
+    fn rule_words(&self, rule: &Rule) -> String {
+        let (first, then) = (self.name_of(&rule.first), self.name_of(&rule.then));
+        if rule.declared_by == rule.then {
+            trf("mods.rule_after", &[("mod", &then), ("other", &first)])
+        } else {
+            trf("mods.rule_before", &[("mod", &first), ("other", &then)])
+        }
+    }
+
+    /// Sorts the load order by the rules of the mods: dependencies first,
+    /// then `load_after` and `load_before`, keeping the present order where
+    /// they allow.
+    pub fn sort(&mut self, ctx: &egui::Context) {
+        let Some(manager) = &self.manager else { return };
+        let rules = manager.rules();
+        let ids: Vec<&str> = manager.mods().iter().map(|m| m.id.as_str()).collect();
+        let dropped = match order::sort(&ids, &rules) {
+            Ok(sorted) => sorted
+                .dropped
+                .iter()
+                .map(|r| self.rule_words(r))
+                .collect::<Vec<_>>(),
+            Err(cycle) => {
+                self.message = Some((
+                    trf(
+                        "mods.sort_cycle",
+                        &[("mods", &self.names_of(&cycle).replace(", ", " → "))],
+                    ),
+                    true,
+                ));
+                return;
+            }
+        };
+        let label = tr("mods.undo_sort").to_owned();
+        self.rearrange(ctx, label, move |m| {
+            let report = m.sort(false)?;
+            let mut text = if report.changed {
+                tr("mods.sorted").to_owned()
+            } else {
+                tr("mods.sorted_already").to_owned()
+            };
+            if !dropped.is_empty() {
+                text += " ";
+                text += &trf("mods.sort_dropped", &[("rules", &dropped.join(" "))]);
+            }
+            Ok((text, !dropped.is_empty()))
         });
     }
 
@@ -782,11 +927,14 @@ impl ModsPanel {
         self.rearrange(ctx, label, move |m| {
             let missing = m.use_set(&set)?;
             Ok(if missing.is_empty() {
-                trf("mods.set_used", &[("name", &set)])
+                (trf("mods.set_used", &[("name", &set)]), false)
             } else {
-                trf(
-                    "mods.set_used_missing",
-                    &[("name", &set), ("mods", &missing.join(", "))],
+                (
+                    trf(
+                        "mods.set_used_missing",
+                        &[("name", &set), ("mods", &missing.join(", "))],
+                    ),
+                    false,
                 )
             })
         });
@@ -885,11 +1033,17 @@ impl ModsPanel {
         self.dialog = Some(dialogs::Dialog::Write);
     }
 
-    /// Asks before removing mod `id`.
+    /// Asks before removing mod `id`, naming the enabled mods that need it.
     pub fn ask_remove(&mut self, id: &str) {
+        let needed_by = self
+            .manager
+            .as_ref()
+            .map(|m| self.names_of(&m.dependents(id)))
+            .unwrap_or_default();
         self.dialog = Some(dialogs::Dialog::Remove {
             id: id.to_owned(),
             name: self.name_of(id),
+            needed_by,
         });
     }
 
@@ -992,6 +1146,13 @@ impl ModsPanel {
                     .pick_files()
             {
                 self.install_files(ui.ctx(), paths);
+            }
+            if has_mods
+                && action_button(ui, idle, tr("mods.sort"), Prominence::Normal)
+                    .on_hover_text(tr("mods.sort_hint"))
+                    .clicked()
+            {
+                self.sort(ui.ctx());
             }
             if has_mods || !self.overview.sets.is_empty() {
                 self.set_choice(ui, idle);

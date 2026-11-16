@@ -605,6 +605,17 @@ impl Project {
             author: p.author.clone(),
             description: p.description.clone(),
             url: (!p.url.is_empty()).then(|| p.url.clone()),
+            // The mods the project needs become dependencies of any version.
+            relations: crate::mods::Relations {
+                depends: self
+                    .config
+                    .dependencies
+                    .mods
+                    .iter()
+                    .map(|id| (id.clone(), "*".to_owned()))
+                    .collect(),
+                ..Default::default()
+            },
         }
     }
 

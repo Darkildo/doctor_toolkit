@@ -13,6 +13,15 @@
 //! and new streams ([`ModManifest::streams`]: table-of-contents entries). A
 //! mod without them is still written as version 1, which older programs read.
 //!
+//! Format version 3 adds relations between mods and the game: the mod
+//! version is semantic ([`version`]), `game.editions` lists the editions of
+//! the game the mod was tested on, `requires_manager` the versions of this
+//! program it needs, `depends`, `recommends` and `incompatible` name other
+//! mods with conditions on their versions, and `load_after`/`load_before`
+//! are soft rules of the load order ([`order`]). A mod that depends on
+//! another is checked against the game with that mod applied: a patch on
+//! top of a mod.
+//!
 //! ```text
 //! example.zip
 //! ├── mod.json                 manifest: metadata and resources
@@ -38,10 +47,12 @@
 
 pub mod integrity;
 pub mod manager;
+pub mod order;
 pub mod package;
+pub mod version;
 pub mod vpat;
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -57,10 +68,13 @@ pub use package::ModArchive;
 
 /// Value of the `format` field of `mod.json`.
 pub const FORMAT: &str = "doctor-toolkit-mod";
-/// Current version of the mod format: 2 added new resources and new streams.
-pub const FORMAT_VERSION: u32 = 2;
+/// Current version of the mod format: 2 added new resources and new
+/// streams, 3 dependencies, editions and rules of the load order.
+pub const FORMAT_VERSION: u32 = 3;
 /// The first format version that can add resources and streams.
 pub const ADDING_VERSION: u32 = 2;
+/// The first format version with relations: dependencies, editions, load order.
+pub const RELATIONS_VERSION: u32 = 3;
 /// Name of the manifest inside a mod.
 pub const MANIFEST_NAME: &str = "mod.json";
 /// Directory of the payloads inside a mod.
@@ -94,6 +108,12 @@ pub const MAX_NEW_STREAMS: usize = 10_000;
 const MAX_STREAM_TOCS: usize = 64;
 /// Largest alignment of an added resource (the game uses up to 0x1000).
 const MAX_ALIGNMENT: u32 = 0x1_0000;
+/// Most mods one list of relations (`depends`, `load_after`…) may name.
+const MAX_RELATIONS: usize = 256;
+/// Most editions one mod may list.
+const MAX_EDITIONS: usize = 32;
+const MAX_EDITION: usize = 64;
+const MAX_REASON: usize = 1_000;
 
 /// `mod.json`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -107,7 +127,8 @@ pub struct ModManifest {
     pub id: String,
     /// Name shown to players.
     pub name: String,
-    /// Version of the mod, free text such as `1.2`.
+    /// Version of the mod: free text such as `1.2` up to format version 2,
+    /// a semantic version from version 3 ([`version::parse_version`]).
     pub version: String,
     #[serde(default)]
     pub author: String,
@@ -129,6 +150,86 @@ pub struct ModManifest {
     /// Where the mod came from when it was not built as a mod, e.g. `vpat`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub converted_from: Option<String>,
+    /// Versions of the mod manager the mod needs, e.g. `>=0.0.5` (format version 3).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requires_manager: Option<String>,
+    /// Mods that must be installed, enabled and loaded before this one: id →
+    /// condition on the version (format version 3).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub depends: BTreeMap<String, String>,
+    /// Mods that go well with this one: id → condition. Only a hint.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub recommends: BTreeMap<String, String>,
+    /// Mods that must not be enabled together with this one.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub incompatible: BTreeMap<String, Incompatible>,
+    /// Mods this one is loaded after when they are installed (a soft rule).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub load_after: Vec<String>,
+    /// Mods this one is loaded before when they are installed (a soft rule).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub load_before: Vec<String>,
+}
+
+/// A mod another one does not work with: the versions concerned and why.
+/// Written as `"id": {"versions": ">=2", "reason": "…"}` or, without a
+/// reason, as `"id": ">=2"`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(from = "IncompatibleForm", into = "IncompatibleForm")]
+pub struct Incompatible {
+    /// Condition on the version of the other mod; `*` for every version.
+    pub versions: String,
+    pub reason: String,
+}
+
+impl Default for Incompatible {
+    fn default() -> Self {
+        Self {
+            versions: "*".into(),
+            reason: String::new(),
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(untagged)]
+enum IncompatibleForm {
+    Short(String),
+    Full {
+        #[serde(default = "any_version")]
+        versions: String,
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        reason: String,
+    },
+}
+
+fn any_version() -> String {
+    "*".into()
+}
+
+impl From<IncompatibleForm> for Incompatible {
+    fn from(form: IncompatibleForm) -> Self {
+        match form {
+            IncompatibleForm::Short(versions) => Self {
+                versions,
+                reason: String::new(),
+            },
+            IncompatibleForm::Full { versions, reason } => Self { versions, reason },
+        }
+    }
+}
+
+impl From<Incompatible> for IncompatibleForm {
+    fn from(i: Incompatible) -> Self {
+        if i.reason.is_empty() {
+            Self::Short(i.versions)
+        } else {
+            Self::Full {
+                versions: i.versions,
+                reason: i.reason,
+            }
+        }
+    }
 }
 
 /// The game a mod was made for.
@@ -141,6 +242,10 @@ pub struct ModGame {
     pub executable_size: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub executable_sha256: Option<String>,
+    /// Editions the mod was tested on, as [`crate::edition`] names them
+    /// (`1.0.789.0`); empty: any edition (format version 3).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub editions: Vec<String>,
 }
 
 impl ModGame {
@@ -150,7 +255,24 @@ impl ModGame {
             profile: fingerprint.profile.clone(),
             executable_size: known.then_some(fingerprint.executable_size),
             executable_sha256: known.then(|| fingerprint.executable_sha256.clone()),
+            editions: Vec::new(),
         }
+    }
+
+    /// The edition the mod was made on, when it is a known one (`1.0.789.0`).
+    pub fn made_on_edition(&self) -> Option<&'static str> {
+        let known = crate::edition::known_edition(
+            self.executable_size?,
+            self.executable_sha256.as_deref()?,
+        )?;
+        Some(known.version())
+    }
+
+    /// Whether the game of `edition` (as [`crate::edition::game_edition`]
+    /// gives it) is one the mod was tested on; always when the mod lists none.
+    pub fn fits_edition(&self, edition: Option<&str>) -> bool {
+        self.editions.is_empty()
+            || edition.is_some_and(|e| self.editions.iter().any(|x| edition_matches(x, e)))
     }
 
     /// Whether the executable of `game` is the one the mod was made on;
@@ -196,6 +318,57 @@ pub struct ModInfo {
     pub author: String,
     pub description: String,
     pub url: Option<String>,
+    /// Dependencies, editions and the load order (format version 3).
+    pub relations: Relations,
+}
+
+/// What a mod being built says about other mods and the game (format
+/// version 3). With every list empty and `requires_manager` set to
+/// `Some("")`, the mod is written in an older format.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Relations {
+    /// id → condition on its version.
+    pub depends: BTreeMap<String, String>,
+    pub recommends: BTreeMap<String, String>,
+    pub incompatible: BTreeMap<String, Incompatible>,
+    pub load_after: Vec<String>,
+    pub load_before: Vec<String>,
+    /// Editions the mod was tested on; empty: any edition (the resources
+    /// are checked one by one). [`ModGame::made_on_edition`] gives the
+    /// edition of the game the mod is made on, for "only this edition".
+    pub editions: Vec<String>,
+    /// Condition on the version of the mod manager; `None`: this
+    /// program's version or newer ([`default_requires_manager`]); `Some("")`: none.
+    pub requires_manager: Option<String>,
+    /// Replaced resources whose change was made on the data of a dependency
+    /// rather than on the game's original: that data becomes the
+    /// resource's `original` ([`add_suggested_dependencies`] fills it in).
+    pub made_on: BTreeMap<ResourceKey, Blob>,
+}
+
+impl Relations {
+    /// No relations at all: the mod is written in format version 1 or 2.
+    pub fn none() -> Self {
+        Self {
+            requires_manager: Some(String::new()),
+            ..Self::default()
+        }
+    }
+}
+
+/// The condition on the mod manager a built mod gets by default: the version
+/// of this program or newer, the first that reads format version 3.
+pub fn default_requires_manager() -> String {
+    format!(">={}", version::manager_version())
+}
+
+/// Whether the edition `entry` of a mod's list names the edition `game`
+/// (`1.0.789.0`): the same version, or the full id of a known edition.
+pub fn edition_matches(entry: &str, game: &str) -> bool {
+    entry.eq_ignore_ascii_case(game)
+        || crate::edition::KNOWN
+            .iter()
+            .any(|k| k.id.eq_ignore_ascii_case(entry) && k.version() == game)
 }
 
 impl ModManifest {
@@ -217,17 +390,87 @@ impl ModManifest {
             resources: Vec::new(),
             streams: Vec::new(),
             converted_from: None,
+            requires_manager: None,
+            depends: BTreeMap::new(),
+            recommends: BTreeMap::new(),
+            incompatible: BTreeMap::new(),
+            load_after: Vec::new(),
+            load_before: Vec::new(),
         }
     }
 
     /// The lowest format version that can hold this manifest: 1 for a mod
-    /// that only replaces resources, 2 when it adds resources or streams.
+    /// that only replaces resources, 2 when it adds resources or streams, 3
+    /// when it has relations ([`Self::has_relations`]).
     pub fn required_version(&self) -> u32 {
-        if self.streams.is_empty() && !self.resources.iter().any(ModResource::is_added) {
+        if self.has_relations() {
+            RELATIONS_VERSION
+        } else if self.streams.is_empty() && !self.resources.iter().any(ModResource::is_added) {
             1
         } else {
             ADDING_VERSION
         }
+    }
+
+    /// Whether the manifest has a field of format version 3: editions, a
+    /// condition on the mod manager, dependencies or rules of the load order.
+    pub fn has_relations(&self) -> bool {
+        !self.game.editions.is_empty()
+            || self.requires_manager.is_some()
+            || !self.depends.is_empty()
+            || !self.recommends.is_empty()
+            || !self.incompatible.is_empty()
+            || !self.load_after.is_empty()
+            || !self.load_before.is_empty()
+    }
+
+    /// The version of the mod as a semantic version, if it reads as one
+    /// (always from format version 3).
+    pub fn semver(&self) -> Option<semver::Version> {
+        version::parse_version(&self.version).ok()
+    }
+
+    /// Sets the relations of `relations` (format version 3). No editions
+    /// listed means any edition: a mod of data fits wherever its resources do.
+    pub fn set_relations(&mut self, relations: &Relations) {
+        self.depends = relations.depends.clone();
+        self.recommends = relations.recommends.clone();
+        self.incompatible = relations.incompatible.clone();
+        self.load_after = relations.load_after.clone();
+        self.load_before = relations.load_before.clone();
+        self.game.editions = relations.editions.clone();
+        self.requires_manager = match &relations.requires_manager {
+            Some(text) if text.trim().is_empty() => None,
+            Some(text) => Some(text.trim().to_owned()),
+            None => Some(default_requires_manager()),
+        };
+    }
+
+    /// Remarks that do not stop the mod: editions this program does not know.
+    pub fn warnings(&self) -> Vec<String> {
+        let known = || {
+            crate::edition::KNOWN
+                .iter()
+                .map(|k| k.version())
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        self.game
+            .editions
+            .iter()
+            .filter(|e| {
+                !crate::edition::KNOWN
+                    .iter()
+                    .any(|k| k.version().eq_ignore_ascii_case(e) || k.id.eq_ignore_ascii_case(e))
+            })
+            .map(|e| {
+                format!(
+                    "mod.json: the edition `{}` is not known to this program (known: {})",
+                    e.escape_debug(),
+                    known()
+                )
+            })
+            .collect()
     }
 
     /// Parses and validates `mod.json`.
@@ -249,7 +492,7 @@ impl ModManifest {
         {
             return Err(Error::mod_error(format!(
                 "the mod uses format version {version}; this program reads up to \
-                 {FORMAT_VERSION}. Update doctor_toolkit"
+                 {FORMAT_VERSION}. Update Open Mod Manager (doctor_toolkit) to install it"
             )));
         }
         let manifest: Self =
@@ -303,12 +546,24 @@ impl ModManifest {
         {
             return bad("`game.executable_sha256` is not a SHA-256".into());
         }
-        if self.format_version < self.required_version() {
+        if self.format_version < ADDING_VERSION
+            && (!self.streams.is_empty() || self.resources.iter().any(ModResource::is_added))
+        {
             return bad(format!(
                 "format version {} cannot add resources or streams; version {ADDING_VERSION} \
                  is needed",
                 self.format_version
             ));
+        }
+        if self.format_version < RELATIONS_VERSION && self.has_relations() {
+            return bad(format!(
+                "format version {} cannot have editions, dependencies or rules of the load \
+                 order; version {RELATIONS_VERSION} is needed",
+                self.format_version
+            ));
+        }
+        if self.format_version >= RELATIONS_VERSION {
+            self.validate_relations()?;
         }
         if self.resources.is_empty() && self.streams.is_empty() {
             return bad("the mod replaces no resources".into());
@@ -385,6 +640,101 @@ impl ModManifest {
         if total > MAX_TOTAL_SIZE {
             return bad(format!(
                 "the payloads add up to {total} bytes; at most {MAX_TOTAL_SIZE} are allowed"
+            ));
+        }
+        Ok(())
+    }
+
+    /// Checks the fields of format version 3.
+    fn validate_relations(&self) -> Result<()> {
+        let bad = |why: String| Err(Error::mod_error(format!("mod.json: {why}")));
+        version::parse_version(&self.version)
+            .map_err(|e| Error::mod_error(format!("mod.json: `version`: {e}")))?;
+        let condition = |field: &str, text: &str| {
+            version::Condition::parse(text)
+                .map(|_| ())
+                .map_err(|e| Error::mod_error(format!("mod.json: `{field}`: {e}")))
+        };
+        if let Some(text) = &self.requires_manager {
+            condition("requires_manager", text)?;
+        }
+        if self.game.editions.len() > MAX_EDITIONS {
+            return bad(format!("more than {MAX_EDITIONS} editions"));
+        }
+        let mut editions = HashSet::new();
+        for edition in &self.game.editions {
+            if edition.is_empty()
+                || edition.len() > MAX_EDITION
+                || !edition.bytes().all(|b| b.is_ascii_graphic())
+            {
+                return bad(format!(
+                    "bad edition `{}` in `game.editions`",
+                    edition.escape_debug()
+                ));
+            }
+            if !editions.insert(edition.to_ascii_lowercase()) {
+                return bad(format!("the edition {edition} is listed twice"));
+            }
+        }
+        let lists: [(&str, Vec<&String>); 5] = [
+            ("depends", self.depends.keys().collect()),
+            ("recommends", self.recommends.keys().collect()),
+            ("incompatible", self.incompatible.keys().collect()),
+            ("load_after", self.load_after.iter().collect()),
+            ("load_before", self.load_before.iter().collect()),
+        ];
+        for (field, ids) in &lists {
+            if ids.len() > MAX_RELATIONS {
+                return bad(format!("`{field}` names more than {MAX_RELATIONS} mods"));
+            }
+            let mut seen = HashSet::new();
+            for id in ids {
+                validate_id(id)
+                    .map_err(|e| Error::mod_error(format!("mod.json: `{field}`: {e}")))?;
+                if **id == self.id {
+                    return bad(format!("`{field}` names the mod itself"));
+                }
+                if !seen.insert(*id) {
+                    return bad(format!("`{field}` lists `{id}` twice"));
+                }
+            }
+        }
+        for (id, text) in &self.depends {
+            condition(&format!("depends.{id}"), text)?;
+            if self.incompatible.contains_key(id) {
+                return bad(format!("`{id}` is both a dependency and incompatible"));
+            }
+            if self.load_before.contains(id) {
+                return bad(format!(
+                    "`{id}` is a dependency, so it is loaded before this mod, not after it \
+                     (`load_before`)"
+                ));
+            }
+        }
+        for (id, text) in &self.recommends {
+            condition(&format!("recommends.{id}"), text)?;
+        }
+        for (id, incompatible) in &self.incompatible {
+            condition(&format!("incompatible.{id}"), &incompatible.versions)?;
+            if incompatible.reason.len() > MAX_REASON
+                || incompatible
+                    .reason
+                    .chars()
+                    .any(|c| c.is_control() && c != '\n')
+            {
+                return bad(format!(
+                    "the reason of `incompatible.{id}` is longer than {MAX_REASON} bytes or \
+                     contains control characters"
+                ));
+            }
+        }
+        if let Some(id) = self
+            .load_after
+            .iter()
+            .find(|id| self.load_before.contains(id))
+        {
+            return bad(format!(
+                "`{id}` is both in `load_after` and in `load_before`"
             ));
         }
         Ok(())
@@ -518,6 +868,7 @@ pub fn manifest_from_workspace(
     keys: Option<&[ResourceKey]>,
 ) -> Result<ModManifest> {
     let mut manifest = ModManifest::new(info, ModGame::from_fingerprint(&ws.manifest().game));
+    manifest.set_relations(&info.relations);
     if let Some(keys) = keys {
         for key in keys {
             if ws.change(key).is_none() {
@@ -535,7 +886,10 @@ pub fn manifest_from_workspace(
         .map(|c| ModResource {
             key: c.key.clone(),
             payload: c.payload.clone(),
-            original: c.original.clone(),
+            original: match (&c.added, info.relations.made_on.get(&c.key)) {
+                (None, Some(base)) => base.clone(),
+                _ => c.original.clone(),
+            },
             storage: c.storage,
             label: c.label.chars().take(MAX_NAME).collect(),
             added: c.added.clone(),
@@ -559,6 +913,100 @@ pub fn manifest_from_workspace(
     manifest.format_version = manifest.required_version();
     manifest.validate()?;
     Ok(manifest)
+}
+
+/// What a mod built from a workspace needs of the mods the mod manager has
+/// written into the game ([`suggested_dependencies`]).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Suggested {
+    /// id → `>=its version` (`*` for a version that is no version number).
+    pub depends: BTreeMap<String, String>,
+    /// For each replaced resource such a mod changes: its data, which the
+    /// change was made on, and the id of the mod.
+    pub made_on: BTreeMap<ResourceKey, (Blob, String)>,
+}
+
+/// The dependencies of a mod built from the changes of `ws` (all, or those
+/// in `keys`) on the mods the mod manager has written into the game: a mod
+/// is one when a change replaces a resource it changes (the editor shows
+/// the game with the mod, so the change is made on the mod's data) or goes
+/// into a stream it creates. The mod `own_id` itself is left out.
+pub fn suggested_dependencies(
+    game: &GameInstance,
+    ws: &Workspace,
+    keys: Option<&[ResourceKey]>,
+    own_id: &str,
+) -> Result<Suggested> {
+    let manager = ModManager::open(game)?;
+    let written = manager.written_streams();
+    let mut out = Suggested::default();
+    if written.is_empty() {
+        return Ok(out);
+    }
+    let plan = manager.plan();
+    let streams = manager.plan_streams();
+    let mut found: Vec<usize> = Vec::new();
+    for change in ws
+        .changes()
+        .filter(|c| keys.is_none_or(|keys| keys.contains(&c.key)))
+    {
+        if !written.contains(change.key.stream.as_str()) {
+            continue;
+        }
+        if let Some((_, index)) = streams.get(&change.key.stream)
+            && manager.mods()[*index].id != own_id
+        {
+            found.push(*index);
+        }
+        if let Some((planned, index)) = plan.get(&change.key)
+            && manager.mods()[*index].id != own_id
+        {
+            found.push(*index);
+            if change.added.is_none() {
+                let id = manager.mods()[*index].id.clone();
+                out.made_on
+                    .insert(change.key.clone(), (planned.payload.clone(), id));
+            }
+        }
+    }
+    for index in found {
+        let m = &manager.mods()[index];
+        let condition = m.manifest.semver().map_or_else(
+            || "*".to_owned(),
+            |v| version::Condition::at_least(&v).to_string(),
+        );
+        out.depends.insert(m.id.clone(), condition);
+    }
+    Ok(out)
+}
+
+/// Adds [`suggested_dependencies`] to the dependencies of `info` that it
+/// does not name yet (a mod it names as incompatible stays out), and
+/// records the data of the dependencies the changes were made on, so that
+/// the mod is checked against them ([`Relations::made_on`]). Returns the ids
+/// added.
+pub fn add_suggested_dependencies(
+    info: &mut ModInfo,
+    game: &GameInstance,
+    ws: &Workspace,
+    keys: Option<&[ResourceKey]>,
+) -> Result<Vec<String>> {
+    let suggested = suggested_dependencies(game, ws, keys, &info.id)?;
+    let mut added = Vec::new();
+    for (id, condition) in suggested.depends {
+        if !info.relations.depends.contains_key(&id)
+            && !info.relations.incompatible.contains_key(&id)
+        {
+            info.relations.depends.insert(id.clone(), condition);
+            added.push(id);
+        }
+    }
+    for (key, (blob, id)) in suggested.made_on {
+        if info.relations.depends.contains_key(&id) {
+            info.relations.made_on.insert(key, blob);
+        }
+    }
+    Ok(added)
 }
 
 /// A preview picture for a mod being built.
@@ -597,6 +1045,8 @@ impl Preview {
 /// Result of [`build_from_workspace`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BuildReport {
+    /// Version of the format the mod is written in.
+    pub format_version: u32,
     /// Replaced and added resources.
     pub resources: usize,
     /// Added resources among them.
@@ -626,6 +1076,7 @@ pub fn build_from_workspace(
             ws.store().get(blob)
         })?;
     Ok(BuildReport {
+        format_version: manifest.format_version,
         resources: manifest.resources.len(),
         added: manifest.added().count(),
         new_streams: manifest.streams.len(),

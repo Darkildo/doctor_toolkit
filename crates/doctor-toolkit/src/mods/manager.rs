@@ -27,6 +27,16 @@
 //! with one hash, or one GUID added with different data are [`Clash`]es that
 //! stop [`ModManager::apply`]. A created stream leaves the game, with its
 //! table-of-contents entries, when no enabled mod creates it any more.
+//!
+//! Mods of format version 3 name other mods. A dependency (`depends`) must
+//! be installed, enabled, of an allowed version and earlier in the load
+//! order; the dependent mod is checked against the game with its
+//! dependencies applied, so it may change what they changed (a patch on top
+//! of a mod). An `incompatible` mod is a [`Clash`]; a mod of an edition of
+//! the game the mod was not tested on (`game.editions`) does not fit unless
+//! compatibility is ignored. Installing and enabling put a mod in the
+//! nearest place its rules allow; [`ModManager::sort`] sorts the whole list
+//! ([`super::order`]).
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt;
@@ -36,7 +46,9 @@ use std::path::{Path, PathBuf};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
+use super::order::{self, Rule, Strength};
 use super::package::ModArchive;
+use super::version::{self, Condition};
 use super::vpat::{self, VpatPatch};
 use super::{
     MANIFEST_NAME, MAX_PREVIEW_SIZE, ModGame, ModInfo, ModManifest, ModResource, PAYLOAD_DIR,
@@ -140,6 +152,9 @@ pub enum Subject {
     Resource(ResourceKey),
     /// A stream the mod creates.
     Stream(String),
+    /// The mod as a whole: its edition, the mod manager it needs, its
+    /// dependencies (format version 3).
+    Mod,
 }
 
 impl fmt::Display for Subject {
@@ -147,6 +162,7 @@ impl fmt::Display for Subject {
         match self {
             Self::Resource(key) => write!(f, "{key}"),
             Self::Stream(name) => write!(f, "new stream {name}"),
+            Self::Mod => write!(f, "the mod"),
         }
     }
 }
@@ -178,20 +194,68 @@ pub enum Problem {
     ParentMissing { toc: String, parent: String },
     /// A stream of the table of contents already has the hash of the new stream.
     StreamHashUsed { toc: String },
+    /// The game is not one of the editions the mod was tested on; `game` is
+    /// the edition of the game, `None` when it is not known.
+    Edition {
+        game: Option<String>,
+        tested: Vec<String>,
+    },
+    /// The mod needs a newer mod manager (`requires_manager`).
+    ManagerTooOld { required: String },
+    /// A dependency is not installed.
+    DependencyMissing { id: String, versions: String },
+    /// A dependency is installed, but switched off or damaged.
+    DependencyDisabled { id: String, versions: String },
+    /// A dependency is not of a version the mod allows.
+    DependencyVersion {
+        id: String,
+        versions: String,
+        found: String,
+    },
+    /// A dependency is loaded after the mod; sorting puts it before.
+    DependencyLater { id: String },
+    /// A mod the author recommends is not enabled (or not of an allowed
+    /// version). Only a hint.
+    Recommended { id: String, versions: String },
 }
 
 impl Problem {
-    /// Whether the mod cannot be applied at all.
+    /// Whether the mod cannot be applied at all. The others stop applying
+    /// unless compatibility is ignored, except notices ([`Self::is_notice`]).
     pub fn is_fatal(&self) -> bool {
         !matches!(
             self,
-            Self::OriginalDiffers { .. } | Self::AnchorMissing { .. }
+            Self::OriginalDiffers { .. }
+                | Self::AnchorMissing { .. }
+                | Self::Edition { .. }
+                | Self::DependencyVersion { .. }
+                | Self::Recommended { .. }
         )
     }
 
     /// Whether the problem is only reported and never stops applying.
     pub fn is_notice(&self) -> bool {
-        matches!(self, Self::AnchorMissing { .. })
+        matches!(self, Self::AnchorMissing { .. } | Self::Recommended { .. })
+    }
+
+    /// Whether the problem is about another mod the mod needs (format version 3).
+    pub fn is_dependency(&self) -> bool {
+        matches!(
+            self,
+            Self::DependencyMissing { .. }
+                | Self::DependencyDisabled { .. }
+                | Self::DependencyVersion { .. }
+                | Self::DependencyLater { .. }
+        )
+    }
+}
+
+/// `version 1.2` or `any version` for a condition.
+fn versions_words(versions: &str) -> String {
+    match Condition::parse(versions) {
+        Ok(c) if c.is_any() => "any version".to_owned(),
+        Ok(c) => format!("version {c}"),
+        Err(_) => format!("version {versions}"),
     }
 }
 
@@ -230,8 +294,43 @@ impl CompatIssue {
             Problem::StreamHashUsed { toc } => {
                 format!("{toc} already has a stream with the same hash")
             }
+            Problem::Edition { game, tested } => format!(
+                "the mod is tested on the editions {} of the game, this game is {}",
+                tested.join(", "),
+                game.as_deref().unwrap_or("of an unknown edition")
+            ),
+            Problem::ManagerTooOld { required } => format!(
+                "the mod needs mod manager {required}, this is {}; update Open Mod Manager \
+                 (doctor_toolkit)",
+                version::manager_version()
+            ),
+            Problem::DependencyMissing { id, versions } => format!(
+                "needs mod `{id}` ({}), which is not installed",
+                versions_words(versions)
+            ),
+            Problem::DependencyDisabled { id, versions } => format!(
+                "needs mod `{id}` ({}), which is switched off",
+                versions_words(versions)
+            ),
+            Problem::DependencyVersion {
+                id,
+                versions,
+                found,
+            } => format!(
+                "needs mod `{id}` of {}, the installed one is {found}",
+                versions_words(versions)
+            ),
+            Problem::DependencyLater { id } => format!(
+                "needs mod `{id}`, which is loaded after it; sort the mods or move `{id}` up"
+            ),
+            Problem::Recommended { id, versions } => {
+                format!("works best with mod `{id}` ({})", versions_words(versions))
+            }
         };
-        format!("{}: {}: {what}", self.mod_id, self.subject)
+        match self.subject {
+            Subject::Mod => format!("{}: {what}", self.mod_id),
+            _ => format!("{}: {}: {what}", self.mod_id, self.subject),
+        }
     }
 }
 
@@ -269,6 +368,17 @@ pub enum Clash {
         adding: Vec<String>,
         replacing: Vec<String>,
     },
+    /// A mod says it does not work with another (`incompatible`, format
+    /// version 3), and that mod is of a version it names.
+    Incompatible {
+        /// The mod whose manifest says so.
+        declared_by: String,
+        other: String,
+        /// Condition on the version of `other`.
+        versions: String,
+        /// Why, in the words of the author; may be empty.
+        reason: String,
+    },
 }
 
 impl Clash {
@@ -278,7 +388,7 @@ impl Clash {
             Self::Stream {
                 same_definition, ..
             } => !same_definition,
-            Self::StreamHash { .. } => true,
+            Self::StreamHash { .. } | Self::Incompatible { .. } => true,
             Self::Guid { same_data, .. } => !same_data,
             Self::SharedStream { .. } => false,
         }
@@ -293,6 +403,9 @@ impl Clash {
             Self::SharedStream {
                 adding, replacing, ..
             } => adding.iter().chain(replacing).map(String::as_str).collect(),
+            Self::Incompatible {
+                declared_by, other, ..
+            } => vec![declared_by.as_str(), other.as_str()],
         };
         let mut seen = BTreeSet::new();
         mods.retain(|m| seen.insert(*m));
@@ -350,6 +463,21 @@ impl Clash {
                 adding.join(", "),
                 replacing.join(", ")
             ),
+            Self::Incompatible {
+                declared_by,
+                other,
+                versions,
+                reason,
+            } => {
+                let mut text = format!(
+                    "{declared_by} does not work with {other} ({}); enable only one of them",
+                    versions_words(versions)
+                );
+                if !reason.is_empty() {
+                    text += &format!(": {reason}");
+                }
+                text
+            }
         }
     }
 }
@@ -362,6 +490,9 @@ pub struct Conflict {
     pub mods: Vec<String>,
     /// Whether all of them have the same data (a harmless overlap).
     pub same_data: bool,
+    /// Whether the winner depends on all the others: a patch on top of
+    /// them, which is meant to win (format version 3).
+    pub patch: bool,
 }
 
 impl Conflict {
@@ -576,9 +707,12 @@ impl ModManager {
             Vec::new(),
             true,
         )?;
-        let last = self.mods.len() - 1;
-        self.set_enabled(&id, true)?;
-        self.move_mod(&id, last)?;
+        let index = self.position(&id)?;
+        let mut m = self.mods.remove(index);
+        m.enabled = true;
+        self.mods.push(m);
+        self.place(&id);
+        self.save_registry()?;
         Ok(report)
     }
 
@@ -685,6 +819,7 @@ impl ModManager {
             Some(i) => self.mods[i] = installed,
             None => self.mods.push(installed),
         }
+        self.place(&id);
         self.save_registry()?;
         let index = self.position(&id)?;
         let issues = self.check_mods(game, &[index])?;
@@ -730,6 +865,11 @@ impl ModManager {
         Ok(())
     }
 
+    /// Switches a mod on or off. A mod switched on moves to the nearest
+    /// place its rules of the load order allow. Its dependencies are not
+    /// switched on ([`Self::enable_with_dependencies`] does that), and the
+    /// mods that need a mod switched off are not switched off
+    /// ([`Self::dependents`] lists them).
     pub fn set_enabled(&mut self, id: &str, enabled: bool) -> Result<()> {
         let index = self.position(id)?;
         if enabled && let Some(problem) = &self.mods[index].problem {
@@ -738,17 +878,325 @@ impl ModManager {
             )));
         }
         self.mods[index].enabled = enabled;
+        if enabled {
+            self.place(id);
+        }
         self.save_registry()
     }
 
+    /// Switches on mod `id` and every installed dependency of it that is
+    /// off; returns the ids of those dependencies.
+    pub fn enable_with_dependencies(&mut self, id: &str) -> Result<Vec<String>> {
+        let deps = self.disabled_dependencies(id);
+        for dep in &deps {
+            self.set_enabled(dep, true)?;
+        }
+        self.set_enabled(id, true)?;
+        Ok(deps)
+    }
+
     /// Moves a mod to `position` in the load order (0 is applied first,
-    /// the last one wins).
-    pub fn move_mod(&mut self, id: &str, position: usize) -> Result<()> {
+    /// the last one wins). Refused when the move breaks a dependency (a
+    /// mod would be loaded before a mod it needs); soft rules
+    /// (`load_after`, `load_before`) the move breaks are returned as
+    /// warnings.
+    pub fn move_mod(&mut self, id: &str, position: usize) -> Result<Vec<String>> {
+        self.position(id)?;
+        let rules = self.rules();
+        let ids: Vec<&str> = self.mods.iter().map(|m| m.id.as_str()).collect();
+        let before = order::broken(&ids, &rules);
+        let broken: Vec<&Rule> = order::broken_by_move(&ids, &rules, id, position)
+            .into_iter()
+            .filter(|r| !before.contains(r))
+            .collect();
+        if let Some(rule) = broken.iter().find(|r| r.strength == Strength::Hard) {
+            return Err(Error::mod_error(format!(
+                "cannot move `{id}` there: {}",
+                rule.describe()
+            )));
+        }
+        let warnings = broken.iter().map(|r| r.describe()).collect();
+        self.move_to(id, position)?;
+        self.save_registry()?;
+        Ok(warnings)
+    }
+
+    /// Moves a mod without checking the rules.
+    fn move_to(&mut self, id: &str, position: usize) -> Result<()> {
         let index = self.position(id)?;
         let item = self.mods.remove(index);
         let position = position.min(self.mods.len());
         self.mods.insert(position, item);
-        self.save_registry()
+        Ok(())
+    }
+
+    // ------------------------------------------- relations and load order
+
+    /// The rules of the load order among the installed mods ([`order::rules`]).
+    pub fn rules(&self) -> Vec<Rule> {
+        let mods: Vec<(&str, &ModManifest)> = self
+            .mods
+            .iter()
+            .map(|m| (m.id.as_str(), &m.manifest))
+            .collect();
+        order::rules(&mods)
+    }
+
+    /// Moves mod `id` to the nearest place its rules allow ([`order::place`]).
+    /// The registry is not saved.
+    fn place(&mut self, id: &str) {
+        let rules = self.rules();
+        let ids: Vec<&str> = self.mods.iter().map(|m| m.id.as_str()).collect();
+        if let Some(to) = order::place(&ids, &rules, id) {
+            let _ = self.move_to(id, to);
+        }
+    }
+
+    /// Sorts the load order by the rules of the mods, keeping the present
+    /// order where the rules allow ([`order::sort`]); with `dry_run`, only
+    /// tells what the order would be. A circle of dependencies is an error.
+    pub fn sort(&mut self, dry_run: bool) -> Result<SortReport> {
+        let rules = self.rules();
+        let ids: Vec<&str> = self.mods.iter().map(|m| m.id.as_str()).collect();
+        let sorted = order::sort(&ids, &rules).map_err(|cycle| {
+            Error::mod_error(format!(
+                "the mods {} need each other in a circle, so no order loads each after the \
+                 mods it needs; disable or uninstall one of them",
+                cycle.join(" → ")
+            ))
+        })?;
+        let changed = sorted
+            .order
+            .iter()
+            .map(String::as_str)
+            .ne(ids.iter().copied());
+        let report = SortReport {
+            changed,
+            dropped: sorted.dropped.iter().map(Rule::describe).collect(),
+            order: sorted.order,
+        };
+        if changed && !dry_run {
+            let mut rest = std::mem::take(&mut self.mods);
+            for id in &report.order {
+                if let Some(i) = rest.iter().position(|m| m.id == *id) {
+                    self.mods.push(rest.remove(i));
+                }
+            }
+            self.mods.append(&mut rest);
+            self.save_registry()?;
+        }
+        Ok(report)
+    }
+
+    /// Whether mod `a` needs mod `b`, directly or through other mods.
+    pub fn depends_on(&self, a: &str, b: &str) -> bool {
+        self.dependencies(a).iter().any(|d| d == b)
+    }
+
+    /// The installed mods mod `id` needs, directly or through other mods,
+    /// nearest first.
+    pub fn dependencies(&self, id: &str) -> Vec<String> {
+        let mut out: Vec<String> = Vec::new();
+        let mut queue = std::collections::VecDeque::from([id.to_owned()]);
+        while let Some(next) = queue.pop_front() {
+            let Some(m) = self.get(&next) else { continue };
+            for dep in m.manifest.depends.keys() {
+                if dep != id && self.get(dep).is_some() && !out.contains(dep) {
+                    out.push(dep.clone());
+                    queue.push_back(dep.clone());
+                }
+            }
+        }
+        out
+    }
+
+    /// Installed dependencies of mod `id` (also indirect ones) that are
+    /// switched off, in load order; damaged ones are left out.
+    pub fn disabled_dependencies(&self, id: &str) -> Vec<String> {
+        let deps = self.dependencies(id);
+        self.mods
+            .iter()
+            .filter(|m| !m.enabled && m.problem.is_none() && deps.contains(&m.id))
+            .map(|m| m.id.clone())
+            .collect()
+    }
+
+    /// The enabled mods that need mod `id`, directly or through other mods,
+    /// in load order: switching it off or removing it leaves them without it.
+    pub fn dependents(&self, id: &str) -> Vec<String> {
+        self.mods
+            .iter()
+            .filter(|m| m.enabled && m.id != id && self.depends_on(&m.id, id))
+            .map(|m| m.id.clone())
+            .collect()
+    }
+
+    /// What mod `id` says about other mods, each with its state now, and
+    /// the installed mods that need it.
+    pub fn relations(&self, id: &str) -> Vec<Relation> {
+        let Some(m) = self.get(id) else {
+            return Vec::new();
+        };
+        let at = |x: &str| self.mods.iter().position(|m| m.id == x);
+        let me = at(id);
+        let fits = |other: &InstalledMod, versions: &str| {
+            Condition::parse(versions)
+                .unwrap_or_else(|_| Condition::any())
+                .matches_text(&other.manifest.version)
+        };
+        let mut out = Vec::new();
+        let mut push = |kind, other: &str, versions: &str, reason: &str, state| {
+            out.push(Relation {
+                kind,
+                id: other.to_owned(),
+                name: self.get(other).map(|o| o.manifest.name.clone()),
+                versions: versions.to_owned(),
+                reason: reason.to_owned(),
+                state,
+            });
+        };
+        for (dep, versions) in &m.manifest.depends {
+            let state = match self.get(dep) {
+                None => RelationState::Missing,
+                Some(d) if !d.enabled || d.problem.is_some() => RelationState::Off,
+                Some(d) if !fits(d, versions) => RelationState::Version(d.manifest.version.clone()),
+                Some(_) if at(dep) > me => RelationState::OutOfOrder,
+                Some(_) => RelationState::Fine,
+            };
+            push(RelationKind::Depends, dep, versions, "", state);
+        }
+        for (rec, versions) in &m.manifest.recommends {
+            let state = match self.get(rec) {
+                None => RelationState::Missing,
+                Some(r) if !r.enabled || r.problem.is_some() => RelationState::Off,
+                Some(r) if !fits(r, versions) => RelationState::Version(r.manifest.version.clone()),
+                Some(_) => RelationState::Fine,
+            };
+            push(RelationKind::Recommends, rec, versions, "", state);
+        }
+        for (other, inc) in &m.manifest.incompatible {
+            let state = match self.get(other) {
+                None => RelationState::Missing,
+                Some(o) if !fits(o, &inc.versions) => {
+                    RelationState::Version(o.manifest.version.clone())
+                }
+                Some(o) if o.enabled && m.enabled => RelationState::Clashing,
+                Some(_) => RelationState::Off,
+            };
+            push(
+                RelationKind::Incompatible,
+                other,
+                &inc.versions,
+                &inc.reason,
+                state,
+            );
+        }
+        for (kind, list) in [
+            (RelationKind::LoadAfter, &m.manifest.load_after),
+            (RelationKind::LoadBefore, &m.manifest.load_before),
+        ] {
+            for other in list {
+                let state = match at(other) {
+                    None => RelationState::Missing,
+                    Some(o) if (kind == RelationKind::LoadAfter) == (Some(o) > me) => {
+                        RelationState::OutOfOrder
+                    }
+                    Some(_) => RelationState::Fine,
+                };
+                push(kind, other, "*", "", state);
+            }
+        }
+        for other in &self.mods {
+            if let Some(versions) = other.manifest.depends.get(id) {
+                let state = if other.enabled {
+                    RelationState::Fine
+                } else {
+                    RelationState::Off
+                };
+                push(RelationKind::NeededBy, &other.id, versions, "", state);
+            }
+        }
+        out
+    }
+
+    /// For each mod of `indices`, the data its enabled dependencies (also
+    /// indirect ones) give each resource, applied in load order: what the
+    /// mod was made on instead of the game's original.
+    fn dependency_bases(&self, indices: &[usize]) -> HashMap<usize, HashMap<&ResourceKey, &Blob>> {
+        let mut out = HashMap::new();
+        for &i in indices {
+            let deps = self.dependencies(&self.mods[i].id);
+            if deps.is_empty() {
+                continue;
+            }
+            let mut base = HashMap::new();
+            for m in self
+                .mods
+                .iter()
+                .filter(|m| m.enabled && m.problem.is_none() && deps.contains(&m.id))
+            {
+                for resource in &m.manifest.resources {
+                    base.insert(&resource.key, &resource.payload);
+                }
+            }
+            out.insert(i, base);
+        }
+        out
+    }
+
+    /// Problems of mod `index` as a whole: the edition of the game, the
+    /// version of the mod manager, dependencies and recommended mods.
+    fn check_relations(
+        &self,
+        index: usize,
+        edition: &mut Option<Option<String>>,
+        game: &GameInstance,
+    ) -> Vec<Problem> {
+        let m = &self.mods[index];
+        let mut problems = Vec::new();
+        if let Some(required) = &m.manifest.requires_manager
+            && let Ok(condition) = Condition::parse(required)
+            && !condition.matches(&version::manager_version())
+        {
+            problems.push(Problem::ManagerTooOld {
+                required: condition.to_string(),
+            });
+        }
+        if !m.manifest.game.editions.is_empty() {
+            let edition = edition.get_or_insert_with(|| crate::edition::game_edition(game.root()));
+            if !m.manifest.game.fits_edition(edition.as_deref()) {
+                problems.push(Problem::Edition {
+                    game: edition.clone(),
+                    tested: m.manifest.game.editions.clone(),
+                });
+            }
+        }
+        for relation in self.relations(&m.id) {
+            let (id, versions) = (relation.id, relation.versions);
+            match (relation.kind, relation.state) {
+                (RelationKind::Depends, RelationState::Missing) => {
+                    problems.push(Problem::DependencyMissing { id, versions });
+                }
+                (RelationKind::Depends, RelationState::Off) => {
+                    problems.push(Problem::DependencyDisabled { id, versions });
+                }
+                (RelationKind::Depends, RelationState::Version(found)) => {
+                    problems.push(Problem::DependencyVersion {
+                        id,
+                        versions,
+                        found,
+                    });
+                }
+                (RelationKind::Depends, RelationState::OutOfOrder) => {
+                    problems.push(Problem::DependencyLater { id });
+                }
+                (RelationKind::Recommends, state) if state != RelationState::Fine => {
+                    problems.push(Problem::Recommended { id, versions });
+                }
+                _ => {}
+            }
+        }
+        problems
     }
 
     // ---------------------------------------------------------------- checks
@@ -761,6 +1209,7 @@ impl ModManager {
     /// all installed mods.
     pub fn conflicts(&self, enabled_only: bool) -> Vec<Conflict> {
         let mut by_key: BTreeMap<&ResourceKey, Vec<(&str, &Blob)>> = BTreeMap::new();
+        let mut deps: HashMap<&str, Vec<String>> = HashMap::new();
         for m in self
             .mods
             .iter()
@@ -776,10 +1225,19 @@ impl ModManager {
         by_key
             .into_iter()
             .filter(|(_, mods)| mods.len() > 1)
-            .map(|(key, mods)| Conflict {
-                key: key.clone(),
-                same_data: mods.iter().all(|(_, b)| *b == mods[0].1),
-                mods: mods.iter().map(|(id, _)| (*id).to_owned()).collect(),
+            .map(|(key, mods)| {
+                let (winner, _) = mods[mods.len() - 1];
+                let needs = deps
+                    .entry(winner)
+                    .or_insert_with(|| self.dependencies(winner));
+                Conflict {
+                    key: key.clone(),
+                    same_data: mods.iter().all(|(_, b)| *b == mods[0].1),
+                    patch: mods[..mods.len() - 1]
+                        .iter()
+                        .all(|(id, _)| needs.iter().any(|d| d == id)),
+                    mods: mods.iter().map(|(id, _)| (*id).to_owned()).collect(),
+                }
             })
             .collect()
     }
@@ -807,8 +1265,15 @@ impl ModManager {
     /// documentation). The original is what applying rebuilds from: the
     /// backup, or the file itself. Streams created by other enabled mods
     /// count as present for added resources.
+    ///
+    /// A mod with dependencies is checked against the game with its enabled
+    /// dependencies applied: where a dependency changes or adds a resource,
+    /// the mod's `original` must be the dependency's data. The mod as a
+    /// whole is checked too ([`Subject::Mod`]): the edition of the game, the
+    /// version of the mod manager, its dependencies and recommendations.
     pub fn check_mods(&self, game: &GameInstance, indices: &[usize]) -> Result<Vec<CompatIssue>> {
         let created = self.created_streams();
+        let bases = self.dependency_bases(indices);
         // Streams of the game, as the game was before the mod manager. (A
         // game opened earlier may still list a created stream deleted since.)
         let game_stream = |name: &str| {
@@ -830,9 +1295,19 @@ impl ModManager {
 
         let mut issues = Vec::new();
         let mut tocs: HashMap<usize, Toc> = HashMap::new();
-        let mut by_stream: BTreeMap<&str, Vec<(&str, &ModResource)>> = BTreeMap::new();
+        let mut by_stream: BTreeMap<&str, Vec<(usize, &str, &ModResource)>> = BTreeMap::new();
+        let mut edition = None;
         for &i in indices {
             let m = &self.mods[i];
+            if m.problem.is_none() {
+                issues.extend(self.check_relations(i, &mut edition, game).into_iter().map(
+                    |problem| CompatIssue {
+                        mod_id: m.id.clone(),
+                        subject: Subject::Mod,
+                        problem,
+                    },
+                ));
+            }
             for stream in &m.manifest.streams {
                 issues.extend(
                     self.check_new_stream(game, stream, game_stream(&stream.name), &mut tocs)?
@@ -848,7 +1323,7 @@ impl ModManager {
                 by_stream
                     .entry(&resource.key.stream)
                     .or_default()
-                    .push((&m.id, resource));
+                    .push((i, &m.id, resource));
             }
         }
 
@@ -868,9 +1343,23 @@ impl ModManager {
                 None => None,
             };
             let mut hashes: HashMap<usize, Blob> = HashMap::new();
-            for (id, resource) in resources {
+            for (index, id, resource) in resources {
                 let key = &resource.key;
                 let Some(added) = &resource.added else {
+                    // Made on top of a dependency that changes the resource.
+                    if let Some(&base) = bases.get(&index).and_then(|b| b.get(key)) {
+                        if *base != resource.original {
+                            issue(
+                                id,
+                                key,
+                                Problem::OriginalDiffers {
+                                    expected: resource.original.clone(),
+                                    found: base.clone(),
+                                },
+                            );
+                        }
+                        continue;
+                    }
                     let Some(original) = &original else {
                         let problem = match new_streams.get(stream) {
                             Some(creator) => Problem::InNewStream {
@@ -1093,12 +1582,39 @@ impl ModManager {
                 .filter(|r| !adders.contains(r))
                 .cloned()
                 .collect();
+            // A patch on top of the adding mod, or the other way round, is meant.
+            let others: Vec<String> = others
+                .into_iter()
+                .filter(|r| {
+                    !adders
+                        .iter()
+                        .any(|a| self.depends_on(r, a) || self.depends_on(a, r))
+                })
+                .collect();
             if !others.is_empty() {
                 clashes.push(Clash::SharedStream {
                     stream: stream.to_owned(),
                     adding: adders,
                     replacing: others,
                 });
+            }
+        }
+
+        for m in &mods {
+            for (other, incompatible) in &m.manifest.incompatible {
+                let Some(o) = mods.iter().find(|o| o.id == *other) else {
+                    continue;
+                };
+                let condition =
+                    Condition::parse(&incompatible.versions).unwrap_or_else(|_| Condition::any());
+                if condition.matches_text(&o.manifest.version) {
+                    clashes.push(Clash::Incompatible {
+                        declared_by: m.id.clone(),
+                        other: o.id.clone(),
+                        versions: incompatible.versions.clone(),
+                        reason: incompatible.reason.clone(),
+                    });
+                }
             }
         }
         clashes
@@ -1108,11 +1624,13 @@ impl ModManager {
 
     /// The combined changes of the enabled mods: for each resource, the data
     /// of the last enabled mod that replaces or adds it, with that mod's index.
+    /// A later mod that replaces a resource an earlier one adds (a patch on
+    /// top of a mod) keeps it added; the original is the game's.
     pub fn plan(&self) -> BTreeMap<ResourceKey, (Change, usize)> {
-        let mut plan = BTreeMap::new();
+        let mut plan: BTreeMap<ResourceKey, (Change, usize)> = BTreeMap::new();
         for (index, m) in self.enabled().filter(|(_, m)| m.problem.is_none()) {
             for resource in &m.manifest.resources {
-                let change = Change {
+                let mut change = Change {
                     key: resource.key.clone(),
                     payload: resource.payload.clone(),
                     original: resource.original.clone(),
@@ -1120,6 +1638,12 @@ impl ModManager {
                     label: m.manifest.name.clone(),
                     added: resource.added.clone(),
                 };
+                if let Some((earlier, _)) = plan.get(&resource.key) {
+                    change.original = earlier.original.clone();
+                    if change.added.is_none() {
+                        change.added = earlier.added.clone();
+                    }
+                }
                 plan.insert(resource.key.clone(), (change, index));
             }
         }
@@ -1183,6 +1707,11 @@ impl ModManager {
     /// from the backups; [`Self::apply`] writes the mods anew.
     pub fn interrupted(&self, game: &GameInstance) -> Result<Vec<String>> {
         self.deployment.interrupted(game)
+    }
+
+    /// The streams the mod manager has written into the game (by its record).
+    pub fn written_streams(&self) -> BTreeSet<&str> {
+        self.deployment.streams.keys().map(String::as_str).collect()
     }
 
     /// Whether the mod manager has written anything into the game that is still there.
@@ -1580,6 +2109,69 @@ impl ModManager {
     }
 }
 
+/// Result of [`ModManager::sort`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SortReport {
+    /// Ids in the sorted order.
+    pub order: Vec<String>,
+    /// Whether the order differs from the one before.
+    pub changed: bool,
+    /// Soft rules that could not be kept, in words.
+    pub dropped: Vec<String>,
+}
+
+/// What a mod says about another one ([`ModManager::relations`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RelationKind {
+    /// `depends`: needed.
+    Depends,
+    /// `recommends`: goes well with it.
+    Recommends,
+    /// `incompatible`: does not work with it.
+    Incompatible,
+    /// `load_after`.
+    LoadAfter,
+    /// `load_before`.
+    LoadBefore,
+    /// The other mod depends on this one.
+    NeededBy,
+}
+
+/// How a [`Relation`] stands now.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RelationState {
+    /// As the mod wants it: a dependency enabled, of an allowed version and
+    /// earlier; an incompatible mod switched off; a rule of the order kept;
+    /// a mod that needs this one enabled.
+    Fine,
+    /// The other mod is not installed.
+    Missing,
+    /// The other mod is switched off or damaged.
+    Off,
+    /// The other mod is of this version, which the condition does not allow
+    /// (for an incompatible mod: not one of the versions it is incompatible with).
+    Version(String),
+    /// The load order does not keep the rule.
+    OutOfOrder,
+    /// Both mods are enabled although they do not work together.
+    Clashing,
+}
+
+/// One relation of a mod to another ([`ModManager::relations`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Relation {
+    pub kind: RelationKind,
+    /// Id of the other mod.
+    pub id: String,
+    /// Name of the other mod when it is installed.
+    pub name: Option<String>,
+    /// Condition on its version (`*` for the rules of the order).
+    pub versions: String,
+    /// Why, for an incompatible mod; may be empty.
+    pub reason: String,
+    pub state: RelationState,
+}
+
 /// One mod of a [`ModSet`] or of [`ModManager::arrangement`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SetEntry {
@@ -1667,6 +2259,7 @@ fn load_installed(dir: &Path, entry: RegistryEntry) -> InstalledMod {
                     profile: String::new(),
                     executable_size: None,
                     executable_sha256: None,
+                    editions: Vec::new(),
                 },
             ),
             Some(error.to_string()),

@@ -3187,8 +3187,9 @@ fn cloned_models_and_new_streams_round_trip_on_copies() {
     assert_eq!(snapshot(), originals);
     assert!(!new_file.exists());
 
-    // The same changes as a mod (format version 2): installed and applied by
-    // the mod manager they give the same files, byte for byte.
+    // The same changes as a mod (format version 3, with added resources and a
+    // new stream): installed and applied by the mod manager they give the same
+    // files, byte for byte.
     use doctor_toolkit::mods::manager::ModApplyOptions;
     use doctor_toolkit::mods::{self, ModArchive, ModInfo, ModManager};
     let package = temp.path().join("clones.zip");
@@ -3203,7 +3204,7 @@ fn cloned_models_and_new_streams_round_trip_on_copies() {
     assert_eq!(built.new_streams, 1);
     let mut archive = ModArchive::open(&package).unwrap();
     archive.verify().unwrap();
-    assert_eq!(archive.manifest().format_version, 2);
+    assert_eq!(archive.manifest().format_version, 3);
     let mut manager = ModManager::open(&game).unwrap();
     let report = manager.install_file(&game, &package, true).unwrap();
     assert!(report.issues.is_empty(), "{:?}", report.issues);

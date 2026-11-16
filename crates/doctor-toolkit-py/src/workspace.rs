@@ -156,6 +156,7 @@ pub fn mod_info(
         author: author.to_owned(),
         description: description.to_owned(),
         url,
+        relations: Default::default(),
     }
 }
 
