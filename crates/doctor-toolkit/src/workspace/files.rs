@@ -25,10 +25,13 @@ use std::str::FromStr;
 use serde::{Deserialize, Serialize};
 
 use super::deploy::Deployment;
-use super::{ApplyReport, Blob, ChangeState, FileStamp, PayloadStore, StreamAction};
+use super::{ApplyReport, Blob, ChangeState, FileStamp, StreamAction};
 use crate::container::big::{self, BigArchive, archive_number, find_archives, normalize_name};
 use crate::game::{BACKUP_DIR, GameInstance};
 use crate::{Error, Result};
+
+/// Owner name the mod manager gives to [`sync`].
+pub const MODS_OWNER: &str = "mods";
 
 /// First entry of an overlay archive written by the toolkit.
 pub const OVERLAY_MARKER: &str = "_doctor_toolkit\\overlay.txt";
@@ -380,7 +383,7 @@ pub fn sync(
     applied: &mut Deployment,
     record_path: &Path,
     changes: &BTreeMap<FileKey, FileChange>,
-    store: &PayloadStore,
+    read: &dyn Fn(&FileChange) -> Result<Vec<u8>>,
     owner: &str,
     force: bool,
 ) -> Result<ApplyReport> {
@@ -446,7 +449,12 @@ pub fn sync(
         ));
     }
     if plan.iter().any(|(_, m, _, _)| !m.is_empty()) {
-        crate::mods::ensure_mods_not_in_game(game)?;
+        // The workspace and the mod manager do not write at the same time.
+        if owner == MODS_OWNER {
+            crate::mods::ensure_workspace_not_in_game(game)?;
+        } else {
+            crate::mods::ensure_mods_not_in_game(game)?;
+        }
     }
     for (rel, want_map, want, state) in plan {
         let path = root.join(&rel);
@@ -480,11 +488,11 @@ pub fn sync(
         let data = if at_overlay {
             let mut entries = Vec::with_capacity(want.len());
             for change in &want {
-                entries.push((&change.key, store.get(&change.payload)?));
+                entries.push((&change.key, read(change)?));
             }
             build_overlay(&entries, owner)?
         } else {
-            store.get(&want[0].payload)?
+            read(want[0])?
         };
         let previous = applied.files.get(&rel).cloned();
         let original = match &previous {

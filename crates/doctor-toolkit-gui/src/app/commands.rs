@@ -78,6 +78,7 @@ pub enum Command {
     Project,
     Mods,
     IntegrityCheck,
+    SaveFile,
     RebuildIndex,
     ApplyToGame,
     RevertGame,
@@ -93,6 +94,7 @@ pub enum Command {
     WizardParams,
     WizardTexts,
     WizardPlace,
+    WizardVoice,
     WizardPackage,
     // Help
     UserGuide,
@@ -489,6 +491,7 @@ pub const COMMANDS: &[Spec] = &[
         Global,
     )),
     spec(C::IntegrityCheck, "cmd.integrity", Menu::Tools, &[], Global),
+    spec(C::SaveFile, "cmd.save_file", Menu::Tools, &[], Global),
     spec(
         C::RebuildIndex,
         "cmd.rebuild_index",
@@ -553,6 +556,13 @@ pub const COMMANDS: &[Spec] = &[
     spec(
         C::WizardPlace,
         "cmd.wizard_place",
+        Menu::Wizards,
+        &[],
+        Global,
+    ),
+    spec(
+        C::WizardVoice,
+        "cmd.wizard_voice",
         Menu::Wizards,
         &[],
         Global,
@@ -688,7 +698,8 @@ impl BrowserApp {
             | C::WizardOutfit
             | C::WizardParams
             | C::WizardTexts
-            | C::WizardPlace => game,
+            | C::WizardPlace
+            | C::WizardVoice => game,
             C::WizardPackage => game && self.workspace.as_ref().is_some_and(|ws| !ws.is_empty()),
             C::RebuildIndex => game && !self.nav.busy(),
             C::ApplyToGame => {
@@ -907,6 +918,7 @@ impl BrowserApp {
             C::Project => self.open_project_tab(),
             C::Mods => self.mods_open = !self.mods_open,
             C::IntegrityCheck => self.integrity_check(),
+            C::SaveFile => self.open_save_file(),
             C::RebuildIndex => {
                 if let Some(game) = self.game.clone()
                     && self.nav.rebuild(game)
@@ -939,6 +951,7 @@ impl BrowserApp {
             | C::WizardParams
             | C::WizardTexts
             | C::WizardPlace
+            | C::WizardVoice
             | C::WizardPackage => {
                 if let Some(kind) = super::wizard::Kind::ALL
                     .into_iter()
@@ -1134,6 +1147,7 @@ mod tests {
             C::Project,
             C::Mods,
             C::IntegrityCheck,
+            C::SaveFile,
             C::RebuildIndex,
             C::ApplyToGame,
             C::RevertGame,
@@ -1148,6 +1162,7 @@ mod tests {
             C::WizardParams,
             C::WizardTexts,
             C::WizardPlace,
+            C::WizardVoice,
             C::WizardPackage,
             C::UserGuide,
             C::Shortcuts,

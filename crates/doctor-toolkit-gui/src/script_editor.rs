@@ -947,6 +947,17 @@ impl ScriptEditor {
                         new_params.insert(p.name.into(), Json::from(list));
                     }
                 }
+                ParamKind::Message => {
+                    let mut text = json_text(&current);
+                    ui.horizontal(|ui| {
+                        if ui.text_edit_singleline(&mut text).changed() {
+                            new_params.insert(p.name.into(), Json::from(text.clone()));
+                        }
+                        if let Some(name) = crate::type_picker::message_menu(ui, &text) {
+                            new_params.insert(p.name.into(), Json::from(name));
+                        }
+                    });
+                }
                 ParamKind::Text | ParamKind::Name => {
                     let mut text = json_text(&current);
                     if ui.text_edit_singleline(&mut text).changed() {
@@ -1007,9 +1018,17 @@ impl ScriptEditor {
                                 text.parse::<f64>()
                                     .map_or(Json::from(text.clone()), Json::from)
                             } else {
-                                Json::from(text)
+                                Json::from(text.clone())
                             };
                             new_inputs.insert(p.name.clone(), v);
+                        }
+                        // The message of "Send message" and its kin: names
+                        // of the game to pick from.
+                        if def.category == Category::Message
+                            && p.name == "message"
+                            && let Some(name) = crate::type_picker::message_menu(ui, &text)
+                        {
+                            new_inputs.insert(p.name.clone(), Json::from(name));
                         }
                     }
                 }

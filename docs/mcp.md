@@ -107,6 +107,9 @@ false`, `idempotentHint: true`, `openWorldHint: false`; у записи
 | `resource_json` | `resource`, `pointer` (JSON Pointer), `offset`, `max_chars` (20 000), `original` | JSON ресурса (или исходник Lua) страницами: голова с `total_chars`, `next_offset` и затем часть текста |
 | `lookup_hash` | `hash` и/или `text` | имена хэша (встроенные списки и все имена игры, с функцией) и где он встречается; для текста — хэш под каждой из шести функций движка и сколько ресурсов его содержат |
 | `strings` | `text` или `hash`, `language`, `offset`, `limit` (50, ≤ 300) | строки `lh2`: таблица, хэш записи, колонка, текст |
+| `kb_search` | `query` (слова; все должны встретиться, регистр не важен), `type`, `status`, `offset`, `limit` (20, ≤ 100) | заметки базы знаний `docs/kb/` (этап 72): путь, URI, заголовок, тип, статус, уверенность, этапы, метки и строка текста со словом. Без слов — список по `type` (`engine`, `system`, `class`, `resource`, `message`, `exe`, `question`, `experiment`, `research`, …) и `status` (`known`, `partial`, `hypothesis`, `unknown`, `planned`) |
+| `kb_note` | `note` — путь из `kb_search` (`engine/message-bus.md`) или URI; `index.md` — карта | текст заметки: свойства (тип, статус, уверенность, источники) и Markdown со ссылками |
+| `game_types` | `enum` (ключ списка), `message` (имя или `0x` + 8 цифр хэша), `search` (часть имени), `class` (класс SimGroup), `limit` (40, ≤ 200); без параметров — обзор | типизированные данные игры, встроенные в сервер (игра не нужна, `docs/logic-graph.md` §2.1): список значений (`family`, `city`, `venue`, `building_type`, `weapon`, `crew_specialty`, `sound_category`, `emotion`) с хэшами, числами, источником и уверенностью; сообщение — группа (`engine`, `game`, `custom`, `unknown`), кто шлёт и слушает по всей игре (класс, атрибут, число объектов), `usage`, `scope`, `mentions`, `data` (пока `unknown`), `collides_with` для нового имени; смысл атрибутов класса (`MsgIn`, `Ref<Класс>`, `Res<тип>`, `Enum<список>`, `Seconds`, `Money`, `Bool`) |
 | `logic_graph` | `object`, `message` или `scope`; `depth` (1, ≤ 4), `direction` (`down`, `up`, `both`), `offset`, `limit` (100, ≤ 400), `original` | см. ниже |
 | `level_objects` | `stream` (поток или префикс), `filter`, `near` `[x, y, z]`, `radius` (30), `offset`, `limit` (100, ≤ 500), `original` | объекты SimGroup: id, класс, имя (`CMD_SetName`), GUID, положение (перенос `CMD_LoadMatrix`, Y вверх), id metamodel, расстояние; не больше 400 потоков за раз |
 | `workspace_status` | `offset`, `limit` (100, ≤ 500) | изменения с состоянием (`pending`, `applied`, `conflict`), новые потоки, файлы, потоки и их состояние, 20 последних операций, что отменит undo и вернёт redo |
@@ -187,7 +190,7 @@ unchanged`. Ошибка ничего не записывает.
 | `project_build` | `only`, `force`, `dry_run` | сборка проекта (`--project`) в рабочее пространство одной операцией (`project build`) |
 | `mod_build` | `name`, `id`, `version`, `author`, `description`, `url`, `preview`, `changes`, `depends`, `recommends`, `incompatible`, `load_after`, `load_before`, `editions`, `requires_manager` | мод формата 3 (замены, новые ресурсы и потоки; зависимости, издания и правила порядка — `docs/mods.md` §1.3; `editions` по умолчанию пусто — любое издание; зависимости от модов, записанных в игру, на данных которых сделаны правки, добавляются сами — ответ называет их в `depends_added`) из изменений проекта, названных или всех — **только** в `mods/<id>-<версия>.zip` рабочего пространства, путь от клиента не принимается; `preview` — абсолютный путь картинки PNG или JPEG для карточки мода в менеджере (как `mods build --preview`, этап 63), `url` — страница мода |
 | `live_objects_to_workspace` | `forget` | этап 47: передвинутое в игре через связь — матрицами записей SimGroup, одной операцией со сравнением; скрытие не пишется; `forget` чистит журнал модуля |
-| `validate` | `filter` | проверки: каждый изменённый ресурс читается своим разборщиком (SimGroup, `lh2`, граф, metamodel, Lua, диалог); объекты SimGroup могут показать свои модели (`level::compat::check_edit`, иначе игра падает); `problems()` графов; ссылки, **добавленные правкой**, находятся в потоке или в загруженных до него (с учётом ресурсов, добавленных рабочим пространством); конфликты с файлами игры, потоки, изменённые вне рабочего пространства; проект — что не собрано, пропавшие файлы. `ok`, `errors`, `warnings`; только чтение |
+| `validate` | `filter` | проверки: каждый изменённый ресурс читается своим разборщиком (SimGroup, `lh2`, граф, metamodel, Lua, диалог); объекты SimGroup могут показать свои модели (`level::compat::check_edit`, иначе игра падает); `problems()` графов; ссылки, **добавленные правкой**, находятся в потоке или в загруженных до него (с учётом ресурсов, добавленных рабочим пространством); конфликты с файлами игры, потоки, изменённые вне рабочего пространства; проект — что не собрано, пропавшие файлы; **сообщения изменённых SimGroup** (этап 73): новое имя с хэшем сообщения игры — ошибка, «слышат, но никто не посылает» и «посылают, но никто не слышит» — предупреждения, список новых сообщений — `new_messages`. `ok`, `errors`, `warnings`; только чтение |
 
 Объект называется так, как его печатают `level_objects` и `logic_graph`:
 `<поток>#<ресурс>:<объект>`; группа — `<поток>#<ресурс>`. SimGroup,
@@ -204,8 +207,9 @@ unchanged`. Ошибка ничего не записывает.
 
 | Инструмент | Параметры | Что делает (как в CLI) |
 |---|---|---|
-| `add_stream` | `name`, `parent`, `with_parent`, `tocs` (`toc[=родитель]`), `guid` | новый поток (`add-stream`, ядро `create::new_stream`): GUID с незанятым хэшем, записи во всех оглавлениях, где есть родитель; по умолчанию загружается по запросу (`StreamSet` или `stream_load`), `with_parent` — дочерний (`new-resources.md` §3.1) |
+| `add_stream` | `name`, `parent`, `with_parent`, `auto_load`, `tocs` (`toc[=родитель]`), `guid` | новый поток (`add-stream`, ядро `create::new_stream`): GUID с незанятым хэшем, записи во всех оглавлениях, где есть родитель; по умолчанию загружается по запросу (`StreamSet` или `stream_load`), `with_parent` — дочерний (`new-resources.md` §3.1) |
 | `remove_stream` | `name` | удалить поток рабочего пространства со всеми его ресурсами (`remove-stream`) |
+| `add_zone_cell` | `level` (корневой поток уровня), `stream`, `min`, `max` (углы коробки, м), `lod` (`high`, `medium`, `low`, `map`), `name`, `on_enable`, `guid` | ячейка потока в мировой сетке уровня (`world-grid add`, ядро `level::world_grid::add_zone_cell`): игра грузит поток, когда игрок рядом, и выгружает, когда уходит; с `name` и `on_enable` — пока игрок в коробке `ZoneStreamEnable` с этим именем (этап 84, `new-resources.md` §3.5). `add_stream` с `with_parent` и `auto_load` — дочерний поток, который игра открывает при каждой загрузке родителя |
 | `add_simgroup` | `stream`, `copy_of` (группа), `objects` | новая SimGroup в потоке (новом или игры): пустая или с копиями объектов другой группы под новыми GUID; атрибуты-GUID и связи между копиями переводятся на копии (`level::edit::add_group`); в ответе ключ |
 | `add_resource` | `stream`, `type`, `file`, `ids`, `before`, `policy`, `alignment`, `compress` | ресурс из файла сырых данных под новыми незанятыми ids (`add-resource`) |
 | `clone_resource` | `stream`, `indices`, `to`, `seed`, `rewrite_references`, `retarget` | клоны ресурсов под новыми ids в тот же или другой поток, ссылки между клонами — на клоны, `retarget` переводит ресурсы потока на клоны (`clone-resource`) |
@@ -225,7 +229,8 @@ unchanged`. Ошибка ничего не записывает.
 `collision` (образец — metamodel с частью коллизии из потока-родителя или
 его предков) → `add_object` (`group` — ключ группы, `template` — объект
 нужного класса, `model` — id из ответа) → `validate` → `play` и
-`stream_load` нового потока, или `mod_build`.
+`stream_load` нового потока, или `mod_build`. Чтобы зона грузилась сама
+по подходу игрока — `add_zone_cell` (этап 84).
 
 **Импорт файлов и связи логики (этап 57).**
 
@@ -345,8 +350,13 @@ unchanged`. Ошибка ничего не записывает.
 |---|---|
 | `doctor-toolkit://docs/formats/<файл>.md` | все документы форматов `docs/formats/` |
 | `doctor-toolkit://docs/{mcp,navigation,logic-graph,levels,workspace,project}.md` | этот документ и описания индекса, графа логики, уровней, рабочего пространства, проекта |
+| `doctor-toolkit://kb/<путь>.md` | заметки базы знаний `docs/kb/` (этап 72): в списке ресурсов — карта `kb/index.md`, `kb/README.md`, карты разделов `kb/maps/*.md` и списки папок `kb/<папка>/index.md`; по URI читается любая заметка (`kb/classes/Gun.md`, `kb/questions/…`) |
 | `doctor-toolkit://schema/logic_schema.toml` | схема пинов SimGroup (`data/gf2/logic_schema.toml`) |
 | `doctor-toolkit://schema/engine_messages.txt` | имена сообщений, которые посылает и слушает код игры |
+| `doctor-toolkit://schema/enums.toml` | перечисления значений игры с источниками (`data/gf2/enums.toml`) |
+| `doctor-toolkit://schema/attr_types.toml` | смысл атрибутов SimGroup (`data/gf2/attr_types.toml`) |
+| `doctor-toolkit://schema/messages.toml` | описания отдельных сообщений (`data/gf2/messages.toml`) |
+| `doctor-toolkit://schema/gf2-types.schema.json` | JSON Schema перечислений, имён сообщений и поля `messages` файла `mod.json` |
 | `doctor-toolkit://game/messages` | все сообщения игры: имя, отправителей, слушателей (строка через табуляцию) |
 | `doctor-toolkit://game/missions` | миссии и их потоки (JSON) |
 
@@ -355,6 +365,15 @@ unchanged`. Ошибка ничего не записывает.
 сервер работает из выпуска, где дерева исходников нет, документ всегда
 соответствует коду, который его отдаёт, и нет чтения файлов по пути из
 запроса. Цена — около 0,5 МБ в бинарнике.
+
+**База знаний** (`docs/kb/`, `docs/kb/README.md`) встроена так же: все заметки
+— что известно о движке и игре, классы SimGroup, типы ресурсов, сообщения,
+адреса `godfather2.exe` (PC 1.0.789.0), опыты на стенде, открытые вопросы и
+запланированные исследования. В `resources/list` попадают только карты и
+списки (отдельных заметок сотни); остальные находит `kb_search` и читает
+`kb_note` или `resources/read` по URI. Заметки написаны по-русски; имена
+классов, сообщений и функций — как в игре. Игра для этих инструментов не
+читается.
 
 ## 5. Безопасность
 
@@ -461,7 +480,7 @@ Windows) — ошибка с именем держателя. Режим «Пр�
 
 | Тест | Что проверяет |
 |---|---|
-| `crates/doctor-toolkit-mcp/tests/server.rs` | на поддельной игре (`doctor_toolkit::testing`) с рабочим пространством (новая логика, правка строки) и проектом: `initialize`, `tools/list` (28 инструментов без флагов, аннотации, схемы), `resources/list` и `read`, отказ на URI с путём и на неизвестный инструмент; каждый инструмент, страницы `search` и `resource_json` (склейка страниц равна целому), `pointer`, `original`, граф логики на 2 шага, обход вверх по имени объекта, `level_objects` рядом с точкой; имена потоков с `..`; неизменность файлов; ограда и предел ответа; игра без рабочего пространства и проекта |
+| `crates/doctor-toolkit-mcp/tests/server.rs` | на поддельной игре (`doctor_toolkit::testing`) с рабочим пространством (новая логика, правка строки) и проектом: `initialize`, `tools/list` (31 инструмент без флагов, аннотации, схемы), `resources/list` и `read`, отказ на URI с путём и на неизвестный инструмент; каждый инструмент, страницы `search` и `resource_json` (склейка страниц равна целому), `pointer`, `original`, граф логики на 2 шага, обход вверх по имени объекта, `level_objects` рядом с точкой; имена потоков с `..`; неизменность файлов; ограда и предел ответа; игра без рабочего пространства и проекта |
 | `crates/doctor-toolkit-cli/tests/mcp.rs` | `doctor-toolkit mcp` дочерним процессом по stdio: в stdout только JSON-RPC, папка игры не тронута |
 | `crates/doctor-toolkit-mcp/tests/write.rs` | этап 51 на поддельной игре (с навигационным графом и шаблоном `LuaAudioScript`, `testing::write_extra_streams`): флаги включают и прячут инструменты, аннотации; каждый инструмент записи — одна операция, сравнение в ответе, `undo` возвращает прежнее сравнение, `redo` — правку; ошибки ничего не пишут (в том числе имя потока с `..`); `validate`, `mod_build` (файл внутри рабочего пространства; с `preview` и `url` — картинка и адрес в архиве, не картинка — отказ), `project_build` без проекта; файлы игры не изменились; блокировка редактора; 12 параллельных правок с трёх клиентов; `apply`/`unapply` и `play` → живая связь (поддельный модуль: игрок, объекты, телепорт, сообщение всем и одному, Lua) → `stop` (файлы игры как до `play`, `cmd.txt` убран), отключение клиента останавливает игру — с подставной игрой и подставным X-сервером; запись в живую игру без флага и с модулем без записи; мир и состояние (этап 48: `game_state`, `variables` без флага, запись без флага — отказ; `set_time`, `set_money`, `set_variable`, `stream_load`/`stream_unload` с `--allow-game`, неверное время, чужой поток); снимок с настоящего Xvfb (если установлен) — `image/png`; правка мира (этап 47: `live_object` и запись без флага — отказ; `move_live_object`, скрытие и `live_object_undo`, `live_objects_to_workspace` пишет матрицу триггера уровня одной операцией со сравнением) |
 | `crates/doctor-toolkit-mcp/tests/write.rs`, этап 57 | новая зона на поддельной игре: `add_stream` (повтор — ошибка), `add_simgroup`, `add_object` с образцом из уровня, `move_object` и `level_objects` по ключу группы, копия группы, `import_model` новым набором в новый поток, `clone_resource` и `add_resource` в него, `check_refs`, `validate` без ошибок, `mod_build` с новым потоком, `remove_stream` и `undo`; выгрузка `lh2` и графа, правка и `import_file` (повтор — без изменений), отказ для типа без импорта, `logic_connect` и разъединение; мод: `mod_build` → `mods_manage install/disable/uninstall`, `mods`, `integrity`; файлы игры не изменились; правка мира (этап 47: `live_object` и запись без флага — отказ; `move_live_object`, скрытие и `live_object_undo`, `live_objects_to_workspace` пишет матрицу триггера уровня одной операцией со сравнением) |

@@ -7,7 +7,8 @@ use serde_json::{Value, json};
 use doctor_toolkit::dialogue::{self, Report};
 use doctor_toolkit::hash::sdbm;
 use doctor_toolkit::resource::{
-    anim, chv, dlg, ffn, hkx, lh2, logic, lua, material, rcb, sbk, shading, smb, tg4, tob, trinity,
+    anim, auc, chv, dlg, ffn, get, hkx, lh2, logic, lua, material, mix, rcb, sbk, shading, smb,
+    tg4, tob, trinity,
 };
 use doctor_toolkit::workspace::Workspace;
 
@@ -37,7 +38,10 @@ pub fn view_name(type_id: u32) -> Option<&'static str> {
         anim::TYPE_BNK => "animation bank: clips and events",
         hkx::TYPE_HKX => "Havok packfile: sections and objects",
         chv::TYPE_CHV => "chatter set: lines and events",
-        smb::TYPE_SMB => "speech map: entries",
+        smb::TYPE_SMB => "speech bank: entries with ids, files, mix categories and settings",
+        get::TYPE_GET => "speech event table: cool-downs, ranks, flags, priorities",
+        auc::TYPE_AUC => "audio configuration: mix categories, bank pools, ducks",
+        mix::TYPE_MIX => "mixer snapshot: levels of mix categories",
         TYPE_SBK => "sound bank: emitters, parameters, variations",
         ffn::TYPE_FFN => "font: glyph metrics",
         TYPE_MATERIAL => "material: shaders, parameters, textures",
@@ -90,7 +94,10 @@ fn decode(
         anim::TYPE_BNK => to_value(anim::AnimBank::parse(data))?,
         hkx::TYPE_HKX => to_value(hkx::Packfile::parse(data))?,
         chv::TYPE_CHV => to_value(chv::ChatterSet::parse(data))?,
-        smb::TYPE_SMB => to_value(smb::parse(data))?,
+        smb::TYPE_SMB => to_value(smb::SpeechBank::parse(data))?,
+        get::TYPE_GET => to_value(get::SpeechEventTable::parse(data))?,
+        auc::TYPE_AUC => to_value(auc::AudioConfig::parse(data))?,
+        mix::TYPE_MIX => to_value(mix::Mix::parse(data))?,
         TYPE_SBK => to_value(sbk::SoundBank::parse(data))?,
         ffn::TYPE_FFN => to_value(ffn::Font::parse(data))?,
         TYPE_MATERIAL => material_json(&material::Material::parse(data)?)?,

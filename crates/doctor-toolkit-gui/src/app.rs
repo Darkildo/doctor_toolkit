@@ -58,6 +58,7 @@ mod outliner;
 mod palette;
 mod play;
 mod project;
+mod save_view;
 mod scripts;
 mod shell;
 pub mod theme;
@@ -235,6 +236,8 @@ pub struct BrowserApp {
     /// The mod manager of the open game.
     mods: doctor_toolkit_mods::ModsPanel,
     mods_open: bool,
+    /// Tools → Save file: a save of the game, read only.
+    save_view: save_view::SaveWindow,
     /// The Movies window (`movies/*.vp6`).
     movies: crate::video_view::MoviesWindow,
     /// The integrity check waits for the Mods window to read the mods.
@@ -358,6 +361,7 @@ impl BrowserApp {
             direct: false,
             mods: doctor_toolkit_mods::ModsPanel::new(),
             mods_open: std::env::var_os("DOCTOR_TOOLKIT_GUI_MODS").is_some(),
+            save_view: save_view::SaveWindow::from_env(),
             movies: crate::video_view::MoviesWindow::new(),
             integrity_queued: false,
             model_import: Default::default(),
@@ -1060,6 +1064,7 @@ impl eframe::App for BrowserApp {
         self.content_drag(&ctx);
         self.play_frame(&ctx);
         self.show_mods(&ctx);
+        self.show_save_view(&ctx);
         if let Some(game) = self.game.clone()
             && let Some(done) = self.movies.update(&ctx, game.root())
         {

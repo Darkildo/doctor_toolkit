@@ -21,7 +21,7 @@ use doctor_toolkit::workspace::{Workspace, WorkspaceLock};
 use doctor_toolkit_mcp::Config;
 use doctor_toolkit_mcp::game::XServer;
 
-const EDIT_TOOLS: [&str; 30] = [
+const EDIT_TOOLS: [&str; 31] = [
     "set_attribute",
     "move_object",
     "duplicate_object",
@@ -40,6 +40,7 @@ const EDIT_TOOLS: [&str; 30] = [
     "live_objects_to_workspace",
     "add_stream",
     "remove_stream",
+    "add_zone_cell",
     "add_simgroup",
     "add_resource",
     "clone_resource",
@@ -56,7 +57,7 @@ const EDIT_TOOLS: [&str; 30] = [
 ];
 
 /// Tools of a server without flags (reading, the live link, the editor).
-const READ_TOOLS: usize = 28;
+const READ_TOOLS: usize = 31;
 
 const GAME_TOOLS: [&str; 17] = [
     "apply",
@@ -1002,6 +1003,22 @@ async fn a_new_area_is_made_in_a_new_stream_without_touching_the_game() {
         )
         .await;
     assert!(error && text.contains("already exists"), "{text}");
+    // The level of the fake game has no world grid: a cell is refused.
+    let (text, error) = c
+        .call(
+            "add_zone_cell",
+            json!({ "level": LEVEL, "stream": "gf2/doctor/area",
+                    "min": [0.0, 0.0, 0.0], "max": [10.0, 5.0, 10.0] }),
+        )
+        .await;
+    assert!(error && text.contains("world grid"), "{text}");
+    let (text, error) = c
+        .call(
+            "add_stream",
+            json!({ "name": "gf2/doctor/kid", "parent": LEVEL, "auto_load": true }),
+        )
+        .await;
+    assert!(error && text.contains("with_parent"), "{text}");
 
     // A SimGroup in it, an object copied from the level placed in it.
     let group = c

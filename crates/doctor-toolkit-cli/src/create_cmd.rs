@@ -1,17 +1,20 @@
 //! Commands that create resources and streams: `add-resource`,
-//! `clone-resource`, `add-stream`, `remove-stream`, `check-refs`.
+//! `clone-resource`, `add-stream`, `remove-stream`, `check-refs`,
+//! `world-grid`.
 
 use std::fs;
 use std::io::Write as _;
 use std::path::PathBuf;
 
 use anyhow::{Context, Result, bail};
-use clap::Args;
+use clap::{Args, Subcommand};
 
 use doctor_toolkit::container::ustream::{ResourceHeader, Storage};
 use doctor_toolkit::create::{self, CloneOptions, IdForm, Remap};
 use doctor_toolkit::game::GameInstance;
+use doctor_toolkit::level::world_grid::{self, ZoneCell};
 use doctor_toolkit::resource::names::type_tags;
+use doctor_toolkit::resource::wgi;
 use doctor_toolkit::workspace::{
     NewResourceEdit, ResourceEdit, ResourceKey, StorageChoice, Workspace,
 };
@@ -101,6 +104,13 @@ pub struct AddStream {
     /// when game data asks for its hash (`StreamSet`)
     #[arg(long)]
     with_parent: bool,
+    /// With `--with-parent`: do not mark the stream as disabled by default
+    /// (flags `0,0,1,0`), so the game opens it with every load of the
+    /// parent and unloads it with the parent. With a world zone as the
+    /// parent the new stream comes and goes as the player approaches and
+    /// leaves, without `EnableDisableStreams` (stage 84)
+    #[arg(long, requires = "with_parent")]
+    auto_load: bool,
     /// Table of contents to list it in, relative path, optionally with
     /// another parent there: `gf2/globals_global.toc=gf2/globals_global`
     /// (repeatable) [default: every table that lists the parent]
@@ -324,7 +334,7 @@ fn retarget(
 pub fn add_stream(args: AddStream) -> Result<()> {
     let game = GameInstance::open(&args.game_dir)?;
     let mut ws = workspace_cmd::open_for_edit(&game, &args.mode)?;
-    let stream = create::new_stream(
+    let mut stream = create::new_stream(
         &game,
         &ws,
         &args.name,
@@ -333,6 +343,7 @@ pub fn add_stream(args: AddStream) -> Result<()> {
         &args.tocs,
         args.guid.as_deref(),
     )?;
+    stream.auto_load = args.auto_load;
     let (name, guid_text, hash, tocs) = (
         stream.name.clone(),
         stream.guid.clone(),
@@ -385,4 +396,274 @@ pub fn check_refs(args: CheckRefs) -> Result<()> {
     }
     out!("{total} unresolved reference(s)");
     Ok(())
+}
+
+#[derive(Subcommand)]
+pub enum WorldGridCommand {
+    /// List the world grids of a level: streams, cells and their boxes
+    Info(WorldGridInfo),
+    /// Add a stream to a world grid: the game loads it when the player
+    /// comes near and unloads it when the player leaves (recorded in the
+    /// workspace)
+    ///
+    /// The stream is one made with `add-stream` (or any stream with
+    /// `--guid`). With the default `--lod high` the game loads it within
+    /// about 180 m of the centre of the box.
+    Add(WorldGridAdd),
+    /// Take the cell of a stream out of the world grids of a level
+    /// (recorded in the workspace)
+    Remove(WorldGridRemove),
+}
+
+#[derive(Args)]
+pub struct WorldGridInfo {
+    game_dir: PathBuf,
+    /// Root stream of the level, e.g. `gf2/queens`
+    level: String,
+    /// List every cell
+    #[arg(long)]
+    cells: bool,
+    /// Print the grids as JSON
+    #[arg(long)]
+    json: bool,
+    /// Workspace directory [default: <GAME_DIR>/_doctor_toolkit/workspace]
+    #[arg(long, value_name = "DIR")]
+    workspace_dir: Option<PathBuf>,
+}
+
+#[derive(Args)]
+pub struct WorldGridAdd {
+    game_dir: PathBuf,
+    /// Root stream of the level, e.g. `gf2/queens`
+    level: String,
+    /// Stream to load by the position of the player, e.g. `gf2/doctor/island`
+    stream: String,
+    /// Lowest corner of the box of the zone, `X,Y,Z` in metres
+    #[arg(long, value_name = "X,Y,Z", allow_hyphen_values = true)]
+    min: String,
+    /// Highest corner of the box
+    #[arg(long, value_name = "X,Y,Z", allow_hyphen_values = true)]
+    max: String,
+    /// Grid to add it to: `high` (loaded within about 180 m), `medium`
+    /// (450 m), `low` (1800 m), `map` (the grid of the Don's View map)
+    #[arg(long, default_value = "high", value_parser = ["high", "medium", "low", "map"])]
+    lod: String,
+    /// Name `ZoneStreamEnable` objects find the cell by
+    #[arg(long)]
+    name: Option<String>,
+    /// Leave the cell disabled until the player enters the box of a
+    /// `ZoneStreamEnable` object with this `--name` (cell kind 5, as the
+    /// game's interiors)
+    #[arg(long, requires = "name")]
+    on_enable: bool,
+    /// GUID of the stream, 32 hexadecimal digits [default: the GUID of the
+    /// stream made with `add-stream`]
+    #[arg(long)]
+    guid: Option<String>,
+    #[command(flatten)]
+    mode: EditMode,
+}
+
+#[derive(Args)]
+pub struct WorldGridRemove {
+    game_dir: PathBuf,
+    level: String,
+    /// Stream name, or its table-of-contents hash as 8 hexadecimal digits
+    stream: String,
+    #[command(flatten)]
+    mode: EditMode,
+}
+
+fn parse_point(text: &str) -> Result<[f32; 3]> {
+    let parts: Vec<f32> = text
+        .split(',')
+        .map(|p| p.trim().parse::<f32>())
+        .collect::<std::result::Result<_, _>>()
+        .with_context(|| format!("`{text}` is not X,Y,Z"))?;
+    <[f32; 3]>::try_from(parts).map_err(|_| anyhow::anyhow!("`{text}` is not X,Y,Z"))
+}
+
+fn lod_name(mask: u32) -> String {
+    let names = [
+        (wgi::lod::HIGH, "high"),
+        (wgi::lod::MEDIUM, "medium"),
+        (wgi::lod::LOW, "low"),
+        (wgi::lod::MAP, "map"),
+        (wgi::lod::INTERIOR, "interior"),
+    ];
+    let list: Vec<&str> = names
+        .iter()
+        .filter(|(bit, _)| mask & bit != 0)
+        .map(|(_, name)| *name)
+        .collect();
+    if list.is_empty() {
+        "none".to_owned()
+    } else {
+        list.join("+")
+    }
+}
+
+/// Names of the streams of the tables of contents by hash, with the new
+/// streams of the workspace.
+fn stream_names(
+    game: &GameInstance,
+    ws: &Workspace,
+) -> Result<std::collections::HashMap<u32, String>> {
+    let mut names = std::collections::HashMap::new();
+    for index in 0..game.tocs().len() {
+        for name in &game.load_toc(index)?.names {
+            names
+                .entry(name.hash)
+                .or_insert_with(|| name.name_lossy().replace('\\', "/"));
+        }
+    }
+    for stream in ws.new_streams() {
+        names.insert(stream.hash, stream.name.clone());
+    }
+    Ok(names)
+}
+
+pub fn world_grid(command: WorldGridCommand) -> Result<()> {
+    match command {
+        WorldGridCommand::Info(args) => world_grid_info(args),
+        WorldGridCommand::Add(args) => world_grid_add(args),
+        WorldGridCommand::Remove(args) => world_grid_remove(args),
+    }
+}
+
+fn world_grid_info(args: WorldGridInfo) -> Result<()> {
+    let game = GameInstance::open(&args.game_dir)?;
+    let ws = Workspace::for_game(&game, args.workspace_dir.as_deref())?;
+    let grids = world_grid::level_grids(&game, &ws, &args.level)?;
+    if grids.is_empty() {
+        bail!("{} has no world grid (`wgi`)", args.level);
+    }
+    if args.json {
+        let list: Vec<_> = grids
+            .iter()
+            .map(|g| {
+                serde_json::json!({
+                    "resource": g.resource,
+                    "id": format!("{:08x}", g.id),
+                    "grid": g.grid,
+                })
+            })
+            .collect();
+        out!("{}", serde_json::to_string_pretty(&list)?);
+        return Ok(());
+    }
+    let names = stream_names(&game, &ws)?;
+    let name_of = |hash: u32| {
+        names
+            .get(&hash)
+            .cloned()
+            .unwrap_or_else(|| format!("{hash:08x}"))
+    };
+    for g in &grids {
+        let grid = &g.grid;
+        out!(
+            "#{} wgi {:08x}: {} cell(s), level of detail {}, {} stream(s) in the table, {} pool word(s)",
+            g.resource,
+            g.id,
+            grid.cells.len(),
+            grid.main_lod_mask().map_or("none".to_owned(), lod_name),
+            grid.streams.len(),
+            grid.pool.len()
+        );
+        if !args.cells {
+            continue;
+        }
+        for (index, cell) in grid.cells.iter().enumerate() {
+            let needs: Vec<String> = grid
+                .list(&cell.needs)
+                .iter()
+                .map(|&s| name_of(grid.streams[s as usize].hash()))
+                .collect();
+            out!(
+                "  {index:4} {}  kind {} flags {:#04x} lod {}  centre {:.1},{:.1},{:.1} r {:.1}{}{}",
+                name_of(cell.stream_hash.0),
+                cell.kind,
+                cell.flags,
+                lod_name(cell.lod_mask),
+                cell.centre[0],
+                cell.centre[1],
+                cell.centre[2],
+                cell.radius,
+                if cell.name_hash.0 != 0 {
+                    format!("  name {}", cell.name_hash)
+                } else {
+                    String::new()
+                },
+                if needs.is_empty() {
+                    String::new()
+                } else {
+                    format!("  needs {}", needs.join(", "))
+                }
+            );
+        }
+    }
+    Ok(())
+}
+
+fn world_grid_add(args: WorldGridAdd) -> Result<()> {
+    let game = GameInstance::open(&args.game_dir)?;
+    let mut ws = workspace_cmd::open_for_edit(&game, &args.mode)?;
+    let lod_mask = match args.lod.as_str() {
+        "high" => wgi::lod::HIGH,
+        "medium" => wgi::lod::MEDIUM,
+        "low" => wgi::lod::LOW,
+        _ => wgi::lod::MAP,
+    };
+    let cell = ZoneCell {
+        stream: args.stream.clone(),
+        guid: args.guid.clone(),
+        box_min: parse_point(&args.min)?,
+        box_max: parse_point(&args.max)?,
+        lod_mask,
+        kind: if args.on_enable { 5 } else { wgi::KIND_WORLD },
+        flags: 0,
+        name: args.name.clone(),
+    };
+    let added = world_grid::add_zone_cell(&game, &mut ws, &args.level, &cell)?;
+    out!(
+        "cell {} of world grid #{} of {}: stream {} ({:08x}){}",
+        added.cell,
+        added.resource,
+        args.level,
+        args.stream,
+        added.hash,
+        added
+            .needs
+            .as_ref()
+            .map_or(String::new(), |n| format!(", needs {n}"))
+    );
+    let level = doctor_toolkit::workspace::key::normalize_stream(&args.level);
+    workspace_cmd::finish_edit(&game, &mut ws, &args.mode, vec![level])
+}
+
+fn world_grid_remove(args: WorldGridRemove) -> Result<()> {
+    let game = GameInstance::open(&args.game_dir)?;
+    let mut ws = workspace_cmd::open_for_edit(&game, &args.mode)?;
+    let name = doctor_toolkit::workspace::key::normalize_stream(&args.stream);
+    let hash = match ws.new_stream(&name) {
+        Some(stream) => stream.hash,
+        None => match stream_names(&game, &ws)?
+            .into_iter()
+            .find(|(_, n)| n.eq_ignore_ascii_case(&name))
+        {
+            Some((hash, _)) => hash,
+            None => u32::from_str_radix(&args.stream, 16)
+                .with_context(|| format!("{} is neither a stream nor a hash", args.stream))?,
+        },
+    };
+    if !world_grid::remove_zone_cell(&game, &mut ws, &args.level, hash)? {
+        bail!(
+            "the world grids of {} have no cell of {}",
+            args.level,
+            args.stream
+        );
+    }
+    out!("removed the cell of {} ({hash:08x})", args.stream);
+    let level = doctor_toolkit::workspace::key::normalize_stream(&args.level);
+    workspace_cmd::finish_edit(&game, &mut ws, &args.mode, vec![level])
 }

@@ -87,7 +87,7 @@ documentation of this tool only.
 2. Unpack it and start the editor with the folder of your game:
 
    ```sh
-   tar xzf doctor_toolkit-0.0.6-linux-x86_64.tar.gz && cd doctor_toolkit-0.0.6-linux-x86_64
+   tar xzf doctor_toolkit-0.0.7-linux-x86_64.tar.gz && cd doctor_toolkit-0.0.7-linux-x86_64
    ./doctor-toolkit-gui "/path/to/The Godfather II"
    ```
 
@@ -143,6 +143,13 @@ This is a **beta**: back up your game folder before writing into it.
   instruments and tones, written back byte for byte; volume, pitch and other
   parameters are edited, new variations and new emitters added
   (`sbk-info`, `sbk-edit`, `sound-add`, the bank tab of the GUI).
+- Speech: speech banks (`smb`), the table of speech events (`get`), the audio
+  configuration (`auc`) and mixer snapshots (`mix`) are read and written back
+  byte for byte. A new voice line is made from a recording (`voice-add`, the
+  **New voice line** wizard): the sound file as a new entry of the overlay
+  archive, its entry in a speech bank, the line in the speaker's chatter set
+  and the record of a new event; mods carry the sound with them. A new line
+  with a new event was recorded playing in the game with its subtitle.
 - Movies (`movies/*.vp6`, EA container with VP6 video and EA-XA audio): info,
   audio as WAV, frames as PNG (built-in decoder for key frames), replacement
   with a built-in VP6 encoder (Y4M input, or any video through an installed
@@ -284,7 +291,7 @@ Download `doctor_toolkit-<version>-linux-x86_64.tar.gz` from the releases,
 unpack it anywhere and run the programs from that folder:
 
 ```sh
-tar xzf doctor_toolkit-0.0.6-linux-x86_64.tar.gz && cd doctor_toolkit-0.0.6-linux-x86_64
+tar xzf doctor_toolkit-0.0.7-linux-x86_64.tar.gz && cd doctor_toolkit-0.0.7-linux-x86_64
 ./doctor-toolkit-gui "/path/to/The Godfather II"     # the editor
 ./open-mod-manager "/path/to/The Godfather II"       # Open Mod Manager, for players
 ./doctor-toolkit --help                              # the command line
@@ -404,6 +411,11 @@ $T sound-encode theme.wav -o theme.snu --like original.snu   # encode only
 $T sbk-info "$GAME" gf2/frontend:sbk:6d4bafbd    # emitters, variations, tones of a bank
 $T sbk-edit "$GAME" gf2/frontend:sbk:6d4bafbd --emitter '#4' --volume 0.5 --pitch 1.5
 $T sound-add "$GAME" gf2/frontend:sbk:6d4bafbd beep.wav --new my_beep  # a new emitter my_beep.emx
+$T voice-add "$GAME" gf2/globals_global:chv:18c7062e hello.wav --event DOCTOR_HELLO \
+    --name doc1_xxx_0000001 --subtitle en="Hello."   # a new voice line (voice-add GAME --speakers lists the sets)
+$T speech-events "$GAME" F2F_ENJOY_FLIGHT        # records of the speech event table
+$T audio-config "$GAME"                          # mix categories, bank pools, ducks
+$T mix "$GAME" global_f2f.mix --category MUSIC --volume 0.2   # a mixer snapshot
 $T viv-list "$GAME" title_screen                 # files of the .viv archives
 $T lua-export "$GAME" -o scripts                 # Lua 5.0 bytecode
 $T lua-decompile "$GAME" -o scripts              # Lua source, checked by compiling it back
@@ -415,6 +427,7 @@ $T script-run graph.json send:iMsgX wait:5       # run against a mock of the gam
 $T script-deploy "$GAME" gf2/globals_global graph.json   # lua resource + LuaAudioScript
 $T logic-export "$GAME" -o logic --type simgroup --stream mp_mall   # level objects as JSON
 $T logic-import "$GAME" logic/gf2/frontend/00046_simgroup_00000000.json   # edited JSON back
+$T save GF2-EN-autosave --chunk variables --game "$GAME"   # look into a save file (read only)
 $T simgroup-set "$GAME" gf2/frontend 46 12 --set RenderingParams.1=0.5 --position 1,2,3
 $T logic-graph "$GAME" mission:killingcastro      # nodes, wires, dangling messages
 $T logic-graph "$GAME" checkpoint:737 --dot | dot -Tsvg > cp737.svg
@@ -647,9 +660,12 @@ navigation graph, rigs, materials and more as JSON, Lua as decompiled source;
 paged), `lookup_hash`, `strings`, `logic_graph` (object → messages →
 listeners over N hops, a message across the game, a mission overview),
 `level_objects` (placed objects with positions), `workspace_status`,
-`workspace_diff`, `project_status`. Resources: the format documents
-(`docs/formats/*.md`, built into the binary), the schema of logic pins, the
-engine's message names, the messages and missions of the game. Game data in
+`workspace_diff`, `project_status`, `kb_search` and `kb_note` (the knowledge
+base `docs/kb/`: what is known about the engine and the game, SimGroup
+classes, addresses of the executable, experiments, open questions).
+Resources: the format documents (`docs/formats/*.md`) and the knowledge base
+(both built into the binary), the schema of logic pins, the engine's message
+names, the messages and missions of the game. Game data in
 results is fenced off as untrusted data, results are limited in size
 (`--max-response-chars`). Details: `docs/mcp.md`, guide chapter 22 (Russian).
 

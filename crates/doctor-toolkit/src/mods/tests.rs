@@ -1366,6 +1366,7 @@ fn new_stream_def(name: &str, hash: u32, with_parent: bool) -> NewStream {
         hash,
         parent: LEVEL.into(),
         with_parent,
+        auto_load: false,
         tocs: vec!["gf2/level.toc".into()],
         toc_parents: Default::default(),
         label: String::new(),
@@ -2523,7 +2524,7 @@ fn version_2_manifests_are_written_back_byte_for_byte() {
     assert!(error.contains("version 3 is needed"), "{error}");
     // A program that reads up to version 2 says to update.
     let mut newer: serde_json::Value = serde_json::from_slice(&v3.to_json().unwrap()).unwrap();
-    newer["format_version"] = 4.into();
+    newer["format_version"] = (FORMAT_VERSION + 1).into();
     let error = ModManifest::parse(newer.to_string().as_bytes()).unwrap_err();
     assert!(
         error.to_string().contains("Update Open Mod Manager"),
@@ -3093,4 +3094,182 @@ fn the_load_order_follows_the_rules() {
             .any(|i| matches!(i.problem, Problem::DependencyLater { .. })),
         "{issues:?}"
     );
+}
+
+/// `messages` of mod.json: the names a mod adds must be new to the game and
+/// must not have the hash of a game message.
+#[test]
+fn messages_of_a_mod_must_not_be_messages_of_the_game() {
+    let (_dir, game) = fake_game();
+    let mut manifest = manifest_for(&game, &mesh(3));
+    manifest.messages = vec!["evil_door_opened".into(), "Evil_Door_Closed".into()];
+    manifest.validate().unwrap();
+    // The field survives the JSON form and older readers may ignore it.
+    let json = String::from_utf8(manifest.to_json().unwrap()).unwrap();
+    assert!(json.contains("\"messages\""), "{json}");
+    assert_eq!(
+        ModManifest::parse(json.as_bytes()).unwrap().messages,
+        manifest.messages
+    );
+    // A message of the game files and one named by the executable.
+    for taken in ["boundary_fade_out", "iMsgPostSpawnInitialize"] {
+        manifest.messages = vec![taken.into()];
+        let error = manifest.validate().unwrap_err().to_string();
+        assert!(error.contains("is a message of the game"), "{error}");
+    }
+    manifest.messages = vec![String::new()];
+    assert!(manifest.validate().is_err());
+    manifest.messages = Vec::new();
+    assert!(
+        !String::from_utf8(manifest.to_json().unwrap())
+            .unwrap()
+            .contains("messages")
+    );
+}
+
+/// A voice line in a mod: the changed resources and the new file of the
+/// archives travel together; the mod manager writes the file into its
+/// overlay archive and takes it away again.
+#[test]
+fn mods_carry_new_files_of_the_archives() {
+    use crate::container::big::BigArchive;
+    use crate::workspace::tests::fake_game_with_files;
+    use crate::workspace::{FileKey, ResourceEdit, StorageChoice, files};
+    let (dir, game) = fake_game_with_files();
+    let root = dir.path();
+    let pristine = snapshot(root);
+    let original_mesh = game_data(&game, LEVEL, MESH);
+    let temp = tempfile::tempdir().unwrap();
+
+    let mut ws = Workspace::create(temp.path().join("ws"), &game).unwrap();
+    let new_key = FileKey::archive_entry("audiostreams\\c1_xxx_0\\d_doc1_xxx_0000001.exa.snu");
+    let edits = vec![(
+        stream(&game, LEVEL),
+        vec![ResourceEdit {
+            index: MESH,
+            data: mesh(5),
+            storage: StorageChoice::Keep,
+        }],
+    )];
+    ws.change_resources_and_new_files(
+        &game,
+        "New voice line",
+        &edits,
+        vec![(new_key.clone(), vec![7; 4000])],
+    )
+    .unwrap();
+    // An entry the game has cannot be added as new, and a file that is not
+    // an archive entry cannot be added at all.
+    let taken = FileKey::archive_entry("audiostreams\\a\\one.exa.snu");
+    assert!(
+        ws.change_resources_and_new_files(&game, "again", &[], vec![(taken, vec![1])])
+            .is_err()
+    );
+    let loose = FileKey::loose("movies/common/new.vp6");
+    assert!(
+        ws.change_resources_and_new_files(&game, "loose", &[], vec![(loose, vec![1])])
+            .is_err()
+    );
+    assert_eq!(ws.current_file(&game, &new_key).unwrap(), vec![7; 4000]);
+    // One operation: undoing it takes the file and the resource back.
+    ws.undo().unwrap();
+    assert!(ws.file_change(&new_key).is_none() && ws.is_empty());
+    ws.redo().unwrap();
+
+    let out = temp.path().join("voice.zip");
+    let report = build_from_workspace(&ws, &info("voice"), None, None, &out).unwrap();
+    assert_eq!(report.format_version, FILES_VERSION);
+    let mut package = ModArchive::open(&out).unwrap();
+    let manifest = package.manifest().clone();
+    assert_eq!(manifest.files.len(), 1);
+    assert_eq!(manifest.files[0].key, new_key);
+    assert!(package.warnings().is_empty(), "{:?}", package.warnings());
+    package.verify().unwrap();
+    // The selected resource takes the file of its operation along.
+    let mesh_key = key(&game, LEVEL, MESH);
+    let picked = manifest_from_workspace(&ws, &info("voice"), Some(&[mesh_key])).unwrap();
+    assert_eq!(picked.files.len(), 1);
+    // A version 3 manifest cannot carry files; bad names are refused.
+    let mut stamped = manifest.clone();
+    stamped.format_version = RELATIONS_VERSION;
+    let error = stamped.validate().unwrap_err().to_string();
+    assert!(error.contains("version 4 is needed"), "{error}");
+    for bad in [
+        "audiostreams\\..\\x.snu",
+        "_doctor_toolkit\\overlay.txt",
+        "a\\\\b",
+        "Audiostreams\\x.snu",
+    ] {
+        let mut m = manifest.clone();
+        m.files[0].key = FileKey::Archive(bad.to_owned());
+        assert!(m.validate().is_err(), "{bad}");
+    }
+    let mut m = manifest.clone();
+    m.files[0].key = FileKey::loose("movies/x.vp6");
+    assert!(m.validate().is_err());
+
+    let mut mods = ModManager::open(&game).unwrap();
+    mods.install_file(&game, &out, true).unwrap();
+    assert_eq!(
+        snapshot(root),
+        pristine,
+        "installing does not touch the game"
+    );
+    mods.apply(&game, ModApplyOptions::default()).unwrap();
+    assert!(mods.has_written());
+    let overlay = BigArchive::open(root.join("GODFATH0.viv")).unwrap();
+    assert_eq!(overlay.entries[0].name, files::OVERLAY_MARKER);
+    let entry = overlay
+        .entries
+        .iter()
+        .find(|e| e.name == new_key.name())
+        .unwrap();
+    assert_eq!(overlay.read(entry).unwrap(), vec![7; 4000]);
+    assert_eq!(
+        fs::read(root.join("GODFATH1.viv")).unwrap(),
+        pristine["GODFATH0.viv"],
+        "the game's archives are renamed, not rewritten"
+    );
+    assert_eq!(game_data(&game, LEVEL, MESH), mesh(5));
+    // Applying again writes nothing; the workspace may not write meanwhile.
+    let again = mods.apply(&game, ModApplyOptions::default()).unwrap();
+    assert!(again.written.is_empty(), "{:?}", again.written);
+    assert!(ensure_mods_not_in_game(&game).is_err());
+
+    // A disabled mod takes its file out of the game.
+    mods.set_enabled("voice", false).unwrap();
+    mods.apply(&game, ModApplyOptions::default()).unwrap();
+    assert!(!root.join("GODFATH2.viv").exists());
+    assert_eq!(
+        fs::read(root.join("GODFATH0.viv")).unwrap(),
+        pristine["GODFATH0.viv"]
+    );
+    assert!(!mods.has_written());
+    mods.set_enabled("voice", true).unwrap();
+    mods.apply(&game, ModApplyOptions::default()).unwrap();
+    assert!(root.join("GODFATH2.viv").is_file());
+    mods.unapply(&game, false).unwrap();
+    assert!(!root.join("GODFATH2.viv").exists());
+    assert_eq!(
+        fs::read(root.join("GODFATH0.viv")).unwrap(),
+        pristine["GODFATH0.viv"]
+    );
+    assert_eq!(game_data(&game, LEVEL, MESH), original_mesh);
+}
+
+/// A child stream that loads with its parent needs format version 4: an
+/// older manager does not know `auto_load` and would install it disabled.
+#[test]
+fn a_child_stream_that_loads_with_its_parent_needs_format_4() {
+    let (_dir, game) = fake_game();
+    let mut manifest = manifest_for(&game, &mesh(3));
+    let mut stream = new_stream_def(PROPS, 0x0777_0000, true);
+    manifest.streams = vec![stream.clone()];
+    assert_eq!(manifest.required_version(), ADDING_VERSION);
+    stream.auto_load = true;
+    manifest.streams = vec![stream];
+    assert_eq!(manifest.required_version(), FILES_VERSION);
+    manifest.format_version = RELATIONS_VERSION;
+    let error = manifest.validate().unwrap_err().to_string();
+    assert!(error.contains("version 4 is needed"), "{error}");
 }

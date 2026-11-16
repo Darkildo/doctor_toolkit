@@ -74,3 +74,45 @@ def test_checkpoint_runs_without_the_game():
         original=True,
     )
     assert len(again["comparison"]["matched"]) == 1
+
+
+def test_messages_are_typed_without_a_game():
+    engine = dt.message_info("imsgnewcheckpointloaded")
+    assert engine["kind"] == "engine" and engine["name"] == "iMsgNewCheckpointLoaded"
+    assert engine["usage"] == "heard_from_engine" and engine["conf"] == "exe"
+    fade = dt.message_info("boundary_fade_out")
+    assert fade["kind"] == "game" and fade["usage"] == "sent_and_heard"
+    assert any(s["class"] == "TriggerBase" for s in fade["senders"])
+    assert fade["data"] == "unknown"
+    assert dt.message_info("0x%08x" % fade["hash"])["name"] == "boundary_fade_out"
+    custom = dt.message_info("my_mod_door_opened")
+    assert custom["kind"] == "custom" and custom["collides_with"] is None
+    assert dt.message_info("0xdeadbeef")["kind"] == "unknown"
+    found = dt.message_search("cp_325_", limit=5)
+    assert 0 < len(found) <= 5 and all("cp_325_" in m["name"] for m in found)
+
+
+def test_value_lists_and_attribute_types():
+    from doctor_toolkit import gf2_types
+
+    family = dt.enum_values("family")
+    names = [v["name"] for v in family["values"]]
+    assert len(names) == 28 and "corleone" in names
+    assert tuple(names) == gf2_types.FAMILY
+    corleone = next(v for v in family["values"] if v["name"] == "corleone")
+    assert corleone["hash"] == gf2_types.enum_hash("corleone") == dt.sdbm("corleone")
+    assert [e["key"] for e in dt.enum_values()] == list(gf2_types.ENUMS)
+    assert gf2_types.ENUMS["crew_specialty"]["values"][4]["value"] == 0x40
+    assert "iMsgPostSpawnInitialize" in gf2_types.ENGINE_MESSAGES
+    with pytest.raises(dt.InvalidArgumentError):
+        dt.enum_values("planets")
+    building = {a["index"]: a["type"] for a in dt.attr_types("Building")}
+    assert building[3] == "Enum<city>" and building[4] == "Enum<family>"
+    assert building[21] == "MsgIn"
+    assert dt.attr_types("NoSuchClass") == []
+
+
+def test_logic_check_without_a_workspace(sample):
+    game, _, _ = sample
+    report = dt.logic_check(game)
+    assert report["ok"] is True

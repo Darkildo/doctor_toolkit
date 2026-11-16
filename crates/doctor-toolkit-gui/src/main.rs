@@ -15,6 +15,7 @@
 //! `DOCTOR_TOOLKIT_GUI_SELECT=<index>` selects a resource first and
 //! `DOCTOR_TOOLKIT_GUI_CHANGES=1` shows the Changes panel and
 //! `DOCTOR_TOOLKIT_GUI_MODS=1` the mods window and
+//! `DOCTOR_TOOLKIT_GUI_SAVE=<file>` the Save file window with that save and
 //! `DOCTOR_TOOLKIT_GUI_SEARCH=<query>` searches once the game index is ready.
 //! `DOCTOR_TOOLKIT_GUI_SHELL=<window>[,…]` opens windows of the shell
 //! (palette, preferences, about, shortcuts, …; see `app::Capture`).
@@ -70,6 +71,7 @@ mod script_view;
 mod settings;
 mod text_view;
 mod texture_view;
+mod type_picker;
 mod video_view;
 mod views;
 mod wizard_view;

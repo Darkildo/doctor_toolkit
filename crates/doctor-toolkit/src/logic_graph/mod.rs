@@ -18,11 +18,14 @@
 //!   whether some other part of the game sends or hears it.
 //!
 //! Edits of the graph (connect, disconnect, add and remove nodes, change
-//! parameters) are SimGroup edits recorded in a workspace: [`edit`].
+//! parameters) are SimGroup edits recorded in a workspace: [`edit`]; [`check`]
+//! tells when an edit gives a new message the hash of a game message or
+//! leaves a message with one end only.
 //! Messages as they go — from the running game or a run without it — are
 //! matched to nodes and wires by [`trace`].
 //! See `docs/logic-graph.md`.
 
+pub mod check;
 pub mod edit;
 pub mod index;
 pub mod run;
@@ -37,6 +40,7 @@ use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 
 use serde::Serialize;
 
+use crate::game_types::{MessageId, SemanticType};
 use crate::hash::string_id;
 use crate::level::Location;
 use crate::resource::simgroup::{Guid, SimGroup, Value};
@@ -102,6 +106,12 @@ pub struct Pin {
     pub target: Option<String>,
     /// The value shown for parameters.
     pub value: Option<String>,
+    /// What the value means, when the schema or `attr_types.toml` tells:
+    /// `MsgIn`, `Ref<CommonNPC>`, `Enum<family>`, `Seconds`…
+    pub ty: Option<SemanticType>,
+    /// The name of the value in its list, for `Enum` types (`corleone` for
+    /// the hash `0637b907`).
+    pub label: Option<String>,
 }
 
 /// A node of the graph.
@@ -207,6 +217,9 @@ pub struct Message {
     pub state: MessageState,
     /// Whether the engine names this message.
     pub engine: bool,
+    /// Where the name is known from: `engine` (a literal of the executable),
+    /// `game` (the SimGroups of the game) or `custom` (new: a mod's message).
+    pub origin: &'static str,
     /// Drawn through a hub node (too many senders × listeners).
     pub hub: Option<NodeId>,
     /// Senders and listeners in the rest of the game, outside the scope
@@ -308,7 +321,13 @@ impl<'s> GraphBuilder<'s> {
                     delay: None,
                     target: None,
                     value: None,
+                    ty: self.schema.semantic(op.class, a.index).map(|t| t.0),
+                    label: None,
                 };
+                if let (Some(list), Some(v)) = (pin.ty.and_then(SemanticType::enum_def), &op.value)
+                {
+                    pin.label = list.find(v).map(|x| x.label());
+                }
                 match (a.pin, &op.value) {
                     (PinKind::In | PinKind::Out, Some(Value::String(s))) => {
                         pin.hash = Some(string_id(s));
@@ -391,6 +410,7 @@ impl<'s> GraphBuilder<'s> {
                     listeners: Vec::new(),
                     state: MessageState::Connected,
                     engine: schema.engine_message(h).is_some(),
+                    origin: MessageId::from_name(name).kind(),
                     hub: None,
                     elsewhere: None,
                 });
@@ -589,6 +609,11 @@ fn virtual_pin(name: &str, kind: PinKind, message: &str) -> Pin {
         delay: None,
         target: None,
         value: None,
+        ty: Some(match kind {
+            PinKind::In => SemanticType::MsgIn,
+            _ => SemanticType::MsgOut,
+        }),
+        label: None,
     }
 }
 

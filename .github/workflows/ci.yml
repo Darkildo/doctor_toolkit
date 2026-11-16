@@ -3,7 +3,8 @@ name: CI
 # Checks of every change, kept short to spend few runner minutes: one Linux
 # job (format, lints, tests) and the Python bindings. Packages for Linux,
 # Windows and macOS are built only for a release tag (release.yml); the
-# fuzzers run weekly (fuzz.yml). Changes of documentation alone run nothing.
+# fuzzers run weekly (fuzz.yml). Changes of documentation alone run only the
+# checks of the knowledge base (kb.yml).
 
 on:
   push:
@@ -59,6 +60,13 @@ jobs:
       - run: cargo clippy -p doctor-toolkit-gui --all-targets --no-default-features -- -D warnings
       # Corpus tests need the game files (EARS_GF2_DIR) and skip themselves here.
       - run: cargo test --workspace
+      # The knowledge base docs/kb: every note passes the lint and the
+      # generated notes match data/gf2 (the tests above check the same; these
+      # print the list). Changes of documentation alone are checked by kb.yml.
+      - name: Check the knowledge base
+        run: |
+          cargo run -p doctor-toolkit-cli -- kb-lint
+          cargo run -p doctor-toolkit-cli -- kb-gen --check
       - name: Check the release scripts
         run: bash -n tools/release.sh && bash -n tools/package.sh
 

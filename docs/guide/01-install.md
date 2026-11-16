@@ -6,9 +6,9 @@
 SHA-256 рядом.
 
 ```sh
-sha256sum -c doctor_toolkit-0.0.6-linux-x86_64.tar.gz.sha256
-tar xzf doctor_toolkit-0.0.6-linux-x86_64.tar.gz
-cd doctor_toolkit-0.0.6-linux-x86_64
+sha256sum -c doctor_toolkit-0.0.7-linux-x86_64.tar.gz.sha256
+tar xzf doctor_toolkit-0.0.7-linux-x86_64.tar.gz
+cd doctor_toolkit-0.0.7-linux-x86_64
 ./doctor-toolkit --version
 ./doctor-toolkit-gui
 ```

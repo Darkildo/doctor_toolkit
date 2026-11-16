@@ -514,9 +514,25 @@ pub fn validate(kit: &Toolkit, p: ValidateParams) -> ToolResult<Output> {
     for w in project_notes {
         warnings.push(json!({ "project": true, "what": w }));
     }
+    // Messages of the changed SimGroups: a new name with the hash of a game
+    // message, messages left with one end.
+    let messages = doctor_toolkit::logic_graph::check::check_workspace(&ws);
+    for p in &messages.problems {
+        let item = json!({
+            "message": p.message,
+            "kind": p.kind,
+            "what": p.what,
+            "groups": p.groups,
+        });
+        match p.severity {
+            doctor_toolkit::logic_graph::check::Severity::Error => errors.push(item),
+            doctor_toolkit::logic_graph::check::Severity::Warning => warnings.push(item),
+        }
+    }
     let running = doctor_toolkit::play::game_processes();
     Ok(Output::Json(json!({
         "ok": errors.is_empty(),
+        "new_messages": messages.custom,
         "checked_changes": checked,
         "errors": errors,
         "warnings": warnings,
@@ -529,6 +545,7 @@ pub fn validate(kit: &Toolkit, p: ValidateParams) -> ToolResult<Output> {
             "navigation graphs: what the file cannot hold or the game cannot use",
             "references an edit adds resolve in the stream or the streams loaded before it",
             "conflicts with the game files, streams changed outside the workspace",
+            "messages of changed SimGroups: a new name with the hash of a game message (error), heard but never sent and sent but never heard (warnings)",
             "the project: entries to build, missing files",
         ],
     })))

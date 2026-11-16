@@ -315,6 +315,19 @@ impl GameInstance {
         Ok(ancestors(&self.stream_parents()?, name))
     }
 
+    /// Hash of stream `name` in the tables of contents: the fold of the
+    /// GUID of the stream ([`toc::guid_hash`]); 0 for the root `*_global`
+    /// streams. `None` when no table lists the stream.
+    pub fn stream_hash(&self, name: &str) -> Result<Option<u32>> {
+        for index in 0..self.tocs.len() {
+            let toc = self.load_toc(index)?;
+            if let Some(found) = toc.find_name(name) {
+                return Ok(Some(toc.names[found].hash));
+            }
+        }
+        Ok(None)
+    }
+
     /// Every non-zero name hash in the tables of contents.
     pub fn toc_hashes(&self) -> Result<std::collections::HashSet<u32>> {
         let mut out = std::collections::HashSet::new();

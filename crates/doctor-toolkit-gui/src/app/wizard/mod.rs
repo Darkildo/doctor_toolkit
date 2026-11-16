@@ -22,6 +22,7 @@
 //! - `params`: game parameters of `data/gf2/tunables.toml`;
 //! - `texts`: string tables;
 //! - `place`: a new object in a level;
+//! - `voice`: a new voice line made from a recording;
 //! - `package`: a mod package from the workspace.
 
 mod model;
@@ -33,6 +34,7 @@ mod retexture;
 #[cfg(test)]
 mod tests;
 mod texts;
+mod voice;
 
 use std::collections::HashMap;
 
@@ -54,17 +56,19 @@ pub enum Kind {
     Parameters,
     Texts,
     PlaceObject,
+    VoiceLine,
     PackageMod,
 }
 
 impl Kind {
-    pub const ALL: [Kind; 7] = [
+    pub const ALL: [Kind; 8] = [
         Kind::Retexture,
         Kind::ReplaceModel,
         Kind::Outfit,
         Kind::Parameters,
         Kind::Texts,
         Kind::PlaceObject,
+        Kind::VoiceLine,
         Kind::PackageMod,
     ];
 
@@ -76,6 +80,7 @@ impl Kind {
             Self::Parameters => "params",
             Self::Texts => "texts",
             Self::PlaceObject => "place",
+            Self::VoiceLine => "voice",
             Self::PackageMod => "package",
         }
     }
@@ -92,6 +97,7 @@ impl Kind {
             Self::Parameters => "wizard.params.title",
             Self::Texts => "wizard.texts.title",
             Self::PlaceObject => "wizard.place.title",
+            Self::VoiceLine => "wizard.voice.title",
             Self::PackageMod => "wizard.package.title",
         })
     }
@@ -104,6 +110,7 @@ impl Kind {
             Self::Parameters => "wizard.params.blurb",
             Self::Texts => "wizard.texts.blurb",
             Self::PlaceObject => "wizard.place.blurb",
+            Self::VoiceLine => "wizard.voice.blurb",
             Self::PackageMod => "wizard.package.blurb",
         })
     }
@@ -117,6 +124,7 @@ impl Kind {
             Self::Parameters => Command::WizardParams,
             Self::Texts => Command::WizardTexts,
             Self::PlaceObject => Command::WizardPlace,
+            Self::VoiceLine => Command::WizardVoice,
             Self::PackageMod => Command::WizardPackage,
         }
     }
@@ -181,6 +189,7 @@ pub(super) enum State {
     Params(Box<params::Params>),
     Texts(Box<texts::Texts>),
     Place(Box<place::Place>),
+    Voice(Box<voice::Voice>),
     Package(Box<package::Package>),
 }
 
@@ -193,6 +202,7 @@ impl State {
             Self::Params(t) => t.as_mut(),
             Self::Texts(t) => t.as_mut(),
             Self::Place(t) => t.as_mut(),
+            Self::Voice(t) => t.as_mut(),
             Self::Package(t) => t.as_mut(),
         }
     }
@@ -205,6 +215,7 @@ impl State {
             Self::Params(t) => t.as_ref(),
             Self::Texts(t) => t.as_ref(),
             Self::Place(t) => t.as_ref(),
+            Self::Voice(t) => t.as_ref(),
             Self::Package(t) => t.as_ref(),
         }
     }
@@ -289,6 +300,7 @@ impl BrowserApp {
             Kind::Parameters => State::Params(Box::new(params::Params::new(self, start))),
             Kind::Texts => State::Texts(Box::new(texts::Texts::new(self, start))),
             Kind::PlaceObject => State::Place(Box::new(place::Place::new(self, start))),
+            Kind::VoiceLine => State::Voice(Box::new(voice::Voice::new(self, start))),
             Kind::PackageMod => State::Package(Box::new(package::Package::new(self, start))),
         };
         Wizard {
@@ -664,6 +676,7 @@ impl BrowserApp {
                 State::Params(t) => t.preset(key, value, self),
                 State::Texts(t) => t.preset(key, value, self),
                 State::Place(t) => t.preset(key, value, self),
+                State::Voice(t) => t.preset(key, value, self),
                 State::Package(t) => t.preset(key, value, self),
             }
         }

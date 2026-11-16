@@ -7,6 +7,7 @@ mod cutscene_cmd;
 mod dialogue_cmd;
 mod edit_cmd;
 mod graph_cmd;
+mod kb_cmd;
 mod level_cmd;
 mod live_cmd;
 mod live_object_cmd;
@@ -23,11 +24,14 @@ mod partsdb_cmd;
 mod play_cmd;
 mod project_cmd;
 mod render_cmd;
+mod save_cmd;
 mod sbk_cmd;
 mod script_cmd;
 mod sound_cmd;
 mod text_cmd;
+mod types_cmd;
 mod video_cmd;
+mod voice_cmd;
 mod workspace_cmd;
 
 use std::fs;
@@ -106,6 +110,11 @@ enum Command {
 
     /// Remove a stream made by `add-stream` and everything added to it
     RemoveStream(create_cmd::RemoveStream),
+
+    /// The world grid of a level (`wgi`): the streams the game loads by the
+    /// position of the player; add a new stream to them
+    #[command(subcommand)]
+    WorldGrid(create_cmd::WorldGridCommand),
 
     /// Check that metamodel, simgroup, mesh and material references of streams resolve
     ///
@@ -548,6 +557,29 @@ enum Command {
     /// A new emitter takes the parameters of `--like` (default: the first).
     SoundAdd(sbk_cmd::AddArgs),
 
+    /// Add a voice line made from a recording: the sound file in the overlay
+    /// archive, its entry in a speech bank (`smb`), the line in the
+    /// speaker's chatter set (`chv`) and, for a new event, its record in the
+    /// event table (`get`) (recorded in the workspace)
+    VoiceAdd(voice_cmd::AddArgs),
+
+    /// List the speech banks (`smb`) or find their entries: sound id, file,
+    /// mix category, archive path
+    SpeechBank(voice_cmd::BankArgs),
+
+    /// Show the table of speech events (`get`), add records or change
+    /// cool-down, priority, flags and rank (recorded in the workspace)
+    SpeechEvents(voice_cmd::EventsArgs),
+
+    /// Show the audio configuration (`auc`): mix categories, bank pools and
+    /// ducks; add a mix category (recorded in the workspace)
+    AudioConfig(voice_cmd::ConfigArgs),
+
+    /// List the mixer snapshots (`mix`), show one, or set the volume,
+    /// low-pass frequency and times of a category in it (recorded in the
+    /// workspace)
+    Mix(voice_cmd::MixArgs),
+
     /// Show a navigation graph (`graph`): type, nodes, links, neighbouring
     /// graphs, properties, R-tree and precomputed paths
     GraphInfo(graph_cmd::InfoArgs),
@@ -645,6 +677,54 @@ enum Command {
     /// running the game on an X server of its own, screenshots and writes
     /// into the running game. See docs/mcp.md.
     Mcp(mcp_cmd::McpArgs),
+
+    /// Write the generated notes of the knowledge base docs/kb
+    ///
+    /// A note of every SimGroup class, of every resource type and the list
+    /// of the engine's messages are made from data/gf2; every folder gets
+    /// its list (index.md). The hand-written section of a generated note
+    /// (between the kb:manual markers) is kept; a run that changes nothing
+    /// writes nothing. See docs/kb/README.md.
+    KbGen(kb_cmd::KbGen),
+
+    /// Typed game data: value lists, meanings of attributes, messages
+    ///
+    /// `enums [KEY]` — families, cities, venues, weapons, crew specialties,
+    /// sound categories, emotions; `message NAME` — where a message name
+    /// comes from, who sends and hears it in the game files; `attrs CLASS` —
+    /// what the attributes of a class hold; `stats`. Needs no game: the data
+    /// is built in (data/gf2). See docs/logic-graph.md §2.1.
+    #[command(subcommand)]
+    GameTypes(types_cmd::TypesCommand),
+
+    /// Write the files generated from data/gf2: JSON Schema and the Python
+    /// module of the value lists
+    ///
+    /// `--check` writes nothing and fails when a file is out of date.
+    TypesGen(types_cmd::TypesGen),
+
+    /// Check the messages of the SimGroups the workspace changes
+    ///
+    /// An error for a new message name whose hash is the hash of a message
+    /// of the game; warnings for messages left with one end (heard but never
+    /// sent, sent but never heard). Lists the messages the workspace adds.
+    LogicCheck(types_cmd::LogicCheck),
+
+    /// Check the knowledge base docs/kb
+    ///
+    /// The properties of every note, broken links, orphans, questions
+    /// without a next step and names of files left out of the public
+    /// repository.
+    KbLint(kb_cmd::KbLint),
+
+    /// Look into a save file of the game (read only)
+    ///
+    /// Shows the name, profile, city, play time, checksums and the chunks
+    /// of a save; `--chunk` shows what a chunk holds: story variables,
+    /// money and family members, families, buildings, cities, weapons, the
+    /// history log. With `--game` variables and objects get their names.
+    /// A folder lists the saves in it. See docs/formats/save.md.
+    Save(save_cmd::SaveArgs),
 }
 
 fn main() -> std::process::ExitCode {
@@ -838,6 +918,7 @@ fn run(command: Command) -> Result<()> {
         Command::ApxTextRefs(args) => text_cmd::apx_text_refs(args),
         Command::CollisionExport(args) => collision_cmd::collision_export(args),
         Command::RemoveStream(args) => create_cmd::remove_stream(args),
+        Command::WorldGrid(command) => create_cmd::world_grid(command),
         Command::CheckRefs(args) => create_cmd::check_refs(args),
         Command::Skeletons { game_dir, output } => formats::skeletons(&game_dir, &output),
         Command::Audio {
@@ -874,6 +955,11 @@ fn run(command: Command) -> Result<()> {
         Command::SbkInfo(args) => sbk_cmd::info(&args),
         Command::SbkEdit(args) => sbk_cmd::edit(&args),
         Command::SoundAdd(args) => sbk_cmd::add(&args),
+        Command::VoiceAdd(args) => voice_cmd::add(&args),
+        Command::SpeechBank(args) => voice_cmd::bank(&args),
+        Command::SpeechEvents(args) => voice_cmd::events(&args),
+        Command::AudioConfig(args) => voice_cmd::config(&args),
+        Command::Mix(args) => voice_cmd::mix(&args),
         Command::GraphInfo(args) => graph_cmd::info(&args),
         Command::GraphExport(args) => graph_cmd::export(&args),
         Command::GraphImport(args) => graph_cmd::import(&args),
@@ -896,6 +982,12 @@ fn run(command: Command) -> Result<()> {
         Command::LogicConnect(args) => logic_graph_cmd::connect(&args),
         Command::LogicSchema { json } => logic_graph_cmd::schema(json),
         Command::Mcp(args) => mcp_cmd::run(args),
+        Command::KbGen(args) => kb_cmd::generate(args),
+        Command::KbLint(args) => kb_cmd::check(args),
+        Command::Save(args) => save_cmd::run(args),
+        Command::GameTypes(command) => types_cmd::run(command),
+        Command::TypesGen(args) => types_cmd::generate(args),
+        Command::LogicCheck(args) => types_cmd::logic_check(&args),
     }
 }
 

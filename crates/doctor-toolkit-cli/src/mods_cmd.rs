@@ -746,12 +746,26 @@ fn info(file: &Path, resources: bool) -> Result<()> {
         m.streams().len(),
         m.payload_bytes()
     );
+    for file in &m.files {
+        out!(
+            "  file {}  {} byte(s){}",
+            file.key,
+            file.payload.size,
+            if file.label.is_empty() {
+                String::new()
+            } else {
+                format!("  {}", file.label)
+            }
+        );
+    }
     for stream in &m.streams {
         out!(
             "  new stream {}  hash {:08x}, {} {}, in {}",
             stream.name,
             stream.hash,
-            if stream.with_parent {
+            if stream.with_parent && stream.auto_load {
+                "loaded with every load of"
+            } else if stream.with_parent {
                 "loaded with"
             } else {
                 "requested, after"

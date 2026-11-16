@@ -129,6 +129,11 @@ dt.logic_messages(game, "cp_737_loaded")              # senders, listeners ил�
 dt.logic_messages(game, "cp_737_", search=True)       # список сообщений
 dt.logic_missions(game)                               # [{"name", "streams"}]
 dt.logic_schema()                                     # покрытие схемы пинов
+dt.message_info("boundary_fade_out")                  # группа, кто шлёт и слушает, данные, уверенность
+dt.message_search("cp_325_", limit=10)                # сообщения файлов игры по части имени
+dt.enum_values("family")                              # список значений: имена, хэши, источник
+dt.attr_types("Building")                             # смысл атрибутов класса: Enum<city>, Ref<…>, MsgIn
+dt.logic_check(game)                                  # сообщения правок: коллизии хэшей, один конец
 r = dt.logic_run(game, "checkpoint:737", events=["load", "send:cp_737_loaded"], until=60)
 r["journal"]                                          # кто кому послал (logic-graph.md §9)
 ```
@@ -189,6 +194,39 @@ pcm = numpy.frombuffer(sound.pcm(), "<i2").reshape(-1, sound.channels)
 `ModManager`, `StringTable` и `Index.refresh` изменяемые: одновременный вызов
 изменяющих методов одного объекта из двух потоков даёт `RuntimeError`
 («already borrowed»), а не гонку.
+
+### 2.5 Типы игры: сообщения, перечисления, смысл атрибутов (этап 73)
+
+Данные встроены в модуль, игра для них не нужна (`docs/logic-graph.md` §2.1).
+
+- `message_info(имя | "0x…")` — словарь: `kind` (`engine` — имя из exe,
+  `game` — из файлов игры, `custom` — новое, `unknown` — хэш без имени),
+  `name`, `hash`, `usage`, `senders` и `listeners` (класс, атрибут, число
+  объектов по всей игре), `scope`, `streams`, `mentions`, `data` (пока
+  `"unknown"`), `summary`, `sent_by`, `conf`, `source`, `collides_with` —
+  сообщение игры, с которым новое имя совпало по хэшу.
+- `message_search(текст, limit=40)` — сообщения файлов игры по части имени.
+- `enum_values(ключ)` — список значений (`family`, `city`, `venue`,
+  `building_type`, `weapon`, `crew_specialty`, `sound_category`, `emotion`);
+  без ключа — все списки.
+- `attr_types(класс)` — смысл атрибутов пакета класса: `MsgIn`, `MsgOut`,
+  `Ref<Класс>`, `Res<тип>`, `Enum<список>`, `Seconds`, `Money`, `Bool`.
+- `logic_check(game)` — проверка сообщений изменённых SimGroup рабочего
+  пространства (как `doctor-toolkit logic-check`).
+
+Модуль `doctor_toolkit.gf2_types` (чистый Python с заглушкой `.pyi`,
+сгенерирован `doctor-toolkit types-gen` из `data/gf2/`) даёт те же списки для
+проверки типов: `Family = Literal["innocent", …]`, `FAMILY` — кортеж значений,
+`ENGINE_MESSAGES`, `ENUMS` (списки с источниками), `message_hash(имя)`.
+
+```python
+from doctor_toolkit import gf2_types
+
+def owner(family: gf2_types.Family) -> int:
+    return gf2_types.enum_hash(family)     # то, что лежит в Building 4
+
+assert "corleone" in gf2_types.FAMILY
+```
 
 ## 3. Индекс и поиск
 

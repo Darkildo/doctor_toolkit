@@ -57,8 +57,8 @@ use super::{
 use crate::game::{GameInstance, StreamFile};
 use crate::toc::Toc;
 use crate::workspace::{
-    ApplyReport, Blob, Change, DeployStatus, Deployment, GameFingerprint, NewStream, PayloadStore,
-    ResourceKey, SyncProgress, Workspace,
+    ApplyReport, Blob, Change, DeployStatus, Deployment, FileChange, FileKey, GameFingerprint,
+    NewStream, PayloadStore, ResourceKey, SyncProgress, Workspace, files,
 };
 use crate::{Error, Result};
 
@@ -1650,6 +1650,64 @@ impl ModManager {
         plan
     }
 
+    /// The files of the archives the enabled mods carry: for each entry, the
+    /// file of the last enabled mod that has it, with that mod's index.
+    pub fn plan_files(&self) -> BTreeMap<FileKey, (FileChange, usize)> {
+        let mut plan = BTreeMap::new();
+        for (index, m) in self.enabled().filter(|(_, m)| m.problem.is_none()) {
+            for file in &m.manifest.files {
+                let change = FileChange {
+                    key: file.key.clone(),
+                    payload: file.payload.clone(),
+                    // The archives of the game are never written: nothing is
+                    // compared with the original of an entry.
+                    original: Blob::of(&[]),
+                    label: m.manifest.name.clone(),
+                };
+                plan.insert(file.key.clone(), (change, index));
+            }
+        }
+        plan
+    }
+
+    /// Writes the files of [`Self::plan_files`] into the overlay archive, or
+    /// takes the overlay away when no enabled mod has files.
+    fn sync_files(
+        &mut self,
+        game: &GameInstance,
+        wanted: bool,
+        force: bool,
+    ) -> Result<ApplyReport> {
+        let plan = if wanted {
+            self.plan_files()
+        } else {
+            BTreeMap::new()
+        };
+        if plan.is_empty() && self.deployment.files.is_empty() {
+            return Ok(ApplyReport::default());
+        }
+        let stores: Vec<PayloadStore> = self.mods.iter().map(InstalledMod::store).collect();
+        let changes: BTreeMap<FileKey, FileChange> = plan
+            .iter()
+            .map(|(key, (change, _))| (key.clone(), change.clone()))
+            .collect();
+        let path = self.dir.join(APPLIED_FILE);
+        files::sync(
+            game,
+            &mut self.deployment,
+            &path,
+            &changes,
+            &|change| {
+                let (_, index) = plan
+                    .get(&change.key)
+                    .ok_or_else(|| Error::mod_error(format!("{} is not planned", change.key)))?;
+                stores[*index].get(&change.payload)
+            },
+            files::MODS_OWNER,
+            force,
+        )
+    }
+
     /// The streams the enabled mods create: for each name, the definition of
     /// the last enabled mod that creates it, with that mod's index.
     pub fn plan_streams(&self) -> BTreeMap<String, (NewStream, usize)> {
@@ -1716,7 +1774,7 @@ impl ModManager {
 
     /// Whether the mod manager has written anything into the game that is still there.
     pub fn has_written(&self) -> bool {
-        !self.deployment.streams.is_empty()
+        !self.deployment.streams.is_empty() || !self.deployment.files.is_empty()
     }
 
     /// Writes the combined result of the enabled mods into the game. Streams
@@ -1747,7 +1805,7 @@ impl ModManager {
         }
         let plan = self.plan();
         let new_streams = self.new_streams();
-        if !plan.is_empty() || !new_streams.is_empty() {
+        if !plan.is_empty() || !new_streams.is_empty() || !self.plan_files().is_empty() {
             ensure_workspace_not_in_game(game)?;
         }
         let clashes: Vec<String> = self
@@ -1800,7 +1858,7 @@ impl ModManager {
             .map(|(name, changes)| (name, changes.into_iter().cloned().collect()))
             .collect();
         let path = self.dir.join(APPLIED_FILE);
-        self.deployment.sync_with_progress(
+        let mut report = self.deployment.sync_with_progress(
             &path,
             game,
             &names,
@@ -1814,7 +1872,10 @@ impl ModManager {
                 stores[*index].get(&change.payload)
             },
             progress,
-        )
+        )?;
+        // Files of the archives go after the streams, into the overlay archive.
+        report.merge(self.sync_files(game, true, options.force)?);
+        Ok(report)
     }
 
     /// Puts back the original of every stream the mod manager has written.
@@ -1832,7 +1893,7 @@ impl ModManager {
     ) -> Result<ApplyReport> {
         let names: BTreeSet<String> = self.deployment.streams.keys().cloned().collect();
         let path = self.dir.join(APPLIED_FILE);
-        self.deployment.sync_with_progress(
+        let mut report = self.deployment.sync_with_progress(
             &path,
             game,
             &names,
@@ -1841,7 +1902,9 @@ impl ModManager {
             |_| Vec::new(),
             |change| Err(Error::mod_error(format!("{} is not planned", change.key))),
             progress,
-        )
+        )?;
+        report.merge(self.sync_files(game, false, force)?);
+        Ok(report)
     }
 
     /// The game directory.

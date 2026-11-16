@@ -8,9 +8,11 @@
 //! 0x00  u32  version, 4
 //! 0x04  u32  entry count N
 //! 0x08  N × 16-byte entries, sorted by hash:
-//!       u32  hash of the name (the function is not known; it is not SDBM,
-//!            FNV-1a or CRC-32 of the name in any letter case)
-//!       u32  kind: 0 or 1 (1 when the value is used as a flag)
+//!       u32  hash of the entry (the function is not known; it is not SDBM,
+//!            FNV-1a or CRC-32 of the name in any letter case); the key of
+//!            the variable in a save file (`docs/formats/save.md` §4)
+//!       u32  kind: 0 or 1. The game takes it as flags (exe 0x004423F0):
+//!            bit 0 puts the variable into saves
 //!       u32  initial value: 0 for kind 0, 0 or 1 for kind 1
 //!       u32  offset of the NUL-terminated name
 //!       string region: one NUL, then the names, each with a NUL, in an

@@ -157,6 +157,73 @@ impl ChatterSet {
     pub fn event(&self, hash: u32) -> Option<&ChatterEvent> {
         self.events.iter().find(|e| e.hash == hash)
     }
+
+    /// Adds a line to an event and returns `(event is new, line index)`.
+    /// A new event goes to its place in the hash order: the game finds
+    /// events with a binary search (`0x006F4C10`). The name of an existing
+    /// event is kept as it is stored.
+    pub fn add_line(
+        &mut self,
+        event: &str,
+        sound: u32,
+        subtitle: u32,
+        weight: f32,
+    ) -> Result<(bool, usize)> {
+        if event.is_empty() || event.contains('\0') {
+            return Err(Error::InvalidArgument("bad event name".into()));
+        }
+        let hash = event_hash(event);
+        let (new, at) = match self.events.binary_search_by_key(&hash, |e| e.hash) {
+            Ok(at) => (false, at),
+            Err(at) => {
+                self.events.insert(
+                    at,
+                    ChatterEvent {
+                        name: event.to_owned(),
+                        hash,
+                        lines: Vec::new(),
+                    },
+                );
+                (true, at)
+            }
+        };
+        let lines = &mut self.events[at].lines;
+        let index = lines.len();
+        lines.push(ChatterLine {
+            sounds: [sound; 4],
+            subtitle,
+            weight,
+            flag: 1,
+            index: index as u32,
+        });
+        Ok((new, index))
+    }
+
+    /// Problems the game would trip over: events out of hash order or
+    /// repeated (the binary search misses them), a hash that is not the
+    /// hash of the name, lines numbered out of order.
+    pub fn validate(&self) -> Vec<String> {
+        let mut problems = Vec::new();
+        for pair in self.events.windows(2) {
+            if pair[0].hash >= pair[1].hash {
+                problems.push(format!(
+                    "events {} and {} are not in ascending hash order",
+                    pair[0].name, pair[1].name
+                ));
+            }
+        }
+        for event in &self.events {
+            if event.hash != event_hash(&event.name) {
+                problems.push(format!("{}: hash {:08x}", event.name, event.hash));
+            }
+            for (i, line) in event.lines.iter().enumerate() {
+                if line.index != i as u32 {
+                    problems.push(format!("{}: line {i} has index {}", event.name, line.index));
+                }
+            }
+        }
+        problems
+    }
 }
 
 /// Hash of a speech event name as `chv` and `dlg` store it.
@@ -214,6 +281,28 @@ mod tests {
         assert_eq!(bytes.len() % 4, 0);
         assert_eq!(ChatterSet::parse(&bytes).unwrap(), set);
         assert_eq!(set.event(event_hash("line01")).unwrap().lines.len(), 1);
+    }
+
+    #[test]
+    fn adds_lines_and_events_in_hash_order() {
+        let mut set = ChatterSet {
+            version: 3,
+            events: Vec::new(),
+        };
+        for name in ["P2_LINE1", "DOCTOR_HELLO", "F2F_ENJOY_FLIGHT"] {
+            assert_eq!(set.add_line(name, 1, 2, 1.0).unwrap(), (true, 0));
+        }
+        assert_eq!(set.add_line("doctor_hello", 9, 8, 2.0).unwrap(), (false, 1));
+        assert!(set.validate().is_empty());
+        let event = set.event(event_hash("DOCTOR_HELLO")).unwrap();
+        assert_eq!(event.name, "DOCTOR_HELLO");
+        assert_eq!(event.lines[1].sounds, [9; 4]);
+        assert_eq!(event.lines[1].index, 1);
+        let back = ChatterSet::parse(&set.to_bytes().unwrap()).unwrap();
+        assert_eq!(back, set);
+        assert!(set.add_line("", 1, 2, 1.0).is_err());
+        set.events.reverse();
+        assert!(!set.validate().is_empty());
     }
 
     #[test]

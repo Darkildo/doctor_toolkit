@@ -12,6 +12,7 @@ The Godfather 1/2, Dead Space 1/2/3, Dante's Inferno, The Simpsons Game.
 | `metamodel.md` | MetaModel (magic `MMdl`): части, состояния, свойства |
 | `logic-types.md` | variabledictionary, partsdb, `covernodetable` (`0xDF14DA75`) |
 | `treemodel.md` | Модели деревьев `treemodel` (`0xCDB9D42B`): части, полосы ствола, листья к камере, как игра их рисует |
+| `wgi.md` | Мировая сетка `wgi`: таблица потоков, ячейки зон, пул; как игра выбирает зоны для загрузки; `ZoneStreamEnable`; новая ячейка |
 | `navigation-graph.md` | Навигационный граф `graph`: заголовок, узлы, рёбра, соседние графы, свойства, R-дерево, таблица путей, видимость, флаги |
 | `lua.md` | Скрипты `lua`: формат чанка Lua 5.0 с числами float, компилятор, декомпилятор, правка |
 | `mission-logic.md` | Где живёт логика миссий: SimGroup и сообщения, Lua-API движка, `tob`, `get`, `score` |
@@ -23,6 +24,7 @@ The Godfather 1/2, Dead Space 1/2/3, Dante's Inferno, The Simpsons Game.
 | `dialogues.md` | Диалоги F2F: деревья `dlg`, события речи `chv`, банки `smb`, субтитры в файлах речи `.snu`, редактор |
 | `video.md` | Ролики `movies/*.vp6`: контейнер EA, VP6, звук EA-XA, проигрыватель игры, замена |
 | `cutscenes.md` | Ролики на движке: `trinity_seq_master`, команды секвенсора, кривые камеры, актёры, клипы, субтитры `TOB1` в звуке |
+| `save.md` | Файл сохранения The Godfather II (PC): заголовки, контейнер с CRC-32, 25 блоков объектов, переменные сюжета, деньги, семьи, здания, оружие |
 | `compression-and-hash.md` | RefPack (полный алгоритм) + LZX + SDBM |
 
 ## Статус проверки

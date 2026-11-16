@@ -12,12 +12,14 @@ pub mod export;
 pub mod game;
 pub mod import;
 pub mod json;
+pub mod kb;
 pub mod level;
 pub mod live;
 pub mod logic;
 pub mod mods;
 pub mod play;
 pub mod search;
+pub mod types;
 pub mod workspace;
 
 use schemars::JsonSchema;
@@ -71,6 +73,62 @@ pub struct SearchParams {
     /// At most this many results (default 30, at most 200).
     #[serde(default)]
     pub limit: Option<usize>,
+}
+
+#[derive(Debug, Default, Deserialize, JsonSchema)]
+pub struct GameTypesParams {
+    /// A value list by key: family, city, venue, building_type, weapon,
+    /// crew_specialty, sound_category, emotion. Gives its values with
+    /// hashes, numbers, notes, source and confidence.
+    #[serde(default, rename = "enum")]
+    pub list: Option<String>,
+    /// A message by name, or by hash as `0x` and eight hexadecimal digits:
+    /// where the name comes from (engine, game, custom, unknown), who sends
+    /// and hears it in the game files, its data, whether a new name collides
+    /// with a game message.
+    #[serde(default)]
+    pub message: Option<String>,
+    /// Messages of the game files whose name contains this text.
+    #[serde(default)]
+    pub search: Option<String>,
+    /// A SimGroup class (name or eight hexadecimal digits of the hash): what
+    /// its attributes mean (MsgIn, MsgOut, Ref<Class>, Res<type>,
+    /// Enum<list>, Seconds, Money, Bool) with confidence.
+    #[serde(default)]
+    pub class: Option<String>,
+    /// At most this many results of `search` (default 40, at most 200).
+    #[serde(default)]
+    pub limit: Option<usize>,
+}
+
+#[derive(Debug, Default, Deserialize, JsonSchema)]
+pub struct KbSearchParams {
+    /// Words to find (case-insensitive, every word must occur; a part of a
+    /// word matches): `шина сообщений`, `0x00408A00`, `Gun`, `wgi`. The notes
+    /// are written in Russian; names of classes, messages and functions are
+    /// as in the game.
+    #[serde(default)]
+    pub query: Option<String>,
+    /// Only notes of this type: map, index, engine, system, class, resource,
+    /// message, exe, question, experiment, research.
+    #[serde(default, rename = "type")]
+    pub note_type: Option<String>,
+    /// Only notes of this status: known, partial, hypothesis, unknown, planned.
+    #[serde(default)]
+    pub status: Option<String>,
+    /// Skip this many results (paging).
+    #[serde(default)]
+    pub offset: Option<usize>,
+    /// At most this many results (default 20, at most 100).
+    #[serde(default)]
+    pub limit: Option<usize>,
+}
+
+#[derive(Debug, Default, Deserialize, JsonSchema)]
+pub struct KbNoteParams {
+    /// Path of the note below the knowledge base, as kb_search gives it:
+    /// `engine/message-bus.md`, `classes/Gun.md`; `index.md` is the map.
+    pub note: String,
 }
 
 #[derive(Debug, Default, Deserialize, JsonSchema)]

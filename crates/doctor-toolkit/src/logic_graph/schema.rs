@@ -11,6 +11,7 @@ use std::sync::OnceLock;
 
 use serde::Deserialize;
 
+use crate::game_types::SemanticType;
 use crate::hash::sdbm;
 use crate::resource::simgroup::{Kind, Object, SimGroup};
 use crate::{Error, Result};
@@ -216,6 +217,13 @@ impl LogicSchema {
         self.packets.get(&class).map_or(&[], Vec::as_slice)
     }
 
+    /// Hashes of the classes whose packet the schema describes, sorted.
+    pub fn packet_classes(&self) -> Vec<u32> {
+        let mut out: Vec<u32> = self.packets.keys().copied().collect();
+        out.sort_unstable();
+        out
+    }
+
     /// One attribute of a class packet.
     pub fn attr(&self, class: u32, index: u16) -> Option<&AttrPin> {
         self.packet(class).iter().find(|a| a.index == index)
@@ -253,6 +261,22 @@ impl LogicSchema {
     /// Whether a message (by hash) is one the engine itself sends or listens to.
     pub fn engine_message(&self, hash: u32) -> Option<&str> {
         self.engine.get(&hash).map(String::as_str)
+    }
+
+    /// What the value of an attribute means, and how that is known: a
+    /// message heard or sent for `in` and `out` pins, otherwise the type of
+    /// `data/gf2/attr_types.toml` (a reference to an object of a class, a
+    /// resource of a type, a value of a list, seconds, money, a flag).
+    pub fn semantic(&self, class: u32, index: u16) -> Option<(SemanticType, Confidence)> {
+        match self.attr(class, index) {
+            Some(a) if a.pin == PinKind::In => {
+                Some((SemanticType::MsgIn, a.conf.unwrap_or(Confidence::Guess)))
+            }
+            Some(a) if a.pin == PinKind::Out => {
+                Some((SemanticType::MsgOut, a.conf.unwrap_or(Confidence::Guess)))
+            }
+            _ => crate::game_types::attr_type(class, index).map(|t| (t.ty, t.conf)),
+        }
     }
 
     /// Pins of an object: every schema attribute of its packets that is not

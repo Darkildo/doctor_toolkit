@@ -19,6 +19,8 @@ use doctor_toolkit::toc::Toc;
 
 #[path = "corpus/project.rs"]
 mod project;
+#[path = "corpus/types.rs"]
+mod types;
 
 fn game_dir() -> Option<PathBuf> {
     let dir = PathBuf::from(std::env::var_os("EARS_GF2_DIR")?);
@@ -1241,6 +1243,208 @@ fn for_each_resource(tag: &str, check: impl Fn(&str, &[u8]) -> Result<(), String
     });
     failures.assert_empty();
     count.into_inner()
+}
+
+/// `docs/formats/wgi.md`: every world grid is written back byte for byte,
+/// its cells and stream table name streams of the tables of contents, and a
+/// grid with a new cell still parses.
+#[test]
+fn every_world_grid_round_trips() {
+    use doctor_toolkit::resource::wgi::{self, WorldGrid};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let Some(dir) = game_dir() else { return };
+    let hashes = GameInstance::open(&dir).unwrap().toc_hashes().unwrap();
+    let (cells, streams, named) = (
+        AtomicUsize::new(0),
+        AtomicUsize::new(0),
+        AtomicUsize::new(0),
+    );
+    let count = for_each_resource("wgi", |_, data| {
+        let grid = WorldGrid::parse(data).map_err(|e| e.to_string())?;
+        if grid.to_bytes().map_err(|e| e.to_string())? != data {
+            return Err("does not round-trip".into());
+        }
+        for cell in &grid.cells {
+            let hash = cell.stream_hash.0;
+            if doctor_toolkit::toc::guid_hash(&cell.guid.0) != hash {
+                return Err(format!(
+                    "cell {hash:08x}: the GUID does not fold to the hash"
+                ));
+            }
+            if !hashes.contains(&hash) {
+                return Err(format!("cell {hash:08x} is not in a table of contents"));
+            }
+            if grid.find_stream(hash).is_some() {
+                return Err(format!("cell {hash:08x} is also in the stream table"));
+            }
+            if cell.reserved_64 != 0 || cell.min_distance != 0.0 || cell.max_distance != 0.0 {
+                return Err(format!("cell {hash:08x}: unexpected distance fields"));
+            }
+            named.fetch_add(usize::from(cell.name_hash.0 != 0), Ordering::Relaxed);
+        }
+        for stream in &grid.streams {
+            if !hashes.contains(&stream.hash()) {
+                return Err(format!(
+                    "stream {:08x} is not in a table of contents",
+                    stream.hash()
+                ));
+            }
+        }
+        cells.fetch_add(grid.cells.len(), Ordering::Relaxed);
+        streams.fetch_add(grid.streams.len(), Ordering::Relaxed);
+        // A new cell that needs the first stream of the table.
+        let mut edited = grid.clone();
+        let mut guid = [0x84u8; 16];
+        guid[8..].copy_from_slice(b"XDOCTORT");
+        let index = edited
+            .add_cell(&wgi::NewCell {
+                guid,
+                box_min: [0.0, 0.0, 0.0],
+                box_max: [40.0, 10.0, 40.0],
+                kind: wgi::KIND_WORLD,
+                flags: 0,
+                lod_mask: grid.main_lod_mask().unwrap_or(wgi::lod::HIGH),
+                name: None,
+                needs: grid.streams.first().map(|s| s.hash()),
+            })
+            .map_err(|e| e.to_string())?;
+        let bytes = edited.to_bytes().map_err(|e| e.to_string())?;
+        let mut again = WorldGrid::parse(&bytes).map_err(|e| e.to_string())?;
+        if again != edited {
+            return Err("the edited grid does not parse back".into());
+        }
+        again.remove_cell(index).map_err(|e| e.to_string())?;
+        again.pool.truncate(grid.pool.len());
+        if again.to_bytes().map_err(|e| e.to_string())? != data {
+            return Err("removing the new cell does not give the original".into());
+        }
+        Ok(())
+    });
+    eprintln!(
+        "world grids: {count}, cells: {}, named: {}, stream entries: {}",
+        cells.load(Ordering::Relaxed),
+        named.load(Ordering::Relaxed),
+        streams.load(Ordering::Relaxed)
+    );
+    assert_eq!(count, 28);
+    assert_eq!(cells.into_inner(), 1483);
+    assert_eq!(named.into_inner(), 196);
+    assert_eq!(streams.into_inner(), 5254);
+}
+
+/// A new stream joins the world grid of every city (recorded in a workspace
+/// outside the game; nothing is written): the cell lands in the grid of the
+/// high level of detail, needs the `local` folder of the city, and removing
+/// it gives the original resource back.
+#[test]
+fn a_new_stream_joins_the_world_grid() {
+    use doctor_toolkit::level::world_grid::{self, ZoneCell};
+    use doctor_toolkit::resource::wgi;
+    use doctor_toolkit::workspace::Workspace;
+    let Some(dir) = game_dir() else { return };
+    let game = GameInstance::open(&dir).unwrap();
+    let tmp = tempfile::tempdir().unwrap();
+    for city in ["cuba", "miami", "queens"] {
+        let level = format!("gf2/{city}");
+        let parent = format!("gf2/{city}/local");
+        let name = format!("gf2/doctor/grid_{city}");
+        let mut ws = Workspace::for_game(&game, Some(&tmp.path().join(city))).unwrap();
+        let before = world_grid::level_grids(&game, &ws, &level).unwrap();
+        assert_eq!(before.len(), 4, "{level}");
+        let stream =
+            doctor_toolkit::create::new_stream(&game, &ws, &name, &parent, false, &[], None)
+                .unwrap();
+        let hash = stream.hash;
+        ws.add_stream(&game, stream).unwrap();
+        let cell = ZoneCell {
+            stream: name.clone(),
+            guid: None,
+            box_min: [100.0, 0.0, 100.0],
+            box_max: [140.0, 20.0, 160.0],
+            lod_mask: wgi::lod::HIGH,
+            kind: wgi::KIND_WORLD,
+            flags: 0,
+            name: Some("Doctor_Grid".into()),
+        };
+        let added = world_grid::add_zone_cell(&game, &mut ws, &level, &cell).unwrap();
+        assert_eq!(added.hash, hash);
+        assert_eq!(added.needs.as_deref(), Some(parent.as_str()), "{level}");
+        // Twice is refused.
+        assert!(world_grid::add_zone_cell(&game, &mut ws, &level, &cell).is_err());
+        let after = world_grid::level_grids(&game, &ws, &level).unwrap();
+        let grid = after.iter().find(|g| g.resource == added.resource).unwrap();
+        assert_eq!(grid.grid.main_lod_mask(), Some(wgi::lod::HIGH));
+        let new = &grid.grid.cells[added.cell];
+        assert_eq!(new.stream_hash.0, hash);
+        assert_eq!(new.centre, [120.0, 10.0, 130.0]);
+        assert_eq!(new.name_hash.0, doctor_toolkit::hash::sdbm(b"doctor_grid"));
+        let needs = grid.grid.list(&new.needs);
+        assert_eq!(needs.len(), 1);
+        assert_eq!(
+            Some(grid.grid.streams[needs[0] as usize].hash()),
+            game.stream_hash(&parent).unwrap()
+        );
+        // The other grids are untouched; removing the cell restores this one.
+        for (a, b) in before.iter().zip(&after) {
+            assert_eq!(a.grid == b.grid, a.resource != added.resource);
+        }
+        assert!(world_grid::remove_zone_cell(&game, &mut ws, &level, hash).unwrap());
+        assert!(!world_grid::remove_zone_cell(&game, &mut ws, &level, hash).unwrap());
+        let restored = world_grid::level_grids(&game, &ws, &level).unwrap();
+        for (a, b) in before.iter().zip(&restored) {
+            assert_eq!(a.grid, b.grid);
+        }
+    }
+}
+
+/// `docs/formats/simgroup.md` §1: the group hash of a SimGroup is the
+/// table-of-contents hash of its stream (0 in the root `*_global` streams).
+#[test]
+fn simgroup_group_hash_is_the_stream_hash() {
+    use doctor_toolkit::resource::simgroup::SimGroup;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let Some(dir) = game_dir() else { return };
+    let game = GameInstance::open(&dir).unwrap();
+    let mut by_name = std::collections::HashMap::new();
+    for index in 0..game.tocs().len() {
+        let toc = game.load_toc(index).unwrap();
+        for name in &toc.names {
+            by_name.insert(
+                name.name_lossy().replace('\\', "/").to_ascii_lowercase(),
+                name.hash,
+            );
+        }
+    }
+    let (equal, zero) = (AtomicUsize::new(0), AtomicUsize::new(0));
+    let failures = Failures::default();
+    game.streams().par_iter().for_each(|file| {
+        let stream = StreamFile::open(&file.path).unwrap();
+        let name = file.stream_name().to_ascii_lowercase();
+        for (index, resource) in stream.layout().resources.iter().enumerate() {
+            if resource.header.type_id != doctor_toolkit::level::TYPE_SIMGROUP {
+                continue;
+            }
+            let group = SimGroup::parse(&stream.resource_data(index).unwrap()).unwrap();
+            if group.group_hash == 0 {
+                zero.fetch_add(1, Ordering::Relaxed);
+                if !name.ends_with("_global") {
+                    failures.push(format!("{name}: group hash 0 outside a root stream"));
+                }
+            } else if by_name.get(&name) == Some(&group.group_hash) {
+                equal.fetch_add(1, Ordering::Relaxed);
+            } else {
+                failures.push(format!("{name}: group hash {:08x}", group.group_hash));
+            }
+        }
+    });
+    failures.assert_empty();
+    eprintln!(
+        "group hashes: {} equal, {} zero",
+        equal.load(Ordering::Relaxed),
+        zero.load(Ordering::Relaxed)
+    );
+    assert_eq!(equal.into_inner(), 1999);
+    assert_eq!(zero.into_inner(), 7);
 }
 
 #[test]
@@ -3097,6 +3301,7 @@ fn cloned_models_and_new_streams_round_trip_on_copies() {
             hash: doctor_toolkit::toc::guid_hash(&guid),
             parent: source_name.clone(),
             with_parent: true,
+            auto_load: false,
             tocs: tocs.clone(),
             toc_parents: Default::default(),
             label: String::new(),
@@ -5153,6 +5358,202 @@ fn every_chatter_set_writes_back_and_finds_its_sounds() {
     if game_dir().is_some() {
         assert_eq!((count, banks), (259, 59));
     }
+}
+
+/// Speech banks: every `smb` writes back byte for byte, its entries are in
+/// the order the game's binary search needs, and the path built from an
+/// entry the way the game builds it names a file of the archives.
+#[test]
+fn every_speech_bank_writes_back_and_names_archive_files() {
+    use doctor_toolkit::container::big::{BigArchive, find_archives, normalize_name};
+    use doctor_toolkit::resource::smb::{
+        ENTRY_TAG, FLAG_LOCALISED, SpeechBank, VERSION, name_hash,
+    };
+    let Some(dir) = game_dir() else { return };
+    let mut files = std::collections::HashSet::new();
+    for path in find_archives(&dir).unwrap() {
+        for entry in BigArchive::open(&path).unwrap().entries {
+            files.insert(normalize_name(&entry.name));
+        }
+    }
+    let entries = std::sync::atomic::AtomicUsize::new(0);
+    let localised = std::sync::atomic::AtomicUsize::new(0);
+    let odd_hashes = std::sync::atomic::AtomicUsize::new(0);
+    let count = for_each_resource("smb", |_, data| {
+        let bank = SpeechBank::parse(data).map_err(|e| e.to_string())?;
+        if bank.to_bytes().map_err(|e| e.to_string())? != data {
+            return Err("does not write back identically".into());
+        }
+        if bank.version != VERSION {
+            return Err(format!("version {}", bank.version));
+        }
+        if let Some(problem) = bank.validate().first() {
+            return Err(problem.clone());
+        }
+        for e in &bank.entries {
+            if e.tag != ENTRY_TAG || e.id.iter().any(|&w| w != e.id[0]) {
+                return Err(format!("{}: tag {} id {:08x?}", e.file, e.tag, e.id));
+            }
+            if bank.find(&e.id).map(|f| &f.file) != Some(&e.file) {
+                return Err(format!("{}: not found by its id", e.file));
+            }
+            if e.name_hash != name_hash(&e.file) {
+                odd_hashes.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            }
+            let path = e.stream_path(None);
+            if !files.contains(&path) {
+                return Err(format!("{}: no archive has {path}", e.file));
+            }
+            if e.flags & FLAG_LOCALISED != 0 {
+                let es = e.stream_path(Some("es"));
+                if !files.contains(&es) {
+                    return Err(format!("{}: no archive has {es}", e.file));
+                }
+                localised.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            }
+        }
+        entries.fetch_add(bank.entries.len(), std::sync::atomic::Ordering::Relaxed);
+        Ok(())
+    });
+    assert_eq!(count, 59);
+    assert_eq!(entries.into_inner(), 12_918);
+    // Two entries (`gf2_dons_view_01.exa` is one) keep the hash of another name.
+    assert_eq!(odd_hashes.into_inner(), 2);
+    eprintln!("localised entries: {}", localised.into_inner());
+}
+
+/// The speech event table: `get` writes back byte for byte, its records are
+/// in hash order, and a new record goes to its place.
+#[test]
+fn speech_event_table_writes_back_and_covers_chatter_events() {
+    use doctor_toolkit::resource::chv::ChatterSet;
+    use doctor_toolkit::resource::get::{SpeechEvent, SpeechEventTable};
+    let table = Mutex::new(None);
+    let count = for_each_resource("get", |_, data| {
+        let t = SpeechEventTable::parse(data).map_err(|e| e.to_string())?;
+        if t.to_bytes().map_err(|e| e.to_string())? != data {
+            return Err("does not write back identically".into());
+        }
+        if let Some(problem) = t.validate().first() {
+            return Err(problem.clone());
+        }
+        let mut grown = t.clone();
+        if !grown.insert(SpeechEvent::new("DOCTOR_TOOLKIT_NEW_EVENT")) {
+            return Err("the test event exists".into());
+        }
+        let back = SpeechEventTable::parse(&grown.to_bytes().map_err(|e| e.to_string())?)
+            .map_err(|e| e.to_string())?;
+        if back != grown || !back.validate().is_empty() || back.events.len() != t.events.len() + 1 {
+            return Err("a new record does not survive".into());
+        }
+        *table.lock().unwrap() = Some(t);
+        Ok(())
+    });
+    if game_dir().is_none() {
+        return;
+    }
+    assert_eq!(count, 1);
+    let table = table.into_inner().unwrap().unwrap();
+    assert_eq!(table.events.len(), 1372);
+    // Events of the chatter sets and the table: the game reads the record of
+    // an event it is about to say without a check.
+    let missing = Mutex::new(std::collections::BTreeSet::new());
+    let events = std::sync::atomic::AtomicUsize::new(0);
+    for_each_resource("chv", |_, data| {
+        let set = ChatterSet::parse(data).map_err(|e| e.to_string())?;
+        if let Some(problem) = set.validate().first() {
+            return Err(problem.clone());
+        }
+        for event in &set.events {
+            events.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            if table.find(event.hash).is_none() {
+                missing.lock().unwrap().insert(event.name.clone());
+            }
+        }
+        Ok(())
+    });
+    let missing = missing.into_inner().unwrap();
+    eprintln!(
+        "chatter events: {}, names without a record in get: {} {:?}",
+        events.into_inner(),
+        missing.len(),
+        missing.iter().take(12).collect::<Vec<_>>()
+    );
+}
+
+/// Audio configuration and mixer snapshots: every `auc` and `mix` writes
+/// back byte for byte; mixes and speech banks name categories of `auc`.
+#[test]
+fn audio_config_and_mixes_write_back() {
+    use doctor_toolkit::resource::auc::AudioConfig;
+    use doctor_toolkit::resource::mix::Mix;
+    use doctor_toolkit::resource::smb::SpeechBank;
+    let config = Mutex::new(None);
+    let configs = for_each_resource("auc", |_, data| {
+        let c = AudioConfig::parse(data).map_err(|e| e.to_string())?;
+        if c.to_bytes().map_err(|e| e.to_string())? != data {
+            return Err("does not write back identically".into());
+        }
+        if let Some(problem) = c.validate().first() {
+            return Err(problem.clone());
+        }
+        let mut grown = c.clone();
+        grown
+            .add_category("DOCTOR_VOICE", "DIALOG")
+            .map_err(|e| e.to_string())?;
+        let back = AudioConfig::parse(&grown.to_bytes().map_err(|e| e.to_string())?)
+            .map_err(|e| e.to_string())?;
+        if back != grown || !back.validate().is_empty() {
+            return Err("a new category does not survive".into());
+        }
+        *config.lock().unwrap() = Some(c);
+        Ok(())
+    });
+    if game_dir().is_none() {
+        return;
+    }
+    let config = config.into_inner().unwrap().unwrap();
+    assert_eq!(
+        (
+            config.categories.len(),
+            config.pools.len(),
+            config.ducks.len()
+        ),
+        (49, 6, 3)
+    );
+    let channels = std::sync::atomic::AtomicUsize::new(0);
+    let mixes = for_each_resource("mix", |_, data| {
+        let mix = Mix::parse(data).map_err(|e| e.to_string())?;
+        if mix.to_bytes().map_err(|e| e.to_string())? != data {
+            return Err("does not write back identically".into());
+        }
+        for channel in &mix.channels {
+            if config.name_of(channel.category).is_none() {
+                return Err(format!(
+                    "{}: category {:08x} is not in auc",
+                    mix.name, channel.category
+                ));
+            }
+        }
+        channels.fetch_add(mix.channels.len(), std::sync::atomic::Ordering::Relaxed);
+        Ok(())
+    });
+    assert_eq!((configs, mixes), (2, 43));
+    assert_eq!(channels.into_inner(), 1749);
+    let unknown = Mutex::new(std::collections::BTreeSet::new());
+    for_each_resource("smb", |_, data| {
+        let bank = SpeechBank::parse(data).map_err(|e| e.to_string())?;
+        for e in &bank.entries {
+            if config.name_of(e.category).is_none() {
+                unknown.lock().unwrap().insert(e.category);
+            }
+        }
+        Ok(())
+    });
+    eprintln!(
+        "speech bank categories that auc does not name: {:08x?}",
+        unknown.into_inner().unwrap()
+    );
 }
 
 /// Speech files: the subtitle table of every tenth archived file is read and

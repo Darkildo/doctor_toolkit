@@ -631,6 +631,7 @@ fn a_new_stream_gets_a_simgroup_with_objects_and_a_cloned_model() {
         crate::create::new_stream(&game, &ws, "gf2/doctor/area", "gf2/zone", false, &[], None)
             .unwrap();
     assert_eq!(stream.tocs, ["gf2/zone.toc"]);
+    let stream_hash = stream.hash;
     ws.add_stream(&game, stream).unwrap();
 
     // Not a stream of the game nor of the workspace.
@@ -638,12 +639,10 @@ fn a_new_stream_gets_a_simgroup_with_objects_and_a_cloned_model() {
     let empty = edit::add_group(&game, &index, &mut ws, "gf2/doctor/area", None, &none).unwrap();
     assert_eq!(empty.objects, 0);
     let at = GroupAt::Added(empty.key.clone());
-    assert!(
-        edit::current_group_at(&game, &ws, &at)
-            .unwrap()
-            .objects
-            .is_empty()
-    );
+    let made = edit::current_group_at(&game, &ws, &at).unwrap();
+    assert!(made.objects.is_empty());
+    // The group hash is the table-of-contents hash of its stream.
+    assert_eq!(made.group_hash, stream_hash);
 
     // An object copied from the zone, showing a clone of the zone's model:
     // the clone goes into the new stream.

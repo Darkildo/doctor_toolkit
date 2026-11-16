@@ -168,6 +168,7 @@ impl ModArchive {
             .resources
             .iter()
             .map(|r| r.payload.sha256.as_str())
+            .chain(manifest.files.iter().map(|f| f.payload.sha256.as_str()))
             .collect();
         let unused = payloads
             .keys()

@@ -42,12 +42,46 @@ pub struct AddStreamParams {
     /// (`stream_load`).
     #[serde(default)]
     pub with_parent: Option<bool>,
+    /// With `with_parent`: leave the stream enabled (flags `0,0,1,0`), so
+    /// the game opens it with every load of `parent` and unloads it with
+    /// the parent. With a world zone as the parent the stream comes and
+    /// goes as the player approaches and leaves.
+    #[serde(default)]
+    pub auto_load: Option<bool>,
     /// Tables of contents to list it in (relative paths), optionally with
     /// another parent there: `gf2/globals_global.toc=gf2/globals_global`
     /// [default: every table that lists the parent].
     #[serde(default)]
     pub tocs: Vec<String>,
     /// 32 hexadecimal digits [default: derived from the name, with an unused hash].
+    #[serde(default)]
+    pub guid: Option<String>,
+}
+
+#[derive(Debug, Default, Deserialize, JsonSchema)]
+pub struct AddZoneCellParams {
+    /// Root stream of the level whose world grid gets the cell, e.g. `gf2/queens`.
+    pub level: String,
+    /// The stream to load by the position of the player: one made with
+    /// `add_stream` (or any stream when `guid` is given).
+    pub stream: String,
+    /// Lowest corner of the box of the zone, `[x, y, z]` in metres (Y is up).
+    pub min: [f32; 3],
+    /// Highest corner of the box.
+    pub max: [f32; 3],
+    /// Grid to add it to: `high` (default; loaded within about 180 m of the
+    /// centre of the box while the memory budget of the grid lasts),
+    /// `medium` (450 m), `low` (1800 m) or `map` (the grid of the Don's View map).
+    #[serde(default)]
+    pub lod: Option<String>,
+    /// Name `ZoneStreamEnable` objects find the cell by (their attribute 0).
+    #[serde(default)]
+    pub name: Option<String>,
+    /// Leave the cell disabled until the player is inside the box of a
+    /// `ZoneStreamEnable` object with this `name` (as the game's interiors).
+    #[serde(default)]
+    pub on_enable: Option<bool>,
+    /// GUID of the stream, 32 hexadecimal digits [default: that of the new stream].
     #[serde(default)]
     pub guid: Option<String>,
 }
@@ -276,7 +310,10 @@ pub fn add_stream(kit: &Toolkit, p: AddStreamParams) -> ToolResult<Output> {
     let ws = &mut access.ws;
     let parent = normalize_stream(&p.parent);
     kit.stream(&parent)?;
-    let stream = create::new_stream(
+    if p.auto_load == Some(true) && p.with_parent != Some(true) {
+        return fail("`auto_load` goes with `with_parent`");
+    }
+    let mut stream = create::new_stream(
         &kit.game,
         ws,
         &p.name,
@@ -285,6 +322,7 @@ pub fn add_stream(kit: &Toolkit, p: AddStreamParams) -> ToolResult<Output> {
         &p.tocs,
         p.guid.as_deref(),
     )?;
+    stream.auto_load = p.auto_load.unwrap_or(false);
     let done = json!({
         "stream": stream.name,
         "file": stream.rel_path(),
@@ -292,17 +330,76 @@ pub fn add_stream(kit: &Toolkit, p: AddStreamParams) -> ToolResult<Output> {
         "guid": stream.guid,
         "toc_hash": hex(stream.hash),
         "tocs": stream.tocs,
-        "loaded": if stream.with_parent {
+        "loaded": if stream.with_parent && stream.auto_load {
+            "with every load of its parent, unloaded with it"
+        } else if stream.with_parent {
             "with its parent, once an EnableDisableStreams object enables its hash"
         } else {
             "when game data asks for its hash (StreamSet) or by stream_load"
         },
-        "next": "add_simgroup puts a SimGroup into it; import_model with `stream` a model",
+        "next": "add_simgroup puts a SimGroup into it; import_model with `stream` a model; \
+                 add_zone_cell makes the game load it when the player comes near",
     });
     let since = ws.head();
     ws.add_stream(&kit.game, stream)?;
     let label = last_label(ws);
     finish(ws, since, &label, done)
+}
+
+pub fn add_zone_cell(kit: &Toolkit, p: AddZoneCellParams) -> ToolResult<Output> {
+    use doctor_toolkit::level::world_grid::{self, ZoneCell};
+    use doctor_toolkit::resource::wgi;
+    let lod_mask = match p.lod.as_deref().unwrap_or("high") {
+        "high" => wgi::lod::HIGH,
+        "medium" => wgi::lod::MEDIUM,
+        "low" => wgi::lod::LOW,
+        "map" => wgi::lod::MAP,
+        other => return fail(format!("`lod` is high, medium, low or map, not {other}")),
+    };
+    let on_enable = p.on_enable.unwrap_or(false);
+    if on_enable && p.name.is_none() {
+        return fail("`on_enable` needs `name`: the name a ZoneStreamEnable object carries");
+    }
+    let mut access = kit.write_workspace(&format!("add_zone_cell: {}", p.stream))?;
+    let ws = &mut access.ws;
+    let level = normalize_stream(&p.level);
+    kit.stream(&level)?;
+    let since = ws.head();
+    let added = world_grid::add_zone_cell(
+        &kit.game,
+        ws,
+        &level,
+        &ZoneCell {
+            stream: p.stream.clone(),
+            guid: p.guid.clone(),
+            box_min: p.min,
+            box_max: p.max,
+            lod_mask,
+            kind: if on_enable { 5 } else { wgi::KIND_WORLD },
+            flags: 0,
+            name: p.name.clone(),
+        },
+    )?;
+    let label = last_label(ws);
+    finish(
+        ws,
+        since,
+        &label,
+        json!({
+            "level": level,
+            "stream": normalize_stream(&p.stream),
+            "toc_hash": hex(added.hash),
+            "world_grid_resource": added.resource,
+            "cell": added.cell,
+            "needs": added.needs,
+            "loaded": if on_enable {
+                "while the player is inside the box of a ZoneStreamEnable object with this name \
+                 and near the cell"
+            } else {
+                "when the player comes near the centre of the box, unloaded when he leaves"
+            },
+        }),
+    )
 }
 
 pub fn remove_stream(kit: &Toolkit, p: RemoveStreamParams) -> ToolResult<Output> {

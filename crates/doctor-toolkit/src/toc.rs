@@ -355,8 +355,9 @@ impl Toc {
 /// Folds a 128-bit asset GUID into the 32-bit hash stored in name records.
 ///
 /// The GUID is read as four little-endian words `a, b, c, d`; the hash is
-/// `((a * 33 + b) * 33 + c) * 33 + d` modulo 2³². Found in `godfather2.exe`
-/// at `0x004A82B0`.
+/// `((a * 33 + b) * 33 + c) * 33 + d` modulo 2³². In `godfather2.exe` it is
+/// the function `0x00401F40` (called by the stream manager) and the start of
+/// the record lookup `0x004A82B0`.
 pub fn guid_hash(guid: &[u8; 16]) -> u32 {
     guid.chunks_exact(4)
         .map(|w| u32::from_le_bytes(w.try_into().expect("chunk of four bytes")))
@@ -376,6 +377,11 @@ pub const FLAGS_REQUESTED: [u8; 4] = [0, 0, 1, 0];
 /// one dependency, the stream that loads it. The game never loads such a
 /// stream on its own.
 pub const FLAGS_PARENTED: [u8; 4] = [0, 0, 5, 0];
+/// Flags of a child stream that is not disabled by default: listed in the
+/// force-load list of its parent, it is opened with every load of the parent
+/// (`0x00403C40` asks `0x00404590`, which refuses only entries with
+/// [`FLAG_LOAD_DISABLED_DEFAULT`]). The game files have no such entry.
+pub const FLAGS_CHILD: [u8; 4] = [0, 0, 1, 0];
 
 impl TocFile {
     /// A new file entry. `deps` is a range of [`Toc::dep_words`].

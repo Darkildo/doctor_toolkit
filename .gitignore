@@ -20,3 +20,9 @@ Thumbs.db
 
 # Release archives (tools/release.sh)
 /dist/
+
+# Obsidian: the personal layout of the docs/ vault (the shared settings are
+# the other files of docs/.obsidian/)
+.obsidian/workspace*.json
+.obsidian/cache
+.trash/

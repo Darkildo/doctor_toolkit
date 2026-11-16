@@ -317,3 +317,134 @@ fn mission_of_stream_names() {
     assert_eq!(mission_of("gf2/cuba/global/objectives/x"), None);
     assert_eq!(mission_of("gf2/miami/local"), None);
 }
+
+#[test]
+fn pins_carry_semantic_types_and_list_labels() {
+    use crate::game_types::SemanticType;
+    let mut g = sample();
+    let c = class("TestBuildingOwnership");
+    let layout = LogicSchema::gf2().layout(c).expect("layout").to_vec();
+    let o = g.push_object(c, guid(9), &layout).unwrap();
+    g.set_class_attr(o, c, 2, Some(Value::String("start".into())))
+        .unwrap();
+    g.set_class_attr(o, c, 0, Some(Value::Int(125))).unwrap();
+    g.set_class_attr(
+        o,
+        c,
+        1,
+        Some(Value::Hash(crate::resource::simgroup::Hash32(string_id(
+            "corleone",
+        )))),
+    )
+    .unwrap();
+    let graph = graph_of(&g);
+    let node = graph
+        .nodes
+        .iter()
+        .find(|n| n.class_name == "TestBuildingOwnership")
+        .unwrap();
+    let pin = |index: u16| node.pins.iter().find(|p| p.index == index).unwrap();
+    assert_eq!(pin(2).ty, Some(SemanticType::MsgIn));
+    assert_eq!(pin(1).ty, Some(SemanticType::Enum("family")));
+    assert_eq!(pin(1).label.as_deref(), Some("corleone"));
+    assert_eq!(pin(0).ty, Some(SemanticType::Enum("venue")));
+    assert_eq!(pin(0).label.as_deref(), Some("125"));
+    // Where the names come from.
+    assert_eq!(
+        graph.message("iMsgNewCheckpointLoaded").unwrap().origin,
+        "engine"
+    );
+    assert_eq!(graph.message("nobody_hears").unwrap().origin, "custom");
+    let json = serde_json::to_value(pin(1)).unwrap();
+    assert_eq!(json["ty"], "Enum<family>");
+}
+
+#[test]
+fn checks_find_collisions_and_one_ended_messages() {
+    use super::check::{self, EditedGroup, ProblemKind, Severity};
+    let schema = LogicSchema::gf2();
+    // A new group: `start` and `spawn_guards` are wired, `nobody_hears` is
+    // only sent, `never_sent` only heard; the engine message is fine.
+    let edited = sample();
+    let problems = check::check_messages(
+        schema,
+        &[EditedGroup {
+            label: "test".into(),
+            original: None,
+            edited: &edited,
+        }],
+    );
+    let kinds: Vec<(ProblemKind, &str)> = problems
+        .iter()
+        .map(|p| (p.kind, p.message.as_str()))
+        .collect();
+    assert!(
+        kinds.contains(&(ProblemKind::SentNeverHeard, "nobody_hears")),
+        "{kinds:?}"
+    );
+    assert!(
+        kinds.contains(&(ProblemKind::HeardNeverSent, "never_sent")),
+        "{kinds:?}"
+    );
+    assert!(problems.iter().all(|p| p.severity == Severity::Warning));
+    assert!(
+        !kinds
+            .iter()
+            .any(|k| k.1 == "start" || k.1.eq_ignore_ascii_case("spawn_guards"))
+    );
+    assert!(!kinds.iter().any(|k| k.1 == "iMsgNewCheckpointLoaded"));
+    // The same group unchanged is no edit: nothing to report.
+    let none = check::check_messages(
+        schema,
+        &[EditedGroup {
+            label: "test".into(),
+            original: Some(&edited),
+            edited: &edited,
+        }],
+    );
+    assert!(none.is_empty(), "{none:?}");
+    // The messages the group adds to the game.
+    let custom = check::custom_messages(
+        schema,
+        &[EditedGroup {
+            label: "test".into(),
+            original: None,
+            edited: &edited,
+        }],
+    );
+    assert_eq!(
+        custom,
+        ["never_sent", "nobody_hears", "Spawn_Guards", "start"]
+    );
+    // A listener added to a game message that the game sends: fine. A new
+    // listener of a message the game only hears: a warning naming the
+    // cut-scene that mentions it.
+    let mut more = edited.clone();
+    add(
+        &mut more,
+        "MultiManager",
+        20,
+        &[("MultiManager", 0, "boundary_fade_out")],
+    );
+    add(
+        &mut more,
+        "MultiManager",
+        21,
+        &[("MultiManager", 0, "mus_play_igc_01")],
+    );
+    let problems = check::check_messages(
+        schema,
+        &[EditedGroup {
+            label: "test".into(),
+            original: Some(&edited),
+            edited: &more,
+        }],
+    );
+    assert_eq!(problems.len(), 1, "{problems:?}");
+    assert_eq!(problems[0].kind, ProblemKind::HeardNeverSent);
+    assert!(
+        problems[0].what.contains("cut-scene"),
+        "{}",
+        problems[0].what
+    );
+}

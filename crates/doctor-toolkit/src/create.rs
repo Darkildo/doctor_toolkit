@@ -915,6 +915,7 @@ pub fn new_stream(
         hash: crate::toc::guid_hash(&guid),
         parent,
         with_parent,
+        auto_load: false,
         tocs: list,
         toc_parents,
         label: String::new(),

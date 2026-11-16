@@ -123,6 +123,7 @@ script_editor = "Script editor"
 movies = "Movies"
 mods = "Mods"
 integrity = "Check game files"
+save_file = "Look into a save file…"
 rebuild_index = "Rebuild game index"
 apply = "Apply changes to game"
 revert_game = "Revert game files"
@@ -137,6 +138,7 @@ wizard_outfit = "New outfit…"
 wizard_params = "Change game parameters…"
 wizard_texts = "Edit texts…"
 wizard_place = "Place an object in a level…"
+wizard_voice = "New voice line…"
 wizard_package = "Package a mod…"
 guide = "User guide"
 shortcuts = "Keyboard shortcuts"
@@ -187,6 +189,7 @@ make_drawer_hint = "Take the panel out of the layout: its button in the status b
 
 [window]
 mods = "Mods"
+save = "Save file"
 
 [files]
 no_game = "No game is open."
@@ -404,6 +407,15 @@ choose = "Choose…"
 forget = "Forget"
 open_folder = "Open folder"
 not_saved = "not saved in this mode"
+
+[save_view]
+pick = "A save of the game"
+open = "Open a save…"
+summary = "Summary"
+read_only = "The file is only read: the editor does not change saves."
+no_names = "Variables and objects are shown by hash and GUID; their names appear after a session of the live link has read the game's names."
+bad_checksums = "The checksums do not match: the game will not load this file."
+error = "{file} is not a save of the game: {error}"
 
 [about]
 title = "About doctor_toolkit"
@@ -851,6 +863,36 @@ replaced_n = { one = "Replaced in {n} string", other = "Replaced in {n} strings"
 csv_loaded_n = { one = "Read the CSV file: {n} string changed", other = "Read the CSV file: {n} strings changed" }
 label_n = { one = "Edit {n} string", other = "Edit {n} strings" }
 
+[wizard.voice]
+title = "New voice line"
+blurb = "Make a line of speech from a recording: the sound, its subtitles and the speech event that says it."
+step.speaker = "Speaker"
+step.line = "Line"
+pick = "Choose the chatter set of the speaker: the voice of its lines, the resource, its events / lines."
+need_speaker = "Choose a chatter set."
+file = "Recording:"
+browse = "Choose…"
+files_filter = "Sound files"
+need_file = "Choose the recording: a WAV file, or any sound file when ffmpeg is installed."
+event = "Speech event:"
+event_new = "new event: it gets a record in the event table"
+event_known = "the speaker has this event: one more line"
+events = "Events of the speaker (click to take the name):"
+name = "Line name:"
+name_hint = "Lower-case letters, digits and _ (doc1_xxx_0000001); the file becomes d_<name>.exa.snu"
+subtitle = "Subtitle {language}:"
+subtitle_hint = "A language without a subtitle gets the English one."
+weight = "Weight:"
+only = "Remove the other lines of the event: it always says the new one"
+label = "New voice line {name} ({event})"
+
+[wizard.voice.summary]
+line = "Line {name} from {file}"
+speaker = "Speaker {speaker}, event {event}"
+new_event = "The event is new: the chatter set gets it and the event table gets its record"
+only = "The other lines of the event are removed"
+sound = "The sound goes into the overlay archive as {entry}, with an entry in the speaker's speech bank"
+
 [wizard.place]
 title = "Place an object in a level"
 blurb = "Put a model of the game, or a new one, into a level zone and move it with the gizmo."
@@ -1113,6 +1155,9 @@ op_disconnect = "Disconnect logic"
 op_clear = "Clear a logic message"
 op_delay = "Change a logic delay"
 bad_delay = "A delay is a number of seconds, 0 or more"
+pick_message = "Pick a message: names of the engine and of the game files that contain the text typed"
+pick_value = "Pick a value of the list"
+pick_hint = "Type a part of a name to see the messages of the game files; engine messages:"
 op_set = "Set {pin}"
 recorded = "Recorded: {what}"
 no_change = "No change"

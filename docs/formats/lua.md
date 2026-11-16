@@ -161,7 +161,7 @@ chunk = dt.lua_compile(text, chunk_name)  # LuaSyntaxError(message, line)
 
 ## 5. Проверка в игре
 
-`docs/analysis/game-bench.md` §11: изменённый `aud_utils.lua` (пробные вызовы
+`docs/analysis/game-bench.md` §13.8: изменённый `aud_utils.lua` (пробные вызовы
 `loadfile("doctor_probe_…")` в начале, в конце чанка и в функции
 `lua_switch`) импортирован в теневую копию; запуск под стендом с
 `TRACE_FILES=1` показывает обращения к пробным файлам — чанк загружен,

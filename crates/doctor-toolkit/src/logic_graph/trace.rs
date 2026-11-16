@@ -425,6 +425,8 @@ mod tests {
                     delay: None,
                     target: None,
                     value: None,
+                    ty: None,
+                    label: None,
                 },
                 Pin {
                     slot: 0,
@@ -438,6 +440,8 @@ mod tests {
                     delay: None,
                     target: None,
                     value: None,
+                    ty: None,
+                    label: None,
                 },
             ],
         }
@@ -489,6 +493,7 @@ mod tests {
                     listeners: Vec::new(),
                     state: MessageState::Connected,
                     engine: h == 3,
+                    origin: "custom",
                     hub: None,
                     elsewhere: None,
                 },

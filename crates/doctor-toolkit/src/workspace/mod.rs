@@ -169,6 +169,13 @@ pub struct NewStream {
     /// stream is loaded when game data asks for its hash (flags `0,0,1,0`).
     #[serde(default)]
     pub with_parent: bool,
+    /// With `with_parent`: the stream is not disabled by default (flags
+    /// `0,0,1,0` and a child link in the parent's entry), so the game opens
+    /// it with every load of the parent (`0x00403C40`, `0x00404590`; stage
+    /// 84, `docs/analysis/new-resources.md` §3.1). None of the game's own
+    /// child streams is made this way.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub auto_load: bool,
     /// Tables of contents that list the stream, relative paths.
     pub tocs: Vec<String>,
     /// A different parent in some tables of contents (relative path → stream
@@ -1829,6 +1836,63 @@ impl Workspace {
         self.commit_all(label, Vec::new(), Vec::new(), vec![edit])
     }
 
+    /// Records changed resources of several streams and **new** entries of
+    /// the `.viv` archives as one undoable operation (a new voice line: its
+    /// sound file and the tables that name it). `edits` as in
+    /// [`Self::change_resources`]. A new entry must not exist in the game's
+    /// archives; it goes into the overlay archive like a replaced one, and
+    /// reverting it takes it out again.
+    pub fn change_resources_and_new_files(
+        &mut self,
+        game: &GameInstance,
+        label: &str,
+        edits: &[(usize, Vec<ResourceEdit>)],
+        new_files: Vec<(FileKey, Vec<u8>)>,
+    ) -> Result<Option<u64>> {
+        let mut planned = Vec::new();
+        for (stream_index, list) in edits {
+            planned.extend(self.plan_set(game, label, *stream_index, list)?);
+        }
+        let mut keys = HashSet::new();
+        if let Some(edit) = planned.iter().find(|e| !keys.insert(e.key.clone())) {
+            return Err(Error::InvalidArgument(format!(
+                "{} is edited twice",
+                edit.key
+            )));
+        }
+        let mut file_edits = Vec::with_capacity(new_files.len());
+        for (key, data) in new_files {
+            if !matches!(key, FileKey::Archive(_)) {
+                return Err(Error::InvalidArgument(format!(
+                    "{key}: only archive entries can be added"
+                )));
+            }
+            let before = self.files.get(&key).cloned();
+            let original = match &before {
+                Some(change) => change.original.clone(),
+                None if files::original_data(game.root(), &key).is_ok() => {
+                    return Err(Error::InvalidArgument(format!(
+                        "{key} already exists in the game"
+                    )));
+                }
+                // A new entry has no original: the empty blob stands for it.
+                None => Blob::of(&[]),
+            };
+            let after = Some(FileChange {
+                key: key.clone(),
+                payload: self.store.put(&data)?,
+                original,
+                label: label.to_owned(),
+            });
+            file_edits.push(FileEdit { key, before, after });
+        }
+        if planned.is_empty() && file_edits.is_empty() {
+            return Ok(None);
+        }
+        self.commit_all(label, planned, Vec::new(), file_edits)
+            .map(Some)
+    }
+
     /// Removes the changes of these files (one undoable operation). Returns
     /// whether anything changed.
     pub fn revert_files(&mut self, keys: &[FileKey], label: &str) -> Result<bool> {
@@ -1862,7 +1926,7 @@ impl Workspace {
             &mut self.applied,
             &path,
             if wanted { &self.files } else { &empty },
-            &self.store,
+            &|change| self.store.get(&change.payload),
             "workspace",
             force,
         )

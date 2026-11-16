@@ -58,8 +58,10 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::game::GameInstance;
+use crate::game_types::MessageId;
 use crate::workspace::{
-    Added, Blob, Deployment, GameFingerprint, NewStream, ResourceKey, StorageChoice, Workspace,
+    Added, Blob, Deployment, FileKey, GameFingerprint, NewStream, ResourceKey, StorageChoice,
+    Workspace,
 };
 use crate::{Error, Result};
 
@@ -69,12 +71,16 @@ pub use package::ModArchive;
 /// Value of the `format` field of `mod.json`.
 pub const FORMAT: &str = "doctor-toolkit-mod";
 /// Current version of the mod format: 2 added new resources and new
-/// streams, 3 dependencies, editions and rules of the load order.
-pub const FORMAT_VERSION: u32 = 3;
+/// streams, 3 dependencies, editions and rules of the load order, 4 files of
+/// the `.viv` archives (voice lines and other streamed sounds) and child
+/// streams that load with their parent.
+pub const FORMAT_VERSION: u32 = 4;
 /// The first format version that can add resources and streams.
 pub const ADDING_VERSION: u32 = 2;
 /// The first format version with relations: dependencies, editions, load order.
 pub const RELATIONS_VERSION: u32 = 3;
+/// The first format version that carries files of the archives.
+pub const FILES_VERSION: u32 = 4;
 /// Name of the manifest inside a mod.
 pub const MANIFEST_NAME: &str = "mod.json";
 /// Directory of the payloads inside a mod.
@@ -102,6 +108,8 @@ const MAX_VERSION: usize = 64;
 const MAX_DESCRIPTION: usize = 20_000;
 const MAX_URL: usize = 2_000;
 const MAX_STREAM_NAME: usize = 260;
+/// Most messages one mod may add.
+pub const MAX_MESSAGES: usize = 10_000;
 /// Most new streams one mod may create.
 pub const MAX_NEW_STREAMS: usize = 10_000;
 /// Most tables of contents one new stream may be listed in (the game has 25).
@@ -169,6 +177,17 @@ pub struct ModManifest {
     /// Mods this one is loaded before when they are installed (a soft rule).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub load_before: Vec<String>,
+    /// Messages the mod adds to the game: names its SimGroups send or hear
+    /// that the game does not have, sorted. On the bus a message is
+    /// `sdbm(lower(name))`, so a name here must not be a game message and
+    /// must not share its hash with one ([`MessageId::custom`]). Older
+    /// managers ignore the field; any format version may carry it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub messages: Vec<String>,
+    /// Entries of the `.viv` archives the mod replaces or adds (format
+    /// version 4), sorted by key.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub files: Vec<ModFile>,
 }
 
 /// A mod another one does not work with: the versions concerned and why.
@@ -281,6 +300,20 @@ impl ModGame {
         let sha = self.executable_sha256.as_ref()?;
         Some(*sha == game.executable_sha256 && self.executable_size == Some(game.executable_size))
     }
+}
+
+/// A file of the `.viv` archives a mod replaces or adds (format version 4):
+/// a streamed sound, such as a voice line. The mod manager puts it into its
+/// overlay archive, as the workspace does.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ModFile {
+    /// `viv:audiostreams\…`; loose files are not carried by mods.
+    pub key: FileKey,
+    /// The new data: `payloads/<sha256>` in the package.
+    pub payload: Blob,
+    /// What the change is, e.g. the label of the workspace operation.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub label: String,
 }
 
 /// One resource a mod replaces or adds.
@@ -396,14 +429,21 @@ impl ModManifest {
             incompatible: BTreeMap::new(),
             load_after: Vec::new(),
             load_before: Vec::new(),
+            messages: Vec::new(),
+            files: Vec::new(),
         }
     }
 
     /// The lowest format version that can hold this manifest: 1 for a mod
     /// that only replaces resources, 2 when it adds resources or streams, 3
-    /// when it has relations ([`Self::has_relations`]).
+    /// when it has relations ([`Self::has_relations`]), 4 when it carries
+    /// files of the archives or a child stream that loads with its parent
+    /// (`auto_load`: a manager older than that field would install the
+    /// stream disabled without a word).
     pub fn required_version(&self) -> u32 {
-        if self.has_relations() {
+        if !self.files.is_empty() || self.streams.iter().any(|s| s.auto_load) {
+            FILES_VERSION
+        } else if self.has_relations() {
             RELATIONS_VERSION
         } else if self.streams.is_empty() && !self.resources.iter().any(ModResource::is_added) {
             1
@@ -555,6 +595,57 @@ impl ModManifest {
                 self.format_version
             ));
         }
+        if self.format_version < FILES_VERSION && !self.files.is_empty() {
+            return bad(format!(
+                "format version {} cannot carry files of the archives; version \
+                 {FILES_VERSION} is needed",
+                self.format_version
+            ));
+        }
+        if self.format_version < FILES_VERSION && self.streams.iter().any(|s| s.auto_load) {
+            return bad(format!(
+                "format version {} cannot hold a child stream that loads with its parent; \
+                 version {FILES_VERSION} is needed",
+                self.format_version
+            ));
+        }
+        if self.files.len() > MAX_RESOURCES {
+            return bad(format!("more than {MAX_RESOURCES} files"));
+        }
+        let mut file_keys = HashSet::new();
+        for file in &self.files {
+            let FileKey::Archive(name) = &file.key else {
+                return bad(format!(
+                    "{}: only archive entries can be in a mod",
+                    file.key
+                ));
+            };
+            let safe = !name.is_empty()
+                && name.len() <= MAX_STREAM_NAME
+                && name.bytes().all(|b| b.is_ascii_graphic())
+                && *name == name.to_ascii_lowercase()
+                && !name.contains('/')
+                && !name.starts_with("_doctor_toolkit")
+                && name
+                    .split('\\')
+                    .all(|part| !part.is_empty() && part != ".." && part != ".");
+            if !safe {
+                return bad(format!("bad archive entry name `{}`", name.escape_debug()));
+            }
+            if !file_keys.insert(&file.key) {
+                return bad(format!("{} is listed twice", file.key));
+            }
+            if !is_sha256(&file.payload.sha256) {
+                return bad(format!("{}: the payload hash is not a SHA-256", file.key));
+            }
+            if file.payload.size > MAX_PAYLOAD_SIZE {
+                return bad(format!(
+                    "{}: the payload is {} bytes; at most {MAX_PAYLOAD_SIZE} are allowed",
+                    file.key, file.payload.size
+                ));
+            }
+            check_text("label", &file.label, MAX_NAME, true)?;
+        }
         if self.format_version < RELATIONS_VERSION && self.has_relations() {
             return bad(format!(
                 "format version {} cannot have editions, dependencies or rules of the load \
@@ -567,6 +658,28 @@ impl ModManifest {
         }
         if self.resources.is_empty() && self.streams.is_empty() {
             return bad("the mod replaces no resources".into());
+        }
+        if self.messages.len() > MAX_MESSAGES {
+            return bad(format!(
+                "{} messages; at most {MAX_MESSAGES} are allowed",
+                self.messages.len()
+            ));
+        }
+        let mut hashes: HashMap<u32, &str> = HashMap::new();
+        for name in &self.messages {
+            check_text("messages", name, MAX_NAME, false)?;
+            // Not a message of the game, and not the hash of one: the game
+            // could not tell the two apart.
+            if let Err(e) = MessageId::custom(&self.id, name) {
+                return bad(format!("`messages`: {e}"));
+            }
+            if let Some(other) = hashes.insert(crate::hash::string_id(name), name)
+                && !other.eq_ignore_ascii_case(name)
+            {
+                return bad(format!(
+                    "`messages`: `{name}` and `{other}` have one hash; the game cannot tell them apart"
+                ));
+            }
         }
         if self.streams.len() > MAX_NEW_STREAMS {
             return bad(format!(
@@ -831,12 +944,13 @@ impl ModManifest {
         self.streams.iter().find(|s| s.name == name)
     }
 
-    /// Distinct payloads, each once.
+    /// Distinct payloads of resources and files, each once.
     pub fn payloads(&self) -> Vec<&Blob> {
         let mut seen = HashSet::new();
         self.resources
             .iter()
             .map(|r| &r.payload)
+            .chain(self.files.iter().map(|f| &f.payload))
             .filter(|b| seen.insert(&b.sha256))
             .collect()
     }
@@ -905,11 +1019,31 @@ pub fn manifest_from_workspace(
         })
         .collect();
     manifest.streams.sort_by(|a, b| a.name.cmp(&b.name));
-    if manifest.resources.is_empty() && manifest.streams.is_empty() {
+    // Changed and new entries of the archives (voice lines, replaced
+    // sounds): all of them, or those recorded by the operations of the
+    // selected resources. Loose files (movies) stay out of mods.
+    let labels: HashSet<&str> = selected().map(|c| c.label.as_str()).collect();
+    manifest.files = ws
+        .file_changes()
+        .filter(|c| matches!(c.key, FileKey::Archive(_)))
+        .filter(|c| keys.is_none() || labels.contains(c.label.as_str()))
+        .map(|c| ModFile {
+            key: c.key.clone(),
+            payload: c.payload.clone(),
+            label: c.label.chars().take(MAX_NAME).collect(),
+        })
+        .collect();
+    if manifest.resources.is_empty() && manifest.streams.is_empty() && manifest.files.is_empty() {
         return Err(Error::mod_error(
             "the workspace has no changes to put into a mod",
         ));
     }
+    // The messages the selected SimGroups add; `validate` refuses a name
+    // with the hash of a game message.
+    manifest.messages = crate::logic_graph::check::check_workspace_keys(ws, |key| {
+        keys.is_none_or(|keys| keys.contains(key))
+    })
+    .custom;
     manifest.format_version = manifest.required_version();
     manifest.validate()?;
     Ok(manifest)

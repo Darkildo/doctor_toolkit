@@ -807,6 +807,7 @@ pub(crate) fn new_stream(name: &str, with_parent: bool) -> NewStream {
         hash: 0x0777_0000,
         parent: LEVEL.into(),
         with_parent,
+        auto_load: false,
         tocs: vec!["gf2/level.toc".into()],
         toc_parents: Default::default(),
         label: String::new(),
@@ -881,13 +882,15 @@ fn added_resources_are_inserted_and_removed_with_undo() {
 
 #[test]
 fn new_streams_are_created_listed_and_deleted() {
-    for with_parent in [false, true] {
+    for (with_parent, auto_load) in [(false, false), (true, false), (true, true)] {
         let (dir, game) = fake_game();
         let root = dir.path();
         let before = snapshot(root);
         let mut ws = Workspace::for_game(&game, None).unwrap();
         let name = "gf2/doctor/props";
-        ws.add_stream(&game, new_stream(name, with_parent)).unwrap();
+        let mut created = new_stream(name, with_parent);
+        created.auto_load = auto_load;
+        ws.add_stream(&game, created).unwrap();
         // The same name, a name of the game or a used hash are refused.
         assert!(ws.add_stream(&game, new_stream(name, false)).is_err());
         assert!(ws.add_stream(&game, new_stream(TEXT, false)).is_err());
@@ -931,7 +934,16 @@ fn new_streams_are_created_listed_and_deleted() {
         assert_eq!(deps, ["gf2\\level"]);
         let level = table.find_file(LEVEL).unwrap();
         let children: Vec<String> = table.file_deps(level).map(|n| n.name_lossy()).collect();
-        if with_parent {
+        if with_parent && auto_load {
+            // A child that is not disabled by default: the game opens it
+            // with every load of the parent.
+            assert_eq!(table.files[entry].flags, toc::FLAGS_CHILD);
+            assert_eq!(
+                table.files[entry].flags[2] & toc::FLAG_LOAD_DISABLED_DEFAULT,
+                0
+            );
+            assert_eq!(children, ["gf2\\doctor\\props"]);
+        } else if with_parent {
             assert_eq!(table.files[entry].flags, toc::FLAGS_PARENTED);
             assert_eq!(children, ["gf2\\doctor\\props"]);
         } else {

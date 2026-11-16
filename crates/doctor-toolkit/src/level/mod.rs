@@ -20,6 +20,7 @@ pub mod compat;
 pub mod edit;
 pub mod model;
 pub mod navgraph;
+pub mod world_grid;
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};

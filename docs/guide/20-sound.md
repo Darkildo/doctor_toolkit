@@ -42,6 +42,30 @@ doctor-toolkit sbk-edit "$GAME" gf2/frontend:sbk:6d4bafbd --emitter '#4' \
     --volume 0.5 --pitch 1.5 --pitch-range 0.1 --velocity 100
 ```
 
+## Голосовые реплики
+
+Речь лежит не в банках, а в архивах `.viv`; реплику персонажу добавляет
+мастер **Новая голосовая реплика** (раздел 15.9) или команда:
+
+```sh
+doctor-toolkit voice-add "$GAME" --speakers        # наборы речи и их голоса
+doctor-toolkit voice-add "$GAME" gf2/globals_global:chv:18c7062e hello.wav \
+    --event DOCTOR_HELLO --name doc1_xxx_0000001 --subtitle en="Hello."
+```
+
+Таблица событий речи, категории звука и миксы:
+
+```sh
+doctor-toolkit speech-events "$GAME" F2F_ENJOY_FLIGHT          # пауза, ранг, флаги, приоритет
+doctor-toolkit speech-events "$GAME" DOCTOR_HELLO --set --cooldown 30
+doctor-toolkit audio-config "$GAME"                            # категории, пулы банков, даки
+doctor-toolkit mix "$GAME"                                     # список миксов
+doctor-toolkit mix "$GAME" global_f2f.mix                      # каналы микса
+doctor-toolkit mix "$GAME" global_f2f.mix --category MUSIC --volume 0.2
+```
+
+Форматы — `docs/formats/audio.md` §13–§15 и `docs/formats/dialogues.md` §3–§6.
+
 ## Замена и добавление звуков
 
 | Задача | Редактор | Командная строка |

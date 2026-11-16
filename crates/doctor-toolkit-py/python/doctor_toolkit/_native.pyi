@@ -113,6 +113,36 @@ def logic_missions(game: "Game") -> list[dict[str, Any]]:
 def logic_schema() -> dict[str, Any]:
     """What the schema of SimGroup pins covers."""
 
+def message_info(name: str) -> dict[str, Any]:
+    """What is known about a message (a name, or a hash as `0x` and eight
+    hexadecimal digits): `kind` (`engine`, `game`, `custom`, `unknown`),
+    `name`, `hash`, `usage`, `senders` and `listeners` (class, attribute
+    index, objects over the whole game), `scope`, `streams`, `mentions`,
+    `data` (`"unknown"` so far), `summary`, `sent_by`, `conf`, `source` and
+    `collides_with` (the game message a new name shares its hash with).
+    Needs no game. See docs/logic-graph.md §2.1."""
+
+def message_search(text: str, limit: int = 40) -> list[dict[str, Any]]:
+    """Messages of the game files whose name contains `text`, as
+    `message_info` gives them."""
+
+def enum_values(key: Optional[str] = None) -> Any:
+    """A value list of the game (`family`, `city`, `venue`, `building_type`,
+    `weapon`, `crew_specialty`, `sound_category`, `emotion`): `title`,
+    `kind`, `source`, `conf`, `values` (`name`, `value`, `hash`, `note`).
+    Without a key, the list of every list. The same values with `Literal`
+    types are in `doctor_toolkit.gf2_types`."""
+
+def attr_types(class_name: str) -> list[dict[str, Any]]:
+    """What the attributes of the packet of a SimGroup class mean: `index`,
+    `name`, `type` (`MsgIn`, `MsgOut`, `Ref<Class>`, `Res<type>`,
+    `Enum<list>`, `Seconds`, `Money`, `Bool`), `conf`, `seen`."""
+
+def logic_check(game: "Game") -> dict[str, Any]:
+    """Checks the messages of the SimGroups the workspace changes: `custom`
+    (new names), `problems` (`error` — a new name with the hash of a game
+    message; `warning` — heard but never sent, sent but never heard), `ok`."""
+
 def logic_run(
     game: "Game",
     scope: str,

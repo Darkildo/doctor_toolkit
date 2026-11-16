@@ -939,7 +939,9 @@ pub fn add_stream_entry(
     let size = u32::try_from(data_size)
         .map_err(|_| Error::InvalidArgument("stream data exceeds 4 GiB".into()))?;
     let entry = table.add_name(stream.hash, &stream.toc_name());
-    let flags = if stream.with_parent {
+    let flags = if stream.with_parent && stream.auto_load {
+        crate::toc::FLAGS_CHILD
+    } else if stream.with_parent {
         crate::toc::FLAGS_PARENTED
     } else {
         crate::toc::FLAGS_REQUESTED

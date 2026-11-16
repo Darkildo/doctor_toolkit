@@ -1,0 +1,95 @@
+# Facts about single messages of The Godfather II (PC 1.0.789.0) that the
+# generated lists cannot hold: what a message does, what its data word is, who
+# sends it besides SimGroup objects. Kept by hand; every entry names its source.
+#
+# The lists themselves: data/gf2/engine_messages.txt (names in godfather2.exe)
+# and data/gf2/game_messages.tsv (names in the SimGroups, with senders and
+# listeners). A message named here must be in one of them
+# (crates/doctor-toolkit/build.rs checks).
+#
+# [message.<name>]
+# summary — one sentence, English (tools); ru — the same in Russian (notes);
+# data    — the data word of the message; "unknown" until it is read in the code;
+# sent_by — senders that are not SimGroup objects (engine code, cut-scenes, Lua);
+#           sent_by_ru — the same in Russian (as many entries);
+# conf    — exe, data, bench (checked in the running game), guess;
+# source  — document and section, or an address.
+
+[message.iMsgPostSpawnInitialize]
+summary = "The engine sends it to the objects of a SimGroup that has just been loaded; TriggerAuto fires on it once."
+ru = "Движок шлёт его объектам только что загруженной SimGroup; по нему один раз срабатывает TriggerAuto."
+data = "unknown"
+sent_by = ["engine: message variable 0x0110064C, named by 0x00445530"]
+sent_by_ru = ["движок: переменная сообщения 0x0110064C, имя задаёт 0x00445530"]
+conf = "exe"
+source = "docs/logic-graph.md §9.2"
+
+[message.iMsgBeforeRender]
+summary = "Frame message of the main thread, before the scene is rendered; the live module moves the free camera on it."
+ru = "Сообщение кадра на главном потоке перед рендером сцены; по нему модуль связи двигает свободную камеру."
+data = "unknown"
+sent_by = ["engine: hashes registered by 0x0040D640, hash variable 0x01206960"]
+sent_by_ru = ["движок: хэши регистрирует 0x0040D640, переменная с хэшем 0x01206960"]
+conf = "exe"
+source = "docs/analysis/renderer.md §3"
+
+[message.iMsgPreRender]
+summary = "Frame message of the main thread; the order inside the frame is a guess by the name."
+ru = "Сообщение кадра на главном потоке; место в кадре — догадка по имени."
+data = "unknown"
+sent_by = ["engine: hashes registered by 0x0040D640"]
+sent_by_ru = ["движок: хэши регистрирует 0x0040D640"]
+conf = "exe"
+source = "docs/analysis/renderer.md §3"
+
+[message.iMsgDoRender]
+summary = "Frame message of the main thread: the scene pass (a guess by the name)."
+ru = "Сообщение кадра на главном потоке: проход сцены (догадка по имени)."
+data = "unknown"
+sent_by = ["engine: hashes registered by 0x0040D640"]
+sent_by_ru = ["движок: хэши регистрирует 0x0040D640"]
+conf = "exe"
+source = "docs/analysis/renderer.md §3"
+
+[message.iMsgDoRenderFullScreen]
+summary = "Frame message of the main thread: the full-screen pass, post effects and interface (a guess by the name)."
+ru = "Сообщение кадра на главном потоке: полноэкранный проход, постэффекты и интерфейс (догадка по имени)."
+data = "unknown"
+sent_by = ["engine: hashes registered by 0x0040D640"]
+sent_by_ru = ["движок: хэши регистрирует 0x0040D640"]
+conf = "exe"
+source = "docs/analysis/renderer.md §3"
+
+[message.iMsgPreShowRaster]
+summary = "Frame message of the main thread: the step before the frame is shown (a guess by the name)."
+ru = "Сообщение кадра на главном потоке: шаг перед показом кадра (догадка по имени)."
+data = "unknown"
+sent_by = ["engine: hashes registered by 0x0040D640"]
+sent_by_ru = ["движок: хэши регистрирует 0x0040D640"]
+conf = "exe"
+source = "docs/analysis/renderer.md §3"
+
+[message.mus_play_igc_01]
+summary = "Starts the music of the cut-scene igc01; no SimGroup object sends it, the cut-scene does."
+ru = "Запуск музыки ролика igc01; среди объектов SimGroup отправителя нет — его шлёт ролик."
+data = "unknown"
+sent_by = ["cut-scene (trinity_seq_master): text command 0x402 of kind 1, a message to the bus"]
+sent_by_ru = ["ролик (trinity_seq_master): текстовая команда 0x402 вида 1 — сообщение на общую шину"]
+conf = "data"
+source = "docs/formats/cutscenes.md §6.1"
+
+[message.boundary_fade_out]
+summary = "Fades the screen out (FadeScreenFx); TriggerHurt volumes at the edge of the world send it."
+ru = "Гасит экран (FadeScreenFx); его шлют объёмы TriggerHurt на границе мира."
+data = "unknown"
+sent_by = []
+conf = "bench"
+source = "docs/scripts.md §1"
+
+[message.cp_325_start_now]
+summary = "Checkpoint message of the story: sent live, it starts Mission 3 (current checkpoint becomes cp_325)."
+ru = "Сообщение чекпоинта сюжета: посланное вживую, включает Миссию 3 (текущий чекпоинт становится cp_325)."
+data = "unknown"
+sent_by = []
+conf = "bench"
+source = "docs/analysis/game-bench.md §30"

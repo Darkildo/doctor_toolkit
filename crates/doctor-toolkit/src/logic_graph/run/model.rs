@@ -76,7 +76,7 @@ pub enum TimerState {
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(tag = "model", rename_all = "snake_case")]
 pub enum Model {
-    /// `0x0047A1B0`: on `trigger` sends every pair (delay 0 — at once, in
+    /// `0x0047A1C0`: on `trigger` sends every pair (delay 0 — at once, in
     /// order), or with flag 1 one pair per trigger in turn; `max_fires`
     /// counts down (−1 — forever).
     MultiManager {
@@ -93,7 +93,7 @@ pub enum Model {
         send: Option<Msg>,
         target: Option<Guid>,
     },
-    /// `0x00479B50`: every set condition must arrive (in any order), then
+    /// `0x00479B60`: every set condition must arrive (in any order), then
     /// `send` goes out and the gate starts again; `reset` forgets them.
     AndGate {
         conditions: Vec<Option<Msg>>,
@@ -101,7 +101,7 @@ pub enum Model {
         reset: Option<Msg>,
         got: u8,
     },
-    /// `0x00479E20`: any set condition sends `send`; afterwards the gate
+    /// `0x00479E30`: any set condition sends `send`; afterwards the gate
     /// ignores conditions for `lockout` seconds; `reset` ends the lockout.
     OrGate {
         conditions: Vec<Option<Msg>>,
@@ -110,14 +110,14 @@ pub enum Model {
         lockout: f64,
         locked_until: f64,
     },
-    /// `0x00477EE0`: once, on [`POST_SPAWN`], sends `send` after its delay.
+    /// `0x00477EF0`: once, on [`POST_SPAWN`], sends `send` after its delay.
     TriggerAuto { send: Option<Out>, fired: bool },
-    /// `0x0047AF50`: on `trigger` picks one pair by weight (`rand()`).
+    /// `0x0047AF60`: on `trigger` picks one pair by weight (`rand()`).
     TriggerRandom {
         trigger: Option<Msg>,
         choices: Vec<(f64, Out)>,
     },
-    /// `0x00476970` → `0x004768C0`: on `trigger` changes the variable:
+    /// `0x00476980` → `0x004768D0`: on `trigger` changes the variable:
     /// 0 add, 1 subtract, 2 set, 3 switch between 0 and 1.
     VariableOperator {
         trigger: Option<Msg>,
@@ -125,7 +125,7 @@ pub enum Model {
         operation: i32,
         operand: i32,
     },
-    /// `0x00476E40`: on `trigger` sends every case whose value equals the
+    /// `0x00476E50`: on `trigger` sends every case whose value equals the
     /// variable; when none does, `default`.
     VariableSwitch {
         trigger: Option<Msg>,
@@ -133,7 +133,7 @@ pub enum Model {
         default: Option<Out>,
         cases: Vec<(i32, Out)>,
     },
-    /// `0x00477A80`, `0x00477BD0`: once active (`activate`, or
+    /// `0x00477A90`, `0x00477BE0`: once active (`activate`, or
     /// [`POST_SPAWN`] with flag 1), checks the variable now and on every
     /// change: bit 2 equal, bit 1 less, bit 4 greater than `value`; sends
     /// `send` and stops watching, unless flag 4 keeps it watching.

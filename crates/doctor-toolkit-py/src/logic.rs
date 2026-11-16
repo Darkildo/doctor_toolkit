@@ -1,6 +1,8 @@
 //! The logic graph of missions: `logic_graph`, `logic_messages`,
 //! `logic_missions`, `logic_schema` (graphs and lists as dicts) and
-//! `logic_run` (the logic run without the game, stage 38).
+//! `logic_run` (the logic run without the game, stage 38); the typed game
+//! data: `message_info`, `message_search`, `enum_values`, `attr_types`,
+//! `logic_check`.
 
 use doctor_toolkit::logic_graph::{BuildOptions, LogicSchema, MessageIndex, ScopeSpec, scope};
 use doctor_toolkit::workspace::Workspace;
@@ -109,6 +111,141 @@ fn logic_missions<'py>(py: Python<'py>, game: &Game) -> PyResult<Bound<'py, PyAn
 #[pyfunction]
 fn logic_schema<'py>(py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
     to_python(py, &LogicSchema::gf2().coverage())
+}
+
+fn message_id(name: &str) -> doctor_toolkit::game_types::MessageId {
+    use doctor_toolkit::game_types::MessageId;
+    match name
+        .strip_prefix("0x")
+        .filter(|h| h.len() == 8)
+        .and_then(|h| u32::from_str_radix(h, 16).ok())
+    {
+        Some(hash) => MessageId::from_hash(hash),
+        None => MessageId::from_name(name),
+    }
+}
+
+/// What is known about a message, as a dict: `kind` (`engine` — named by
+/// the executable, `game` — used by the game files, `custom` — new,
+/// `unknown` — a hash without a name), `name`, `hash`, `usage`, `senders`
+/// and `listeners` (class, attribute index, number of objects over the whole
+/// game), `scope`, `streams`, `mentions`, `data` (`"unknown"` so far),
+/// `summary`, `sent_by`, `conf`, `source`, and `collides_with` — the game
+/// message a new name shares its hash with (`None` when the hash is free).
+///
+/// `name`: a message name, or a hash as `0x` and eight hexadecimal digits.
+/// Needs no game.
+#[pyfunction]
+fn message_info<'py>(py: Python<'py>, name: &str) -> PyResult<Bound<'py, PyAny>> {
+    use doctor_toolkit::game_types::{MessageId, message};
+    let id = message_id(name);
+    let mut value = serde_json::to_value(id.info())
+        .map_err(|e| doctor_toolkit::Error::InvalidArgument(e.to_string()))
+        .py()?;
+    value["collides_with"] = match &id {
+        MessageId::Custom { name, .. } => serde_json::json!(message::collision(name)),
+        _ => serde_json::Value::Null,
+    };
+    to_python(py, &value)
+}
+
+/// Messages of the game files whose name contains `text`: a list of dicts
+/// as `message_info` gives, at most `limit`.
+#[pyfunction]
+#[pyo3(signature = (text, limit = 40))]
+fn message_search<'py>(py: Python<'py>, text: &str, limit: usize) -> PyResult<Bound<'py, PyAny>> {
+    use doctor_toolkit::game_types::{MessageCatalog, MessageId};
+    let found: Vec<_> = MessageCatalog::gf2()
+        .search(text, limit)
+        .into_iter()
+        .map(|m| MessageId::from_hash(m.hash).info())
+        .collect();
+    to_python(py, &found)
+}
+
+/// A value list of the game by key (`family`, `city`, `venue`,
+/// `building_type`, `weapon`, `crew_specialty`, `sound_category`,
+/// `emotion`) as a dict: `title`, `kind`, `source`, `conf` and `values`
+/// (`name`, `value`, `hash`, `note`). Without a key, every list.
+#[pyfunction]
+#[pyo3(signature = (key = None))]
+fn enum_values<'py>(py: Python<'py>, key: Option<&str>) -> PyResult<Bound<'py, PyAny>> {
+    use doctor_toolkit::game_types;
+    match key {
+        None => to_python(py, &game_types::enums()),
+        Some(key) => {
+            let list = game_types::enum_def(key)
+                .ok_or_else(|| {
+                    doctor_toolkit::Error::InvalidArgument(format!(
+                        "no list `{key}`; lists: {}",
+                        game_types::enums()
+                            .iter()
+                            .map(|e| e.key)
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ))
+                })
+                .py()?;
+            to_python(py, list)
+        }
+    }
+}
+
+/// What the attributes of the packet of a SimGroup class mean: a list of
+/// dicts `index`, `name`, `type` (`MsgIn`, `MsgOut`, `Ref<Class>`,
+/// `Res<type>`, `Enum<list>`, `Seconds`, `Money`, `Bool`), `conf` and, for
+/// types read from the game files, `seen` (values that fit, values seen).
+/// `class_name`: a class name or eight hexadecimal digits of its hash.
+#[pyfunction]
+fn attr_types<'py>(py: Python<'py>, class_name: &str) -> PyResult<Bound<'py, PyAny>> {
+    use doctor_toolkit::game_types;
+    let schema = LogicSchema::gf2();
+    let hash = match u32::from_str_radix(class_name, 16) {
+        Ok(h) if class_name.len() == 8 => h,
+        _ => doctor_toolkit::hash::string_id(class_name),
+    };
+    let mut indexes: Vec<u16> = schema.packet(hash).iter().map(|a| a.index).collect();
+    indexes.extend(
+        game_types::attr_types()
+            .iter()
+            .filter(|r| r.0 == hash)
+            .map(|r| r.1),
+    );
+    indexes.sort_unstable();
+    indexes.dedup();
+    let rows: Vec<serde_json::Value> = indexes
+        .into_iter()
+        .filter_map(|i| {
+            let (ty, conf) = schema.semantic(hash, i)?;
+            let extra = game_types::attr_type(hash, i);
+            Some(serde_json::json!({
+                "index": i,
+                "name": schema.attr(hash, i).and_then(|a| a.name.clone()),
+                "type": ty,
+                "conf": conf,
+                "seen": extra.map(|e| e.seen),
+            }))
+        })
+        .collect();
+    to_python(py, &rows)
+}
+
+/// Checks the messages of the SimGroups the workspace of `game` changes: a
+/// dict with `groups`, `custom` (new message names), `problems` (`severity`
+/// — `error` for a new name with the hash of a game message, `warning` for
+/// a message heard but never sent or sent but never heard — `kind`,
+/// `message`, `what`, `groups`) and `ok`. Without a workspace: `ok` only.
+#[pyfunction]
+fn logic_check<'py>(py: Python<'py>, game: &Game) -> PyResult<Bound<'py, PyAny>> {
+    let Some(ws) = workspace(game, false)? else {
+        return to_python(py, &serde_json::json!({ "ok": true, "groups": 0 }));
+    };
+    let report = py.detach(|| doctor_toolkit::logic_graph::check::check_workspace(&ws));
+    let mut value = serde_json::to_value(&report)
+        .map_err(|e| doctor_toolkit::Error::InvalidArgument(e.to_string()))
+        .py()?;
+    value["ok"] = (report.errors().count() == 0).into();
+    to_python(py, &value)
 }
 
 /// Runs the logic of a scope without the game and returns a dict:
@@ -224,5 +361,10 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(logic_messages, m)?)?;
     m.add_function(wrap_pyfunction!(logic_missions, m)?)?;
     m.add_function(wrap_pyfunction!(logic_schema, m)?)?;
+    m.add_function(wrap_pyfunction!(message_info, m)?)?;
+    m.add_function(wrap_pyfunction!(message_search, m)?)?;
+    m.add_function(wrap_pyfunction!(enum_values, m)?)?;
+    m.add_function(wrap_pyfunction!(attr_types, m)?)?;
+    m.add_function(wrap_pyfunction!(logic_check, m)?)?;
     Ok(())
 }

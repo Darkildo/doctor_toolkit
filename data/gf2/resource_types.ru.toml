@@ -1,0 +1,327 @@
+# Resource types of The Godfather II (PC) for the knowledge base (docs/kb/):
+# what a type is, how far the toolkit reads it and where it is documented.
+# `doctor-toolkit kb-gen` makes a note of docs/kb/resources/ of every entry;
+# every tag of type_tags.txt must have one. Kept by hand, in Russian, like
+# the documents the entries summarise (docs/formats/resource-types.md §8 and
+# the format documents).
+#
+# status: known (format read in full), partial (read in part, or the purpose
+# is known and the format is not), unknown (neither is known).
+# confidence: exe, data, bench or guess — what the summary rests on.
+# docs: documents with the details, paths from the repository root with an
+# optional section after a space.
+
+[type.apx]
+summary = "интерфейс на Flash (инструменты Apt от EA), magic `apxf`"
+parse = "все 97 файлов разбираются и записываются обратно побайтно, встроенные текстуры декодируются"
+status = "known"
+confidence = "data"
+docs = ["docs/formats/resource-types.md §5"]
+
+[type.auc]
+summary = "конфигурация звука: дерево категорий микшера (`DIALOG` → `CHATTER`), пулы банков, «даки»"
+parse = "полный, запись побайтно, новая категория"
+status = "known"
+confidence = "exe"
+docs = ["docs/formats/audio.md §13", "docs/formats/resource-types.md §8"]
+
+[type.bnk]
+summary = "анимации скелета человека: клипы, граф смешивания, события клипов (образ памяти v9); не звук"
+parse = "все клипы (схемы 1, 3, 4) и события; граф анимации — разбор и запись байт в байт"
+status = "known"
+confidence = "data"
+docs = ["docs/formats/characters.md §6", "docs/formats/anim-graph.md", "docs/formats/resource-types.md §8"]
+
+[type.bricknmortarres]
+summary = "состояния заведений и эффекты (`dv_building_fire`)"
+parse = "нет"
+status = "partial"
+confidence = "data"
+docs = ["docs/formats/resource-types.md §8"]
+
+[type.cec]
+summary = "раскладки управления (`basic_aiming_player.cec`)"
+parse = "нет"
+status = "partial"
+confidence = "data"
+docs = ["docs/formats/resource-types.md §8"]
+
+[type.chv]
+summary = "события речи персонажа: записи, вес, id субтитра"
+parse = "полный, запись, новые события и реплики"
+status = "known"
+confidence = "bench"
+docs = ["docs/formats/dialogues.md §3", "docs/formats/audio.md §15", "docs/formats/resource-types.md §8"]
+
+[type.covernodetable]
+summary = "таблицы точек (укрытия); смысл видов, косинусов и блока связей — гипотеза"
+parse = "чтение точек"
+status = "partial"
+confidence = "data"
+docs = ["docs/formats/logic-types.md §4", "docs/levels.md §10"]
+
+[type.dlg]
+summary = "деревья диалогов F2F: реплики, выборы, условия, клипы"
+parse = "полный, запись"
+status = "known"
+confidence = "data"
+docs = ["docs/formats/dialogues.md §2", "docs/formats/resource-types.md §8"]
+
+[type.emx]
+summary = "тип ссылок metamodel на звуки дверей (`Door.CMD_Set*Audio`); ресурсов этого типа в потоках нет"
+parse = "только тип ссылки"
+status = "partial"
+confidence = "data"
+docs = ["docs/formats/resource-types.md §8", "docs/formats/audio.md"]
+
+[type.ffn]
+summary = "растровые шрифты (magic `TNOF`)"
+parse = "полный; раскладка кернинга не разобрана"
+status = "known"
+confidence = "data"
+docs = ["docs/formats/resource-types.md §11"]
+
+[type.get]
+summary = "таблица событий речи: пауза повтора, ранг, флаги и группы, приоритет"
+parse = "полный, запись побайтно, новые записи; смысл части полей не установлен"
+status = "partial"
+confidence = "exe"
+docs = ["docs/formats/dialogues.md §6", "docs/formats/mission-logic.md §5.2", "docs/formats/resource-types.md §8"]
+
+[type.graph]
+summary = "навигационный граф: узлы, рёбра, соседние графы, свойства, R-дерево, таблица путей"
+parse = "полный: все 2 178 графов побайтно, правка и пересборка"
+status = "known"
+confidence = "data"
+docs = ["docs/formats/navigation-graph.md", "docs/formats/logic-types.md §3"]
+
+[type.grt]
+summary = "наборы звуков реакций NPC (`npc6_arm_break_01.emx`)"
+parse = "нет"
+status = "partial"
+confidence = "data"
+docs = ["docs/formats/resource-types.md §8"]
+
+[type.hka]
+summary = "тип ссылок metamodel на коллизию `hkx`; ресурсов этого типа в потоках нет"
+parse = "только тип ссылки"
+status = "partial"
+confidence = "data"
+docs = ["docs/formats/resource-types.md §8", "docs/formats/havok.md"]
+
+[type.hkx]
+summary = "Havok 5.5.0: только физика и коллизии"
+parse = "полный: тела, формы, MOPP, запись"
+status = "known"
+confidence = "data"
+docs = ["docs/formats/havok.md", "docs/formats/resource-types.md §10"]
+
+[type.ism]
+summary = "назначение неизвестно (один ресурс, 14 944 байта)"
+parse = "нет"
+status = "unknown"
+confidence = "data"
+docs = ["docs/formats/resource-types.md §8"]
+
+[type.lh2]
+summary = "таблицы строк локализации (magic `LCH2`): записи по хэшу имени, текст по языкам"
+parse = "полный, запись, новые строки"
+status = "known"
+confidence = "data"
+docs = ["docs/formats/resource-types.md §4"]
+
+[type.lhr]
+summary = "текстовый список «код языка, поток, хэш потока»: какой поток строк грузить для языка"
+parse = "читается как текст"
+status = "known"
+confidence = "data"
+docs = ["docs/formats/resource-types.md §4"]
+
+[type.lighttoc]
+summary = "списки источников света (`earslight_point`)"
+parse = "нет"
+status = "partial"
+confidence = "data"
+docs = ["docs/formats/resource-types.md §8"]
+
+[type.lua]
+summary = "байт-код Lua 5.0 (звуковые и музыкальные скрипты)"
+parse = "полный: декомпиляция и компиляция"
+status = "known"
+confidence = "data"
+docs = ["docs/formats/lua.md", "docs/scripts.md", "docs/formats/resource-types.md §12"]
+
+[type.material]
+summary = "материал (`0x0AA0DEED`, версия 19): шейдеры, параметры, текстуры"
+parse = "все 77 643 материала разбираются"
+status = "known"
+confidence = "data"
+docs = ["docs/formats/geometry.md §6", "docs/formats/characters.md"]
+
+[type.materialswaplistresource]
+summary = "списки замены материалов (хэши)"
+parse = "нет: раскладка не разобрана"
+status = "partial"
+confidence = "data"
+docs = ["docs/formats/resource-types.md §8", "docs/navigation.md §7"]
+
+[type.mesh]
+summary = "геометрия (заголовок `MGAE`): буферы, записи отрисовки, форматы вершин"
+parse = "полный, запись мешей"
+status = "known"
+confidence = "data"
+docs = ["docs/formats/geometry.md"]
+
+[type.meshvolatile]
+summary = "вторая часть геометрии: данные буферов меша; следующий ресурс потока с идентификатором `~id` меша"
+parse = "полный, вместе с `mesh`"
+status = "known"
+confidence = "data"
+docs = ["docs/formats/geometry.md §1"]
+
+[type.metamodel]
+summary = "MetaModel (magic `MMdl`): части, состояния, свойства — шаблон объекта мира"
+parse = "чтение; правка значений заплатками, полная запись не реализована"
+status = "partial"
+confidence = "data"
+docs = ["docs/formats/metamodel.md"]
+
+[type.mix]
+summary = "снимки звукового микшера (`occlusion.mix`): уровни категорий звука"
+parse = "структура полностью, запись побайтно, правка каналов; смысл уровней — по данным"
+status = "partial"
+confidence = "data"
+docs = ["docs/formats/audio.md §14", "docs/formats/resource-types.md §8"]
+
+[type.mnl]
+summary = "таблица смещений, назначение неизвестно (один ресурс, 82 632 байта)"
+parse = "нет"
+status = "unknown"
+confidence = "data"
+docs = ["docs/formats/resource-types.md §8"]
+
+[type.mobface]
+summary = "редактор внешности: палитры, ползунки лица, меню одежды (magic `FboM`)"
+parse = "палитры, ползунки, разделы меню"
+status = "partial"
+confidence = "data"
+docs = ["docs/formats/characters.md §5", "docs/formats/resource-types.md §8"]
+
+[type.pad]
+summary = "эмоции персонажей: набор `pedestrian` из 7 состояний (`Neutral`, `Angry`, `Disgusted`, `Fearful`, `Happy`, `Sad`, `Surprised`) с числами"
+parse = "нет"
+status = "partial"
+confidence = "data"
+docs = ["docs/formats/resource-types.md §8"]
+
+[type.partsdb]
+summary = "базы частей персонажей и машин (магия `0x50744442`, на диске `BDtP`)"
+parse = "полный, побайтный round-trip, правка"
+status = "known"
+confidence = "data"
+docs = ["docs/formats/logic-types.md §2", "docs/formats/characters.md"]
+
+[type.rcb]
+summary = "риги: скелеты, позы привязки, наборы костей"
+parse = "полный по скелетам"
+status = "known"
+confidence = "data"
+docs = ["docs/formats/rig.md", "docs/formats/resource-types.md §9"]
+
+[type.sbk]
+summary = "банки звуков (magic `sbnk`): SNR/SNS, EA-XAS v1; id — SDBM пути сборки"
+parse = "полный по звукам, импорт звука"
+status = "known"
+confidence = "data"
+docs = ["docs/formats/audio.md §3", "docs/formats/resource-types.md §8"]
+
+[type.score]
+summary = "гипотеза: база событий счёта и достижений, подписанная на шину сообщений (два одинаковых ресурса, около 1200 имён сообщений)"
+parse = "нет"
+status = "hypothesis"
+confidence = "guess"
+docs = ["docs/formats/resource-types.md §8", "docs/formats/mission-logic.md", "docs/logic-graph.md §8"]
+
+[type.shk]
+summary = "тряска камеры (несколько чисел)"
+parse = "нет"
+status = "partial"
+confidence = "data"
+docs = ["docs/formats/resource-types.md §8"]
+
+[type.simgroup]
+summary = "SimGroup (magic `SimG`): объекты уровня и логики, пакеты атрибутов классов"
+parse = "полный, побайтный round-trip, запись"
+status = "known"
+confidence = "data"
+docs = ["docs/formats/simgroup.md", "docs/logic-graph.md", "docs/formats/mission-logic.md"]
+
+[type.smb]
+summary = "банки потокового звука (речь, музыка, фон): id звука → файл `.exa` архивов `.viv` и параметры; id ресурса — SDBM пути сборки"
+parse = "полный, запись побайтно, новые записи; смысл части параметров не установлен"
+status = "known"
+confidence = "bench"
+docs = ["docs/formats/dialogues.md §4", "docs/formats/audio.md §15", "docs/formats/resource-types.md §8"]
+
+[type.tg4d]
+summary = "данные текстуры; идут за заголовком `tg4h` в том же потоке"
+parse = "полный, запись"
+status = "known"
+confidence = "data"
+docs = ["docs/formats/resource-types.md §1"]
+
+[type.tg4h]
+summary = "заголовок текстуры: имя, размер, формат"
+parse = "полный, запись"
+status = "known"
+confidence = "data"
+docs = ["docs/formats/resource-types.md §1"]
+
+[type.tob]
+summary = "тайминги субтитров роликов (magic `TOB1`)"
+parse = "полный"
+status = "known"
+confidence = "data"
+docs = ["docs/formats/mission-logic.md §5.1", "docs/formats/cutscenes.md"]
+
+[type.trb]
+summary = "параметры заведений (`dv_gr`, `dv_cn`)"
+parse = "нет"
+status = "partial"
+confidence = "data"
+docs = ["docs/formats/resource-types.md §8"]
+
+[type.treemodel]
+summary = "модели деревьев: части, полосы ствола, листья к камере"
+parse = "чтение и побайтная запись всех 432 моделей; новых деревьев инструмент не собирает"
+status = "known"
+confidence = "data"
+docs = ["docs/formats/treemodel.md"]
+
+[type.trinity_seq_master]
+summary = "кадры роликов на движке (Trinity): команды актёров, камеры, эффектов, движка"
+parse = "полный, запись побайтно"
+status = "known"
+confidence = "data"
+docs = ["docs/formats/cutscenes.md", "docs/formats/resource-types.md §8"]
+
+[type.variabledictionary]
+summary = "словарь переменных: флаги сюжета и обучения (`global_tutorial_*`, `autosave_*`)"
+parse = "полный, побайтный round-trip"
+status = "known"
+confidence = "data"
+docs = ["docs/formats/logic-types.md §1", "docs/analysis/tunables.md §3"]
+
+[type.vfx]
+summary = "описания эффектов частиц: имя, эмиттеры (`flare02`, `ember1`); 10 113 ресурсов"
+parse = "нет"
+status = "partial"
+confidence = "data"
+docs = ["docs/formats/resource-types.md §8"]
+
+[type.wgi]
+summary = "мировая сетка уровня: ячейки — потоки, которые игра грузит по положению игрока (центр, коробка, вид, маска LOD, имя для `ZoneStreamEnable`), и таблица остальных потоков уровня с их предпосылками"
+parse = "полный, запись: все 28 ресурсов побайтно, добавление и удаление ячеек (`resource::wgi`, `world-grid`)"
+status = "known"
+confidence = "exe"
+docs = ["docs/formats/wgi.md", "docs/analysis/new-resources.md §3.5", "docs/analysis/game-bench.md §33", "docs/formats/resource-types.md §8"]

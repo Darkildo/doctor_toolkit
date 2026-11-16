@@ -563,6 +563,12 @@ pub fn add_group(
         )));
     }
     let mut g = SimGroup::empty();
+    // The group hash is the table-of-contents hash of the stream, as in
+    // every SimGroup of the game (`docs/formats/simgroup.md` §1).
+    g.group_hash = match ws.new_stream(&stream) {
+        Some(new) => new.hash,
+        None => game.stream_hash(&stream)?.unwrap_or(0),
+    };
     let mut guids: Vec<(Guid, Guid)> = Vec::new();
     let mut rewired = 0;
     if let Some((from, objects)) = copy {

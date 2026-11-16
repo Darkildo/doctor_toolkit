@@ -16,7 +16,7 @@ use doctor_toolkit::project::{self, CreateOptions};
 use doctor_toolkit::testing::{self, LEVEL, SIMGROUP, TEXT};
 use doctor_toolkit::workspace::Workspace;
 
-const TOOLS: [&str; 28] = [
+const TOOLS: [&str; 31] = [
     "game_info",
     "list_streams",
     "search",
@@ -24,6 +24,9 @@ const TOOLS: [&str; 28] = [
     "resource_json",
     "lookup_hash",
     "strings",
+    "kb_search",
+    "kb_note",
+    "game_types",
     "logic_graph",
     "level_objects",
     "workspace_status",
@@ -150,8 +153,15 @@ async fn the_handshake_lists_read_only_tools_and_resources() {
         "doctor-toolkit://docs/formats/simgroup.md",
         "doctor-toolkit://docs/formats/README.md",
         "doctor-toolkit://docs/logic-graph.md",
+        "doctor-toolkit://kb/index.md",
+        "doctor-toolkit://kb/README.md",
+        "doctor-toolkit://kb/classes/index.md",
         "doctor-toolkit://schema/logic_schema.toml",
         "doctor-toolkit://schema/engine_messages.txt",
+        "doctor-toolkit://schema/enums.toml",
+        "doctor-toolkit://schema/attr_types.toml",
+        "doctor-toolkit://schema/messages.toml",
+        "doctor-toolkit://schema/gf2-types.schema.json",
         "doctor-toolkit://game/messages",
         "doctor-toolkit://game/missions",
     ] {
@@ -188,8 +198,25 @@ async fn the_handshake_lists_read_only_tools_and_resources() {
     let data = unfence(text, "game/messages");
     assert!(data.contains("start\t1\t1"), "{data}");
     assert!(data.contains("nobody_hears\t1\t0"), "{data}");
+    // The knowledge base: the lists are listed, every note is read by URI.
+    assert!(
+        !uris
+            .iter()
+            .any(|u| u == "doctor-toolkit://kb/classes/Gun.md"),
+        "single notes are not listed"
+    );
+    let note = c
+        .request(
+            "resources/read",
+            json!({ "uri": "doctor-toolkit://kb/classes/Gun.md" }),
+        )
+        .await;
+    let text = note["result"]["contents"][0]["text"].as_str().unwrap();
+    assert!(text.starts_with("---\ntype: class\n"), "{note}");
     // Only listed URIs exist: a path in a URI reads nothing.
     for uri in [
+        "doctor-toolkit://kb/../formats/simgroup.md",
+        "doctor-toolkit://kb/classes/../../../Cargo.toml",
         "doctor-toolkit://docs/../../../../etc/passwd",
         "doctor-toolkit://docs/formats/../../Cargo.toml",
         "file:///etc/passwd",
@@ -242,6 +269,82 @@ async fn every_tool_answers_and_nothing_is_written() {
         .await;
     assert_eq!(streams["total"], 1);
     assert_eq!(streams["streams"][0]["stream"], TEXT);
+
+    // game_types: lists, messages and attribute meanings built into the server
+    let overview = c.json("game_types", json!({})).await;
+    assert_eq!(overview["enums"].as_array().unwrap().len(), 8, "{overview}");
+    assert!(overview["messages"]["catalog"].as_u64().unwrap() > 40_000);
+    let family = c.json("game_types", json!({ "enum": "family" })).await;
+    assert_eq!(family["enum"]["values"].as_array().unwrap().len(), 28);
+    let typed = c
+        .json(
+            "game_types",
+            json!({ "message": "mus_play_igc_01", "class": "Building", "search": "cp_325_", "limit": 5 }),
+        )
+        .await;
+    assert_eq!(typed["message"]["kind"], "game");
+    assert_eq!(typed["message"]["usage"], "heard_never_sent");
+    assert_eq!(typed["message"]["data"], "unknown");
+    assert!(typed["messages"].as_array().unwrap().len() <= 5);
+    let attrs = typed["class"]["attrs"].as_array().unwrap();
+    assert!(
+        attrs
+            .iter()
+            .any(|a| a["index"] == 4 && a["type"] == "Enum<family>"),
+        "{typed}"
+    );
+    let custom = c
+        .json("game_types", json!({ "message": "my_mod_new_message" }))
+        .await;
+    assert_eq!(custom["message"]["kind"], "custom");
+    assert!(custom["message"]["collides_with"].is_null());
+    let (text, error) = c.call("game_types", json!({ "enum": "planets" })).await;
+    assert!(error && text.contains("family"), "{text}");
+    let schema = c
+        .request(
+            "resources/read",
+            json!({ "uri": "doctor-toolkit://schema/gf2-types.schema.json" }),
+        )
+        .await;
+    assert!(
+        schema["result"]["contents"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("\"mod_messages\"")
+    );
+    // kb_search and kb_note: the knowledge base built into the server
+    let notes = c
+        .json("kb_search", json!({ "query": "Gun", "type": "class" }))
+        .await;
+    assert!(notes["total"].as_u64().unwrap() >= 1, "{notes}");
+    assert_eq!(notes["results"][0]["note"], "classes/Gun.md");
+    assert_eq!(
+        notes["results"][0]["uri"],
+        "doctor-toolkit://kb/classes/Gun.md"
+    );
+    assert_eq!(notes["results"][0]["status"], "partial");
+    let open = c
+        .json("kb_search", json!({ "status": "unknown", "limit": 3 }))
+        .await;
+    assert_eq!(open["results"].as_array().unwrap().len(), 3, "{open}");
+    assert_eq!(open["more"], true);
+    let (text, error) = c.call("kb_search", json!({})).await;
+    assert!(error && text.contains("give `query`"), "{text}");
+    let (text, error) = c.call("kb_search", json!({ "type": "novel" })).await;
+    assert!(error && text.contains("unknown type"), "{text}");
+    let map = c.data("kb_note", json!({ "note": "index.md" })).await;
+    assert!(map.starts_with("---\ntype: map\n"), "{map}");
+    let gun = c
+        .data(
+            "kb_note",
+            json!({ "note": "doctor-toolkit://kb/classes/Gun.md" }),
+        )
+        .await;
+    assert!(gun.contains("# Класс `Gun`"), "{gun}");
+    let (text, error) = c
+        .call("kb_note", json!({ "note": "../formats/simgroup.md" }))
+        .await;
+    assert!(error && text.contains("no note"), "{text}");
 
     // search: by name, by type, by text, paging
     let found = c.json("search", json!({ "query": "brick_wall" })).await;

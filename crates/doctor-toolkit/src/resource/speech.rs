@@ -2,7 +2,7 @@
 //! archives.
 //!
 //! A speech file has metadata between its 0x20-byte header and the SNS
-//! blocks (flags byte 1 not 0, `docs/formats/audio.md` §4):
+//! blocks (the blocks then start after 0x20, `docs/formats/audio.md` §4):
 //!
 //! ```text
 //! 0x20  u32  0xCAE87732
@@ -44,10 +44,16 @@ impl SpeechMeta {
     /// speech metadata (music, effects).
     pub fn parse(snu: &[u8]) -> Result<Option<Self>> {
         let le = Endian::Little;
-        if snu.len() < META_AT + 16 || snu[1] == 0 {
+        if snu.len() < META_AT + 16 {
             return Ok(None);
         }
+        // The flags byte 1 does not tell: a quarter of the speech files with
+        // metadata have 0 there. Metadata is there when the blocks start
+        // after the header.
         let blocks = io::read_u32(snu, 8, le)? as usize;
+        if blocks < META_AT + 16 {
+            return Ok(None);
+        }
         if io::read_u32(snu, META_AT, le)? != MAGIC
             || io::read_u32(snu, META_AT + 8, le)? != TABLE_TAG
         {
@@ -146,6 +152,71 @@ pub fn with_subtitles(snu: &[u8], table: &StringTable) -> Result<Vec<u8>> {
     Ok(out)
 }
 
+/// The language columns of the subtitle tables of the game, in file order.
+/// `SS` holds the line name, `LL` repeats the English text.
+pub const LANGUAGES: [&str; 8] = ["EN", "CS", "NL", "PL", "RU", "ES", "SS", "LL"];
+
+/// The subtitle table of a new line named `line` (`doc1_xxx_0000001`): one
+/// entry, `string_id(line)`, in the columns of the game. `texts` are
+/// `(language code, text)` pairs; a language without a text gets the English
+/// one (or the first given).
+pub fn new_table(line: &str, texts: &[(String, String)]) -> Result<StringTable> {
+    let find = |code: &str| {
+        texts
+            .iter()
+            .find(|(c, _)| c.eq_ignore_ascii_case(code))
+            .map(|(_, t)| t.as_str())
+    };
+    if let Some((code, _)) = texts.iter().find(|(c, _)| {
+        !LANGUAGES.iter().any(|l| l.eq_ignore_ascii_case(c)) || c.eq_ignore_ascii_case("SS")
+    }) {
+        return Err(Error::InvalidArgument(format!(
+            "no subtitle language `{code}` ({})",
+            LANGUAGES.join(" ")
+        )));
+    }
+    let fallback = find("EN")
+        .or_else(|| texts.first().map(|(_, t)| t.as_str()))
+        .unwrap_or("");
+    let strings = LANGUAGES
+        .iter()
+        .map(|&code| {
+            vec![match code {
+                "SS" => line.to_owned(),
+                _ => find(code).unwrap_or(fallback).to_owned(),
+            }]
+        })
+        .collect();
+    Ok(StringTable {
+        version: 1,
+        flags: 0x4000,
+        languages: LANGUAGES.map(String::from).to_vec(),
+        hashes: vec![crate::hash::string_id(line)],
+        strings,
+    })
+}
+
+/// A copy of an `.snu` file with this subtitle table as its only metadata:
+/// what a new speech file needs. Metadata the file had (subtitles and the
+/// undecoded chunk of another line) is dropped; the audio is kept.
+pub fn attach_subtitles(snu: &[u8], table: &StringTable) -> Result<Vec<u8>> {
+    let blocks = io::read_u32(snu, 8, Endian::Little)? as usize;
+    if blocks < META_AT {
+        return Err(Error::malformed("snu", 8, "blocks start inside the header"));
+    }
+    let audio = io::slice(snu, blocks, snu.len().saturating_sub(blocks))?;
+    let meta = SpeechMeta {
+        version: 1,
+        chunks: vec![(CHUNK_SUBTITLES, table.to_bytes()?)],
+    };
+    let mut out = snu[..META_AT].to_vec();
+    out.extend_from_slice(&meta.to_bytes());
+    let at = out.len() as u32;
+    out[8..12].copy_from_slice(&at.to_le_bytes());
+    out.extend_from_slice(audio);
+    Ok(out)
+}
+
 /// Column of a subtitle table for a language code (`en`, `es`, ...), by the
 /// table's own codes, case ignored.
 pub fn language_column(table: &StringTable, code: &str) -> Option<usize> {
@@ -175,7 +246,7 @@ mod tests {
     fn snu(meta: &SpeechMeta) -> Vec<u8> {
         let mut out = vec![0u8; 0x20];
         out[0] = 3;
-        out[1] = 8;
+        out[1] = 0;
         out[3] = 1;
         out.extend_from_slice(&meta.to_bytes());
         let at = out.len() as u32;
@@ -206,6 +277,39 @@ mod tests {
         // Same table: same bytes.
         assert_eq!(with_subtitles(&file, &table()).unwrap(), file);
         assert_eq!(language_column(&t, "es"), Some(5));
+    }
+
+    #[test]
+    fn new_lines_get_a_table_of_their_own() {
+        let texts = vec![
+            ("en".to_owned(), "Hello.".to_owned()),
+            ("ru".to_owned(), "Привет.".to_owned()),
+        ];
+        let t = new_table("doc1_xxx_0000001", &texts).unwrap();
+        assert_eq!(t.hashes, vec![string_id("doc1_xxx_0000001")]);
+        assert_eq!(t.strings[0][0], "Hello.");
+        assert_eq!(t.strings[4][0], "Привет.");
+        assert_eq!(t.strings[5][0], "Hello.");
+        assert_eq!(t.strings[6][0], "doc1_xxx_0000001");
+        assert_eq!(t.strings[7][0], "Hello.");
+        assert!(new_table("x", &[("xx".to_owned(), String::new())]).is_err());
+        // A sound without metadata, and one with the metadata of another line.
+        let mut plain = vec![0u8; 0x20];
+        plain[0] = 3;
+        plain[8] = 0x20;
+        plain.extend_from_slice(&[0x80, 0, 0, 8, 1, 2, 3, 4]);
+        let other = snu(&SpeechMeta {
+            version: 1,
+            chunks: vec![(0x30B0_0ADF, vec![9; 13])],
+        });
+        for file in [plain, other] {
+            let new = attach_subtitles(&file, &t).unwrap();
+            assert_eq!(subtitles(&new).unwrap().unwrap(), t);
+            assert_eq!(SpeechMeta::parse(&new).unwrap().unwrap().chunks.len(), 1);
+            let blocks = u32::from_le_bytes(new[8..12].try_into().unwrap()) as usize;
+            assert_eq!(blocks % 16, 0);
+            assert_eq!(&new[blocks..], &[0x80, 0, 0, 8, 1, 2, 3, 4]);
+        }
     }
 
     #[test]

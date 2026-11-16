@@ -27,6 +27,11 @@ lz4_flex = { version = "0.14", default-features = false, features = ["std", "saf
 zip = { version = "9", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 notify = "8.2"
 
+[build-dependencies]
+serde = { version = "1", features = ["derive"] }
+toml = "1"
+flate2 = "1"
+
 [features]
 # A miniature game for the tests of the GUI and other crates (`testing`).
 testing = []

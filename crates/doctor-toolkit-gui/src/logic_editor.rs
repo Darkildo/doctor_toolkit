@@ -14,6 +14,7 @@ use std::sync::Arc;
 use std::sync::mpsc::{Receiver, channel};
 
 use doctor_toolkit::game::{GameInstance, ResourceIndex};
+use doctor_toolkit::game_types::SemanticType;
 use doctor_toolkit::level::Location;
 use doctor_toolkit::logic_graph::edit::{self, Change, NodeTemplate};
 use doctor_toolkit::logic_graph::{
@@ -1290,8 +1291,36 @@ impl LogicEditor {
                         // Parameters: the editable text of the stored value.
                         current.clone()
                     });
-                    let r = ui.add(egui::TextEdit::singleline(text).desired_width(170.0));
-                    if r.lost_focus()
+                    // The field, and a list to pick from where the type of
+                    // the attribute gives one: message names, values of a
+                    // list (families, cities, venues…).
+                    let mut picked = None;
+                    let r = ui
+                        .horizontal(|ui| {
+                            let r = ui.add(egui::TextEdit::singleline(text).desired_width(170.0));
+                            match pin.ty {
+                                Some(SemanticType::MsgIn | SemanticType::MsgOut) => {
+                                    picked = crate::type_picker::message_menu(ui, text);
+                                }
+                                Some(ty) => {
+                                    if let Some(list) = ty.enum_def() {
+                                        picked = crate::type_picker::enum_menu(ui, list);
+                                        if let Some(label) = &pin.label {
+                                            ui.label(RichText::new(label).weak());
+                                        }
+                                    } else {
+                                        ui.label(RichText::new(ty.to_string()).weak());
+                                    }
+                                }
+                                None => {}
+                            }
+                            r
+                        })
+                        .inner;
+                    if let Some(value) = picked {
+                        self.texts.remove(&key);
+                        action = self.set_value(&graph, n, p, &value);
+                    } else if r.lost_focus()
                         && ui.input(|i| i.key_pressed(egui::Key::Enter))
                         && *text != current
                     {

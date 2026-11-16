@@ -35,11 +35,14 @@ from ._native import (
     animation_bank,
     animation_graph,
     animation_glb,
+    attr_types,
     character_glb,
     crc32,
     decode,
+    enum_values,
     fnv1a,
     hash_all,
+    logic_check,
     logic_graph,
     logic_messages,
     logic_missions,
@@ -51,6 +54,8 @@ from ._native import (
     lua_decompile,
     lua_listing,
     LuaSyntaxError,
+    message_info,
+    message_search,
     mod_info,
     parse_key,
     project_object_guid,
@@ -63,7 +68,7 @@ from ._native import (
     type_id,
     type_name,
 )
-from . import testing
+from . import gf2_types, testing
 
 open_game = Game
 
@@ -89,11 +94,15 @@ __all__ = [
     "animation_bank",
     "animation_graph",
     "animation_glb",
+    "attr_types",
     "character_glb",
     "crc32",
     "decode",
+    "enum_values",
     "fnv1a",
+    "gf2_types",
     "hash_all",
+    "logic_check",
     "logic_graph",
     "logic_messages",
     "logic_missions",
@@ -105,6 +114,8 @@ __all__ = [
     "lua_decompile",
     "lua_listing",
     "LuaSyntaxError",
+    "message_info",
+    "message_search",
     "mod_info",
     "open_game",
     "parse_key",

@@ -216,15 +216,20 @@ pub fn messages(args: &MessagesArgs) -> Result<()> {
         return Ok(());
     }
     let m = found[0];
-    let engine = LogicSchema::gf2()
-        .engine_message(doctor_toolkit::hash::string_id(&m.name))
-        .is_some();
+    let id = doctor_toolkit::game_types::MessageId::from_name(&m.name);
     out!(
         "{} (sdbm {:08x}){}",
         m.name,
         doctor_toolkit::hash::string_id(&m.name),
-        if engine { ", named by the engine" } else { "" }
+        match id.kind() {
+            "engine" => ", named by the engine",
+            "custom" => ", not a message of the game files (custom)",
+            _ => "",
+        }
     );
+    if let Some(other) = doctor_toolkit::game_types::message::collision(&m.name) {
+        out!("COLLISION: the same hash as the game message `{other}`");
+    }
     out!("sent by {}:", m.senders.len());
     for s in &m.senders {
         print_site(&messages, s);

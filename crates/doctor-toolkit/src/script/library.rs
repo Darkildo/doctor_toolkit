@@ -56,8 +56,11 @@ impl Category {
 /// Kind of a setting.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ParamKind {
-    /// Free text (a message name).
+    /// Free text.
     Text,
+    /// The name of a message of the bus: editors offer the names of the
+    /// game (`game_types::MessageCatalog`), any other text is a new message.
+    Message,
     /// A Lua identifier (timer, function and variable names).
     Name,
     Number,
@@ -183,7 +186,7 @@ fn build() -> Vec<NodeDef> {
         def!("event.message", "On message", C::Event,
             "Runs when a game message arrives. Data and type are what the sender attached.",
             in [], out [THEN, ("data", Any, "Data"), ("type", Str, "Data type")],
-            params [p("message", K::Text, "Message", "\"\"")]),
+            params [p("message", K::Message, "Message", "\"\"")]),
         def!("event.timer", "On timer", C::Event,
         "Runs every `seconds` (or once). Start and Stop timer nodes control it by name.",
         in [], out [THEN],

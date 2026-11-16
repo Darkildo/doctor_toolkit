@@ -1,0 +1,57 @@
+name: Knowledge base
+
+# The checks of docs/kb for changes CI leaves out (ci.yml runs nothing for
+# documentation alone): every note passes kb-lint — properties, links,
+# orphans, questions without a next step, names of closed files — and the
+# generated notes match data/gf2. The files generated from data/gf2 (JSON
+# Schema, the Python module of the value lists) are checked with them. Only
+# the library is built.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "docs/**"
+      - "data/gf2/**"
+      - "crates/doctor-toolkit/src/kb/**"
+      - "crates/doctor-toolkit/src/game_types/**"
+      - "crates/doctor-toolkit/build.rs"
+      - "crates/doctor-toolkit/tests/kb.rs"
+      - "crates/doctor-toolkit/tests/types_gen.rs"
+      - ".github/workflows/kb.yml"
+  pull_request:
+    paths:
+      - "docs/**"
+      - "data/gf2/**"
+      - "crates/doctor-toolkit/src/kb/**"
+      - "crates/doctor-toolkit/src/game_types/**"
+      - "crates/doctor-toolkit/build.rs"
+      - "crates/doctor-toolkit/tests/kb.rs"
+      - "crates/doctor-toolkit/tests/types_gen.rs"
+      - ".github/workflows/kb.yml"
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  CARGO_PROFILE_DEV_DEBUG: 0
+  CARGO_PROFILE_TEST_DEBUG: 0
+
+permissions:
+  contents: read
+
+concurrency:
+  group: kb-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  kb-lint:
+    name: kb-lint, kb-gen --check, types-gen --check
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@1.97.1
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - run: cargo test -p doctor-toolkit --test kb --test types_gen

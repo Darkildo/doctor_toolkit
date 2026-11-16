@@ -722,6 +722,7 @@ mod tests {
                 listeners: Vec::new(),
                 state: MessageState::Connected,
                 engine: false,
+                origin: "custom",
                 hub: None,
                 elsewhere: None,
             },

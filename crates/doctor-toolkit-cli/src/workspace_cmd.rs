@@ -368,7 +368,9 @@ fn status(game: &GameInstance, ws: &Workspace) -> Result<()> {
             stream.name,
             stream.hash,
             stream.parent,
-            if stream.with_parent {
+            if stream.with_parent && stream.auto_load {
+                " (loaded with every load of it)"
+            } else if stream.with_parent {
                 " (loaded with it)"
             } else {
                 ""

@@ -161,7 +161,7 @@ Could not turn 5 into a GUID». Откуда скрипту брать объе�
 
 | Вид | Узел | Что делает |
 |---|---|---|
-| `action.send_message` | Send message | `SendMessage(message)` — то же сообщение, что шлют триггеры и `MultiManager` |
+| `action.send_message` | Send message | `SendMessage(message)` — то же сообщение, что шлют триггеры и `MultiManager`. В редакторе у поля сообщения (и у «On message») кнопка `▾`: имена сообщений движка и файлов игры с набранным текстом (этап 73, `docs/logic-graph.md` §2.1); любое другое имя — новое сообщение |
 | `action.send_message_data` | Send message with data | `SendMessage(message, type, data)` (не проверено) |
 | `action.query` | Ask the game | `SendMessageEx(message, data)` → до трёх ответов; `iMsgLuaGetPlayerVenue` на террасе отвечает пустой строкой |
 | `timer.start`, `timer.stop` | Start/Stop timer | управление событием On timer по имени |

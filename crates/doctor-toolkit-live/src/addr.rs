@@ -43,8 +43,10 @@ pub const FRAME_COMMANDS: u32 = 0x0120_6880;
 pub const PLAYER_LIST: u32 = 0x0122_33A0;
 /// Offset of the list entry inside `Player`.
 pub const PLAYER_ENTRY_OFFSET: u32 = 0x1F30;
-/// World matrix of an `Entity` (and of `Player`): rows right, up, forward,
-/// translation (`0x00471610`, constructor `0x0046E6B0`).
+/// Matrix of an `Entity` (and of `Player`): rows right, up, forward,
+/// translation (`0x00471610`, constructor `0x0046E6B0`). It is the local
+/// matrix of the node at `+0x90`; the node's world matrix is at `+0x90` and
+/// equals this one while the node has no parent ([`ENTITY_PARENT`]).
 pub const ENTITY_MATRIX: u32 = 0xD0;
 /// Player state word; bit 7 set: the game does not teleport him now
 /// (`0x007DD050`).
