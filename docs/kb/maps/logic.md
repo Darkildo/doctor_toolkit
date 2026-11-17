@@ -30,11 +30,13 @@ updated: 2026-11-16
 - условия: [AndEventGate](../classes/AndEventGate.md), [OrEventGate](../classes/OrEventGate.md), [VariableWatcher](../classes/VariableWatcher.md), [VariableOperator](../classes/VariableOperator.md);
 - общее для объектов: [CSystemCommands](../classes/CSystemCommands.md), [Base](../classes/Base.md).
 
+Что делает класс — на какие сообщения реагирует, что шлёт, как читает атрибуты — прочитано в коде у 45 классов (этап 79): раздел «Поведение» в заметке класса, обзор — [Поведение классов SimGroup](../../analysis/class-behavior.md), проверка в игре — [опыт](../experiments/class-state-in-game.md); открыто: [касания триггеров](../questions/trigger-touch-frequency.md), [хранилище состояния](../questions/state-store-records.md).
+
 Код обработчиков — в заметке [обработчики логических классов](../exe/logic-class-handlers.md) и [реестр классов](../exe/simgroup-class-registry.md).
 
 ## Типы
 
-- [Сообщения файлов игры: каталог и группы](../messages/game-messages.md) — открытое перечисление `Engine` / `Game` / `Custom` / `Unknown`, кто шлёт и кто слушает каждое из 41 872 сообщений, проверка новых имён.
+- [Сообщения файлов игры: каталог и группы](../messages/game-messages.md) — открытое перечисление `Engine` / `Game` / `Custom` / `Unknown`, кто шлёт и кто слушает каждое из 41 915 сообщений, проверка новых имён.
 - [Перечисления](../enums/index.md) — [семьи](../enums/family.md), [города](../enums/city.md), [заведения](../enums/venue.md), [типы зданий](../enums/building_type.md), [оружие и предметы](../enums/weapon.md), [специализации команды](../enums/crew_specialty.md), [категории звука](../enums/sound_category.md), [эмоции](../enums/emotion.md).
 - Смысл атрибутов (`MsgIn`, `Ref<Класс>`, `Res<тип>`, `Enum<список>`, `Seconds`…) — колонка «Смысл» в заметках классов; подробно — [граф логики](../../logic-graph.md) §2.1, итог — [этап 73](../research/stage-73.md).
 
@@ -46,6 +48,7 @@ updated: 2026-11-16
 
 - Сообщения: [данные сообщения](../questions/lua-message-data.md), [отправители в коде движка](../questions/engine-message-senders.md), [отправитель](../questions/message-sender-unknown.md), [отправители вне SimGroup](../questions/non-simgroup-message-senders.md), [отложенный хэш у 12 классов](../questions/deferred-message-hash-classes.md), [`ExecuteVFX`](../questions/executevfx-show-hide-senders.md).
 - Классы: [имена атрибутов и классов](../questions/attribute-and-class-names.md), [виды значений](../questions/simgroup-value-kinds.md), [`Bool` и `Money`](../questions/attr-bool-and-money-types.md), [типы зданий](../questions/building-type-names.md), [ссылки на звук](../questions/audio-reference-ids.md), [`MultiManager` 1–2](../questions/multimanager-attrs-1-2.md), [`TriggerBase` 6, 8–10](../questions/triggerbase-attrs-6-8-10.md), [`TriggerAuto` flags](../questions/triggerauto-flags.md), [`CSystemCommands` 2–3](../questions/csystemcommands-attrs-2-3.md).
-- Lua: [объекты и группы](../questions/lua-groups-and-objects.md), [таймеры](../questions/lua-timer-function-by-name.md), [`PlayEarsAudioStream`](../questions/lua-play-ears-audio-stream.md), [полиция и машины](../questions/lua-police-and-cars.md).
+- Выдача из логики (этап 75): [реле, подбор, адаптеры денег — адреса](../exe/items-and-money.md), [опыт на стенде и торговец](../experiments/trader-handing-out.md), вопросы — [навык в одиночной игре](../questions/upgrade-grant-single-player.md), [проверка денег](../questions/money-check-in-logic.md), [выбор в меню разговора на стенде](../questions/f2f-choice-input-on-bench.md).
+- Lua: [функции и таблицы из exe](../exe/lua-functions.md), [проверки на стенде](../experiments/lua-api-on-bench.md), [объекты и группы](../questions/lua-groups-and-objects.md), [таймеры](../questions/lua-timer-function-by-name.md), [`PlayEarsAudioStream`](../questions/lua-play-ears-audio-stream.md), [полиция и машины](../questions/lua-police-and-cars.md).
 
 Все вопросы — в [списке](../questions/index.md).

@@ -46,7 +46,7 @@ use crate::level::Location;
 use crate::resource::simgroup::{Guid, SimGroup, Value};
 
 pub use index::{MessageIndex, Site};
-pub use schema::{Category, Confidence, LogicSchema, PinKind};
+pub use schema::{Category, Confidence, LogicSchema, PinKind, TypedAttr};
 pub use scope::{Mission, ScopeSpec};
 
 /// Index of a node in [`LogicGraph::nodes`].

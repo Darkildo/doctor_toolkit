@@ -21,7 +21,7 @@ updated: 2026-11-16
 
 ## Семья и деньги
 
-- [Команда игрока](../systems/crew.md) — вопрос: [капо `crosato_0051`](../questions/capo-crosato-0051-missing.md).
+- [Команда игрока](../systems/crew.md) — люди чести, найм, повышение, лицензии; опыт: [новый человек чести](../experiments/new-crew-member.md); вопросы: [портрет нового человека](../questions/crew-portrait-of-new-member.md), [капо `crosato_0051`](../questions/capo-crosato-0051-missing.md).
 - [Экономика](../systems/economy.md) — вопросы: [доходы и цены](../questions/economy-income-and-prices.md), [деньги с убитых](../questions/npc-money-drop.md), [`Reduced Law Costs`](../questions/reduced-law-costs.md).
 - [Семьи и война семей](../systems/families.md) — вопросы: [таймеры ходов](../questions/family-turn-timers.md), [сила семьи](../questions/family-strength.md).
 - [Навыки и улучшения](../systems/upgrades.md) — вопрос: [остальные навыки](../questions/upgrade-remaining-skills.md).

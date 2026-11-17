@@ -118,6 +118,25 @@ if "$root/tools/build-render-module.sh" "$stage/$name/doctor_render.asi" >/dev/n
 else
     echo "warning: the graphics module was not built (see tools/build-render-module.sh)" >&2
 fi
+# The crash module (stage 99), likewise.
+if "$root/tools/build-crash-module.sh" "$stage/$name/doctor_crash.asi" >/dev/null; then
+    echo "crash module: doctor_crash.asi"
+else
+    echo "warning: the crash module was not built (see tools/build-crash-module.sh)" >&2
+fi
+# The platform of native mods (stage 80) and the toolkit's ASI loader (stage
+# 81): the mod manager installs them into a game with a mod that carries
+# executable code, after the player agreed to it.
+if "$root/tools/build-platform-module.sh" "$stage/$name/doctor_platform.asi" >/dev/null; then
+    echo "platform module: doctor_platform.asi"
+else
+    echo "warning: the platform module was not built (see tools/build-platform-module.sh)" >&2
+fi
+if "$root/tools/build-loader.sh" "$stage/$name/doctor_loader.dll" >/dev/null; then
+    echo "ASI loader: doctor_loader.dll"
+else
+    echo "warning: the ASI loader was not built (see tools/build-loader.sh)" >&2
+fi
 # Menu entries and icons: install-desktop.sh at the top finds the programs
 # next to itself and the entries in desktop/; icons/ is for packagers.
 cp tools/install-desktop.sh "$stage/$name/"

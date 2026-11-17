@@ -1,0 +1,70 @@
+{
+  "format": "doctor-toolkit-mod",
+  "format_version": 5,
+  "id": "fuzz-seed-3",
+  "name": "Fuzz seed of format 3",
+  "version": "1.2.0-rc.1+build",
+  "author": "fuzz",
+  "description": "A patch on top of another mod",
+  "game": {
+    "profile": "The Godfather II (PC)",
+    "editions": [
+      "1.0.789.0",
+      "1.0.764.0-2009-01-27"
+    ]
+  },
+  "requires_manager": ">=0.0.4",
+  "depends": {
+    "base": ">=1.1 <2",
+    "other": "^0.3-beta",
+    "third": "~1"
+  },
+  "recommends": {
+    "extra": "*",
+    "more": "=2.0.1"
+  },
+  "incompatible": {
+    "rival": {
+      "versions": "<=3",
+      "reason": "changes the same lamps"
+    },
+    "short": ">1",
+    "noversions": {
+      "reason": "any version"
+    }
+  },
+  "load_after": [
+    "extra"
+  ],
+  "load_before": [
+    "late"
+  ],
+  "resources": [
+    {
+      "key": "gf2/cuba:variabledictionary:00000000",
+      "payload": {
+        "sha256": "1136e8cf83c904fc13a46e912fd92f662f54ade417080d502088065da68c5750",
+        "size": 16
+      },
+      "original": {
+        "sha256": "5fa303d0c7487254f0382018cc70326c73b1bd5765336f040befefa47831e424",
+        "size": 29
+      },
+      "label": "Replace resource 5 of gf2/cuba"
+    }
+  ],
+  "native": {
+    "edition": "1.0.789.0",
+    "platform_abi": 1,
+    "required": true,
+    "modules": [
+      {
+        "file": "doctor_example.asi",
+        "payload": {
+          "sha256": "d7283c46ef35695c62a115d53b7dd86cde20a60d73dcd80658930c2fa12289b3",
+          "size": 284160
+        }
+      }
+    ]
+  }
+}

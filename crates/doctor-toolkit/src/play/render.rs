@@ -49,6 +49,9 @@ pub struct GraphicsOptions {
     pub fxaa: bool,
     /// Sharpening, 0–100.
     pub sharpen: u32,
+    /// Fewer draw calls (stage 101): draws that follow each other with
+    /// nothing changed between them go to Direct3D as one.
+    pub draw_merge: bool,
     /// Start a copy of the executable with Large Address Aware.
     pub laa: bool,
     /// The memory test of LAA: megabytes left free below 2 GB; 0 — off.
@@ -70,6 +73,7 @@ impl Default for GraphicsOptions {
             fov: c.fov,
             fxaa: c.fxaa,
             sharpen: c.sharpen,
+            draw_merge: false,
             laa: false,
             low_memory: 0,
             vulkan_driver: String::new(),
@@ -94,10 +98,12 @@ impl GraphicsOptions {
                 fov: self.fov,
                 fxaa: self.fxaa,
                 sharpen: self.sharpen,
+                draw_merge: u32::from(self.draw_merge),
                 low_memory: self.low_memory,
                 memory_log: if self.laa { 30 } else { 0 },
                 force_vsync: false,
                 fov_trace: false,
+                ..RenderConfig::default()
             }
             .to_text(),
         )
@@ -412,6 +418,8 @@ impl LaaMirror {
                 let _ = std::fs::copy(&log, &to);
             }
         }
+        // The crash module wrote its reports into the mirror (stage 99).
+        crate::crash::collect_from(&self.root, game_root);
         self.overlay.remove()
     }
 }

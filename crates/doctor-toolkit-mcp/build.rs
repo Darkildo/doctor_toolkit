@@ -14,6 +14,7 @@ const GUIDES: &[&str] = &[
     "levels.md",
     "workspace.md",
     "project.md",
+    "scripts.md",
 ];
 
 fn main() {

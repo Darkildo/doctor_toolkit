@@ -3,8 +3,8 @@ type: exe
 status: known
 confidence: exe
 editions: ["1.0.789.0"]
-stages: [72, 16, 34]
-sources: ["docs/formats/mission-logic.md §2.1", "docs/formats/mission-logic.md §3", "docs/analysis/live-link.md §5", "docs/analysis/live-link.md §11.2", "crates/doctor-toolkit-live/src/addr.rs", "crates/doctor-toolkit-live/src/edition.rs"]
+stages: [72, 16, 34, 74, 80]
+sources: ["docs/formats/mission-logic.md §2.1", "docs/formats/mission-logic.md §3", "docs/analysis/live-link.md §5", "docs/analysis/live-link.md §11.2", "crates/doctor-toolkit-live/src/addr.rs", "crates/doctor-toolkit-live/src/edition.rs", "docs/analysis/lua-api.md §1", "docs/analysis/lua-api.md §8", "docs/analysis/lua-api.md §9", "docs/analysis/asi-platform.md §3"]
 tags: [exe, lua, scripts]
 updated: 2026-11-16
 ---
@@ -45,13 +45,24 @@ updated: 2026-11-16
 | `0x01223474` | данные: объект позиции Lua (используется `GetPlayerPosition`) | crates/doctor-toolkit-live/src/edition.rs |
 | `0x0043E5C0` | `EclipseLog`: `mov eax, 1; ret` | mission-logic.md §3 |
 | `0x004211E0` | поиск ресурса (скрипта) по GUID в момент запуска | mission-logic.md §3; live-link.md §12.3 |
+| `0x00625740`, `0x006259B0`, `0x00625A30`, `0x00625A70`, `0x00625B60` | `lua_type` (индекс в `EDX`, `L` в `EAX`), `lua_tonumber`, `lua_toboolean`, `lua_tostring`, `lua_touserdata` | lua-api.md §1 |
+| `0x00625C20`, `0x00625C40`, `0x00625DF0`, `0x00625E10`, `0x00625F40` | `lua_pushnil`, `lua_pushnumber`, `lua_pushboolean`, `lua_pushlightuserdata`, `lua_newtable` | lua-api.md §1 |
+| `0x00627BD0`, `0x00627C90`, `0x00627E50`, `0x00638A40` | `luaL_error`, `luaL_newmetatable`, проверка userdata по имени метатаблицы, `lua_newuserdata` | lua-api.md §1 |
+| `0x00633D60`, `0x00633CB0`, `0x006362D0` | `luaV_settable`, `luaV_gettable`, `luaD_call` | lua-api.md §1 |
+| `0x00480AF0`, `0x00480D40`, `0x00480A00` | `LuaAudioScript`: чтение атрибутов, обработчик стартового и стопового сообщений, деструктор (зовёт `shutdown`) | lua-api.md §9 |
+| `0x00468E10` | `RegisterScriptName`: имя скрипта в объект `+0x84` | lua-api.md §9 |
+| `0x0110AA98`, `0x0110A6F0`, `0x011289F8` | данные: три встроенных текста Lua (`debug_print`; `RegisterFunction` и `CallLuaFunction`; обвязка `MessageReceiver`) | lua-api.md §9 |
+| `0x004CB170` | обёртка загрузки чанка в состояние `+0x1C`: ни вызовов, ни ссылок | lua-api.md §8 |
 
 ## Что неизвестно
 
-Состояние `+0x1C` в релизе, вероятно, не используется (гипотеза источника).
+Состояние `+0x1C`: функции в него регистрируются, чанки скриптов не загружаются (этап 74); доступ к нему через другой указатель не исключён.
 
 ## Подробнее
 
+- [ASI-платформа](../../analysis/asi-platform.md) §3 — связки LuaManager (`0x0043E2E0`), через которые регистрируются функции; адреса: [платформа нативных модов](native-mods.md)
 - [Логика миссий](../../formats/mission-logic.md) §1, §3
 - [Живая связь](../../analysis/live-link.md) §5 «Lua»
 - [Формат Lua](../../formats/lua.md)
+- [Lua-API движка](../../analysis/lua-api.md)
+- [Функции и таблицы Lua из exe: полный список](lua-functions.md)

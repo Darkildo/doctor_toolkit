@@ -336,6 +336,7 @@ fn black_boxes_get_messages_and_take_manual_reactions() {
 #[test]
 fn triggers_take_the_player_and_their_switch() {
     let mut b = Builder::new();
+    // A touch sensor that is on at load (bit 1 of the flags, attribute 8).
     b.add(
         "TriggerBox",
         &[
@@ -343,7 +344,9 @@ fn triggers_take_the_player_and_their_switch() {
             ("TriggerBase", 2, V::S("box_off")),
             ("TriggerBase", 4, V::S("entered")),
             ("TriggerBase", 5, V::F(0.25)),
-            ("TriggerBase", 7, V::S("left")),
+            ("TriggerBase", 6, V::I(-1)),
+            ("TriggerBase", 7, V::S("reverse")),
+            ("TriggerBase", 8, V::I(1)),
         ],
     );
     let mut run = b.run();
@@ -370,7 +373,273 @@ fn triggers_take_the_player_and_their_switch() {
             .collect::<Vec<_>>(),
         vec![0.25, 6.25]
     );
-    assert!(s.contains(&(1.0, "left".into())));
+    // Attribute 7 is the message of a touch against the axis of the volume
+    // (0x004C1E40), not of leaving: nothing is sent when the player leaves.
+    assert!(!s.iter().any(|(_, m)| m == "reverse"));
+}
+
+/// Readers `0x004C1550` and `0x008FFE80`: a trigger volume without bit 1 in
+/// its flags is off until a message switches it on.
+#[test]
+fn a_trigger_is_off_at_load_without_its_flag() {
+    let mut b = Builder::new();
+    b.add(
+        "TriggerBox",
+        &[
+            ("TriggerBase", 1, V::S("box_on")),
+            ("TriggerBase", 4, V::S("touched")),
+        ],
+    );
+    b.add(
+        "EnterExitTrigger",
+        &[
+            ("EnterExitTrigger", 0, V::S("came_in")),
+            ("EnterExitTrigger", 1, V::S("went_out")),
+            ("EnterExitTrigger", 4, V::S("zone_on")),
+        ],
+    );
+    b.add(
+        "EnterExitTrigger",
+        &[
+            ("EnterExitTrigger", 0, V::S("came_in_2")),
+            ("EnterExitTrigger", 1, V::S("went_out_2")),
+            ("EnterExitTrigger", 6, V::I(1)),
+        ],
+    );
+    let mut run = b.run();
+    for (t, i) in parse_inputs(&[
+        "enter:#0; enter:#1; enter:#2; exit:#2; send:box_on; send:zone_on; enter:#0; enter:#1; exit:#1"
+            .into(),
+    ])
+    .unwrap()
+    {
+        run.schedule(t, i);
+    }
+    run.run(Until::Idle, 1000);
+    assert_eq!(
+        names(&run),
+        [
+            "came_in_2",
+            "went_out_2",
+            "box_on",
+            "zone_on",
+            "touched",
+            "came_in",
+            "went_out"
+        ]
+    );
+}
+
+/// `TriggerBase` attributes 9 and 6 (`0x004C1550`, `0x004C1260`): with
+/// attribute 9 = 1 the message goes out when the touch ends; attribute 6
+/// counts the sends and at 0 the object is gone.
+#[test]
+fn a_touch_sensor_fires_on_leave_and_counts_its_fires() {
+    let mut b = Builder::new();
+    b.add(
+        "TriggerBox",
+        &[
+            ("TriggerBase", 4, V::S("left_the_box")),
+            ("TriggerBase", 6, V::I(-1)),
+            ("TriggerBase", 8, V::I(1)),
+            ("TriggerBase", 9, V::I(1)),
+        ],
+    );
+    b.add(
+        "TriggerBox",
+        &[
+            ("TriggerBase", 4, V::S("once")),
+            ("TriggerBase", 6, V::I(1)),
+            ("TriggerBase", 8, V::I(1)),
+        ],
+    );
+    let mut run = b.run();
+    for (t, i) in
+        parse_inputs(&["enter:#0; send:mark; exit:#0; enter:#1; enter:#1; enter:#1".into()])
+            .unwrap()
+    {
+        run.schedule(t, i);
+    }
+    run.run(Until::Idle, 1000);
+    assert_eq!(names(&run), ["mark", "left_the_box", "once"]);
+}
+
+/// Handler `0x0047AF60`, reader `0x0047B040`: the roll is taken over the
+/// sum of all eight weights, and an entry without a message is passed over,
+/// so its weight is the chance that nothing is sent.
+#[test]
+fn trigger_random_keeps_the_weight_of_an_empty_entry() {
+    let mut b = Builder::new();
+    b.add(
+        "TriggerRandom",
+        &[
+            ("TriggerRandom", 0, V::S("roll")),
+            ("TriggerRandom", 1, V::F(1.0)),
+            ("TriggerRandom", 2, V::S("heads")),
+            // Weight 3 without a message.
+            ("TriggerRandom", 4, V::F(3.0)),
+        ],
+    );
+    let mut run = b.run();
+    let rolls = 400;
+    for (t, i) in parse_inputs(&[vec!["send:roll"; rolls].join("; ")]).unwrap() {
+        run.schedule(t, i);
+    }
+    run.run(Until::Idle, 100_000);
+    let heads = names(&run).iter().filter(|m| *m == "heads").count();
+    // A quarter of the rolls, not all of them.
+    assert!((60..=140).contains(&heads), "{heads} of {rolls}");
+}
+
+/// Handler `0x00479B60`: the conditions are tried first and `reset` last,
+/// and the comparison follows either.
+#[test]
+fn and_gate_tries_conditions_before_reset() {
+    let mut b = Builder::new();
+    // `both` is a condition and the reset: it counts as the condition.
+    b.add(
+        "AndEventGate",
+        &[
+            ("AndEventGate", 0, V::S("first")),
+            ("AndEventGate", 1, V::S("both")),
+            ("AndEventGate", 4, V::S("opened")),
+            ("AndEventGate", 6, V::S("both")),
+        ],
+    );
+    // No conditions at all: the gate sends on its reset.
+    b.add(
+        "AndEventGate",
+        &[
+            ("AndEventGate", 4, V::S("empty_gate")),
+            ("AndEventGate", 6, V::S("clear")),
+        ],
+    );
+    let mut run = b.run();
+    for (t, i) in parse_inputs(&["send:first; send:both; send:clear".into()]).unwrap() {
+        run.schedule(t, i);
+    }
+    run.run(Until::Idle, 1000);
+    assert_eq!(
+        names(&run),
+        ["first", "both", "opened", "clear", "empty_gate"]
+    );
+}
+
+/// `0x00477A90` tests the fire limit of a `VariableWatcher` on activation
+/// only; the change callback `0x00477BE0` does not.
+#[test]
+fn a_watcher_tests_its_limit_only_when_activated() {
+    let mut b = Builder::new();
+    b.add(
+        "VariableOperator",
+        &[
+            ("VariableOperator", 0, V::S("inc")),
+            ("VariableOperator", 2, V::H("steps")),
+            ("VariableOperator", 3, V::I(0)),
+            ("VariableOperator", 4, V::I(1)),
+        ],
+    );
+    b.add(
+        "VariableWatcher",
+        &[
+            ("VariableWatcher", 0, V::S("watch")),
+            ("VariableWatcher", 2, V::S("stepped")),
+            ("VariableWatcher", 4, V::H("steps")),
+            ("VariableWatcher", 5, V::I(4)),
+            ("VariableWatcher", 6, V::I(0)),
+            // Keeps watching (4); at most one fire.
+            ("VariableWatcher", 7, V::I(4)),
+            ("VariableWatcher", 8, V::I(1)),
+        ],
+    );
+    let mut run = b.run();
+    for (t, i) in
+        parse_inputs(&["send:watch; send:inc; send:inc; send:watch; send:inc".into()]).unwrap()
+    {
+        run.schedule(t, i);
+    }
+    run.run(Until::Idle, 1000);
+    // Past the limit the watch that is on goes on firing; activating again
+    // neither stops it nor starts another.
+    assert_eq!(names(&run).iter().filter(|m| *m == "stepped").count(), 3);
+}
+
+/// What the run models is what the code of the class was read to do: every
+/// modelled class is described in `data/gf2/class_behavior.toml`, with the
+/// messages the model reacts to named as its input attributes.
+#[test]
+fn modelled_classes_are_described_in_the_class_behaviour_data() {
+    use crate::game_types::behavior::{Behaviors, UseKind};
+    let all = Behaviors::gf2();
+    let ins: &[(&str, &[(&str, u16)])] = &[
+        ("MultiManager", &[("MultiManager", 0)]),
+        ("MessageRelay", &[("MessageRelay", 0)]),
+        (
+            "AndEventGate",
+            &[
+                ("AndEventGate", 0),
+                ("AndEventGate", 1),
+                ("AndEventGate", 2),
+                ("AndEventGate", 3),
+                ("AndEventGate", 6),
+            ],
+        ),
+        ("TriggerRandom", &[("TriggerRandom", 0)]),
+        ("VariableOperator", &[("VariableOperator", 0)]),
+        ("VariableSwitch", &[("VariableSwitch", 0)]),
+        (
+            "VariableWatcher",
+            &[("VariableWatcher", 0), ("VariableWatcher", 1)],
+        ),
+        (
+            "TriggerBase",
+            &[("TriggerBase", 0), ("TriggerBase", 1), ("TriggerBase", 2)],
+        ),
+        (
+            "EnterExitTrigger",
+            &[("EnterExitTrigger", 4), ("EnterExitTrigger", 5)],
+        ),
+    ];
+    for (class, attrs) in ins {
+        let c = all
+            .class(string_id(class))
+            .unwrap_or_else(|| panic!("{class} is not described"));
+        assert!(c.handler.is_some(), "{class}");
+        for (packet, i) in *attrs {
+            let a = all.attr(string_id(packet), *i).expect("attribute");
+            assert_eq!(a.kind, UseKind::MsgIn, "{packet} {i}");
+        }
+    }
+    for (packet, i) in [
+        ("MultiManager", 3),
+        ("TriggerAuto", 0),
+        ("TriggerBase", 4),
+        ("TriggerBase", 7),
+        ("EnterExitTrigger", 0),
+        ("EnterExitTrigger", 1),
+        ("VariableWatcher", 2),
+    ] {
+        let a = all.attr(string_id(packet), i).expect("attribute");
+        assert_eq!(a.kind, UseKind::MsgOut, "{packet} {i}");
+    }
+    // The handlers the models are read from.
+    for (class, handler) in [
+        ("MultiManager", "0x0047A1C0"),
+        ("AndEventGate", "0x00479B60"),
+        ("OrEventGate", "0x00479E30"),
+        ("TriggerAuto", "0x00477EF0"),
+        ("TriggerRandom", "0x0047AF60"),
+        ("VariableOperator", "0x00476980"),
+        ("VariableSwitch", "0x00476E50"),
+        ("TriggerBase", "0x004C1260"),
+        ("EnterExitTrigger", "0x00900E20"),
+    ] {
+        assert_eq!(
+            all.class(string_id(class)).unwrap().handler.as_deref(),
+            Some(handler),
+            "{class}"
+        );
+    }
 }
 
 #[test]

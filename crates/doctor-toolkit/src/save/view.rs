@@ -147,13 +147,20 @@ pub fn chunk_text(chunk: &Chunk, names: Option<&LiveNames>) -> String {
             );
             let _ = writeln!(out, "{} member(s)", f.members.len());
             for m in &f.members {
-                let _ = writeln!(out, "  {}  value {}", object(&m.guid, names), m.value);
+                let _ = writeln!(
+                    out,
+                    "  {}  weapon licence {} ({}), honours {}",
+                    object(&m.guid, names),
+                    m.licence,
+                    m.licence_name(),
+                    m.honours.iter().map(|&h| u32::from(h)).sum::<u32>()
+                );
             }
         }
         Content::Families(f) => {
             let _ = writeln!(
                 out,
-                "version {}, crew value {}, {} family(ies)",
+                "version {}, family tree level {}, {} family(ies)",
                 f.version,
                 f.crew_value,
                 f.families.len()
@@ -190,8 +197,17 @@ pub fn chunk_text(chunk: &Chunk, names: Option<&LiveNames>) -> String {
                     fam.members.len(),
                     fam.records
                 );
-                for guid in &fam.members {
-                    let _ = writeln!(out, "      {}", object(guid, names));
+                for m in &fam.member_records {
+                    let _ = write!(out, "      {}  rank {}", object(&m.guid, names), m.rank);
+                    if let Some(place) = m.place {
+                        let _ = write!(
+                            out,
+                            ", place {}, specialties {}",
+                            place + 1,
+                            specialties(m.specialties)
+                        );
+                    }
+                    let _ = writeln!(out);
                 }
                 if let Some(books) = &fam.books {
                     for (i, list) in books.iter().enumerate() {
@@ -317,6 +333,100 @@ pub fn full_text(save: &SaveFile, names: Option<&LiveNames>) -> String {
         out.push_str(&chunk_text(chunk, names));
     }
     out
+}
+
+/// Names of the specialties of a place of the family tree.
+fn specialties(bits: u32) -> String {
+    const NAMES: [(u32, &str); 6] = [
+        (0x04, "demolition"),
+        (0x08, "arsonist"),
+        (0x10, "safe_cracker"),
+        (0x20, "engineer"),
+        (0x40, "medic"),
+        (0x80, "bruiser"),
+    ];
+    let names: Vec<&str> = NAMES
+        .iter()
+        .filter(|(bit, _)| bits & bit != 0)
+        .map(|&(_, name)| name)
+        .collect();
+    if names.is_empty() {
+        "none".to_owned()
+    } else {
+        names.join("+")
+    }
+}
+
+fn hex(data: &[u8]) -> String {
+    data.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// A save as JSON: the header, the list of chunks and the decoded content
+/// of `chunks`.
+pub fn to_json(save: &SaveFile, chunks: &[&Chunk]) -> serde_json::Value {
+    use serde_json::json;
+    let listed: Vec<_> = save
+        .chunks
+        .iter()
+        .map(|c| {
+            json!({
+                "id": format!("{:08x}", c.id),
+                "name": c.name(),
+                "offset": c.offset,
+                "size": c.data.len(),
+            })
+        })
+        .collect();
+    let decoded: serde_json::Map<String, serde_json::Value> = chunks
+        .iter()
+        .map(|c| {
+            let value = match c.content() {
+                Ok(Content::Raw) => json!({ "hex": hex(&c.data) }),
+                Ok(content) => json!(content),
+                Err(e) => json!({ "error": e.to_string(), "hex": hex(&c.data) }),
+            };
+            (c.name(), value)
+        })
+        .collect();
+    json!({
+        "name": save.description,
+        "title": save.title,
+        "profile": save.profile,
+        "city": save.city,
+        "play_time": save.play_time,
+        "play_seconds": save.play_seconds,
+        "version": save.version,
+        "capacity": save.capacity,
+        "used": save.used,
+        "mask": save.mask,
+        "checksums": save.checksums,
+        "chunks": listed,
+        "content": decoded,
+    })
+}
+
+/// The save files of a folder and the folders below it (files of the size
+/// of a save), sorted.
+pub fn save_files(dir: &std::path::Path) -> crate::Result<Vec<std::path::PathBuf>> {
+    fn collect(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) -> crate::Result<()> {
+        let entries = std::fs::read_dir(dir).map_err(|e| crate::Error::io(dir, e))?;
+        for entry in entries {
+            let path = entry.map_err(|e| crate::Error::io(dir, e))?.path();
+            if path.is_dir() {
+                collect(&path, out)?;
+            } else if path
+                .metadata()
+                .is_ok_and(|m| m.len() == super::FILE_SIZE as u64)
+            {
+                out.push(path);
+            }
+        }
+        Ok(())
+    }
+    let mut files = Vec::new();
+    collect(dir, &mut files)?;
+    files.sort();
+    Ok(files)
 }
 
 #[cfg(test)]

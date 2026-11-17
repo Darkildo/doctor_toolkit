@@ -6,14 +6,18 @@
 //! `attr_types.toml` (what the value of an attribute means),
 //! `engine_messages.txt` (names in `godfather2.exe`), `game_messages.tsv`
 //! (names in the SimGroups, with senders and listeners) and `messages.toml`
-//! (facts about single messages). `build.rs` turns them into the statics and
+//! (facts about single messages); `lua_api.toml` (the functions the game
+//! gives to Lua scripts) is read by [`lua_api`]. `build.rs` turns the rest into the statics and
 //! the enums of this module; [`export`] writes the same data as Python stubs
 //! and JSON Schema, the knowledge base (`kb::generate`) as notes.
 //!
 //! Nothing here is guessed: every list names its source and how sure it is
 //! ([`Confidence`]); what is not known stays `None` or `"unknown"`.
 
+pub mod behavior;
+pub mod custom;
 pub mod export;
+pub mod lua_api;
 pub mod message;
 
 use serde::Serialize;
@@ -22,8 +26,8 @@ use crate::logic_graph::schema::Confidence;
 use crate::resource::simgroup::{Hash32, Value};
 
 pub use message::{
-    CustomMessageError, MessageCatalog, MessageId, MessageInfo, MessageNote, NoteConfidence,
-    PinUse, Usage,
+    ClassData, CustomMessageError, DataType, MessageCatalog, MessageFact, MessageId, MessageInfo,
+    MessageNote, NoteConfidence, PinUse, Usage,
 };
 
 include!(concat!(env!("OUT_DIR"), "/gf2_types.rs"));

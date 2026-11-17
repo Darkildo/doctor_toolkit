@@ -842,9 +842,15 @@ impl CutsceneView {
         let (draft, draft_time) = (draft.clone(), *draft_time);
         let mut seq = shot.seq.clone();
         let label = command.label();
-        seq.blocks[0].commands[index] = draft;
-        if moved {
-            let _ = seq.blocks[0].move_command(index, draft_time);
+        // The same edit the command line and the MCP server record.
+        if let Err(e) = doctor_toolkit::cutscene::edit::replace_command(
+            &mut seq,
+            index,
+            draft,
+            moved.then_some(draft_time),
+        ) {
+            self.message = e.to_string();
+            return None;
         }
         let label = trf(
             "cutscene.label_edit",
@@ -1170,16 +1176,17 @@ impl TimelineEdits<'_> {
         duration_ms: u32,
     ) -> Result<ViewAction, String> {
         let audio = &self.cutscene.audio[track];
-        let sub = &audio.subtitles[line];
-        let mut tob = audio.tob.clone().ok_or("no subtitle table")?;
-        let group = &mut tob.groups[sub.group_index];
-        group.entries[sub.entry].start_ms = start_ms;
-        group.entries[sub.entry].duration_ms = duration_ms;
-        group.entries.sort_by_key(|e| e.start_ms);
         let (key, snu) = self.sounds[track]
             .as_ref()
             .ok_or("the sound was not read")?;
-        let data = tob.replace_in_snu(snu).map_err(|e| e.to_string())?;
+        // The same edit the command line and the MCP server record.
+        let edit = doctor_toolkit::cutscene::ops::SubtitleEdit {
+            line,
+            start_ms: Some(start_ms),
+            duration_ms: Some(duration_ms),
+        };
+        let (data, ..) =
+            doctor_toolkit::cutscene::ops::retimed(audio, snu, &edit).map_err(|e| e.to_string())?;
         let label = trf(
             "cutscene.label_subtitle",
             &[

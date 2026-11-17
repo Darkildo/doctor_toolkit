@@ -1,7 +1,7 @@
 ---
 type: class
 status: partial
-confidence: data
+confidence: exe
 editions: ["1.0.789.0"]
 stages: [72, 73]
 sources: ["data/gf2/sim_classes.txt", "data/gf2/simgroup_schema.txt", "data/gf2/logic_schema.toml", "data/gf2/attr_types.toml"]
@@ -23,7 +23,7 @@ updated: 2026-11-16
 
 | № | Вид | Роль | Имя | Смысл | Уверенность | Значений |
 |---:|---|---|---|---|---|---:|
-| 1 | string | вход (сообщение, которое объект слушает) | — | `MsgIn` | роль: data | 180 |
+| 1 | string | вход (сообщение, которое объект слушает) | — | `MsgIn` | роль: exe | 180 |
 | 2 | int | — | — | — | — | 180 |
 | 3 | guid | ссылка на объект (GUID) | — | [`Ref<Entity>`](Entity.md) | роль: data, смысл: data | 180 |
 | 4 | float | — | — | — | — | 180 |

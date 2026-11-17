@@ -4,7 +4,9 @@
 `settings.rs` (настройки), `views.rs` (реестр просмотрщиков, см.
 `docs/viewers.md` §0), общая часть с менеджером модов —
 `crates/doctor-toolkit-mods/src/i18n.rs` (строки) и `icon.rs` (значки).
-Руководство пользователя — `docs/guide/10-interface.md`.
+Руководство пользователя — `docs/guide/10-interface.md`. Что из возможностей
+тулкита есть в окне, а что только в MCP или командной строке —
+`docs/parity.md`.
 
 ## 1. Устройство окна
 
@@ -81,8 +83,8 @@ Restore originals) кэш освобождается целиком (`release_fi
 | Edit | Undo (Ctrl+Z), Redo (Ctrl+Shift+Z, Ctrl+Y), Preferences… (Ctrl+,) |
 | View | Command palette (Ctrl+Shift+P), Back/Forward (Alt+←/→), панели Files/Details/Changes/Log (Ctrl+1…4), Outliner/Zones/Undo history (Ctrl+5, Ctrl+6, Ctrl+7), Another Details panel, Content Drawer (Ctrl+Space), New Content Browser, Welcome, тема, масштаб (Ctrl+Plus/Minus/0), Maximize tab (Ctrl+M), Full screen (F11), Save layout as…, Reset layout, подменю Layouts (§11.4) |
 | Level | Select, Move, Rotate, Scale, Local axes, Snap always — для уровня впереди (§11.2) |
-| Tools | Search the game (Ctrl+F), New search tab (Ctrl+Shift+F), All resources (Ctrl+Shift+R), Level editor (Ctrl+L), New level tab (Ctrl+Shift+L), Logic graph (Ctrl+G), Mods (Ctrl+Shift+M), Check game files, Rebuild game index, Apply changes to game, Revert game files, Restore originals, Play (F5), Play options…, Find installed games |
-| Wizards | What do you want to do? (F2), Retexture a model…, Replace a model…, New outfit…, Change game parameters…, Edit texts…, Place an object in a level…, Package a mod… (§10) |
+| Tools | Search the game (Ctrl+F), New search tab (Ctrl+Shift+F), All resources (Ctrl+Shift+R), Level editor (Ctrl+L), New level tab (Ctrl+Shift+L), Logic graph (Ctrl+G), Mods (Ctrl+Shift+M), Check game files, Look into a save file…, Sound: archives, speech, mixer (окно «Звук», `docs/viewers.md` §4a), Rebuild game index, Apply changes to game, Revert game files, Restore originals, Play (F5), Play options…, Find installed games; новая зона (этап 103, `docs/levels.md` §12): New stream…, New SimGroup…, World grid cell…, Clone resources…, Add resource from a file… |
+| Wizards | What do you want to do? (F2), Retexture a model…, Replace a model…, New outfit…, Change game parameters…, Edit texts…, Place an object in a level…, New voice line…, New zone…, Package a mod… (§10) |
 | Help | User guide (F1), Keyboard shortcuts (Ctrl+/), Show log file, About |
 
 **Клавиши и поля ввода.** Клавиши разбираются в начале кадра, до виджетов
@@ -287,8 +289,19 @@ SVG. `app_id` окна (`doctor-toolkit`, `open-mod-manager`) совпадает
 | Переменная | Действие |
 |---|---|
 | `DOCTOR_TOOLKIT_GUI_SHELL=palette=<текст>,streams,prefs,about,shortcuts,welcome,log,index,pin,notify,play,layout=<раскладка>,drawer=<ящик>,layouts` | открыть окна оболочки перед снимком: палитру с текстом, палитру потоков, Preferences, About, шпаргалку; показать вкладки Welcome, Log, All resources; `pin` — открыть выбранный ресурс (`DOCTOR_TOOLKIT_GUI_SELECT`) вкладкой, `max` — то же и развернуть вкладку; `notify` — два примера всплывающих сообщений; `play` — окно Play options; `layout=level|resources|<имя>` — применить раскладку; `drawer=content|log|changes` — открыть ящик; `layouts` — окно своих раскладок |
+| `DOCTOR_TOOLKIT_GUI_SHELL=check,refs=<поток или папка>,hash=<имя или хеш>,findings,kb=<слова через +>,kb=<заметка.md>,types=<список>,types=message:<текст>,types=class:<имя>,zones` | этап 103 (§12): `check` — «Check edits» (ошибки в правках — ненулевой код выхода), `refs=` — «Check references» потока или папки, `hash=` — панель Hashes с этим текстом, `findings` — панель Findings, `kb=` — вкладка Knowledge base с поиском или заметкой (заметки нет — ошибка), `types=` — её раздел Data types, `zones` — панель Zones впереди |
+| `DOCTOR_TOOLKIT_GUI_MODS=info=<файл>` или `export=<id>:<файл>` | окно Mods: вопрос перед установкой с тем, что в файле мода (файл не читается — ошибка); записать установленный мод файлом (мода нет — ошибка) |
 | `DOCTOR_TOOLKIT_NO_DETECT=1` | не искать установленные игры (список приветствия пуст) |
-| `DOCTOR_TOOLKIT_GUI_WIZARD=<мастер>[,опция…]` | открыть мастер (развёрнутым) и пройти шаги: `tasks` — страница задач; мастера `retexture`, `model`, `outfit`, `params`, `texts`, `place`, `package`; опции `select` (начать с ресурса `DOCTOR_TOOLKIT_GUI_SELECT`), `step=N` (пройти N шагов; дойдя до сводки — записать), свои у каждого мастера (§10) |
+| `DOCTOR_TOOLKIT_GUI_WIZARD=<мастер>[,опция…]` | открыть мастер (развёрнутым) и пройти шаги: `tasks` — страница задач; мастера `retexture`, `model`, `outfit`, `params`, `texts`, `place`, `voice`, `zone`, `package`; опции `select` (начать с ресурса `DOCTOR_TOOLKIT_GUI_SELECT`), `step=N` (пройти N шагов; дойдя до сводки — записать), свои у каждого мастера (§10) |
+| `DOCTOR_TOOLKIT_GUI_SOUND=<пункт>[,…]` | открыть окно «Звук» (Tools → Sound) и выполнить действия по порядку: страница и фильтр, выбор файла архива, экспорт в WAV, замена, субтитры, запись события речи, новая категория микшера, канал снимка микшера; пункты — в `docs/viewers.md` §5; первый отказ останавливает цепочку, код выхода 2 |
+| `DOCTOR_TOOLKIT_GUI_SHELL=pull,crashes[=<номер или имя отчёта>]` | этап 103: `pull` — кнопка **Pull** вкладки Project (вместе с `DOCTOR_TOOLKIT_GUI_PROJECT=<папка>`): версия рабочего пространства записей, разошедшихся с ним, пишется в файлы проекта; `crashes` — окно Tools → **Crash reports** со списком отчётов о падениях, с номером (1 — самый новый) или именем — и текст отчёта (нет такого отчёта — ошибка) |
+| `DOCTOR_TOOLKIT_GUI_RESOURCE=<пункт>[,…]` | этап 103: действия над ресурсом, выбранным `DOCTOR_TOOLKIT_GUI_SELECT`, по порядку, каждое — одна операция рабочего пространства: `import=<файл>` — заменить ресурс файлом по его типу (JSON экспорта строк, логики, графа навигации, диалога; исходник `.lua` или байт-код `.luac`), `raw=<файл>` — данными как есть; `collision=mesh\|hull\|box` — новая коллизия metamodel (или metamodel, которой принадлежит выбранный `hkx`) из её собственного меша, после `source=<файл модели>` — из файла; `param=<имя>=<n>/<n>/…` и `param=<имя>=tex:<хеш>` — параметры материала (идущие подряд — одна операция); `string=<имя или 0xхеш>:<текст>` — текст записи во всех таблицах и языках (после `language=<код>` — только в столбцах этого языка); `add_string=<имя>:<текст>` с пунктами `tr=<код языка>:<текст>` за ним — новая строка в таблицах языков с переводами; `apx=<старое>:<новое>` — перенаправить ссылки `$имя` ролика интерфейса; `material=<хеш имени>` — открыть редактор этого материала |
+| `DOCTOR_TOOLKIT_GUI_LIVE_DO=<пункт>[,…]` | этап 103, вместе с `DOCTOR_TOOLKIT_GUI_LIVE=ПОРТ[:ТОКЕН]`: когда связь установлена, послать игре команды по одной, **без вопроса** (переменная и есть согласие): `profile[=reset+memory+sample:<мс>]` — замер раздела Profile панели Link, `get=<guid>` — прочитать объект, `logic=<guid>:on\|off` — запустить или остановить его логику, `hide=<guid>`, `show=<guid>`, `undo` |
+| `DOCTOR_TOOLKIT_GUI_DIALOGUE=select=<узел>,lang=<код>,search=<текст>` | редактор диалога выбранного ресурса `dlg`: выбрать реплику по номеру, язык текстов, выполнить поиск |
+| `DOCTOR_TOOLKIT_GUI_LUA=<file.lua>` | просмотрщик скрипта выбранного ресурса `lua`: положить в редактор текст из файла (как после Load…; ничего не записывает) |
+| `DOCTOR_TOOLKIT_GUI_SAVE=<файл сохранения>` | открыть окно Tools → Save file с этим сохранением |
+| `DOCTOR_TOOLKIT_GUI_BENCH_SWITCHES=noshadows,nolamps` | к замеру `DOCTOR_TOOLKIT_GUI_BENCH` с видом «как в игре» (`DOCTOR_TOOLKIT_GUI_BENCH_LOOK=game`): без теней, без фонарей |
+| `DOCTOR_TOOLKIT_GUI_ZONE=<действие>[;…]` | действия новой зоны при открытии игры (этап 103, `docs/levels.md` §12): `stream:`, `simgroup:`, `cell:`, `clone:`, `resource:`, `import:`, `remove-stream:`, `remove-cell:` с парами `ключ=значение`; `form=<форма>` открывает окно форм. Ошибка действия — код выхода 2 |
 | `DOCTOR_TOOLKIT_GAME_PROCESS=<имя>[,…]` | искать процессы с этими именами вместо `godfather2.exe` (для тестов: игра, запущенная на машине стендом, не мешает) |
 | `DOCTOR_TOOLKIT_CONFIG_DIR=<каталог>` | настройки и раскладка из этого каталога (и в режиме снимка) |
 | `DOCTOR_TOOLKIT_LANG=ru` | язык интерфейса поверх настроек и системы (`en`, `ru`); для снимков на русском |
@@ -298,6 +311,25 @@ SVG. `app_id` окна (`doctor-toolkit`, `open-mod-manager`) совпадает
 Editor» (§11.4; при выключенном запоминании раскладок — развёрнутой на всё
 окно).
 Без каталога игры снимок делается сразу (приветствие).
+
+**Ошибка действия без рук (этап 103).** Первая ошибка останавливает
+цепочку: следующие правки `act=` вкладки уровня не выполняются, мастер не
+идёт дальше шага, который не прошёл проверку, пункты
+`DOCTOR_TOOLKIT_GUI_RESOURCE`, `_SOUND`, `_LIVE_DO` после отказавшего не
+выполняются. Текст ошибки печатается в stderr строкой `error: …`, снимок
+всё равно записывается (на нём видно сообщение), а редактор выходит с
+кодом **2** (код 1 — не записался сам снимок, 0 — ошибок не было). Ошибкой
+считается любое сообщение уровня Error за запуск: отказ записи правки,
+неизвестная зона, неизвестный мастер или пункт предустановки, не найденная
+заметка базы знаний. Устроено это одним местом — `BrowserApp::preset_failed`
+(`app.rs`), его зовёт `notify(Level::Error, …)`.
+
+**Запятая в значении.** Пункты предустановок мастеров, `_RESOURCE`,
+`_SOUND` и `_LIVE_DO` разделяются запятыми. Запятая внутри значения
+пишется `\,` либо значение целиком даётся строкой JSON в двойных кавычках:
+`replace=Привет\, мир` и `replace="Привет, мир"` — одно и то же. Больше
+ничего не экранируется, поэтому прежние предустановки (в том числе пути
+Windows с `\`) читаются как раньше.
 
 Модульные тесты без окна (`app.rs`, `app/*`): команды меню переключают
 панели и тему, команды без игры недоступны, клавиши Ctrl+Shift+P, Esc,
@@ -539,6 +571,15 @@ X-сервера завершается. Без этого игра однажд
 `docs/guide/11-play.md` §11.11, устройство — `docs/analysis/live-link.md`
 §14.
 
+**Ресурсы в памяти (этап 100).** `PlayConfig::streams` (`overlay::Streams`:
+`rebuilt` по умолчанию, `patched`; `settings.toml`, `play.streams`) —
+флажок «Put resources into streams in memory (experimental)» под списком
+выше, недоступный при записи в папку игры. `play()` зовёт
+`Overlay::build_with(…, config.streams)`; `install_live_with` получает два
+списка — подмены файлов и заплатки ресурсов (`Config::redirects`,
+`Config::resources`). Строки — `play.resources_in_memory*`. Устройство —
+`docs/analysis/resources-in-memory.md`.
+
 **CLI.** `play --apply|--mods [--no-game-writes|--write-game]`: решение
 то же (`--write-game` — `off`, `--no-game-writes` и `--mods` — `on`); при
 подмене `play` ждёт выхода игры, убирает модуль и зеркало и пишет,
@@ -546,7 +587,15 @@ X-сервера завершается. Без этого игра однажд
 журналу модуля). `live install ИГРА [--apply [--workspace-dir DIR] |
 --mods] [--cmd-txt=ТЕКСТ] [--files-log]` — то же для стенда: зеркало
 остаётся до `live uninstall`. `live files [--json]` — запрос `Files`
-(протокол 5): подмены, сколько раз игра открыла каждую.
+(протокол 5): подмены, сколько раз игра открыла каждую. С
+`--resources-in-memory` (`play` и `live install`; у последнего ещё
+`--resources-dump`) изменённые потоки идут заплатками ресурсов; `play` в
+конце пишет, сколько потоков модуль собрал и не было ли отказов
+(`live::composed_in_log`); `live resources [--json]` — запрос `Resources`
+(протокол 9), `live resource IDS [--out|--compare ФАЙЛ]` — запись
+загруженного ресурса в таблице игры и его данные, `live resource-check
+ПАПКА ПОТОК… [--original ИГРА]` — ресурсы потоков папки против памяти
+игры.
 
 **Поток связи** (`LiveState`, `worker`): пока нет связи — попытка раз в
 2 с (тайм-аут 3 с); со связью — каждые 250 мс Status, Player, Camera (они
@@ -795,10 +844,11 @@ Build mod… (мастер сборки мода) и Another task.
 |---|---|---|
 | `retexture` | модель (меш, metamodel, `partsdb` с набором, объект уровня) → текстуры с ролями, копиями, материалами; экспорт PNG и «Edit in image program» → новые картинки рядом со старыми (новая — после сжатия, как в игре) | `import_texture` каждой копии каждой текстуры |
 | `model` | модель → образец glTF (экспорт или Blender со слежением за файлом) → файл и коллизия → план и просмотр | `ImportPlan::commit` |
-| `outfit` | база частей, слот, наборы → меш (клон части-образца, обязательно со скелетом) → оттенки новых материалов → имя части, теги → просмотр персонажа (`CharacterView::preview_with` с ещё не записанным мешом) | план импорта новым набором + `partsdb` с частью, вариантом и `allow` |
+| `outfit` | база частей, слот, наборы → меш (клон части-образца, обязательно со скелетом; необязательный второй файл — меш меньшей детализации) → оттенки новых материалов → имя части, теги → просмотр персонажа (`CharacterView::preview_with` с ещё не записанным мешом) | план импорта новым набором (и вторым, `<имя>_lod2`, для меша меньшей детализации) + `partsdb` с частью (`models[0]`, `models[1]`), вариантом и `allow` |
 | `params` | параметры списка `data/gf2/tunables.toml` по категориям или «Find attribute» → значения (одно для всех, множитель, по объекту) с проверкой | `tunables::apply`: все SimGroup одной `change_resources` |
 | `texts` | таблица (языки первыми) → поиск, правка, замена, CSV во внешней программе | `set_string_table` |
 | `place` | metamodel или файл новым набором, клон в зону, своя коллизия → редактор уровня внутри мастера (`levels` под id мастера; поле Add object заполнено и не меняется выбором) | правки редактора уровня, склеенные в одну |
+| `zone` | новый поток (имя, родитель, способ загрузки, «пустая SimGroup») → ячейка мировой сетки (уровень — по родителю, коробка, сетка, имя) | `zone_ops::add_stream`, `add_simgroup`, `add_zone_cell` одной операцией; на Done — «Open the zone in the level view» |
 | `package` | изменения → имя, автор, версия, описание, картинка → проверка (манифест, сборка игры, конфликты, установленные моды с теми же ресурсами, тот же id) | ZIP (`build_from_workspace`); рабочее пространство не меняется; на Done — Install in Mods |
 
 **Список параметров.** `data/gf2/tunables.toml` (версия 1): строки
@@ -828,10 +878,12 @@ SimGroup, классом, номером атрибута, объектами (G
 |---|---|
 | `retexture` | `set=<набор>`, `only=<i>[+<i>]`, `image=<png>` |
 | `model` | `search=<текст>`, `file=<glb>`, `collision=mesh|hull|box` |
-| `outfit` | `slot=…`, `set=…`, `name=…`, `file=<glb>`, `search=…` |
+| `outfit` | `slot=…`, `set=…`, `template=<часть-образец>`, `name=…`, `file=<glb>`, `lod=<glb второго уровня детализации>`, `tint=<0..2>:<r>/<g>/<b>` (оттенок новых материалов), `tags=…`, `only`, `search=…` |
 | `params` | `category=…`, `add=<id>[+<id>]`, `value=…`, `factor=…`, `find=<класс>.<атрибут>` |
-| `texts` | `table=<язык или часть пути>`, `search=…`, `find=…`, `replace=…`, `replace_all`, `changed` |
+| `texts` | `table=<язык или часть пути>`, `search=…`, `find=…`, `replace=…`, `replace_all`, `changed`, `everywhere` (записать во все таблицы и языки) |
+| `voice` | `chv=<набор говорящего>`, `file=<звуковой файл>`, `event=<событие речи>`, `name=<имя реплики>`, `subtitle=<текст>`, `only` |
 | `place` | `model=<id metamodel>`, `search=…`, `file=<glb>`, `collision`, `zones=<зона>[+…]` |
+| `zone` | `name=<поток>`, `parent=<поток>`, `load=on_demand|with_parent|auto_load`, `level=<поток>`, `min=X/Y/Z`, `max=X/Y/Z`, `lod=…`, `nogroup`, `nocell`; ошибка шага — код выхода 2 |
 | `package` | `name=…`, `author=…`, `description=…`, `preview=<png>`, `out=<zip>`, `check` |
 
 ## 11. Оболочка в духе Unreal Engine 5 (этап 52)
@@ -1625,3 +1677,66 @@ History. Включается при открытии ролика, если п�
 несколько кадров в PNG и VP6 (без видеокарты — пропуск); корпус —
 ключ камеры каждого кадра правится на месте: 259 кадров, байты отличаются
 только в изменённом значении (и 252 ключа фокусного расстояния).
+
+## 12. Проверки и справка в окне (этап 103, пакет 103-C)
+
+Всё, что в MCP дают `validate`, `check_refs`, `lookup_hash`, `kb_search`,
+`kb_note` и `game_types`, есть в окне.
+
+**Check edits и панель Findings** (`app/checks.rs`). Tools → Check edits
+проверяет правки рабочего пространства до записи в игру: каждый изменённый
+ресурс читается своим разборщиком, объекты SimGroup могут показать свои
+модели, добавленные правкой ссылки сходятся, конфликты с файлами игры,
+сообщения изменённых SimGroup, открытый проект. Проверка одна на все
+поверхности — `doctor_toolkit::validate::validate` (параметры `Params`,
+итог `Report` с находками `Finding`): её зовут инструмент MCP `validate`,
+команда `doctor-toolkit check-edits <игра> [--filter] [--project] [--json]`
+(ошибки — ненулевой код) и редактор. Находки показывает панель Findings:
+ошибки и предупреждения, место находки — ссылка, открывающая ресурс.
+Та же проверка идёт перед записью: «Apply to game» (меню, панель
+инструментов, панель Changes без конфликтов) при ошибках ничего не пишет,
+показывает Findings и сообщает об ошибке; кнопка «Apply anyway» панели
+пишет несмотря на ошибки. Запись с подтверждением конфликтов (панель
+Changes), прямой режим и Play идут без проверки. Шаг Check мастера Package
+a mod добавляет находки проверки к своим: ошибки о выбранных изменениях не
+дают собрать мод.
+
+**Check references.** В Content Browser в меню потока и папки — «Check
+references»: `create::ReferenceChecker` в отдельном потоке выполнения,
+итог — в панели Findings (место находки открывает ресурс игры).
+
+**Панель Hashes.** Tools → Hashes: имя под каждой хеш-функцией движка и в
+скольких ресурсах встречается каждый хеш; если текст читается как хеш
+(`0x9cf57f36`, восемь шестнадцатеричных цифр, десятичное число) — известные
+имена с источником, тег типа ресурса, число ресурсов и первые десять;
+щелчок по хешу — поиск по игре.
+
+**Вкладка Knowledge base** (`app/knowledge.rs`). Help → Knowledge base:
+заметки `docs/kb/` вшиты в редактор при сборке (`build.rs`, как в сервере
+MCP). Слева поиск (`kb::search`), справа заметка: заголовки, списки,
+таблицы, блоки кода, ссылки; ссылка на другую заметку открывает её, кнопка
+`<` возвращает; ссылки наружу открываются в браузере, ссылки на документы
+вне базы только называются в строке состояния. В Details объекта уровня и
+ресурса — ссылка «Knowledge base note» на заметку класса
+(`classes/<Класс>.md`) и типа ресурса (`resources/<тег>.md`). Раздел Data
+types той же вкладки: списки значений (`game_types::enums`) с фильтром,
+сообщения по части имени (хеш, род, сколько шлют и слышат), атрибуты
+класса с известным смыслом (`LogicSchema::typed_attrs` — та же функция, что
+у инструмента `game_types`).
+
+**Навигационный граф.** В панели узла (Zones → Navigation graphs) — тип
+графа флажками и кнопка Rebuild R-tree; без рук — `act=nav-rtree` и
+`act=nav-flags:<hex>` предустановки `DOCTOR_TOOLKIT_GUI_LEVEL` при выбранном
+узле (`nav=<граф>:<узел>`).
+
+**Окно Mods.** Install… сначала показывает, что в каждом файле мода
+(`mods::file_info`: имя, версия, автор, ресурсы и потоки, связи,
+исполняемый код, проверка целостности), и только потом ставит; файл,
+который не читается, поставить нельзя. В меню карточки мода — «Save as
+file…» (`ModManager::export`).
+
+Тесты: `app/checks_tests.rs` (проверка правок, удержание Apply, находка в
+мастере Package a mod, ссылки потока и папки, хеши, разбор заметок, вкладка
+базы знаний и типы данных, предустановки), `level_view/nav.rs`
+(R-дерево и флаги графа), `crates/doctor-toolkit-mods/src/tests.rs` (вопрос
+перед установкой и запись мода файлом).

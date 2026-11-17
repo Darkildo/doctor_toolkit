@@ -14,8 +14,10 @@ use clap::{Args, Subcommand};
 use serde_json::json;
 
 use doctor_toolkit::live::names::LiveNames;
-use doctor_toolkit::live::proto::journal::{EventBody, MessageOrigin, mask};
-use doctor_toolkit::live::proto::{self, Event, MessageId, World, WorldFilter, WorldObject};
+use doctor_toolkit::live::proto::journal::mask;
+use doctor_toolkit::live::proto::{self, MessageId, World, WorldFilter, WorldObject};
+pub use doctor_toolkit::live::view::object_label;
+use doctor_toolkit::live::view::{debug_json, debug_lines, event_json, event_lines, free_camera};
 use doctor_toolkit::live::{self, Client, Config, Endpoint, ModuleInstall};
 
 macro_rules! out {
@@ -142,6 +144,49 @@ pub enum LiveCommand {
     /// (`play` without writing into the game, stage 46) and how often the
     /// game opened each
     Files(LinkArgs),
+    /// Streams the module composes in memory from the game's files and
+    /// resource patches (`play --resources-in-memory`, stage 100) and how
+    /// the game used each
+    Resources(LinkArgs),
+    /// A loaded resource in the game's table of resources, by its ids:
+    /// where its data lie in memory; with --out the data are saved, with
+    /// --compare they are compared with a file
+    Resource {
+        /// The ids: one hex number (all four equal) or four joined by dots
+        ids: String,
+        /// Save the data of the resource as they are in memory
+        #[arg(long, value_name = "FILE")]
+        out: Option<PathBuf>,
+        /// Compare the data in memory with this file byte by byte
+        #[arg(long, value_name = "FILE")]
+        compare: Option<PathBuf>,
+        #[command(flatten)]
+        link: LinkArgs,
+    },
+    /// Compare the resources the game holds in memory with stream files
+    /// (stage 100): for every resource of the named streams of EXPECTED —
+    /// a folder with the streams as `apply` writes them — the record of
+    /// the game's table of resources is found by its ids and its data are
+    /// compared byte by byte. With --original only the resources that
+    /// differ from that game folder (changed or added) are compared in
+    /// full and listed; the others are counted by type from their first
+    /// --sample bytes
+    ResourceCheck {
+        /// Folder with the expected streams (a game folder or a copy with
+        /// the workspace or the mods applied)
+        expected: PathBuf,
+        /// Stream names, e.g. gf2/cuba/local (with or without .str)
+        #[arg(required = true)]
+        streams: Vec<String>,
+        /// The unchanged game: resources equal to its are only sampled
+        #[arg(long, value_name = "DIR")]
+        original: Option<PathBuf>,
+        /// Bytes compared of a resource that is not changed
+        #[arg(long, default_value_t = 4096)]
+        sample: u32,
+        #[command(flatten)]
+        link: LinkArgs,
+    },
     /// Measure the game from inside (stage 58): main-loop and present
     /// times, CPU of its threads, reads of files, textures, the clock;
     /// with --memory its address space, with --sample where its threads
@@ -313,6 +358,16 @@ pub enum LiveCommand {
         /// Log every file of the game folder the game opens (doctor_live.log)
         #[arg(long)]
         files_log: bool,
+        /// With --apply or --mods: put the changed resources into the
+        /// game's streams in memory when the game loads them (resource
+        /// patches, stage 100) instead of rebuilding the streams
+        #[arg(long)]
+        resources_in_memory: bool,
+        /// With --resources-in-memory: the module writes every stream it
+        /// composed next to its patch (`<patch>.composed`), for comparing
+        /// it with what `apply` writes
+        #[arg(long, requires = "resources_in_memory")]
+        resources_dump: bool,
     },
     /// Take the module (and the files staged for it) away from a game folder
     Uninstall { game_dir: PathBuf },
@@ -448,238 +503,6 @@ fn pose_json(p: &proto::Pose) -> serde_json::Value {
     })
 }
 
-/// The name of a message: from the index, else the hash.
-fn message_name(names: Option<&LiveNames>, hash: u32) -> String {
-    names
-        .and_then(|n| n.message(hash))
-        .map_or_else(|| format!("{hash:#010x}"), str::to_owned)
-}
-
-/// `{GUID} name` of an object: the name from the index when known.
-pub fn object_label(names: Option<&LiveNames>, guid: &proto::Guid) -> String {
-    match names.and_then(|n| n.object(guid)) {
-        Some(o) if !o.name.is_empty() => format!("{} {}", o.name, proto::guid_hex(guid)),
-        _ => proto::guid_hex(guid),
-    }
-}
-
-/// The lines of one event.
-fn event_lines(e: &Event, names: Option<&LiveNames>) -> Vec<String> {
-    let head = format!(
-        "#{} frame {} {:>8.1}s",
-        e.seq,
-        e.frame,
-        f64::from(e.sim_time_ms) / 1000.0
-    );
-    match &e.body {
-        EventBody::Output {
-            source,
-            text,
-            script,
-            line,
-        } => {
-            let at = if script.is_empty() {
-                String::new()
-            } else {
-                format!(" {script}:{line}:")
-            };
-            vec![format!("{head} {}{at} {text}", source.name())]
-        }
-        EventBody::LuaError {
-            message, traceback, ..
-        } => {
-            let mut out = vec![format!("{head} lua error: {message}")];
-            out.extend(traceback.iter().map(|t| format!("    {t}")));
-            out
-        }
-        EventBody::Message {
-            hash,
-            data,
-            forced,
-            listeners,
-            receivers,
-            origin,
-        } => {
-            let mut line = format!(
-                "{head} message {}{}{} -> {listeners} listener(s)",
-                message_name(names, *hash),
-                if *data != 0 {
-                    format!(" data {data:#x}")
-                } else {
-                    String::new()
-                },
-                if *forced { " forced" } else { "" },
-            );
-            if !receivers.is_empty() {
-                let list: Vec<String> = receivers.iter().map(|g| object_label(names, g)).collect();
-                line += &format!(": {}", list.join(", "));
-            }
-            if *origin == MessageOrigin::Link {
-                line += " (live link)";
-            }
-            vec![line]
-        }
-        EventBody::MessageCounts { window_ms, counts } => {
-            let mut top = counts.clone();
-            top.sort_by_key(|x| std::cmp::Reverse(x.1));
-            let list: Vec<String> = top
-                .iter()
-                .map(|(h, n)| format!("{} x{n}", message_name(names, *h)))
-                .collect();
-            vec![format!(
-                "{head} messages without own events in {:.1} s: {}",
-                f64::from(*window_ms) / 1000.0,
-                list.join(", ")
-            )]
-        }
-    }
-}
-
-/// One line about breakpoints and whether the game stands.
-fn debug_lines(d: &proto::DebugState, names: Option<&LiveNames>) -> Vec<String> {
-    let mut out = Vec::new();
-    for r in &d.rules {
-        let once = if r.once { " (once)" } else { "" };
-        out.push(match &r.on {
-            proto::BreakOn::Message { hash, receiver } => format!(
-                "break on message {}{}{once}",
-                message_name(names, *hash),
-                receiver
-                    .map(|g| format!(" to {}", object_label(names, &g)))
-                    .unwrap_or_default()
-            ),
-            proto::BreakOn::Output { text } => format!("break on print `{text}`{once}"),
-            proto::BreakOn::LuaError => format!("break on Lua errors{once}"),
-        });
-    }
-    if d.rules.is_empty() {
-        out.push("no breakpoints".into());
-    }
-    match &d.stop {
-        Some(stop) => {
-            let why = match &stop.reason {
-                proto::StopReason::Pause => "pause".to_owned(),
-                proto::StopReason::Step => "step".to_owned(),
-                proto::StopReason::Message {
-                    hash, receivers, ..
-                } => {
-                    let to: Vec<String> =
-                        receivers.iter().map(|g| object_label(names, g)).collect();
-                    format!(
-                        "message {} to {}",
-                        message_name(names, *hash),
-                        if to.is_empty() {
-                            "-".to_owned()
-                        } else {
-                            to.join(", ")
-                        }
-                    )
-                }
-                proto::StopReason::Output { text, script, line } => {
-                    format!("print {script}:{line}: {text}")
-                }
-                proto::StopReason::LuaError { message } => format!("Lua error: {message}"),
-            };
-            out.push(format!(
-                "STOPPED in the {} at frame {}, {:.1} s game time: {why}; journal #{}; for {:.1} s, goes on by itself in {:.0} s",
-                stop.place.name(),
-                stop.frame,
-                f64::from(stop.sim_time_ms) / 1000.0,
-                stop.seq,
-                f64::from(stop.held_ms) / 1000.0,
-                f64::from(stop.resume_in_ms) / 1000.0
-            ));
-        }
-        None if d.pending => out.push("running; stops in the next level frame".into()),
-        None => out.push("running".into()),
-    }
-    out.push(format!(
-        "{} hit(s); a stop lasts at most {} s{}",
-        d.hits,
-        d.hold_limit_s,
-        if d.camera.is_some() {
-            "; free camera on"
-        } else {
-            ""
-        }
-    ));
-    out
-}
-
-fn event_json(e: &Event, names: Option<&LiveNames>) -> serde_json::Value {
-    let mut v = json!({"seq": e.seq, "frame": e.frame, "sim_time_ms": e.sim_time_ms});
-    match &e.body {
-        EventBody::Output {
-            source,
-            text,
-            script,
-            line,
-        } => {
-            v["kind"] = json!("output");
-            v["source"] = json!(source.name());
-            v["text"] = json!(text);
-            if !script.is_empty() {
-                v["script"] = json!(script);
-                v["line"] = json!(line);
-            }
-        }
-        EventBody::LuaError {
-            status,
-            message,
-            chunk,
-            line,
-            traceback,
-        } => {
-            v["kind"] = json!("lua_error");
-            v["status"] = json!(status);
-            v["message"] = json!(message);
-            v["chunk"] = json!(chunk);
-            v["line"] = json!(line);
-            v["traceback"] = json!(traceback);
-        }
-        EventBody::Message {
-            hash,
-            data,
-            forced,
-            listeners,
-            receivers,
-            origin,
-        } => {
-            v["kind"] = json!("message");
-            v["hash"] = json!(format!("{hash:#010x}"));
-            v["name"] = json!(names.and_then(|n| n.message(*hash)));
-            v["data"] = json!(data);
-            v["forced"] = json!(forced);
-            v["listeners"] = json!(listeners);
-            v["receivers"] = json!(
-                receivers
-                    .iter()
-                    .map(|g| json!({
-                        "guid": proto::guid_hex(g),
-                        "name": names.and_then(|n| n.object(g)).map(|o| o.name.clone()),
-                    }))
-                    .collect::<Vec<_>>()
-            );
-            v["by_link"] = json!(*origin == MessageOrigin::Link);
-        }
-        EventBody::MessageCounts { window_ms, counts } => {
-            v["kind"] = json!("message_counts");
-            v["window_ms"] = json!(window_ms);
-            v["counts"] = json!(
-                counts
-                    .iter()
-                    .map(|(h, n)| json!({
-                        "hash": format!("{h:#010x}"),
-                        "name": names.and_then(|x| x.message(*h)),
-                        "count": n,
-                    }))
-                    .collect::<Vec<_>>()
-            );
-        }
-    }
-    v
-}
-
 /// Prints the objects of a World answer.
 fn print_world(world: &World, names: Option<&LiveNames>, json_out: bool, stream: Option<&str>) {
     let keep = |o: &WorldObject| {
@@ -766,39 +589,6 @@ fn need_debug(c: &Client) -> Result<()> {
     Ok(())
 }
 
-/// A free camera at `at` (else where `now` is), turned to `yaw` and
-/// `pitch` in degrees (else as `now` looks).
-fn free_camera(
-    now: proto::CameraView,
-    at: Option<[f32; 3]>,
-    yaw: Option<f32>,
-    pitch: Option<f32>,
-) -> proto::CameraView {
-    let f = now.pose.forward;
-    let now_yaw = f[0].atan2(f[2]);
-    let now_pitch = f[1].clamp(-1.0, 1.0).asin();
-    let y = yaw.map_or(now_yaw, f32::to_radians);
-    let p = pitch.map_or(now_pitch, f32::to_radians).clamp(-1.55, 1.55);
-    let forward = [y.sin() * p.cos(), p.sin(), y.cos() * p.cos()];
-    let pose = live::pose_looking(at.unwrap_or(now.pose.position), forward);
-    proto::CameraView { pose, fov: now.fov }
-}
-
-fn debug_json(d: &proto::DebugState, names: Option<&LiveNames>) -> serde_json::Value {
-    json!({
-        "lines": debug_lines(d, names),
-        "stopped": d.stop.is_some(),
-        "place": d.stop.as_ref().map(|s| s.place.name()),
-        "frame": d.stop.as_ref().map(|s| s.frame),
-        "journal_seq": d.stop.as_ref().map(|s| s.seq),
-        "rules": d.rules.len(),
-        "hits": d.hits,
-        "pending": d.pending,
-        "hold_limit_s": d.hold_limit_s,
-        "free_camera": d.camera.is_some(),
-    })
-}
-
 /// `live profile`.
 fn profile(link: &LinkArgs, reset: bool, memory: bool, sample: u32) -> Result<()> {
     if sample > proto::profile::MAX_SAMPLE_MS {
@@ -844,6 +634,20 @@ pub fn run(command: LiveCommand) -> Result<()> {
         } => st::time(&link, at.as_deref(), rate, default_rate, yes)?,
         LiveCommand::Weather(link) => st::weather(&link)?,
         LiveCommand::Files(link) => st::files(&link)?,
+        LiveCommand::Resources(link) => st::resources(&link)?,
+        LiveCommand::Resource {
+            ids,
+            out,
+            compare,
+            link,
+        } => st::resource(&link, &ids, out.as_deref(), compare.as_deref())?,
+        LiveCommand::ResourceCheck {
+            expected,
+            streams,
+            original,
+            sample,
+            link,
+        } => st::resource_check(&link, &expected, &streams, original.as_deref(), sample)?,
         LiveCommand::Profile {
             reset,
             memory,
@@ -1052,7 +856,7 @@ pub fn run(command: LiveCommand) -> Result<()> {
             let kinds = if errors {
                 mask::LUA_ERROR
             } else if messages {
-                mask::ALL_V3
+                mask::ALL_V8
             } else {
                 mask::OUTPUT | mask::LUA_ERROR
             };
@@ -1179,6 +983,8 @@ pub fn run(command: LiveCommand) -> Result<()> {
             mods,
             cmd_txt,
             files_log,
+            resources_in_memory,
+            resources_dump,
         } => {
             let path = module.or_else(live::module_binary).context(
                 "the module is not built: run tools/build-live-module.sh (or --module FILE)",
@@ -1192,6 +998,8 @@ pub fn run(command: LiveCommand) -> Result<()> {
                 journal: true,
                 files_log,
                 redirects: Vec::new(),
+                resources: Vec::new(),
+                resources_dump,
             };
             let mut config = config;
             use doctor_toolkit::play::overlay::{self, Overlay, Source};
@@ -1213,13 +1021,25 @@ pub fn run(command: LiveCommand) -> Result<()> {
                 let text = cmd_txt.map(|t| format!("{}\r\n", t.trim_end()));
                 let dir = overlay::default_dir(&game_dir)
                     .context("no folder for the staged files (no HOME or LOCALAPPDATA)")?;
-                let built = Overlay::build(&game, source.as_ref(), text.as_deref(), &dir)?;
-                config.redirects = built.redirects().to_vec();
+                let built = Overlay::build_with(
+                    &game,
+                    source.as_ref(),
+                    text.as_deref(),
+                    &dir,
+                    overlay::Streams::in_memory(resources_in_memory),
+                )?;
+                built.configure(&mut config);
                 out!(
                     "staged {} file(s) in {}; the module gives them to the game",
                     config.redirects.len(),
                     dir.display()
                 );
+                if !config.resources.is_empty() {
+                    out!(
+                        "{} stream(s) are composed in memory from the game's files and resource patches",
+                        config.resources.len()
+                    );
+                }
                 staged = Some(built);
             }
             let install = ModuleInstall::write(&game_dir, &bytes, &config)?;

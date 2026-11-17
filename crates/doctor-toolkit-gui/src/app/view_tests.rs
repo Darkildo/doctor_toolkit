@@ -456,3 +456,44 @@ fn the_history_panel_goes_back_and_forth() {
     frame(&f.ctx, &mut f.app);
     assert_eq!(f.app.checked(Command::ToggleHistory), Some(true));
 }
+
+/// Stage 103: the first edit of a preset that fails stops the chain — the
+/// edits after it are not made and the run is marked as failed.
+#[test]
+fn a_failed_preset_edit_stops_the_chain() {
+    let mut f = view("preset-fail");
+    assert_eq!(objects(&f), 3);
+    let level = f.app.levels.get_mut(&f.id).unwrap();
+    level.set_selection(Some(r(1)), [r(1)].into());
+    level.queue_preset_actions(&["duplicate", "add:nothex", "remove", "remove"]);
+    let started = std::time::Instant::now();
+    while f.app.levels[&f.id].busy() || f.app.preset_error().is_none() {
+        frame(&f.ctx, &mut f.app);
+        assert!(started.elapsed().as_secs() < 30, "the preset ends");
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert_eq!(objects(&f), 4, "the copy is in, nothing was removed after");
+    let error = f.app.preset_error().expect("the run failed");
+    assert!(error.contains("add:nothex"), "{error}");
+    assert!(!f.app.levels[&f.id].busy(), "the queue is dropped");
+    // An unknown edit fails the same way; an error of any action does too.
+    let mut f = view("preset-unknown");
+    let level = f.app.levels.get_mut(&f.id).unwrap();
+    level.set_selection(Some(r(1)), [r(1)].into());
+    level.queue_preset_actions(&["explode", "remove"]);
+    for _ in 0..4 {
+        frame(&f.ctx, &mut f.app);
+    }
+    assert_eq!(objects(&f), 3);
+    assert!(f.app.preset_error().unwrap().contains("unknown action"));
+    let mut f = view("preset-notify");
+    let level = f.app.levels.get_mut(&f.id).unwrap();
+    level.set_selection(Some(r(1)), [r(1)].into());
+    level.queue_preset_actions(&["remove"]);
+    f.app.notify(super::Level::Error, "Cannot do it".to_owned());
+    for _ in 0..4 {
+        frame(&f.ctx, &mut f.app);
+    }
+    assert_eq!(objects(&f), 3, "nothing is made after an error");
+    assert_eq!(f.app.preset_error(), Some("Cannot do it"));
+}

@@ -1,6 +1,11 @@
 //! What a class does with a message: models of the classes whose handler
-//! was read in `godfather2.exe` (`docs/logic-graph.md` §9.2). Everything
+//! was read in `godfather2.exe` (`docs/logic-graph.md` §9.2; the code of
+//! each class is described in `data/gf2/class_behavior.toml`). Everything
 //! else is a black box: the message arrives, the reaction is not known.
+//!
+//! An attribute a packet does not store reaches the reader of the class as
+//! 0 or an empty string (`0x0043AFF0`), so a missing value is 0 here too,
+//! whatever the constructor of the class wrote into the field.
 
 use serde::Serialize;
 
@@ -28,7 +33,7 @@ pub(super) mod class {
 }
 
 /// The message the game sends to the objects of a SimGroup once they are
-/// all made (`0x0110064C`, set in `0x00445530`).
+/// all made (variable `0x0120E93C`, named in `0x004455D0`; delivered to each listener by `0x00408BF0`).
 pub const POST_SPAWN: &str = "iMsgPostSpawnInitialize";
 
 /// A message name and its hash.
@@ -86,15 +91,18 @@ pub enum Model {
         sequential: bool,
         next: usize,
     },
-    /// `0x004CF8D0` → `0x004CF950`: on `trigger` sends `send` at once; with
-    /// a target GUID (attribute 3) only that object hears it.
+    /// `0x0047AA70` → `0x004CF8D0` → `0x004CF950`: on `trigger` sends `send`
+    /// at once; with a target GUID (attribute 3) only that object hears it.
+    /// Attribute 4 names the object put into the data word, not a receiver.
     MessageRelay {
         trigger: Option<Msg>,
         send: Option<Msg>,
         target: Option<Guid>,
     },
     /// `0x00479B60`: every set condition must arrive (in any order), then
-    /// `send` goes out and the gate starts again; `reset` forgets them.
+    /// `send` goes out and the gate starts again; `reset` forgets them. The
+    /// handler tries the conditions first and `reset` last, and compares
+    /// after either: a gate without conditions sends on `reset`.
     AndGate {
         conditions: Vec<Option<Msg>>,
         send: Option<Out>,
@@ -112,10 +120,13 @@ pub enum Model {
     },
     /// `0x00477EF0`: once, on [`POST_SPAWN`], sends `send` after its delay.
     TriggerAuto { send: Option<Out>, fired: bool },
-    /// `0x0047AF60`: on `trigger` picks one pair by weight (`rand()`).
+    /// `0x0047AF60`: on `trigger` picks one of the eight entries by weight
+    /// (`rand()`). The roll is taken over the sum of all eight weights
+    /// (reader `0x0047B040`), but an entry without a message is passed
+    /// over: its weight is the chance that nothing is sent.
     TriggerRandom {
         trigger: Option<Msg>,
-        choices: Vec<(f64, Out)>,
+        choices: Vec<(f64, Option<Out>)>,
     },
     /// `0x00476980` → `0x004768D0`: on `trigger` changes the variable:
     /// 0 add, 1 subtract, 2 set, 3 switch between 0 and 1.
@@ -137,6 +148,7 @@ pub enum Model {
     /// [`POST_SPAWN`] with flag 1), checks the variable now and on every
     /// change: bit 2 equal, bit 1 less, bit 4 greater than `value`; sends
     /// `send` and stops watching, unless flag 4 keeps it watching.
+    /// `max_fires` is tested on activation only (`0x00477A90`).
     VariableWatcher {
         activate: Option<Msg>,
         deactivate: Option<Msg>,
@@ -150,7 +162,7 @@ pub enum Model {
         fired: i32,
         active: bool,
     },
-    /// `0x0090DF30`, reader `0x0090DA30`: `start` runs it for
+    /// `0x0090EA70`, reader `0x0090E570`: `start` runs it for
     /// `seconds − start_at`, then `on_expired`; `stop` cancels it and sends
     /// `on_stopped`; `pause`/`resume`.
     MissionTimer {
@@ -165,7 +177,7 @@ pub enum Model {
         /// Starts so far: a queued end of an earlier start is stale.
         starts: u32,
     },
-    /// `0x008FF4F0`: on `test` compares the current checkpoint with
+    /// `0x008FF7E0`: on `test` compares the current checkpoint with
     /// `checkpoint` (0 `<`, 1 `<=`, 2 `==`, 3 `>=`, 4 `>`; current on the
     /// right for 0–1) and sends `on_true` or `on_false`.
     TestCheckpoint {
@@ -175,15 +187,32 @@ pub enum Model {
         on_true: Option<Msg>,
         on_false: Option<Msg>,
     },
-    /// Trigger volumes (`TriggerBase` `0x004C1260`, `EnterExitTrigger`
-    /// `0x00900B30`): switched on and off by messages; the player entering
-    /// or leaving is an input of the run.
+    /// Trigger volumes, switched on and off by messages; the player
+    /// touching or leaving one is an input of the run.
+    ///
+    /// `TriggerBase` (`TriggerBox`…; handler `0x004C1260`, fire path
+    /// `0x004C1E40`) is a touch sensor: a touch sends attribute 4 after
+    /// the delay of attribute 5, or, with attribute 9 = 1, the same message
+    /// goes out once the entity has stopped touching (`on_leave`). It has
+    /// no exit message: attribute 7 is sent instead of 4 for a touch against
+    /// the Z axis of the volume, which the run does not tell apart.
+    /// Attribute 6 counts the sends down; at 0 the object asks to be
+    /// removed. Bit 1 of attribute 8 switches it on at load.
+    ///
+    /// `EnterExitTrigger` (handler `0x00900E20`, update `0x00900B80`) sends
+    /// attribute 0 on enter and 1 on exit, at once; bit 1 of attribute 6
+    /// switches it on at load. Its repeated `on_inside` (attribute 2 every
+    /// attribute 3 seconds) is not played.
     Trigger {
         toggle: Option<Msg>,
         enable: Option<Msg>,
         disable: Option<Msg>,
         on_enter: Option<Out>,
         on_exit: Option<Msg>,
+        /// `on_enter` goes out when the touch ends, not when it starts.
+        on_leave: bool,
+        /// Sends left (`TriggerBase` attribute 6); not positive — no limit.
+        remaining: i32,
         switch: Switch,
     },
     /// `LuaAudioScript` (`docs/formats/mission-logic.md` §3.2): runs a Lua
@@ -310,18 +339,17 @@ pub(super) fn build(class_name: &str, a: &Attrs<'_>) -> Model {
             sends: (0..8)
                 .filter_map(|k| a.out(MULTI_MANAGER, 3 + 2 * k, Some(4 + 2 * k)))
                 .collect(),
-            // Attribute 1 is set in every object of the game (−1 in most);
-            // −1 when missing.
-            remaining: a.int(MULTI_MANAGER, 1).unwrap_or(-1),
+            // Attribute 1 is set in every object of the game (−1 in most).
+            remaining: a.int(MULTI_MANAGER, 1).unwrap_or(0),
             sequential: a.int(MULTI_MANAGER, 2).unwrap_or(0) & 1 != 0,
             next: 0,
         },
         "MessageRelay" if a.has(MESSAGE_RELAY) => {
-            // Attributes 2 (a hash) and 4 (a GUID) change whom the relay
-            // sends to in ways not read: such relays stay black boxes.
-            let other = a.int(MESSAGE_RELAY, 2).is_some_and(|h| h != -1 && h != 0)
-                || a.guid(MESSAGE_RELAY, 4).is_some();
-            if other {
+            // Attribute 2 names a group of the engine (`GroupNPC`…,
+            // `0x0043C740`): who is in it at the moment is not known to the
+            // run, such a relay stays a black box. Attribute 4 only names
+            // the object carried in the data word.
+            if a.variable(MESSAGE_RELAY, 2).is_some() {
                 Model::BlackBox
             } else {
                 Model::MessageRelay {
@@ -351,9 +379,11 @@ pub(super) fn build(class_name: &str, a: &Attrs<'_>) -> Model {
         "TriggerRandom" if a.has(TRIGGER_RANDOM) => Model::TriggerRandom {
             trigger: a.msg(TRIGGER_RANDOM, 0),
             choices: (0..8)
-                .filter_map(|k| {
-                    let out = a.out(TRIGGER_RANDOM, 2 + 3 * k, Some(3 + 3 * k))?;
-                    Some((a.float(TRIGGER_RANDOM, 1 + 3 * k).unwrap_or(0.0), out))
+                .map(|k| {
+                    (
+                        a.float(TRIGGER_RANDOM, 1 + 3 * k).unwrap_or(0.0),
+                        a.out(TRIGGER_RANDOM, 2 + 3 * k, Some(3 + 3 * k)),
+                    )
                 })
                 .collect(),
         },
@@ -365,9 +395,8 @@ pub(super) fn build(class_name: &str, a: &Attrs<'_>) -> Model {
         },
         "VariableSwitch" if a.has(VARIABLE_SWITCH) => Model::VariableSwitch {
             trigger: a.msg(VARIABLE_SWITCH, 0),
-            variable: a
-                .variable(VARIABLE_SWITCH, 1)
-                .or_else(|| a.variable(VARIABLE_SWITCH, 2)),
+            // The reader `0x00476FC0` has no case for attribute 2.
+            variable: a.variable(VARIABLE_SWITCH, 1),
             default: a.out(VARIABLE_SWITCH, 3, Some(4)),
             cases: (0..8)
                 .filter_map(|k| {
@@ -420,7 +449,9 @@ pub(super) fn build(class_name: &str, a: &Attrs<'_>) -> Model {
             disable: a.msg(ENTER_EXIT_TRIGGER, 5),
             on_enter: a.out(ENTER_EXIT_TRIGGER, 0, None),
             on_exit: a.msg(ENTER_EXIT_TRIGGER, 1),
-            switch: Switch::Unknown,
+            on_leave: false,
+            remaining: 0,
+            switch: switch_at_load(a.int(ENTER_EXIT_TRIGGER, 6)),
         },
         "LuaAudioScript" if a.has(LUA_AUDIO_SCRIPT) => Model::LuaScript {
             start: a.msg(LUA_AUDIO_SCRIPT, 1),
@@ -434,10 +465,22 @@ pub(super) fn build(class_name: &str, a: &Attrs<'_>) -> Model {
             enable: a.msg(TRIGGER_BASE, 1),
             disable: a.msg(TRIGGER_BASE, 2),
             on_enter: a.out(TRIGGER_BASE, 4, Some(5)),
-            on_exit: a.msg(TRIGGER_BASE, 7),
-            switch: Switch::Unknown,
+            on_exit: None,
+            on_leave: a.int(TRIGGER_BASE, 9) == Some(1),
+            remaining: a.int(TRIGGER_BASE, 6).unwrap_or(0),
+            switch: switch_at_load(a.int(TRIGGER_BASE, 8)),
         },
         _ => Model::BlackBox,
+    }
+}
+
+/// A trigger volume is on at load when bit 1 of its flags attribute is set
+/// (readers `0x004C1550` and `0x008FFE80`); no flags — off.
+fn switch_at_load(flags: Option<i32>) -> Switch {
+    if flags.unwrap_or(0) & 1 != 0 {
+        Switch::On
+    } else {
+        Switch::Off
     }
 }
 
@@ -625,35 +668,42 @@ impl Model {
                 reset,
                 got,
             } => {
-                if is(reset, hash) {
-                    *got = 0;
-                    return Reaction::said("reset");
-                }
                 let need: u8 = conditions
                     .iter()
                     .enumerate()
                     .filter(|(_, c)| c.is_some())
                     .fold(0, |m, (i, _)| m | (1 << i));
-                let Some(i) = conditions.iter().position(|c| is(c, hash)) else {
+                // An else-if chain: the four conditions, then `reset`; the
+                // comparison below follows any of them.
+                let was_reset = if let Some(i) = conditions.iter().position(|c| is(c, hash)) {
+                    *got |= 1 << i;
+                    false
+                } else if is(reset, hash) {
+                    *got = 0;
+                    true
+                } else {
                     return Reaction::said("heard; no reaction in the handler");
                 };
-                *got |= 1 << i;
                 if *got != need {
-                    return Reaction::said(format!(
-                        "condition {} of {}",
-                        got.count_ones(),
-                        need.count_ones()
-                    ));
+                    return Reaction::said(if was_reset {
+                        "reset".to_owned()
+                    } else {
+                        format!("condition {} of {}", got.count_ones(), need.count_ones())
+                    });
                 }
                 *got = 0;
+                let what = if was_reset {
+                    "reset; no conditions set"
+                } else {
+                    "all conditions"
+                };
                 match send {
                     Some(out) => {
-                        let mut r =
-                            Reaction::said(format!("all conditions: sends {}", sends_text(&[out])));
+                        let mut r = Reaction::said(format!("{what}: sends {}", sends_text(&[out])));
                         r.send(out);
                         r
                     }
-                    None => Reaction::said("all conditions; nothing to send"),
+                    None => Reaction::said(format!("{what}; nothing to send")),
                 }
             }
             Self::OrGate {
@@ -704,6 +754,9 @@ impl Model {
                 let roll = f64::from((ctx.rand)()) / 32767.0 * total;
                 let mut sum = 0.0;
                 for (w, out) in choices.iter() {
+                    // An entry without a message is skipped before its
+                    // weight is added.
+                    let Some(out) = out else { continue };
                     sum += *w;
                     if sum > roll {
                         let mut r = Reaction::said(format!("picks {}", sends_text(&[out])));
@@ -793,6 +846,8 @@ impl Model {
                 deactivate,
                 on_spawn,
                 active,
+                max_fires,
+                fired,
                 ..
             } => {
                 if is(deactivate, hash) {
@@ -800,6 +855,11 @@ impl Model {
                     return Reaction::said("stops watching");
                 }
                 if is(activate, hash) || (*on_spawn && hash == post_spawn) {
+                    // The only place the limit is tested: a watch that is
+                    // already on is left as it is.
+                    if *max_fires != 0 && *fired as u32 >= *max_fires as u32 {
+                        return Reaction::said("used up (max_fires reached)");
+                    }
                     *active = true;
                     let mut r = self.check(ctx);
                     if r.text.is_empty() {
@@ -919,8 +979,6 @@ impl Model {
                     *switch = match *switch {
                         Switch::Off => Switch::On,
                         Switch::On => Switch::Off,
-                        // The handler toggles a bit whose start value is not
-                        // known.
                         Switch::Unknown => Switch::Unknown,
                     };
                     return Reaction::said(format!("toggled: {}", switch_name(*switch)));
@@ -969,7 +1027,6 @@ impl Model {
             comparison,
             value,
             keep,
-            max_fires,
             fired,
             active,
             ..
@@ -984,10 +1041,6 @@ impl Model {
             *active = false;
             return Reaction::said("no variable");
         };
-        if *max_fires != 0 && *fired >= *max_fires {
-            *active = false;
-            return Reaction::said("used up (max_fires reached)");
-        }
         let (x, _) = (ctx.variable)(v);
         let hit = (*comparison & 2 != 0 && x == *value)
             || (*comparison & 1 != 0 && x < *value)

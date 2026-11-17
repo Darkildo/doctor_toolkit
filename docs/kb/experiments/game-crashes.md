@@ -3,8 +3,8 @@ type: experiment
 status: partial
 confidence: bench
 editions: ["1.0.789.0"]
-stages: [72, 6, 14, 28, 32, 34, 49, 58, 59, 63]
-sources: ["docs/analysis/game-bench.md §9", "docs/analysis/game-bench.md §10.3", "docs/analysis/game-bench.md §14", "docs/analysis/game-bench.md §16", "docs/analysis/game-bench.md §18", "docs/analysis/game-bench.md §30", "docs/analysis/queens.md §7"]
+stages: [72, 6, 14, 28, 32, 34, 49, 58, 59, 63, 99]
+sources: ["docs/analysis/game-bench.md §9", "docs/analysis/game-bench.md §10.3", "docs/analysis/game-bench.md §14", "docs/analysis/game-bench.md §16", "docs/analysis/game-bench.md §18", "docs/analysis/game-bench.md §30", "docs/analysis/queens.md §7", "docs/analysis/game-bench.md §37"]
 tags: [crash, bench, addresses]
 updated: 2026-11-16
 ---
@@ -28,10 +28,14 @@ updated: 2026-11-16
 
 О падении `0x6E756F7B`: после `cp_325_start_now` текущий чекпоинт — `cp_325`, идут экраны «Compound
 UNLOCKED», древо семьи, «Взгляд дона»; падение — при входе в триггер. Вывод источника: быстрый путь
-годится для чекпоинтов, но не для прохождения заданий. Причина в коде не разобрана.
+годится для чекпоинтов, но не для прохождения заданий. Этап 99 снял отчёт: падает рабочий поток заданий
+(`0x00AC3290`) на вызове испорченного указателя из запроса, сразу после смены чекпоинта на `cp_326` —
+[вопрос](../questions/crash-6e756f7b.md).
 
 Как стенд видит падение: Wine показывает окно отладчика, процесс жив; `await` ищет в `wine.log`
-строку `Unhandled … starting debugger` и пишет `the game crashed: …` в `timeline.txt`.
+строку `Unhandled … starting debugger` и пишет `the game crashed: …` в `timeline.txt`. С модулем
+`doctor_crash.asi` в тени остаётся ещё и отчёт с минидампом (`doctor-toolkit crash-report show ТЕНЬ`) —
+[опыт](crash-reports-bench.md).
 
 ## Подробнее
 

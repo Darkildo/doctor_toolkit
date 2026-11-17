@@ -798,10 +798,15 @@ pub fn lua(code: &str) -> Response {
 // --- Stage 49: every object, the bus for the journal ---------------------------
 
 /// The GUID of a SimGroup object at `object`, when it is one: its vtable in
-/// the read-only data of the image and a GUID that is not zero.
+/// the read-only data of the image — or, for an object of a class of a
+/// native mod (stage 80), the mark of the platform module after its `Base`
+/// — and a GUID that is not zero.
 pub fn object_guid(m: &mut Mem, object: u32) -> Option<Guid> {
+    use doctor_toolkit_live::platform::{OBJECT_MARK, OBJECT_MARK_AT};
     let vtable = m.u32(object)?;
-    if !(0x00D5_5000..0x00E5_0000).contains(&vtable) {
+    if !(0x00D5_5000..0x00E5_0000).contains(&vtable)
+        && m.u32(object + OBJECT_MARK_AT) != Some(OBJECT_MARK)
+    {
         return None;
     }
     let mut g: Guid = [0; 16];

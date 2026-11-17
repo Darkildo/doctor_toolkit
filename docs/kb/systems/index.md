@@ -20,18 +20,18 @@ updated: 2026-11-16
 |---|---|---|---|
 | [ИИ: бой, укрытия, навигация](ai.md) | partial | data | 72, 11, 42, 59, 60 |
 | [Персонажи](characters.md) | partial | data | 72, 17, 24, 45, 65 |
-| [Команда игрока (семья)](crew.md) | partial | exe | 72, 73, 23, 48, 63 |
+| [Команда игрока (семья)](crew.md) | partial | bench | 72, 73, 23, 48, 63, 82 |
 | [Ролики](cutscenes.md) | known | exe | 72, 29, 24, 31, 61, 62, 65 |
-| [Диалоги F2F и речь](dialogues.md) | partial | exe | 72, 30, 45, 83 |
-| [Экономика: деньги, заведения, награды](economy.md) | partial | exe | 72, 73, 23, 48 |
+| [Диалоги F2F и речь](dialogues.md) | partial | exe | 72, 30, 45, 83, 75 |
+| [Экономика: деньги, заведения, награды](economy.md) | partial | exe | 72, 73, 23, 48, 75 |
 | [Семьи и война семей](families.md) | partial | data | 72, 73, 23, 48, 60, 63 |
 | [Параметры игры (мастер «Изменить параметры игры»)](parameters.md) | partial | data | 72, 23, 45 |
 | [Полиция и закон](police.md) | partial | data | 72, 16, 23, 27, 28 |
-| [Сохранения](saves.md) | partial | exe | 72, 14, 24, 32, 48, 63, 76 |
-| [Сюжет и миссии](story.md) | partial | exe | 72, 16, 27, 28, 38, 48, 63, 76 |
-| [Навыки и улучшения](upgrades.md) | partial | bench | 72, 23, 45 |
+| [Сохранения](saves.md) | partial | exe | 72, 14, 24, 32, 48, 63, 76, 82 |
+| [Сюжет и миссии](story.md) | partial | bench | 72, 16, 27, 28, 38, 48, 63, 76, 77 |
+| [Навыки и улучшения](upgrades.md) | partial | bench | 72, 23, 45, 75 |
 | [Транспорт и трафик](vehicles.md) | partial | data | 72, 23, 42, 58, 59, 60, 63 |
-| [Оружие](weapons.md) | partial | bench | 72, 73, 23, 45, 63 |
+| [Оружие](weapons.md) | partial | bench | 72, 73, 23, 45, 63, 75 |
 | [Мир: города, зоны, время суток](world.md) | partial | data | 72, 73, 11, 37, 48, 60, 63, 84 |
 
 <!-- kb:manual:begin -->

@@ -1,0 +1,31 @@
+[package]
+name = "doctor-toolkit-crash-asi"
+description = "Crash module of The Godfather II (PC 1.0.789.0): a DLL for the ASI loader — a minidump and a text report of a crash in _doctor_toolkit/crashes"
+version = "0.0.8"
+edition = "2024"
+license = "GPL-3.0-only"
+publish = false
+
+# A Windows DLL for 32-bit x86, outside the workspace (the workspace builds
+# for the host). Build: tools/build-crash-module.sh, or
+#   cargo build --release --target i686-pc-windows-gnu \
+#       --manifest-path crates/doctor-toolkit-crash-asi/Cargo.toml
+[workspace]
+
+[lib]
+name = "doctor_crash"
+crate-type = ["cdylib"]
+path = "src/lib.rs"
+
+[dependencies]
+doctor-toolkit-live = { path = "../doctor-toolkit-live" }
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+# Unwinding stays on: every entry from the game catches panics, none
+# crosses into the game's code.
+panic = "unwind"
+strip = true
+debug = false

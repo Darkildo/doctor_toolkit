@@ -43,6 +43,11 @@ pub(crate) struct ProjectPanel {
 }
 
 impl ProjectPanel {
+    /// The folder of the open project.
+    pub(super) fn dir(&self) -> Option<std::path::PathBuf> {
+        self.project.as_ref().map(|p| p.root().to_owned())
+    }
+
     fn stale(&self, ws: (usize, usize)) -> bool {
         self.checked
             .is_none_or(|(at, seen)| seen != ws || at.elapsed() >= CHECK_EVERY)
@@ -274,6 +279,45 @@ impl BrowserApp {
         self.project.checked = None;
     }
 
+    /// Pull (stage 103): writes the workspace's version of the entries that
+    /// are out of sync into the files of the project, so that the project
+    /// follows edits made elsewhere (`Project::pull`, as `project pull` and
+    /// the MCP tool `project_pull`). Returns how many entries were written.
+    pub(super) fn project_pull(&mut self) -> Option<usize> {
+        let (Some(game), Some(mut project)) = (self.game.clone(), self.project.project.clone())
+        else {
+            self.notify(Level::Error, tr("project.pull_no_project").to_owned());
+            return None;
+        };
+        let result = self
+            .workspace_mut()
+            .and_then(|ws| project.pull(&game, ws, &[]).map_err(|e| e.to_string()));
+        self.project.checked = None;
+        match result {
+            Ok(ids) => {
+                let line = if ids.is_empty() {
+                    tr("project.pull_nothing").to_owned()
+                } else {
+                    trf(
+                        "project.pulled",
+                        &[("count", &ids.len()), ("ids", &ids.join(", "))],
+                    )
+                };
+                self.notify(Level::Info, line.clone());
+                self.project.last_build = Some(line);
+                self.project.project = Some(project);
+                Some(ids.len())
+            }
+            Err(error) => {
+                self.notify(
+                    Level::Error,
+                    trf("project.cannot_pull", &[("error", &error)]),
+                );
+                None
+            }
+        }
+    }
+
     fn project_mod(&mut self) {
         let Some(project) = self.project.project.clone() else {
             return;
@@ -369,6 +413,13 @@ impl BrowserApp {
                 .clicked()
             {
                 self.project_build(true);
+            }
+            if ui
+                .add_enabled(has && game, egui::Button::new(tr("project.pull")))
+                .on_hover_text(tr("project.pull_hint"))
+                .clicked()
+            {
+                self.project_pull();
             }
             if ui
                 .add_enabled(has, egui::Button::new(tr("project.mod")))
@@ -656,5 +707,82 @@ impl BrowserApp {
                 ui.add(egui::Image::new(texture).fit_to_exact_size(size * scale));
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use doctor_toolkit::game::GameInstance;
+    use doctor_toolkit::testing as mini;
+    use doctor_toolkit::text::StringEdit;
+
+    use super::*;
+    use crate::settings::{Settings, Store};
+
+    /// Stage 103: Pull writes the workspace's version of the entries that
+    /// are out of sync into the files of the project.
+    #[test]
+    fn pull_writes_the_workspace_version_into_the_project_files() {
+        let dir = std::env::temp_dir().join(format!("dt-project-pull-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let root = dir.join("game");
+        std::fs::create_dir_all(&root).unwrap();
+        mini::write_game(&root).unwrap();
+        let ctx = egui::Context::default();
+        let cc = eframe::CreationContext::_new_kittest(ctx.clone());
+        let mut app = BrowserApp::new(
+            &cc,
+            None,
+            None,
+            None,
+            Settings::default(),
+            Store { dir: None },
+        );
+        app.notes.log_to_file = false;
+        let game = Arc::new(GameInstance::open(&root).unwrap());
+        let (index, errors) = game.build_index(|_| {});
+        assert!(errors.is_empty(), "{errors:?}");
+        app.game = Some(game.clone());
+        app.index = Some(Arc::new(index));
+        // Without a project there is nothing to pull into: an error.
+        assert_eq!(app.project_pull(), None);
+        // A project of the text stream, then an edit of a string elsewhere.
+        app.project.new_streams = mini::TEXT.to_owned();
+        app.project_new(dir.join("project"));
+        assert!(app.project.project.is_some(), "the project was created");
+        assert_eq!(app.project_pull(), Some(0), "nothing is out of sync yet");
+        let text = game.find_stream(mini::TEXT).unwrap();
+        let table = doctor_toolkit::resource::lh2::StringTable::parse(
+            &game.open_stream(text).unwrap().resource_data(0).unwrap(),
+        )
+        .unwrap();
+        assert!(app.edit_strings_everywhere(&[StringEdit {
+            hash: table.hashes[0],
+            text: "Pulled".into(),
+            language: None,
+        }]));
+        let files = |dir: &std::path::Path| -> String {
+            let mut all = String::new();
+            let mut stack = vec![dir.to_owned()];
+            while let Some(d) = stack.pop() {
+                for e in std::fs::read_dir(&d).unwrap().flatten() {
+                    let p = e.path();
+                    if p.is_dir() {
+                        stack.push(p);
+                    } else if let Ok(text) = std::fs::read_to_string(&p) {
+                        all.push_str(&text);
+                    }
+                }
+            }
+            all
+        };
+        assert!(!files(&dir.join("project")).contains("Pulled"));
+        let pulled = app.project_pull().expect("the pull went through");
+        assert!(pulled >= 1, "{pulled}");
+        assert!(files(&dir.join("project")).contains("Pulled"));
+        assert_eq!(app.project_pull(), Some(0), "in sync again");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

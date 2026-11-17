@@ -3,8 +3,8 @@ type: system
 status: partial
 confidence: bench
 editions: ["1.0.789.0"]
-stages: [72, 23, 45]
-sources: ["docs/analysis/tunables.md §2 «Здоровье и экипаж», «Игрок», «Экономика», §3", "docs/analysis/game-bench.md §20.2, §31.3"]
+stages: [72, 23, 45, 75]
+sources: ["docs/analysis/tunables.md §2 «Здоровье и экипаж», «Игрок», «Экономика», §3", "docs/analysis/game-bench.md §20.2, §31.3", "docs/analysis/handing-out.md §5"]
 tags: [upgrades, skills, upgradedata, tunables, bench]
 updated: 2026-11-16
 ---
@@ -23,7 +23,12 @@ updated: 2026-11-16
 - `Armored Thug Car` — атрибут 11 указывает на машину `thug60_armored` (см. [транспорт](vehicles.md)).
 - Путь к меню на стенде: `live money --add 500000`, Tab (Don's View) → Family Tree → член семьи → Upgrade.
 
+- Список улучшений семьи — номера в `семья+0x124` (число `+0x128`); его проверяет [TestUpgrade](../classes/TestUpgrade.md) (`0x009B8E80`). Игроку улучшение выдаёт `0x007A6390` — только по сетевому запросу и из `DonControlGadget` сетевых карт (этап 75, по коду).
+- «Улучшение оружия» — другое: оружие уровнем выше выдаётся `GiveItemRelay` с флагом 4 (см. [оружие](weapons.md)).
+
 ## Что неизвестно
+
+- [Чем выдать навык в одиночной игре](../questions/upgrade-grant-single-player.md).
 
 - Цены улучшений: `UpgradeData` их не хранит; вероятно, в Lua или в коде игры (см. [экономика](economy.md)).
 - Остальные навыки — значения видны, но что они меняют, не определено: Handgun/Heavy Weapons Specialization (44 = 2/3/5 и 47 = 0.9/0.8/0.7; 51 = 2/3/5 и 54 = 0.925/0.85/0.75), Marksman (45, 46 = 0.6; 52, 53 = 0.75), Combat Reflexes (26, 33 = 1.25/1.5; 34 = 5/6), Ready Weapon (36–41 = 1.5), Extortion (30 = 30), Dangerous Appearance (25 = 0.5), Specialty Focus (24 = 0.75/0.5), Vice Grip (28 = 0.5).
@@ -34,4 +39,5 @@ updated: 2026-11-16
 
 - [Параметры игры](../../analysis/tunables.md) §2, §3
 - [Стенд проверки в игре](../../analysis/game-bench.md) §31.3
+- [Выдача из логики: улучшения](../../analysis/handing-out.md) §5
 - Связанные заметки: [команда игрока](crew.md), [параметры](parameters.md)

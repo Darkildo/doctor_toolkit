@@ -290,35 +290,38 @@ impl AudioConfig {
     }
 }
 
+/// A configuration with the categories DIALOG and CHATTER, one bank pool
+/// and one duck.
+#[cfg(any(test, feature = "testing"))]
+pub(crate) fn sample() -> AudioConfig {
+    let cat = |name: &str, parent: &str| Category {
+        name: name.into(),
+        second: String::new(),
+        parent: parent.into(),
+        value: 0,
+    };
+    AudioConfig {
+        version: VERSION,
+        categories: vec![cat("DIALOG", "DIALOG"), cat("CHATTER", "DIALOG")],
+        pools: vec![BankPool {
+            name: "audio_bank_00".into(),
+            size: 1536,
+            kind: 1,
+        }],
+        ducks: vec![Duck {
+            levels: [95, 50],
+            filler: *b"rsion='1",
+            name: "WEAPON_DUCK".into(),
+            mix: "combine_weapon_duck.mix".into(),
+        }],
+        chains: 0,
+        tail: Vec::new(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn sample() -> AudioConfig {
-        let cat = |name: &str, parent: &str| Category {
-            name: name.into(),
-            second: String::new(),
-            parent: parent.into(),
-            value: 0,
-        };
-        AudioConfig {
-            version: VERSION,
-            categories: vec![cat("DIALOG", "DIALOG"), cat("CHATTER", "DIALOG")],
-            pools: vec![BankPool {
-                name: "audio_bank_00".into(),
-                size: 1536,
-                kind: 1,
-            }],
-            ducks: vec![Duck {
-                levels: [95, 50],
-                filler: *b"rsion='1",
-                name: "WEAPON_DUCK".into(),
-                mix: "combine_weapon_duck.mix".into(),
-            }],
-            chains: 0,
-            tail: Vec::new(),
-        }
-    }
 
     #[test]
     fn round_trips_and_adds_categories() {

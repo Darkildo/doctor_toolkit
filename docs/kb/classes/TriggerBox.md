@@ -1,10 +1,10 @@
 ---
 type: class
-status: partial
-confidence: data
+status: known
+confidence: exe
 editions: ["1.0.789.0"]
-stages: [72]
-sources: ["data/gf2/sim_classes.txt", "data/gf2/logic_schema.toml"]
+stages: [72, 79]
+sources: ["data/gf2/sim_classes.txt", "data/gf2/logic_schema.toml", "data/gf2/class_behavior.toml"]
 tags: [simgroup, class, trigger]
 updated: 2026-11-16
 ---
@@ -15,7 +15,16 @@ updated: 2026-11-16
 - Хэш класса: `0x0b251a33` — SDBM имени `TriggerBox` в нижнем регистре.
 - Класс объектов; категория в графе логики: `trigger`.
 - Пакеты нового объекта, базовый класс первым (в скобках — число атрибутов): [CAttributeHandler](CAttributeHandler.md) (1), [Base](Base.md) (1), [CSystemCommands](CSystemCommands.md) (5), [Entity](Entity.md) (5), [TriggerBase](TriggerBase.md) (12), [TriggerFilter](TriggerFilter.md) (3).
-- Поведение класса (обработчики сообщений, обновление) здесь не описано: см. ручной раздел и карту [логики](../maps/logic.md).
+- Поведение прочитано в коде `godfather2.exe`: раздел «Поведение» ниже.
+
+## Поведение
+
+TriggerBase с формой «коробка»: конструктор пишет 0 в +0x1FC (0x004C14E0). Своих атрибутов, обработчика и обновления нет; читатель 0x00901920 общий с промежуточным классом 0x00901860: читает пакеты TriggerBase и TriggerFilter (фильтр в +0x210).
+
+- Код класса прочитан полностью: конструктор, читатель атрибутов, обработчик сообщений и обновление (`data/gf2/class_behavior.toml`; адреса — издание 1.0.789.0).
+- Код: конструктор `0x00902B20`, читатель атрибутов `0x00901920`, обработчик сообщений `0x004C1260`.
+- Обновление: нет своего: всё из TriggerBase (слот 50 0x009019F0 — фильтр 0x00903E60, затем 0x004C2200)
+- Когда срабатывает: Как TriggerBase.
 
 ## Атрибуты
 

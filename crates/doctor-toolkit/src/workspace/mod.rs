@@ -17,7 +17,8 @@
 //! ├── manifest.json     format, version, game fingerprint, current changes
 //! ├── log.json          operations with their before/after state, undo position
 //! ├── applied.json      what has been written into the game files
-//! └── payloads/ab/ab12…  resource data, named by SHA-256
+//! ├── payloads/ab/ab12…  resource data, named by SHA-256
+//! └── staged/           new streams as files for readers ([`stage`]); a cache
 //! ```
 //!
 //! `manifest.json` alone describes the result of the edits: which resources
@@ -33,6 +34,8 @@ pub mod diff;
 pub mod files;
 pub mod key;
 pub mod lock;
+mod matching;
+pub mod stage;
 pub mod store;
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
@@ -55,6 +58,7 @@ pub use diff::{
 pub use files::{FileChange, FileEdit, FileKey};
 pub use key::ResourceKey;
 pub use lock::{LockHolder, WorkspaceLock};
+pub use matching::Reverted;
 pub use store::{Blob, FileStamp, PayloadStore};
 
 /// Value of the `format` field of `manifest.json`.
@@ -1114,7 +1118,9 @@ impl Workspace {
                 }
             } else if resource.before.is_some() {
                 return Err(Error::InvalidArgument(format!(
-                    "{stream} is new: its resources are written in the order they were added"
+                    "{stream} is new: its resources are written in the order they were added \
+                     (SimGroups last), so a place before a resource cannot be asked for; add it \
+                     without a place"
                 )));
             }
             let payload = self.store.put(&resource.data)?;
@@ -1750,6 +1756,13 @@ impl Workspace {
 
     /// Compares the workspace with the game files.
     pub fn status(&self, game: &GameInstance) -> Result<Status> {
+        let on_disk;
+        let game = if game.has_staged() {
+            on_disk = game.on_disk();
+            &on_disk
+        } else {
+            game
+        };
         let deploy = self
             .applied
             .status_with(game, &self.desired(), &self.new_streams)?;
@@ -1951,6 +1964,14 @@ impl Workspace {
             // Nothing recorded and nothing in the game.
             return Ok(ApplyReport::default());
         }
+        // Writing is about the game folder, not about staged streams.
+        let on_disk;
+        let game = if game.has_staged() {
+            on_disk = game.on_disk();
+            &on_disk
+        } else {
+            game
+        };
         let desired: BTreeMap<String, Vec<Change>> = self
             .desired()
             .into_iter()
@@ -1998,6 +2019,13 @@ impl Workspace {
         if !self.saved {
             return Ok(ApplyReport::default());
         }
+        let on_disk;
+        let game = if game.has_staged() {
+            on_disk = game.on_disk();
+            &on_disk
+        } else {
+            game
+        };
         let names: BTreeSet<String> = self.applied.streams.keys().cloned().collect();
         let path = self.applied_path();
         let store = &self.store;

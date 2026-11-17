@@ -13,7 +13,14 @@
 //!   error and the Lua call stack when the call failed;
 //! - messages: the first five bytes of the bus `0x00408A00` jump to a thunk
 //!   that records the message (while a client asks for messages) and then
-//!   runs those five bytes and goes on in the bus.
+//!   runs those five bytes and goes on in the bus;
+//! - who sends (stage 78): the three places where the game calls a
+//!   listener's handler (`0x00408A8B` in the broadcast, `0x00408C31` in the
+//!   delivery to one listener, `0x00440819` in the delayed queue) call a
+//!   thunk that leaves a mark on the stack — the listener — for as long as
+//!   the handler runs. A message sent meanwhile finds the innermost mark:
+//!   that listener's object is its sender. The same thunks record the
+//!   deliveries to one listener, which never reach `0x00408A00`.
 //!
 //! Every hook catches panics, takes the ring's lock only for a moment and
 //! never blocks the game for long.
@@ -27,8 +34,8 @@ use std::time::Instant;
 use doctor_toolkit_live::LoopState;
 use doctor_toolkit_live::addr::*;
 use doctor_toolkit_live::journal::{
-    Counts, EventBatch, EventBody, MAX_RECEIVERS, MAX_TRACEBACK, MessageOrigin, OutputSource, Ring,
-    clip, mask,
+    Counts, EventBatch, EventBody, MAX_RECEIVERS, MAX_TRACEBACK, MessageFrom, MessageOrigin,
+    OutputSource, Ring, clip, mask,
 };
 
 use crate::win::{self, Mem};
@@ -480,24 +487,148 @@ fn admit_hash(hash: u32) -> bool {
     e.1 <= PER_HASH_RATE
 }
 
+/// The innermost mark of a handler the bus is running on some thread: the
+/// thunks of the three places that call a handler push
+/// `{previous mark, listener}` under the return address of the game's call
+/// and keep its address here while the handler runs. A message sent by that
+/// handler — or by anything it calls — finds its listener through it.
+///
+/// One variable for every thread: the bus runs on the main thread, and a
+/// mark is believed only if it lies in the stack of the thread that reads
+/// it, above its current frame, and has one of the three return addresses
+/// next to it.
+static BUS_MARK: AtomicU32 = AtomicU32::new(0);
+
+/// The listener whose handler is running on this thread and the hash of the
+/// message it handles, from the innermost mark.
+fn running_handler(m: &mut Mem) -> Option<(u32, u32)> {
+    let mark = BUS_MARK.load(Ordering::Relaxed);
+    if mark == 0 {
+        return None;
+    }
+    let (base, limit): (u32, u32);
+    // SAFETY: the stack bounds of this thread in its TEB.
+    unsafe {
+        std::arch::asm!(
+            "mov {base}, fs:[4]",
+            "mov {limit}, fs:[8]",
+            base = out(reg) base,
+            limit = out(reg) limit,
+            options(nostack, readonly, preserves_flags)
+        );
+    }
+    let here = std::ptr::from_ref(&mark) as usize as u32;
+    if mark <= here || mark < limit || mark.checked_add(16)? > base {
+        return None;
+    }
+    // SAFETY: four words of this thread's stack, above the current frame.
+    let word = |i: u32| unsafe { std::ptr::read_volatile((mark + 4 * i) as usize as *const u32) };
+    if !MESSAGE_CALL_RETURNS.contains(&word(2)) {
+        return None;
+    }
+    let cause = m.u32(word(3)).unwrap_or(0);
+    Some((word(1), cause))
+}
+
+/// Where a message comes from: the place that called the bus (`site`, 0 when
+/// unknown), the handler that was running, the object its data points to.
+fn message_from(m: &mut Mem, site: u32, data: u32, direct: bool) -> MessageFrom {
+    let handler = running_handler(m);
+    let object = |m: &mut Mem, at: u32| {
+        crate::game::object_guid(m, at).filter(doctor_toolkit_live::is_object_guid)
+    };
+    let sender =
+        handler.and_then(|(listener, _)| object(m, listener.wrapping_sub(OBJECT_LISTENER)));
+    let data_object = (data >= 0x1_0000 && m.u32(data) == Some(MESSAGE_DATA_OBJECT_VTABLE))
+        .then(|| m.u32(data + 4))
+        .flatten()
+        .filter(|&anchor| anchor >= 0x1_0000)
+        .and_then(|anchor| object(m, anchor - MESSAGE_DATA_OBJECT_ANCHOR));
+    MessageFrom {
+        // Only code of the game: the module's own calls are not a place.
+        site: if (0x0040_1000..0x00D5_4000).contains(&site) {
+            site
+        } else {
+            0
+        },
+        cause: handler.map_or(0, |h| h.1),
+        sender,
+        data_object,
+        direct,
+    }
+}
+
 /// Records a message the bus is about to deliver (called by the thunk with
-/// the bus's arguments).
-extern "C" fn on_bus(message: *const Message, force: u32) {
+/// the bus's arguments and the stack as the bus got it: its return address
+/// first).
+extern "C" fn on_bus(message: *const Message, force: u32, frame: *const u32) {
     if message.is_null() {
         return;
     }
     let _ = std::panic::catch_unwind(|| {
         // SAFETY: the message the game passes to its bus.
         let (hash, data) = unsafe { ((*message).hash, (*message).data) };
-        record_message(hash, data, force);
+        // SAFETY: the stack of the caller of the bus: the return address,
+        // and — when that is the wrapper `0x0045C400(variable, data,
+        // force)` — the wrapper's own return address past the two arguments
+        // and its 0xC bytes of locals.
+        let ret = unsafe {
+            match *frame {
+                MESSAGE_SEND_WRAPPER_RETURN => *frame.add(6),
+                ret => ret,
+            }
+        };
+        record_message(hash, data, force, ret.wrapping_sub(5));
         // Breakpoints and the free camera (stage 35), recorded or not: after
         // the record, so the journal shows the message a break stops at.
         crate::debug::before_message(hash, data, force & 0xFF != 0);
     });
 }
 
+/// Records a message the game delivers to one listener (called by the
+/// thunks of `0x00408C31` and `0x00440819`). `frame` is the stack as
+/// `0x00408BF0` left it at its call of the handler — the return address of
+/// that function is 0x18 above — or 0 for the delayed queue, where the
+/// place that sent the message is gone.
+extern "C" fn on_direct(message: *const Message, listener: u32, frame: u32) {
+    if message.is_null() || now_ms() > MESSAGES_UNTIL.load(Ordering::Relaxed) {
+        return;
+    }
+    let _ = std::panic::catch_unwind(|| {
+        // SAFETY: the message the game is about to hand to the handler.
+        let (hash, data) = unsafe { ((*message).hash, (*message).data) };
+        if !admit_hash(hash) || !admit(mask::MESSAGE) {
+            return;
+        }
+        let mut m = Mem::default();
+        let mut site = 0;
+        if frame != 0 {
+            // The caller of 0x00408BF0, or of its two wrappers (their own
+            // return address lies 0x1C further: three arguments, 0xC of
+            // locals, and the call).
+            let ret = m.u32(frame + 0x18).unwrap_or(0);
+            let ret = if ret == 0x0040_8BAB || ret == 0x0040_8BDD {
+                m.u32(frame + 0x34).unwrap_or(0)
+            } else {
+                ret
+            };
+            site = ret.wrapping_sub(5);
+        }
+        let from = message_from(&mut m, site, data, true);
+        record(message_event(
+            &mut m,
+            hash,
+            data,
+            false,
+            &[listener],
+            MessageOrigin::Game,
+            Some(from),
+        ));
+    });
+}
+
 /// Records a message of the bus while a client asks for them.
-fn record_message(hash: u32, data: u32, force: u32) {
+fn record_message(hash: u32, data: u32, force: u32, site: u32) {
     {
         if now_ms() > MESSAGES_UNTIL.load(Ordering::Relaxed) {
             return;
@@ -520,6 +651,7 @@ fn record_message(hash: u32, data: u32, force: u32) {
         // SAFETY: the table and listeners the bus is about to walk itself.
         let listeners = unsafe { crate::game::bus_listeners(hash, !forced) };
         let mut m = Mem::default();
+        let from = message_from(&mut m, site, data, false);
         record(message_event(
             &mut m,
             hash,
@@ -531,6 +663,7 @@ fn record_message(hash: u32, data: u32, force: u32) {
             } else {
                 MessageOrigin::Game
             },
+            Some(from),
         ));
     }
 }
@@ -543,6 +676,7 @@ pub fn message_event(
     forced: bool,
     listeners: &[u32],
     origin: MessageOrigin,
+    from: Option<MessageFrom>,
 ) -> EventBody {
     let mut receivers = Vec::new();
     for &listener in listeners {
@@ -562,6 +696,7 @@ pub fn message_event(
         listeners: listeners.len() as u32,
         receivers,
         origin,
+        from,
     }
 }
 
@@ -575,6 +710,10 @@ pub fn record_link_message(m: &mut Mem, hash: u32, listeners: &[u32]) {
             false,
             listeners,
             MessageOrigin::Link,
+            Some(MessageFrom {
+                direct: true,
+                ..MessageFrom::default()
+            }),
         ));
     }
 }
@@ -588,10 +727,12 @@ global_asm!(
     "pushad",
     "pushfd",
     // Stack: flags, 8 registers (36 bytes), return address, message, force.
-    "push dword ptr [esp + 44]",
-    "push dword ptr [esp + 44]",
+    "lea eax, [esp + 36]",
+    "push eax",
+    "push dword ptr [esp + 48]",
+    "push dword ptr [esp + 48]",
     "call {on_bus}",
-    "add esp, 8",
+    "add esp, 12",
     "popfd",
     "popad",
     "push ecx",
@@ -600,6 +741,83 @@ global_asm!(
     "ret",
     on_bus = sym on_bus,
     resume = const MESSAGE_SEND_RESUME,
+);
+
+// The thunks that stand for the game's three calls of a listener's handler
+// (`thiscall handler(message)`, the handler removes its argument). On entry:
+// ECX — the listener, the stack — the return address into the game and the
+// message. Each leaves `{previous mark, listener}` on the stack under that
+// return address, calls the handler with a copy of the argument, takes the
+// mark off and returns past the argument, as the handler would have.
+//
+// `0x00408A8B` (`mov edx,[eax+4]; call edx`): EAX — the method table.
+global_asm!(
+    ".globl _doctor_live_call_broadcast_thunk",
+    "_doctor_live_call_broadcast_thunk:",
+    "push ecx",
+    "push dword ptr [{mark}]",
+    "mov dword ptr [{mark}], esp",
+    "push dword ptr [esp + 12]",
+    "call dword ptr [eax + 4]",
+    "pop dword ptr [{mark}]",
+    "add esp, 4",
+    "ret 4",
+    mark = sym BUS_MARK,
+);
+
+// `0x00408C31` (`and bl,1; call edx`): EAX — the method table. The delivery
+// to one listener is recorded first: `on_direct(message, listener, frame)`.
+global_asm!(
+    ".globl _doctor_live_call_direct_thunk",
+    "_doctor_live_call_direct_thunk:",
+    "and bl, 1",
+    "pushad",
+    "pushfd",
+    // Stack: flags, 8 registers (36 bytes), return address, message.
+    "lea eax, [esp + 36]",
+    "push eax",
+    "push ecx",
+    "push dword ptr [esp + 48]",
+    "call {on_direct}",
+    "add esp, 12",
+    "popfd",
+    "popad",
+    "push ecx",
+    "push dword ptr [{mark}]",
+    "mov dword ptr [{mark}], esp",
+    "push dword ptr [esp + 12]",
+    "call dword ptr [eax + 4]",
+    "pop dword ptr [{mark}]",
+    "add esp, 4",
+    "ret 4",
+    on_direct = sym on_direct,
+    mark = sym BUS_MARK,
+);
+
+// `0x00440819` (`and bl,1; call eax`): EAX — the handler.
+global_asm!(
+    ".globl _doctor_live_call_queue_thunk",
+    "_doctor_live_call_queue_thunk:",
+    "and bl, 1",
+    "pushad",
+    "pushfd",
+    "push 0",
+    "push ecx",
+    "push dword ptr [esp + 48]",
+    "call {on_direct}",
+    "add esp, 12",
+    "popfd",
+    "popad",
+    "push ecx",
+    "push dword ptr [{mark}]",
+    "mov dword ptr [{mark}], esp",
+    "push dword ptr [esp + 12]",
+    "call eax",
+    "pop dword ptr [{mark}]",
+    "add esp, 4",
+    "ret 4",
+    on_direct = sym on_direct,
+    mark = sym BUS_MARK,
 );
 
 // The thunk at the start of `luaG_errormsg` (`L` in ESI): saves every
@@ -626,6 +844,9 @@ global_asm!(
 
 unsafe extern "C" {
     fn doctor_live_bus_thunk();
+    fn doctor_live_call_broadcast_thunk();
+    fn doctor_live_call_direct_thunk();
+    fn doctor_live_call_queue_thunk();
     fn doctor_live_error_thunk();
 }
 
@@ -637,6 +858,18 @@ unsafe extern "C" {
 unsafe fn jump(at: u32, target: u32) -> bool {
     let rel = target.wrapping_sub(at + 5);
     let mut code = [0xE9u8, 0, 0, 0, 0];
+    code[1..].copy_from_slice(&rel.to_le_bytes());
+    // SAFETY: see above.
+    unsafe { win::patch(at, &code) }
+}
+
+/// Writes a `call target` over five bytes of code at `at`.
+///
+/// # Safety
+/// As [`jump`]; the target must do what the five bytes did and return.
+unsafe fn call(at: u32, target: u32) -> bool {
+    let rel = target.wrapping_sub(at + 5);
+    let mut code = [0xE8u8, 0, 0, 0, 0];
     code[1..].copy_from_slice(&rel.to_le_bytes());
     // SAFETY: see above.
     unsafe { win::patch(at, &code) }
@@ -725,6 +958,49 @@ pub fn install() -> Vec<&'static str> {
     // run its code.
     if unsafe { jump(MESSAGE_SEND, thunk) } {
         recording |= mask::MESSAGE | mask::MESSAGE_COUNTS;
+        // Who sends: the three calls of a listener's handler. All three or
+        // none: a mark of one without the others would name a wrong sender.
+        let thunks = [
+            (
+                MESSAGE_CALL_BROADCAST,
+                doctor_live_call_broadcast_thunk as unsafe extern "C" fn() as usize as u32,
+            ),
+            (
+                MESSAGE_CALL_DIRECT,
+                doctor_live_call_direct_thunk as unsafe extern "C" fn() as usize as u32,
+            ),
+            (
+                MESSAGE_CALL_QUEUE,
+                doctor_live_call_queue_thunk as unsafe extern "C" fn() as usize as u32,
+            ),
+        ];
+        let mut done = 0;
+        for (at, thunk) in thunks {
+            // SAFETY: five bytes of whole instructions without relative
+            // operands at each place, checked by `edition::check`
+            // (`mov edx,[eax+4]; call edx`, `and bl,1; call edx`,
+            // `and bl,1; call eax`); installed from DllMain like the jump
+            // above.
+            if !unsafe { call(at, thunk) } {
+                break;
+            }
+            done += 1;
+        }
+        if done == thunks.len() {
+            recording |= mask::MESSAGE_SENDER;
+        } else {
+            // Put back what was replaced: the original instructions.
+            let original: [&[u8]; 3] = [
+                &[0x8B, 0x50, 0x04, 0xFF, 0xD2],
+                &[0x80, 0xE3, 0x01, 0xFF, 0xD2],
+                &[0x80, 0xE3, 0x01, 0xFF, 0xD0],
+            ];
+            for (i, (at, _)) in thunks.iter().enumerate().take(done) {
+                // SAFETY: the bytes that were there.
+                unsafe { win::patch(*at, original[i]) };
+            }
+            failed.push("message senders");
+        }
     } else {
         failed.push("message bus");
     }

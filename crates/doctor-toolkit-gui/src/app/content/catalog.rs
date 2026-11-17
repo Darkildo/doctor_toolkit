@@ -188,6 +188,8 @@ pub struct StreamEntry {
     /// workspace creates.
     pub game: Option<usize>,
     pub size: u64,
+    /// The workspace creates the stream (it may be staged: `game` is set).
+    pub new: bool,
 }
 
 /// A folder of the tree.
@@ -235,6 +237,7 @@ impl FolderTree {
             tree.folders[f].streams.push(StreamEntry {
                 name,
                 path,
+                new: game.is_none(),
                 game,
                 size,
             });
@@ -271,7 +274,15 @@ impl FolderTree {
                 }
             }
         }
-        Self::build(streams)
+        let mut tree = Self::build(streams);
+        if let Some(ws) = ws {
+            for folder in &mut tree.folders {
+                for stream in &mut folder.streams {
+                    stream.new |= ws.new_stream(&stream.path).is_some();
+                }
+            }
+        }
+        tree
     }
 
     /// The folder at `path`, made with its parents when missing.
@@ -487,7 +498,12 @@ impl Source<'_> {
     pub fn stream_assets(&self, stream: &StreamEntry, filter: &Filter) -> Vec<Asset> {
         let mut out = Vec::new();
         if let Some(s) = stream.game {
-            match self.names.filter(|n| s < n.stream_count()) {
+            // The names are of the index read last: a staged stream may
+            // have another layout by now.
+            match self
+                .names
+                .filter(|n| s < n.stream_count() && !self.game.is_staged(s))
+            {
                 Some(names) => {
                     for id in names.stream_records(s) {
                         let record = names.record(id);
@@ -515,7 +531,8 @@ impl Source<'_> {
             }
         }
         for (key, size) in self.marks.added.get(&stream.path).into_iter().flatten() {
-            if filter.passes(key.type_id) {
+            // In a staged stream the added resources are in its file.
+            if filter.passes(key.type_id) && !out.iter().any(|a| a.key == *key) {
                 out.push(Asset {
                     key: key.clone(),
                     at: None,

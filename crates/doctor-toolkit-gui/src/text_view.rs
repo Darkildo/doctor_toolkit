@@ -25,6 +25,11 @@ pub struct TextView {
     new_name: String,
     new_text: String,
     new_everywhere: bool,
+    /// Texts of single languages for the new string: (language code, text).
+    new_translations: Vec<(String, String)>,
+    /// Save gives the changed entries their text in every table and
+    /// language of the game, not only here (stage 103).
+    pub save_everywhere: bool,
 }
 
 /// What the user asked the editor to do.
@@ -36,7 +41,10 @@ pub enum TextAction {
         name: String,
         text: String,
         everywhere: bool,
+        translations: Vec<(String, String)>,
     },
+    /// Give these entries (hash, text) the text in every table and language.
+    SaveEverywhere(Vec<(u32, String)>),
 }
 
 const CHANGED: egui::Color32 = crate::changes_view::PENDING;
@@ -75,6 +83,8 @@ impl TextView {
             new_name: String::new(),
             new_text: String::new(),
             new_everywhere: true,
+            new_translations: Vec::new(),
+            save_everywhere: false,
         }
     }
 
@@ -90,6 +100,44 @@ impl TextView {
         let row = original.find(table.hashes[entry])?;
         let text = original.strings.get(self.language)?.get(row)?;
         (Some(text) != table.strings[self.language].get(entry)).then_some(text.as_str())
+    }
+
+    /// The entries whose text differs from the saved table: (hash, text),
+    /// the text of the shown language first.
+    pub fn changed_entries(&self) -> Vec<(u32, String)> {
+        let (Ok(table), Some(saved)) = (&self.table, &self.saved) else {
+            return Vec::new();
+        };
+        let mut out: Vec<(u32, String)> = Vec::new();
+        let columns = std::iter::once(self.language)
+            .chain((0..table.strings.len()).filter(|&c| c != self.language));
+        for c in columns {
+            let (Some(new), Some(old)) = (table.strings.get(c), saved.strings.get(c)) else {
+                continue;
+            };
+            for (i, (n, o)) in new.iter().zip(old).enumerate() {
+                let hash = table.hashes[i];
+                if n != o && !out.iter().any(|(h, _)| *h == hash) {
+                    out.push((hash, n.clone()));
+                }
+            }
+        }
+        out
+    }
+
+    /// Puts `text` into the entry `hash` of the shown language (tests).
+    #[cfg(test)]
+    pub fn set_text(&mut self, hash: u32, text: &str) -> bool {
+        let Ok(table) = &mut self.table else {
+            return false;
+        };
+        match table.find(hash) {
+            Some(at) => {
+                table.strings[self.language][at] = text.to_owned();
+                true
+            }
+            None => false,
+        }
     }
 
     fn refilter(&mut self) {
@@ -166,6 +214,8 @@ impl TextView {
             {
                 action = Some(TextAction::Save(table.clone()));
             }
+            ui.checkbox(&mut self.save_everywhere, tr("text.save_everywhere"))
+                .on_hover_text(tr("text.save_everywhere_hint"));
             if ui
                 .add_enabled(changed > 0, egui::Button::new(tr("text.discard")))
                 .on_hover_text(tr("text.discard_hint"))
@@ -225,6 +275,34 @@ impl TextView {
                     ui.label(tr("text.text"));
                     ui.add(egui::TextEdit::singleline(&mut self.new_text).desired_width(320.0));
                 });
+                if self.new_everywhere {
+                    // Texts of single languages; the others get the text above.
+                    let mut remove = None;
+                    for (i, (code, text)) in self.new_translations.iter_mut().enumerate() {
+                        ui.horizontal(|ui| {
+                            ui.add(
+                                egui::TextEdit::singleline(code)
+                                    .hint_text(tr("text.language_code"))
+                                    .desired_width(50.0),
+                            )
+                            .on_hover_text(tr("text.language_code_hint"));
+                            ui.add(egui::TextEdit::singleline(text).desired_width(320.0));
+                            if ui.small_button("×").clicked() {
+                                remove = Some(i);
+                            }
+                        });
+                    }
+                    if let Some(i) = remove {
+                        self.new_translations.remove(i);
+                    }
+                    if ui
+                        .small_button(tr("text.add_translation"))
+                        .on_hover_text(tr("text.language_code_hint"))
+                        .clicked()
+                    {
+                        self.new_translations.push(Default::default());
+                    }
+                }
                 ui.horizontal(|ui| {
                     ui.checkbox(&mut self.new_everywhere, tr("text.every_language"))
                         .on_hover_text(tr("text.every_language_hint"));
@@ -241,6 +319,12 @@ impl TextView {
                             name: self.new_name.trim().to_owned(),
                             text: self.new_text.clone(),
                             everywhere: self.new_everywhere,
+                            translations: self
+                                .new_translations
+                                .iter()
+                                .filter(|(code, _)| !code.trim().is_empty())
+                                .map(|(code, text)| (code.trim().to_owned(), text.clone()))
+                                .collect(),
                         });
                     }
                 });
@@ -304,6 +388,9 @@ impl TextView {
         if refilter {
             self.refilter();
         }
+        if self.save_everywhere && matches!(action, Some(TextAction::Save(_))) {
+            action = Some(TextAction::SaveEverywhere(self.changed_entries()));
+        }
         action
     }
 }
@@ -352,11 +439,23 @@ impl crate::views::ResourceViewer for TextView {
                 name,
                 text,
                 everywhere,
+                translations,
             } => Some(crate::views::ViewAction::AddString {
                 name,
                 text,
                 everywhere,
+                translations,
             }),
+            TextAction::SaveEverywhere(entries) => Some(crate::views::ViewAction::EditStrings(
+                entries
+                    .into_iter()
+                    .map(|(hash, text)| doctor_toolkit::text::StringEdit {
+                        hash,
+                        text,
+                        language: None,
+                    })
+                    .collect(),
+            )),
         }
     }
 

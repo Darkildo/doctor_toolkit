@@ -3,8 +3,8 @@ type: exe
 status: known
 confidence: exe
 editions: ["1.0.789.0"]
-stages: [72, 58, 59]
-sources: ["docs/analysis/performance.md §7", "docs/analysis/live-link.md §3", "docs/analysis/live-link.md §16.1", "docs/analysis/live-link.md §16.5", "crates/doctor-toolkit-live/src/addr.rs"]
+stages: [72, 58, 59, 78]
+sources: ["docs/analysis/message-bus.md §3.2", "docs/analysis/performance.md §7", "docs/analysis/live-link.md §3", "docs/analysis/live-link.md §16.1", "docs/analysis/live-link.md §16.5", "crates/doctor-toolkit-live/src/addr.rs"]
 tags: [exe, clock, timing]
 updated: 2026-11-16
 ---
@@ -30,7 +30,7 @@ updated: 2026-11-16
 | `0x01205224` | данные: время симуляции, мс (`u32`); его читает Lua `GetSimTime` | live-link.md §3; performance.md §7; crates/doctor-toolkit-live/src/addr.rs |
 | `0x0046A850` | Lua `GetSimTime`: читает `0x01205224` | live-link.md §3; crates/doctor-toolkit-live/src/edition.rs |
 | `0x0040D450` | ограничитель фиксированного шага (ждать до `тактов / частота`) — мёртвый код, никто не вызывает | performance.md §7; renderer.md §4 |
-| `0x010F6F2C` | данные: игровое время, по которому `0x004404F0` ставит отложенные сообщения | logic-graph.md §9 |
+| `0x00440590` | очередь задержки сообщений: срок записи — `0x01205224` + секунды × 1000 (прежняя запись называла `0x004404F0` и `0x010F6F2C` — неверно) | message-bus.md §3.2 |
 | `0x01129A8C` | данные: счётчик кадров игры (`u32`); `0x0068BAF0` прибавляет 1 в начале кадра | live-link.md §16.1; crates/doctor-toolkit-live/src/addr.rs |
 | `0x011260B0` | данные: константа 59,94 (тики анимации в секунду) | characters.md §6.4 |
 

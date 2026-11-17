@@ -42,10 +42,12 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
+use super::native::{self, NativeBlock, NativeHost, NativeReport};
 use super::order::{self, Rule, Strength};
 use super::package::ModArchive;
 use super::version::{self, Condition};
@@ -217,12 +219,20 @@ pub enum Problem {
     /// A mod the author recommends is not enabled (or not of an allowed
     /// version). Only a hint.
     Recommended { id: String, versions: String },
+    /// The executable code of the mod (format version 5) is not installed:
+    /// why, and whether the mod says it makes no sense without its code
+    /// (`required`). With `required` the mod cannot be applied; without, its
+    /// data is written and this is only said.
+    Native { block: NativeBlock, required: bool },
 }
 
 impl Problem {
     /// Whether the mod cannot be applied at all. The others stop applying
     /// unless compatibility is ignored, except notices ([`Self::is_notice`]).
     pub fn is_fatal(&self) -> bool {
+        if let Self::Native { block, required } = self {
+            return native::is_fatal(block, *required);
+        }
         !matches!(
             self,
             Self::OriginalDiffers { .. }
@@ -235,7 +245,10 @@ impl Problem {
 
     /// Whether the problem is only reported and never stops applying.
     pub fn is_notice(&self) -> bool {
-        matches!(self, Self::AnchorMissing { .. } | Self::Recommended { .. })
+        match self {
+            Self::Native { .. } => !self.is_fatal(),
+            _ => matches!(self, Self::AnchorMissing { .. } | Self::Recommended { .. }),
+        }
     }
 
     /// Whether the problem is about another mod the mod needs (format version 3).
@@ -326,6 +339,17 @@ impl CompatIssue {
             Problem::Recommended { id, versions } => {
                 format!("works best with mod `{id}` ({})", versions_words(versions))
             }
+            Problem::Native {
+                block,
+                required: true,
+            } => format!(
+                "{}; the mod does not work without its code, so it is not written at all",
+                block.describe()
+            ),
+            Problem::Native {
+                block,
+                required: false,
+            } => format!("{}; only its data is written", block.describe()),
         };
         match self.subject {
             Subject::Mod => format!("{}: {what}", self.mod_id),
@@ -536,6 +560,13 @@ pub struct ModManager {
     dir: PathBuf,
     mods: Vec<InstalledMod>,
     deployment: Deployment,
+    /// What installing executable code depends on; looked up when first
+    /// needed and after each write.
+    native_host: OnceLock<NativeHost>,
+    /// The host is given ([`Self::set_native_host`]) and never looked up.
+    native_host_fixed: bool,
+    /// What the last write or removal did with the code of the mods.
+    native_report: NativeReport,
 }
 
 impl ModManager {
@@ -577,7 +608,51 @@ impl ModManager {
             dir,
             mods,
             deployment,
+            native_host: OnceLock::new(),
+            native_host_fixed: false,
+            native_report: NativeReport::default(),
         })
+    }
+
+    /// The game and the files of the toolkit, as installing executable code
+    /// sees them ([`NativeHost::detect`]).
+    pub fn native_host(&self) -> &NativeHost {
+        self.native_host
+            .get_or_init(|| NativeHost::detect(&self.root))
+    }
+
+    /// Gives the host instead of looking at the game and next to the
+    /// program: for tests and for a caller that knows better.
+    pub fn set_native_host(&mut self, host: NativeHost) {
+        self.native_host = OnceLock::from(host);
+        self.native_host_fixed = true;
+    }
+
+    /// The game folder changed: the host is looked up anew.
+    fn forget_native_host(&mut self) {
+        if !self.native_host_fixed {
+            self.native_host = OnceLock::new();
+        }
+    }
+
+    /// What the last [`Self::apply`], [`Self::unapply`] or
+    /// [`Self::sync_native`] did with the executable code of the mods.
+    pub fn native_report(&self) -> &NativeReport {
+        &self.native_report
+    }
+
+    /// Brings the executable code in the game folder in line with the
+    /// enabled mods and the player's answers ([`native::sync`]) without
+    /// writing data: for a launch that does not write the mods into the
+    /// game. Never fails: what went wrong is in the report.
+    pub fn sync_native(&mut self) -> &NativeReport {
+        self.native_report =
+            native::sync(self, self.native_host()).unwrap_or_else(|e| NativeReport {
+                warnings: vec![format!("native code: {e}")],
+                ..NativeReport::default()
+            });
+        self.forget_native_host();
+        &self.native_report
     }
 
     /// The mod manager directory.
@@ -620,7 +695,13 @@ impl ModManager {
         let mut text = serde_json::to_vec_pretty(&registry)
             .map_err(|e| Error::mod_error(format!("registry: {e}")))?;
         text.push(b'\n');
-        crate::atomic::write(&self.dir.join(REGISTRY_FILE), &text)
+        crate::atomic::write(&self.dir.join(REGISTRY_FILE), &text)?;
+        // Code of a mod that is switched off, removed or replaced by a
+        // build nobody agreed to leaves the game at once, not at the next
+        // write. What cannot be removed now (the game is running) is said
+        // by the state of the mod and removed the next time.
+        let _ = native::prune(self);
+        Ok(())
     }
 
     // ---------------------------------------------------------- installation
@@ -688,7 +769,7 @@ impl ModManager {
         let result = (|| {
             let store = PayloadStore::new(staging.join(PAYLOAD_DIR));
             for blob in manifest.payloads() {
-                let data = ws.store().get(blob)?;
+                let data = super::built_payload(ws, info, blob)?;
                 store.put(&data)?;
             }
             write_manifest(&staging, &manifest)?;
@@ -751,9 +832,33 @@ impl ModManager {
         }
         let store = PayloadStore::new(staging.join(PAYLOAD_DIR));
         let blobs: Vec<Blob> = manifest.payloads().into_iter().cloned().collect();
+        let modules: HashMap<&str, &str> = manifest
+            .native
+            .iter()
+            .flat_map(|n| &n.modules)
+            .map(|m| (m.payload.sha256.as_str(), m.file.as_str()))
+            .collect();
         for blob in &blobs {
+            // Checked against its hash by the archive.
             let data = archive.read_payload(blob)?;
+            if let Some(file) = modules.get(blob.sha256.as_str()) {
+                native::check_module(&data).map_err(|why| {
+                    Error::mod_error(format!("{}: native module `{file}`: {why}", path.display()))
+                })?;
+            }
             store.put(&data)?;
+        }
+        if let Some(native) = &manifest.native {
+            warnings.push(format!(
+                "the mod contains executable code ({}): it is installed into the game only \
+                 after you agree to it",
+                native
+                    .modules
+                    .iter()
+                    .map(|m| m.file.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
         }
         if let Some(picture) = archive.read_preview()? {
             let name = manifest.preview.clone().expect("a preview has a name");
@@ -1194,6 +1299,21 @@ impl ModManager {
                     problems.push(Problem::Recommended { id, versions });
                 }
                 _ => {}
+            }
+        }
+        if let Some(code) = &m.manifest.native {
+            let block = if m.enabled {
+                native::blocks(self, self.native_host())
+                    .map(|mut blocks| blocks.remove(&m.id))
+                    .unwrap_or_else(|e| Some(NativeBlock::Damaged(e.to_string())))
+            } else {
+                None
+            };
+            if let Some(block) = block {
+                problems.push(Problem::Native {
+                    block,
+                    required: code.required,
+                });
             }
         }
         problems
@@ -1774,7 +1894,11 @@ impl ModManager {
 
     /// Whether the mod manager has written anything into the game that is still there.
     pub fn has_written(&self) -> bool {
-        !self.deployment.streams.is_empty() || !self.deployment.files.is_empty()
+        !self.deployment.streams.is_empty()
+            || !self.deployment.files.is_empty()
+            // Code too; a loader that stays for other modules is not the mods'.
+            || native::written(self)
+                .is_ok_and(|w| w.iter().any(|(_, owner)| owner != native::OWNER_LOADER))
     }
 
     /// Writes the combined result of the enabled mods into the game. Streams
@@ -1875,6 +1999,18 @@ impl ModManager {
         )?;
         // Files of the archives go after the streams, into the overlay archive.
         report.merge(self.sync_files(game, true, options.force)?);
+        // Executable code goes last, and only what the player agreed to.
+        let code = self.sync_native().clone();
+        report.written.extend(code.written);
+        report
+            .warnings
+            .extend(code.blocked.iter().map(|(id, block)| {
+                format!(
+                    "native code of mod `{id}` is not installed: {}",
+                    block.describe()
+                )
+            }));
+        report.warnings.extend(code.warnings);
         Ok(report)
     }
 
@@ -1904,6 +2040,15 @@ impl ModManager {
             progress,
         )?;
         report.merge(self.sync_files(game, false, force)?);
+        // The code the mod manager installed leaves with the data.
+        self.native_report = native::remove_all(self).unwrap_or_else(|e| NativeReport {
+            warnings: vec![format!("native code: {e}")],
+            ..NativeReport::default()
+        });
+        self.forget_native_host();
+        report
+            .warnings
+            .extend(self.native_report.warnings.iter().cloned());
         Ok(report)
     }
 

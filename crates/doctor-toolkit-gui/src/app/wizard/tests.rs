@@ -526,3 +526,215 @@ fn curated_parameters_have_russian_texts() {
     }
     assert_eq!(russian.len(), curated.len());
 }
+
+/// Stage 103: a preset stops at the first step that fails, and a value may
+/// hold a comma (`\,` or a JSON string).
+#[test]
+fn wizard_preset_stops_on_an_error_and_takes_commas() {
+    assert_eq!(
+        split_preset(r#"texts, find=a\,b ,replace="x, \"y\"",file=C:\dir\a.glb,step=2"#),
+        [
+            "texts",
+            r"find=a,b",
+            r#"replace="x, \"y\"""#,
+            r"file=C:\dir\a.glb",
+            "step=2"
+        ]
+    );
+    assert_eq!(
+        preset_item(r#"replace="x, \"y\"""#),
+        ("replace".to_owned(), r#"x, "y""#.to_owned())
+    );
+    assert_eq!(preset_item("only"), ("only".to_owned(), String::new()));
+    assert_eq!(
+        preset_item(r"file=C:\dir\a.glb").1,
+        r"C:\dir\a.glb",
+        "kept as written"
+    );
+    // Nothing to replace: the step refuses, nothing is recorded.
+    let mut f = fixture("preset-fail");
+    f.app.wizards.preset_used = false;
+    f.app
+        .run_wizard_preset("texts,table=level,find=absent,replace=x,replace_all,step=9");
+    assert!(operations(&f.app).is_empty());
+    let error = f.app.preset_error().expect("the run failed").to_owned();
+    assert!(
+        error.contains("DOCTOR_TOOLKIT_GUI_WIZARD: texts"),
+        "{error}"
+    );
+    // An unknown task fails too.
+    let mut f = fixture("preset-unknown");
+    f.app.run_wizard_preset("nonsense");
+    assert!(f.app.preset_error().unwrap().contains("unknown task"));
+    // A replacement with a comma, both ways of writing it.
+    for (n, value) in [r"Mundo\, amigo", r#""Mundo, amigo""#].iter().enumerate() {
+        let mut f = fixture(&format!("preset-comma-{n}"));
+        let spec = format!("texts,table=level,find=world,replace={value},replace_all,step=9");
+        f.app.run_wizard_preset(&spec);
+        assert_eq!(f.app.preset_error(), None);
+        assert_eq!(operations(&f.app).len(), 1);
+        let loc = level(&f.app, mini::STRINGS);
+        let table = StringTable::parse(&f.app.current_data(loc).unwrap()).unwrap();
+        assert!(
+            table.strings[0].iter().any(|s| s.contains("Mundo, amigo")),
+            "{:?}",
+            table.strings[0]
+        );
+    }
+}
+
+/// Stage 103: the sample of a new part is found outside the first ticked
+/// set — `_all` of the player has nothing with a mesh in the hat slot —
+/// and the wizard says where it comes from; a part may have a second level
+/// of detail.
+#[test]
+fn outfit_wizard_takes_the_sample_from_another_set() {
+    use doctor_toolkit::resource::partsdb::{MODEL_SLOTS, Part};
+    use doctor_toolkit::resource::simgroup::Hash32;
+    let mut f = fixture("outfit-all");
+    let skinned = f.dir.join("hat.glb");
+    std::fs::write(&skinned, mini::triangle_glb(0.0, "hat_cloth", true)).unwrap();
+    let far = f.dir.join("hat_far.glb");
+    std::fs::write(&far, mini::triangle_glb(0.5, "hat_cloth", true)).unwrap();
+    let app = &mut f.app;
+    let at = level(app, mini::PARTSDB);
+    // `_all`: a copy of the set whose only choice of the slot is an empty part.
+    let mut db = PartsDb::parse(&app.current_data(at).unwrap()).unwrap();
+    let all = db.clone_set(0, "_all").unwrap();
+    let empty = db
+        .add_part(Part {
+            name: "no_hat".into(),
+            slot: Some(0),
+            models: [Hash32(0); MODEL_SLOTS],
+            label: String::new(),
+            tags: Vec::new(),
+        })
+        .unwrap();
+    let variant = db.add_variant("no_hat", vec![empty as u16]).unwrap();
+    for choice in &mut db.sets[all].choices {
+        if choice.slot == 0 {
+            choice.variants = vec![variant];
+        }
+    }
+    let game = app.game.clone().unwrap();
+    app.workspace_mut()
+        .unwrap()
+        .set_resource(&game, at.stream, at.resource, db.encode().unwrap(), "_all")
+        .unwrap();
+    let mut w = start(app, Kind::Outfit, Some(at));
+    let State::Outfit(o) = &mut w.state else {
+        panic!()
+    };
+    assert_eq!(o.sets, [false, true], "`_all` is ticked");
+    let templates = o.templates();
+    assert!(templates.iter().all(|t| !t.ticked), "{templates:?}");
+    assert_eq!(
+        templates[0],
+        outfit::Template {
+            part: 0,
+            set: Some(0),
+            ticked: false
+        }
+    );
+    assert_eq!(o.template, Some(0), "the sample of the other set");
+    assert!(
+        w.state.task_ref().check(0, app).is_ok(),
+        "the first step passes"
+    );
+    // A sample named in the preset; an unknown one is an error of the step.
+    let State::Outfit(o) = &mut w.state else {
+        panic!()
+    };
+    o.preset("template", "nothing", app);
+    assert!(w.state.task_ref().check(0, app).is_err());
+    let State::Outfit(o) = &mut w.state else {
+        panic!()
+    };
+    o.preset("template", &db.parts[0].name, app);
+    assert_eq!(o.template, Some(0));
+    o.part_name = "cap".into();
+    o.variant_name = "cap".into();
+    o.set_file(app, skinned);
+    o.set_lod_file(app, Some(far));
+    assert!(
+        matches!(&o.lod_plan, Some(Ok(_))),
+        "the far mesh is planned: {:?}",
+        o.lod_plan.as_ref().and_then(|p| p.as_ref().err())
+    );
+    let summary = o.summary(app).join("\n");
+    assert!(summary.contains("which is not ticked"), "{summary}");
+    assert!(summary.contains("cap_lod2"), "{summary}");
+    let before = operations(app).len();
+    let label = finish(app, &mut w);
+    assert_eq!(operations(app).len(), before + 1, "one operation");
+    assert_eq!(label, "Wizard: Add outfit cap");
+    let db = PartsDb::parse(&app.current_data(at).unwrap()).unwrap();
+    let part = &db.parts[db.part_index("cap").unwrap()];
+    let (near, far) = (part.models[0].0, part.models[1].0);
+    assert!(near != 0 && far != 0 && near != far, "{near:x} {far:x}");
+    let ws = app.workspace.as_ref().unwrap();
+    for mesh in [near, far] {
+        assert!(
+            ws.changes().any(|c| c.key.ids[3] == mesh && c.is_added()),
+            "mesh {mesh:x} is in the workspace"
+        );
+    }
+    let variant = db.variant_index("cap").unwrap();
+    assert!(
+        db.sets[all]
+            .choices
+            .iter()
+            .any(|c| c.variants.contains(&variant))
+    );
+    assert!(
+        !db.sets[0]
+            .choices
+            .iter()
+            .any(|c| c.variants.contains(&variant))
+    );
+    // The hints of the materials step and the size of the preview.
+    assert!(outfit::is_stub_material("jacket_classic_op01_mat"));
+    assert!(!outfit::is_stub_material("jacket_classic_op01_greyBlack"));
+    let black = outfit::Tint {
+        hash: 1,
+        name: "m".into(),
+        colours: vec![("g_TintColor0", vec![0.0; 4])],
+    };
+    assert!(black.is_black());
+    let room = egui::vec2(1500.0, 700.0);
+    let width = outfit::preview_width(room);
+    assert!(
+        width * 0.9 + 200.0 <= room.y + 0.5,
+        "{width}: the view fits"
+    );
+    assert!(outfit::preview_width(egui::vec2(400.0, 2000.0)) <= 400.0);
+}
+
+/// Stage 103: with "In all tables and languages" the Edit texts wizard
+/// gives the changed entries their text in every table that has them.
+#[test]
+fn texts_wizard_edits_every_table() {
+    let mut f = fixture("texts-everywhere");
+    let app = &mut f.app;
+    let here = level(app, mini::STRINGS);
+    let mut w = start(app, Kind::Texts, Some(here));
+    let State::Texts(t) = &mut w.state else {
+        panic!()
+    };
+    t.preset("find", "World", app);
+    t.preset("replace", "Mundo", app);
+    t.preset("replace_all", "", app);
+    t.preset("everywhere", "", app);
+    assert!(t.everywhere);
+    let label = finish(app, &mut w);
+    assert!(label.contains("2 table(s)"), "{label}");
+    assert_eq!(operations(app).len(), 1, "one operation");
+    let other = Location {
+        stream: app.game.as_ref().unwrap().find_stream(mini::TEXT).unwrap(),
+        resource: 0,
+    };
+    for loc in [here, other] {
+        let table = StringTable::parse(&app.current_data(loc).unwrap()).unwrap();
+        assert_eq!(table.strings[0][1], "Mundo", "{loc:?}");
+    }
+}

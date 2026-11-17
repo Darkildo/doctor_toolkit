@@ -163,6 +163,9 @@ pub struct Toolkit {
     dictionary: OnceLock<Dictionary>,
     messages: Mutex<Option<(WsStamp, Arc<Messages>)>>,
     dialogues: OnceLock<Result<Catalog, String>>,
+    /// Names of messages and objects of the game files, for the journal of
+    /// the running game.
+    live_names: OnceLock<doctor_toolkit::live::names::LiveNames>,
 }
 
 impl Toolkit {
@@ -199,6 +202,7 @@ impl Toolkit {
             dictionary: OnceLock::new(),
             messages: Mutex::new(None),
             dialogues: OnceLock::new(),
+            live_names: OnceLock::new(),
         })
     }
 
@@ -360,6 +364,14 @@ impl Toolkit {
         let built = Arc::new(Messages::build(&self.game, self.resources(), ws.as_ref()));
         *cached = Some((stamp, built.clone()));
         Ok(built)
+    }
+
+    /// Names of the messages and objects of the game files (read once): what
+    /// the events of the running game's journal are named with.
+    pub fn live_names(&self) -> &doctor_toolkit::live::names::LiveNames {
+        self.live_names.get_or_init(|| {
+            doctor_toolkit::live::names::LiveNames::build(&self.game, self.resources(), None)
+        })
     }
 
     /// The dialogue catalog (read once).

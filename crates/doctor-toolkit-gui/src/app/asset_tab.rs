@@ -37,6 +37,14 @@ pub enum AssetCmd {
     Export,
     /// A cut-scene shot: open the cut-scene in the level view (stage 62).
     OpenInLevel,
+    /// Replace the resource with a file read by its type, or (`raw`) taken
+    /// as the stored data (stage 103).
+    ImportFile {
+        raw: bool,
+    },
+    /// New collision of this kind for the metamodel, or for the metamodel
+    /// that uses this collision (stage 103).
+    BuildCollision(doctor_toolkit::resource::hkx::collision::CollisionKind),
 }
 
 /// Keys every editor of the tabs shares (`?` of their bars, the shortcut
@@ -72,6 +80,36 @@ pub fn asset_menu(ui: &mut egui::Ui, in_tab: bool, type_id: u32, out: &mut Vec<A
     }
     ui.separator();
     item(ui, AssetCmd::Export, tr("doc.export"));
+    if doctor_toolkit::import::file::is_supported(type_id) {
+        item(
+            ui,
+            AssetCmd::ImportFile { raw: false },
+            tr("doc.import_file"),
+        );
+    }
+    item(ui, AssetCmd::ImportFile { raw: true }, tr("doc.import_raw"));
+    if type_id == doctor_toolkit::level::TYPE_METAMODEL
+        || type_id == doctor_toolkit::resource::hkx::TYPE_HKX
+    {
+        use doctor_toolkit::resource::hkx::collision::CollisionKind as K;
+        ui.menu_button(tr("doc.build_collision"), |ui| {
+            ui.label(
+                egui::RichText::new(tr("doc.build_collision_hint"))
+                    .weak()
+                    .small(),
+            );
+            for (kind, text) in [
+                (K::Mesh, "doc.collision_mesh"),
+                (K::Hull, "doc.collision_hull"),
+                (K::Box, "doc.collision_box"),
+            ] {
+                if ui.button(tr(text)).clicked() {
+                    out.push(AssetCmd::BuildCollision(kind));
+                    ui.close();
+                }
+            }
+        });
+    }
 }
 
 impl BrowserApp {
@@ -140,6 +178,18 @@ impl BrowserApp {
                 if let Some(game) = self.game.clone() {
                     self.nav.export(&game, vec![loc]);
                 }
+            }
+            AssetCmd::ImportFile { raw } => {
+                let mut dialog = rfd::FileDialog::new();
+                if let Some(dir) = &self.settings.export_dirs.import {
+                    dialog = dialog.set_directory(dir);
+                }
+                if let Some(path) = dialog.pick_file() {
+                    self.import_resource_file(loc, &path, raw);
+                }
+            }
+            AssetCmd::BuildCollision(kind) => {
+                self.build_collision(loc, kind, None);
             }
         }
     }

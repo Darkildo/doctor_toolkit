@@ -143,6 +143,10 @@ fn object_ui(
         if level.is_object_hidden(r) {
             badge(ui, tr("details.hidden"), Color32::GRAY);
         }
+        // The note of the class in the knowledge base (stage 103).
+        if let Some(rel) = crate::app::knowledge::class_note(&class) {
+            crate::app::knowledge::note_link(ui, &rel);
+        }
     });
     ui.label(
         RichText::new(trf(
@@ -877,10 +881,52 @@ fn add_ui(
         return;
     };
     let game = game.clone();
+    // Where the new object goes: the SimGroup of this object, or another
+    // loaded one (the SimGroup of a new zone, which has no object to select).
+    let groups: Vec<(Location, String)> = level
+        .level()
+        .map(|l| {
+            l.groups
+                .iter()
+                .map(|g| {
+                    let name = game.streams()[g.location.stream].stream_name();
+                    (
+                        g.location,
+                        format!("{name}#{} ({})", g.location.resource, g.objects.len()),
+                    )
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let target = level
+        .add
+        .into
+        .filter(|t| groups.iter().any(|(at, _)| at == t))
+        .unwrap_or(location);
+    if groups.len() > 1 {
+        ui.horizontal(|ui| {
+            ui.label(tr("level.add_to"));
+            let shown = groups
+                .iter()
+                .find(|(at, _)| *at == target)
+                .map_or_else(String::new, |(_, label)| label.clone());
+            egui::ComboBox::from_id_salt("level-add-to")
+                .selected_text(shown)
+                .width(260.0)
+                .show_ui(ui, |ui| {
+                    for (at, label) in &groups {
+                        let value = (*at != location).then_some(*at);
+                        ui.selectable_value(&mut level.add.into, value, label);
+                    }
+                })
+                .response
+                .on_hover_text(tr("level.add_to_hint"));
+        });
+    }
     let id = u32::from_str_radix(level.add.model.trim(), 16).ok();
     let found = id.and_then(|id| level.level()?.source.find(TYPE_METAMODEL, id));
     let reachable =
-        found.is_some_and(|f| reachable_streams(level, location.stream).contains(&f.stream()));
+        found.is_some_and(|f| reachable_streams(level, target.stream).contains(&f.stream()));
     let note = match (id, found) {
         (None, _) => tr("level.note_type_id").to_owned(),
         (Some(_), None) => tr("level.note_not_found").to_owned(),
@@ -926,12 +972,34 @@ fn add_ui(
             _ => ModelChoice::Existing(id),
         };
         out.push(LevelAction::Add {
-            group: location,
+            group: target,
             template: (location, r.object),
             model,
             position: level.in_front(),
         });
     }
+    // An object of a class with empty attributes, without a template.
+    ui.horizontal(|ui| {
+        ui.label(tr("level.empty_class"));
+        ui.add(
+            egui::TextEdit::singleline(&mut level.add.class)
+                .hint_text("EnableDisableStreams")
+                .desired_width(180.0),
+        )
+        .on_hover_text(tr("level.empty_class_hint"));
+        if ui
+            .add_enabled(
+                !level.add.class.trim().is_empty(),
+                egui::Button::new(tr("level.add_empty")),
+            )
+            .clicked()
+        {
+            out.push(LevelAction::AddEmpty {
+                group: target,
+                class: level.add.class.trim().to_owned(),
+            });
+        }
+    });
 }
 
 // -------------------------------------------------------------------- logic

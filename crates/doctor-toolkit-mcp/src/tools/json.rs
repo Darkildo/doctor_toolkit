@@ -20,6 +20,7 @@ const TYPE_LH2: u32 = sdbm(b"lh2");
 const TYPE_MATERIAL: u32 = sdbm(b"material");
 const TYPE_TG4H: u32 = sdbm(b"tg4h");
 const TYPE_SBK: u32 = sdbm(b"sbk");
+const TYPE_APX: u32 = sdbm(b"apx");
 
 /// What `resource_json` shows for a type, or `None` when it has no view.
 pub fn view_name(type_id: u32) -> Option<&'static str> {
@@ -46,6 +47,7 @@ pub fn view_name(type_id: u32) -> Option<&'static str> {
         ffn::TYPE_FFN => "font: glyph metrics",
         TYPE_MATERIAL => "material: shaders, parameters, textures",
         TYPE_TG4H => "texture header: name, size, format",
+        TYPE_APX => "interface file: title, embedded textures, $name text references",
         lua::TYPE_LUA => "Lua script: decompiled Lua 5.0 source (text, not JSON)",
         _ => return None,
     })
@@ -102,6 +104,9 @@ fn decode(
         ffn::TYPE_FFN => to_value(ffn::Font::parse(data))?,
         TYPE_MATERIAL => material_json(&material::Material::parse(data)?)?,
         TYPE_TG4H => texture_json(&tg4::Tg4Header::parse(data)?),
+        TYPE_APX => doctor_toolkit::apx_edit::describe(
+            &doctor_toolkit::resource::apx::AptFile::parse(data)?,
+        ),
         lua::TYPE_LUA => {
             let chunk = lua::Chunk::parse(data)?;
             return Ok(View::Source(lua::decompile(&chunk).source));

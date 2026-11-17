@@ -15,7 +15,7 @@ updated: 2026-11-16
 ## Ядро
 
 - [Главный цикл](../engine/main-loop.md) — кадр и обновление, точки перехвата; адреса: [главный цикл](../exe/main-loop.md), [часы игры](../exe/game-clock.md).
-- [Шина сообщений](../engine/message-bus.md) — имена и хэши сообщений, подписка, отправка; адреса: [шина](../exe/message-bus.md); список: [сообщения](../messages/index.md).
+- [Шина сообщений](../engine/message-bus.md) — имена и хэши сообщений, подписка, отправка; адреса: [шина](../exe/message-bus.md); список: [сообщения](../messages/index.md); [доставка одному слушателю и очередь задержки](../engine/message-delivery.md); [данные сообщения](../engine/message-data.md); опыт: [отправитель и порядок на стенде](../experiments/message-bus-senders.md).
 - [Объектная модель: SimGroup, классы, GUID](../engine/simgroup-objects.md) — объекты, пакеты атрибутов, регистрация классов; адреса: [реестр классов](../exe/simgroup-class-registry.md), [SimManager](../exe/sim-manager-objects.md), [Entity](../exe/entity-matrix.md).
 - [Lua в игре](../engine/lua.md) — Lua 5.0, функции движка для скриптов; адреса: [среда Lua](../exe/lua-runtime.md), [ошибки Lua](../exe/lua-errors.md).
 - [Хэши имён и сжатие](../engine/hashing.md) — SDBM, CRC-32, RefPack.
@@ -30,7 +30,7 @@ updated: 2026-11-16
 
 ## Картинка и звук
 
-- [Рендер](../engine/render.md) — D3D9, поток рендера, шейдеры, цепочка кадра; адреса: [устройство D3D](../exe/d3d-device.md), [поток рендера](../exe/render-thread.md), [показ кадра](../exe/frame-present.md), [vsync](../exe/vsync-limiter.md), [текстуры](../exe/texture-table.md), [меши](../exe/mesh-buffers.md), [шейдеры](../exe/shader-table.md), [байткод шейдеров](../exe/shader-bytecode-offsets.md), [свет и тон](../exe/lighting-tone-lut.md), [камера](../exe/camera-views.md).
+- [Рендер](../engine/render.md) — D3D9, поток рендера, шейдеры, цепочка кадра; адреса: [устройство D3D](../exe/d3d-device.md), [поток рендера](../exe/render-thread.md), [вызовы отрисовки](../exe/draw-calls.md), [показ кадра](../exe/frame-present.md), [vsync](../exe/vsync-limiter.md), [текстуры](../exe/texture-table.md), [меши](../exe/mesh-buffers.md), [шейдеры](../exe/shader-table.md), [байткод шейдеров](../exe/shader-bytecode-offsets.md), [свет и тон](../exe/lighting-tone-lut.md), [камера](../exe/camera-views.md).
 - [Время суток, свет и погода](../engine/time-of-day.md) — адреса: [время суток](../exe/time-of-day.md), [погода](../exe/weather.md).
 - [Анимация](../engine/animation.md) — скелеты, клипы, граф; адреса: [клипы](../exe/anim-clips.md), [узлы графа](../exe/anim-graph-nodes.md).
 - [Звук](../engine/audio.md) — банки, потоки, речь; адреса: [банки звука](../exe/audio-banks.md).
@@ -45,6 +45,8 @@ updated: 2026-11-16
 
 ## Модули тулкита в игре
 
+- [Платформа нативных модов (`doctor_platform`)](../engine/native-mods.md) — новые классы SimGroup, функции Lua, сообщения и перехваты из DLL мода; адреса: [что она зовёт и патчит](../exe/native-mods.md); [опыт на стенде](../experiments/native-class-on-bench.md).
+- [Как менеджер модов ставит код мода](../engine/native-mod-install.md) — формат версии 5, согласие игрока по хэшу файла, издание, откат; [ASI-загрузчик](../engine/asi-loader.md) — чей он и что делает загрузчик тулкита; [опыт на стенде](../experiments/native-mod-in-manager.md); вопросы: [Windows](../questions/native-mods-on-windows.md), [доверие автору](../questions/native-mod-author-trust.md).
 - [Модуль `doctor_live` (живая связь)](../engine/live-module.md) — что читает и пишет в запущенной игре; адреса: [проверка издания](../exe/edition-check.md), [журнал игры](../exe/game-journal-print.md), [профиль](../exe/profile-hotspots.md).
 - Состояние игры в памяти: [семьи и деньги](../exe/family-money.md), [команда](../exe/player-crew.md), [чекпоинты и переменные](../exe/missions-variables.md).
 - Прочее в exe: [обработчики логических классов](../exe/logic-class-handlers.md), [диалоги](../exe/dialogues.md), [секвенсор роликов](../exe/cutscenes-sequencer.md), [загрузчики форматов](../exe/format-loaders.md), [отладочные средства](../exe/debug-leftovers.md), [известные падения](../exe/known-crashes.md).

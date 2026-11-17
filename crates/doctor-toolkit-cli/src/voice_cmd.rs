@@ -9,13 +9,13 @@ use clap::Args;
 
 use doctor_toolkit::game::GameInstance;
 use doctor_toolkit::hash::string_id;
-use doctor_toolkit::resource::auc::{AudioConfig, TYPE_AUC};
-use doctor_toolkit::resource::chv::{ChatterSet, TYPE_CHV};
+use doctor_toolkit::resource::auc::AudioConfig;
 use doctor_toolkit::resource::get::SpeechEvent;
-use doctor_toolkit::resource::mix::{LEVEL_TIMES, LEVEL_VOLUME, Mix, MixChannel, TYPE_MIX};
+use doctor_toolkit::resource::mix::{LEVEL_TIMES, Mix, TYPE_MIX};
 use doctor_toolkit::resource::video::import::read_audio_file;
+use doctor_toolkit::sound_edit::{self, MixEdit, SetSpeechEvents};
 use doctor_toolkit::voice::{self, NewVoiceLine};
-use doctor_toolkit::workspace::{ResourceEdit, ResourceKey, StorageChoice, Workspace};
+use doctor_toolkit::workspace::Workspace;
 
 use crate::workspace_cmd::{self, EditMode};
 
@@ -45,13 +45,6 @@ fn pair(text: &str) -> Result<(String, String)> {
 
 fn stream_name(game: &GameInstance, stream: usize) -> String {
     game.streams()[stream].stream_name()
-}
-
-fn key_of(game: &GameInstance, stream: usize, resource: usize) -> Result<ResourceKey> {
-    let file = &game.streams()[stream];
-    let opened = game.open_stream(stream)?;
-    let header = &opened.layout().resources[resource].header;
-    Ok(ResourceKey::new(&file.stream_name(), header))
 }
 
 #[derive(Args)]
@@ -98,47 +91,21 @@ pub struct AddArgs {
 }
 
 fn speakers(game: &GameInstance, ws: &Workspace, event: Option<&str>) -> Result<()> {
-    let wanted = event.map(string_id);
-    // Voice codes come from the file names of the lines (`d_mob3_…` → mob3).
-    let mut files = std::collections::HashMap::new();
-    for (_, bank) in voice::banks(game, ws)? {
-        for e in bank.entries {
-            files.insert(e.id[0], e.file);
-        }
-    }
-    let mut count = 0usize;
-    for (_, s, r) in voice::locate(game, &[TYPE_CHV]) {
-        let set = ChatterSet::parse(&ws.current_data(game, s, r)?)?;
-        if wanted.is_some_and(|h| set.event(h).is_none()) {
-            continue;
-        }
-        let lines: usize = set.events.iter().map(|e| e.lines.len()).sum();
-        let mut voices = std::collections::BTreeMap::<&str, usize>::new();
-        for line in set.events.iter().flat_map(|e| &e.lines) {
-            if let Some(code) = files
-                .get(&line.sound())
-                .and_then(|f| f.strip_prefix("d_"))
-                .and_then(|f| f.split('_').next())
-            {
-                *voices.entry(code).or_default() += 1;
-            }
-        }
-        let mut voices: Vec<_> = voices.into_iter().collect();
-        voices.sort_by_key(|&(code, n)| (std::cmp::Reverse(n), code));
-        let voices: Vec<&str> = voices.iter().take(3).map(|&(code, _)| code).collect();
+    let all = sound_edit::speakers(game, ws, event)?;
+    for s in &all {
         out!(
-            "{}  {} event(s), {lines} line(s)  voice: {}",
-            key_of(game, s, r)?,
-            set.events.len(),
-            if voices.is_empty() {
+            "{}  {} event(s), {} line(s)  voice: {}",
+            s.key,
+            s.events,
+            s.lines,
+            if s.voices.is_empty() {
                 "-".to_owned()
             } else {
-                voices.join(", ")
+                s.voices.join(", ")
             }
         );
-        count += 1;
     }
-    out!("{count} chatter set(s)");
+    out!("{} chatter set(s)", all.len());
     Ok(())
 }
 
@@ -323,13 +290,7 @@ pub fn events(args: &EventsArgs) -> Result<()> {
             out!("{}", serde_json::to_string_pretty(&shown)?);
             return Ok(());
         }
-        // Event names are stored only in the chatter sets.
-        let mut names = std::collections::HashMap::new();
-        for (_, s, r) in voice::locate(&game, &[TYPE_CHV]) {
-            for event in ChatterSet::parse(&ws.current_data(&game, s, r)?)?.events {
-                names.insert(event.hash, event.name);
-            }
-        }
+        let names = sound_edit::event_names(&game, &ws)?;
         for e in &shown {
             let name = args
                 .events
@@ -362,42 +323,25 @@ pub fn events(args: &EventsArgs) -> Result<()> {
         bail!("--set needs event names");
     }
     let mut ws = workspace_cmd::open_for_edit(&game, &args.mode)?;
-    let ((s, r), mut table) = voice::event_table(&game, &ws)?;
-    for name in &args.events {
-        voice::check_event(name)?;
-        let hash = string_id(name);
-        let mut event = table
-            .find(hash)
-            .cloned()
-            .unwrap_or_else(|| SpeechEvent::new(name));
-        if let Some(v) = args.cooldown {
-            event.cooldown = v;
-        }
-        if let Some(v) = args.priority {
-            event.priority = v;
-        }
-        if let Some(v) = args.flags {
-            event.flags = v;
-        }
-        if let Some(v) = args.rank {
-            event.rank = v;
-        }
-        let new = table.insert(event);
-        out!("{name}: {}", if new { "new record" } else { "changed" });
+    let (done, stream) = sound_edit::set_speech_events(
+        &game,
+        &mut ws,
+        &SetSpeechEvents {
+            events: args.events.clone(),
+            cooldown: args.cooldown,
+            priority: args.priority,
+            flags: args.flags,
+            rank: args.rank,
+        },
+    )?;
+    for (name, new) in &done {
+        out!("{name}: {}", if *new { "new record" } else { "changed" });
     }
-    if let Some(problem) = table.validate().first() {
-        bail!("the edit breaks the table: {problem}");
-    }
-    let label = format!("Speech events: {}", args.events.join(", "));
-    ws.set_resource(&game, s, r, table.to_bytes()?, &label)?;
-    workspace_cmd::finish_edit(&game, &mut ws, &args.mode, vec![stream_name(&game, s)])
+    workspace_cmd::finish_edit(&game, &mut ws, &args.mode, vec![stream])
 }
 
 fn configs(game: &GameInstance, ws: &Workspace) -> Result<Vec<((usize, usize), AudioConfig)>> {
-    voice::locate(game, &[TYPE_AUC])
-        .into_iter()
-        .map(|(_, s, r)| Ok(((s, r), AudioConfig::parse(&ws.current_data(game, s, r)?)?)))
-        .collect()
+    Ok(sound_edit::audio_configs(game, ws)?)
 }
 
 #[derive(Args)]
@@ -463,32 +407,11 @@ pub fn config(args: &ConfigArgs) -> Result<()> {
     };
     let parent = args.parent.as_deref().unwrap_or_default();
     let mut ws = workspace_cmd::open_for_edit(&game, &args.mode)?;
-    let mut edits = Vec::new();
-    let mut streams = Vec::new();
-    for ((s, r), mut config) in configs(&game, &ws)? {
-        config.add_category(new, parent)?;
-        if let Some(problem) = config.validate().first() {
-            bail!("the edit breaks the configuration: {problem}");
-        }
-        edits.push((
-            s,
-            vec![ResourceEdit {
-                index: r,
-                data: config.to_bytes()?,
-                storage: StorageChoice::Keep,
-            }],
-        ));
-        streams.push(stream_name(&game, s));
-    }
-    if edits.is_empty() {
-        bail!("the game has no `auc` resource");
-    }
-    let label = format!("New mix category {new}");
-    ws.change_resources(&game, &label, &edits, &[])?;
+    let streams = sound_edit::add_mix_category(&game, &mut ws, new, parent)?;
     out!(
         "{new} ({:08x}) under {parent}: {} configuration(s)",
         string_id(new),
-        edits.len()
+        streams.len()
     );
     workspace_cmd::finish_edit(&game, &mut ws, &args.mode, streams)
 }
@@ -579,55 +502,17 @@ pub fn mix(args: &MixArgs) -> Result<()> {
         return Ok(());
     }
     let category = args.category.as_deref().unwrap_or_default();
-    let hash = string_id(category);
-    if let Some(config) = &config
-        && config.name_of(hash).is_none()
-    {
-        bail!("no mix category {category} (see `audio-config`)");
-    }
-    let mut edits = Vec::new();
-    let mut streams = Vec::new();
-    for ((s, r), mut mix) in found {
-        if mix.channel(hash).is_none() {
-            // A new channel takes the levels of the first one, at full volume.
-            let mut levels = mix
-                .channels
-                .first()
-                .map_or([-1.0, -1.0, 1.0, 1.0, 0.0, -1.0, 0.0, 0.0], |c| c.levels);
-            levels[LEVEL_VOLUME] = 1.0;
-            mix.channels.push(MixChannel {
-                category: hash,
-                levels,
-                frequency: 96_000,
-            });
-        }
-        let channel = mix.channel_mut(hash).expect("the channel was just added");
-        if let Some(v) = args.volume {
-            if !(0.0..=1.0).contains(&v) {
-                bail!("the volume must be 0..1");
-            }
-            channel.levels[LEVEL_VOLUME] = v;
-        }
-        if let Some(v) = args.frequency {
-            channel.frequency = v;
-        }
-        if let Some(v) = args.time {
-            for k in LEVEL_TIMES {
-                channel.levels[k] = v;
-            }
-        }
-        edits.push((
-            s,
-            vec![ResourceEdit {
-                index: r,
-                data: mix.to_bytes()?,
-                storage: StorageChoice::Keep,
-            }],
-        ));
-        streams.push(stream_name(&game, s));
-    }
-    let label = format!("Mix {name}: {category}");
-    ws.change_resources(&game, &label, &edits, &[])?;
-    out!("{name}: {category} changed in {} cop(ies)", edits.len());
+    let streams = sound_edit::edit_mix(
+        &game,
+        &mut ws,
+        &MixEdit {
+            name: name.clone(),
+            category: category.to_owned(),
+            volume: args.volume,
+            frequency: args.frequency,
+            time: args.time,
+        },
+    )?;
+    out!("{name}: {category} changed in {} cop(ies)", streams.len());
     workspace_cmd::finish_edit(&game, &mut ws, &args.mode, streams)
 }

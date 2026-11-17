@@ -297,7 +297,13 @@ extern "system" fn read_file<const SITE: usize>(
 ) -> i32 {
     let f = read_file_slot();
     let t0 = qpc();
-    let ok = f(file, buffer, len, read, overlapped);
+    // A stream composed from a resource patch (stage 100) is answered by
+    // the module; every other handle by what the slot holds.
+    // SAFETY: the arguments of the game's call.
+    let ok = match unsafe { crate::resources::read(file, buffer, len, read, overlapped) } {
+        Some(ok) => ok,
+        None => f(file, buffer, len, read, overlapped),
+    };
     let t1 = qpc();
     // SAFETY: plain Win32 calls; the game reads the error of the read.
     let error = unsafe { win::GetLastError() };

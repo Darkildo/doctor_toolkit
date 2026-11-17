@@ -52,6 +52,13 @@ pub struct PlayParams {
     /// hexadecimal digits; `level_objects` with filter `PlayerSpawn` lists them).
     #[serde(default)]
     pub spawn: Option<String>,
+    /// With `stream`, instead of `spawn`: appear at this point `[x, y, z]`
+    /// (Y is up, the player's feet). A PlayerSpawn of the stream is copied
+    /// there in the workspace (one undoable operation; needs
+    /// `--allow-edits`) and the game starts at the copy, so the workspace
+    /// is given to the game (`apply` must not be false).
+    #[serde(default)]
+    pub position: Option<[f32; 3]>,
     /// Draw with the graphics card (DXVK) under Wine: about 30 frames a
     /// second instead of 1–2 [default: as the editor's Play options say].
     #[serde(default)]
@@ -74,6 +81,13 @@ pub struct PlayParams {
     /// the game has the ASI loader and the edition fits).
     #[serde(default)]
     pub write_game: Option<bool>,
+    /// Through the live module only: `true` — the changed resources are put
+    /// into the game's streams in memory when the game loads them (resource
+    /// patches, no rebuilt streams on disk); `false` — every changed stream
+    /// is rebuilt whole and opened from the staged folder; not given — as
+    /// the editor's Play options say (rebuilt by default).
+    #[serde(default)]
+    pub resources_in_memory: Option<bool>,
     /// Wait until a level is loaded (the live link sees the player), at
     /// most `timeout_s` (default true).
     #[serde(default)]
@@ -103,6 +117,10 @@ pub struct PlayParams {
     /// Sharpening over the finished frame, 0–100.
     #[serde(default)]
     pub sharpen: Option<u32>,
+    /// Fewer draw calls: draws that follow each other with nothing changed
+    /// between them go to Direct3D as one (off unless asked for).
+    #[serde(default)]
+    pub draw_merge: Option<bool>,
     /// Start a copy of the executable with Large Address Aware from a
     /// mirror of the game folder (the game's executable is not written).
     #[serde(default)]
@@ -120,7 +138,8 @@ impl PlayParams {
         let implied = self.fps.is_some()
             || self.fov.is_some()
             || self.fxaa == Some(true)
-            || self.sharpen.is_some_and(|s| s > 0);
+            || self.sharpen.is_some_and(|s| s > 0)
+            || self.draw_merge == Some(true);
         g.module = self.render.unwrap_or(g.module) || implied;
         if let Some(v) = self.fps {
             g.fps = v;
@@ -133,6 +152,9 @@ impl PlayParams {
         }
         if let Some(v) = self.sharpen {
             g.sharpen = v;
+        }
+        if let Some(v) = self.draw_merge {
+            g.draw_merge = v;
         }
         if let Some(v) = self.laa {
             g.laa = v;
@@ -173,7 +195,7 @@ fn report_json(report: &ApplyReport) -> Value {
     })
 }
 
-fn refuse_while_running(kit: &Toolkit) -> ToolResult<()> {
+pub(crate) fn refuse_while_running(kit: &Toolkit) -> ToolResult<()> {
     // A stand-in launch (tests) does not look for the real game on the machine.
     let running = if kit.launch.is_some() {
         Vec::new()
@@ -321,14 +343,38 @@ pub fn play(kit: &Toolkit, p: PlayParams) -> ToolResult<Output> {
     if let Some(spawn) = &p.spawn {
         start::spawn_arg(spawn).map_err(|e| ToolError(format!("`spawn`: {e}")))?;
     }
+    // A point made here: recorded in the workspace, which this launch gives
+    // to the game.
+    let mut made_spawn = None;
+    if let Some(at) = p.position {
+        let Some(stream) = stream else {
+            return fail("`position` needs `stream`");
+        };
+        if p.spawn.is_some() {
+            return fail("give `spawn` or `position`, not both");
+        }
+        if p.apply == Some(false) || p.mods == Some(true) {
+            return fail(
+                "`position` makes a spawn point in the workspace: the launch must give the \
+                 workspace to the game (no `apply: false`, no `mods: true`)",
+            );
+        }
+        made_spawn = Some(super::debug::spawn_here(kit, stream, at)?);
+    }
     let options = StartOptions {
         streams: stream.map(str::to_owned).into_iter().collect(),
-        spawn: p.spawn.clone(),
+        spawn: made_spawn
+            .as_ref()
+            .map(|(guid, _)| guid.clone())
+            .or_else(|| p.spawn.clone()),
         windowed: None,
         resolution: Some((size[0], size[1])),
     };
     let editor = editor_play_config(kit).unwrap_or_default();
     let mut notes = Vec::new();
+    if let Some((_, made)) = &made_spawn {
+        notes.push(format!("spawn point made in the workspace: {made}"));
+    }
 
     // How to start it.
     let (mut plan, method) = match &kit.launch {
@@ -446,17 +492,33 @@ pub fn play(kit: &Toolkit, p: PlayParams) -> ToolResult<Output> {
         } else {
             Some(options.cmd_txt()?)
         };
-        let built =
-            Overlay::build(&kit.game, source.as_ref(), cmd_txt.as_deref(), &dir).map_err(|e| {
-                ToolError(format!(
-                    "cannot stage the changes; the game was not started: {e}"
-                ))
-            })?;
+        let streams = match p.resources_in_memory {
+            Some(on) => overlay::Streams::in_memory(on),
+            None => editor.streams,
+        };
+        let built = Overlay::build_with(
+            &kit.game,
+            source.as_ref(),
+            cmd_txt.as_deref(),
+            &dir,
+            streams,
+        )
+        .map_err(|e| {
+            ToolError(format!(
+                "cannot stage the changes; the game was not started: {e}"
+            ))
+        })?;
         notes.push(format!(
             "{} file(s) given to the game by the live module from {}, nothing written into the game folder",
             built.redirects().len(),
             dir.display()
         ));
+        if !built.resources().is_empty() {
+            notes.push(format!(
+                "{} stream(s) composed in memory by the live module from the game's files and resource patches (no rebuilt streams)",
+                built.resources().len()
+            ));
+        }
         staged = Some(built);
     }
 
@@ -479,7 +541,7 @@ pub fn play(kit: &Toolkit, p: PlayParams) -> ToolResult<Output> {
     // From here on a failure takes back what was written.
     let redirects = staged
         .as_ref()
-        .map(|o| o.redirects().to_vec())
+        .map(|o| (o.redirects().to_vec(), o.resources().to_vec()))
         .unwrap_or_default();
     let mut cleanup = Cleanup {
         kit,
@@ -590,7 +652,10 @@ fn session_overlay(kit: &Toolkit) -> Value {
 fn install_live(
     root: &std::path::Path,
     writes: bool,
-    redirects: Vec<doctor_toolkit::live::proto::files::Redirect>,
+    (redirects, resources): (
+        Vec<doctor_toolkit::live::proto::files::Redirect>,
+        Vec<doctor_toolkit::live::proto::resources::PatchLine>,
+    ),
     notes: &mut Vec<String>,
 ) -> ToolResult<Option<ModuleInstall>> {
     let Some(path) = live::module_binary() else {
@@ -616,6 +681,8 @@ fn install_live(
         journal: true,
         files_log: false,
         redirects,
+        resources,
+        resources_dump: false,
     };
     let install = ModuleInstall::write(root, &bytes, &config)?;
     notes.push(format!(
@@ -681,8 +748,16 @@ fn wait_loaded(kit: &Toolkit, endpoint: Option<&live::Endpoint>, timeout: Durati
 /// Ends a launch: the game and its X server, then what `play` wrote into
 /// the game folder, then the workspace taken out of the game.
 pub fn finish(kit: &Toolkit, mut session: GameSession) -> ToolResult<Value> {
-    let killed = session.kill();
     let mut done = Vec::new();
+    // A game held by a pause or a breakpoint does not take its end: Wine
+    // runs it in a session of its own, so it leaves when its X server goes,
+    // and a held main thread does not see that. Let it go first.
+    if let Some(endpoint) = session.endpoint()
+        && super::debug::release(&endpoint)
+    {
+        done.push("the game stood at a pause or a breakpoint: let go before the end".to_owned());
+    }
+    let killed = session.kill();
     if killed {
         done.push("the game did not end after SIGTERM and was killed".to_owned());
     }

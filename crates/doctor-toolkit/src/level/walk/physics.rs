@@ -13,9 +13,9 @@
 
 use std::sync::Arc;
 
-use doctor_toolkit::level::RowMatrix;
-use doctor_toolkit::resource::hkx::geometry::shape_mesh;
-use doctor_toolkit::resource::hkx::physics::{Physics, Shape, ShapeKind};
+use crate::level::RowMatrix;
+use crate::resource::hkx::geometry::shape_mesh;
+use crate::resource::hkx::physics::{Physics, Shape, ShapeKind};
 use rapier3d::control::{CharacterAutostep, CharacterLength, KinematicCharacterController};
 use rapier3d::glamx::{Mat3, Quat};
 use rapier3d::parry::bounding_volume::BoundingVolume;
@@ -617,7 +617,7 @@ fn horizontal(d: V3) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use doctor_toolkit::resource::hkx::physics::Physics;
+    use crate::resource::hkx::physics::Physics;
 
     fn fixed(shapes: Vec<ShapeKind>) -> Physics {
         Physics::fixed(
@@ -675,7 +675,7 @@ mod tests {
         }
     }
 
-    const IDENTITY: RowMatrix = doctor_toolkit::level::IDENTITY;
+    const IDENTITY: RowMatrix = crate::level::IDENTITY;
 
     fn settle(world: &World, body: &BodySize, player: &mut Player, seconds: f32) {
         for _ in 0..(seconds * 60.0) as usize {

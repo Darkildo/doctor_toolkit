@@ -94,6 +94,10 @@ pub(super) struct Shared {
     pub(super) edits: Vec<proto::ObjectEdit>,
     /// The state in the game of the object a level tab asked for.
     pub(super) object: Option<proto::ObjectState>,
+    /// The module measures the game (protocol 7, stage 58).
+    pub(super) profile_ok: bool,
+    /// What "Measure" last read, as text (stage 103).
+    pub(super) profile: Option<String>,
 }
 
 /// Events the panel keeps.
@@ -133,8 +137,17 @@ pub(super) enum Cmd {
     /// A new matrix for an object (a write); `true`: from a level tab's
     /// gizmo.
     ObjectMove(Guid, proto::Matrix, bool),
-    /// Hide (`false`) or show an object (a write).
-    ObjectEnable(Guid, bool),
+    /// Hide (`false`) or show an object, or with the last `true` stop and
+    /// start its logic (a write).
+    ObjectEnable(Guid, bool, bool),
+    /// Stage 103: measure the game from inside — `reset` empties the
+    /// module's rings afterwards, `memory` walks the address space,
+    /// `sample_ms` samples the threads first.
+    Profile {
+        reset: bool,
+        memory: bool,
+        sample_ms: u32,
+    },
     /// Undo the latest edit of the link, of one object or of all (a write).
     ObjectUndo(Option<Guid>),
 }
@@ -204,6 +217,14 @@ pub(super) struct LiveState {
     /// The gizmo of the level tabs moves objects in the game without asking
     /// (allowed once for this link).
     pub(super) gizmo_allowed: bool,
+    /// The Profile section: walk the memory too, and how long to sample
+    /// the threads (ms, empty: no sampling).
+    profile_memory: bool,
+    profile_sample: String,
+    /// `DOCTOR_TOOLKIT_GUI_LIVE_DO`: the items not sent yet (`None`: not
+    /// read yet), and whether the answer of the last one is awaited.
+    todo: Option<VecDeque<String>>,
+    todo_waiting: bool,
 }
 
 /// The index of names for the live link.
@@ -246,6 +267,10 @@ impl Default for LiveState {
             hold_s: proto::debug::HOLD_DEFAULT_S,
             world: Default::default(),
             gizmo_allowed: false,
+            profile_memory: false,
+            profile_sample: String::new(),
+            todo: None,
+            todo_waiting: false,
         }
     }
 }
@@ -379,7 +404,28 @@ fn run(client: &mut Client, cmd: Cmd, s: &Mutex<Shared>) -> Result<String, live:
             }
         }
         Cmd::ObjectMove(g, m, _) => object_edit(client, s, g, |c| c.object_transform(g, m))?,
-        Cmd::ObjectEnable(g, on) => object_edit(client, s, g, |c| c.object_enable(g, on, false))?,
+        Cmd::ObjectEnable(g, on, logic) => {
+            object_edit(client, s, g, |c| c.object_enable(g, on, logic))?
+        }
+        Cmd::Profile {
+            reset,
+            memory,
+            sample_ms,
+        } => {
+            if !client.has_profile() {
+                return Err(live::LinkError::Refused(proto::Failure {
+                    code: proto::ErrorCode::Failed,
+                    message: trf("live.profile_old", &[("protocol", &client.version())]),
+                }));
+            }
+            let profile = client.profile(reset, memory, sample_ms)?;
+            shared(s).profile = Some(live::profile::to_text(&profile));
+            if reset {
+                tr("live.profile_reset_done").to_owned()
+            } else {
+                tr("live.profile_done").to_owned()
+            }
+        }
         Cmd::ObjectUndo(g) => {
             let e = client.object_undo(g)?;
             let note = e.note.clone();
@@ -470,6 +516,7 @@ fn worker(
                     sh.debug_ok = c.has_debug();
                     sh.state_ok = c.has_state();
                     sh.edits_ok = c.has_edits();
+                    sh.profile_ok = c.has_profile();
                     sh.error = None;
                     client = Some(c);
                     next = 0;
@@ -656,6 +703,12 @@ impl LiveState {
         }
     }
 
+    /// Items of `DOCTOR_TOOLKIT_GUI_LIVE_DO` wait to be sent or answered
+    /// (screenshots wait for them).
+    pub(super) fn live_do_pending(&self) -> bool {
+        self.todo_waiting || self.todo.as_ref().is_some_and(|t| !t.is_empty())
+    }
+
     pub(super) fn send(&self, cmd: Cmd) {
         if let Some(tx) = &self.tx {
             let _ = tx.send(cmd);
@@ -668,6 +721,54 @@ impl LiveState {
         }
         self.loader.as_ref().and_then(|(_, l)| l.clone())
     }
+}
+
+/// The command of an item of `DOCTOR_TOOLKIT_GUI_LIVE_DO`.
+fn live_do_cmd(item: &str) -> Result<Cmd, String> {
+    let (key, value) = item.split_once('=').unwrap_or((item, ""));
+    let guid = |text: &str| {
+        proto::parse_guid(text.trim()).ok_or_else(|| format!("`{text}` is not a GUID"))
+    };
+    Ok(match key.trim() {
+        "profile" => {
+            let (mut reset, mut memory, mut sample_ms) = (false, false, 0);
+            for option in value.split('+').filter(|o| !o.is_empty()) {
+                match option.split_once(':') {
+                    None if option == "reset" => reset = true,
+                    None if option == "memory" => memory = true,
+                    Some(("sample", ms)) => {
+                        sample_ms = ms
+                            .parse()
+                            .ok()
+                            .filter(|ms| *ms <= proto::profile::MAX_SAMPLE_MS)
+                            .ok_or_else(|| format!("`{ms}` is not a sampling time in ms"))?;
+                    }
+                    _ => return Err(format!("unknown option `{option}`")),
+                }
+            }
+            Cmd::Profile {
+                reset,
+                memory,
+                sample_ms,
+            }
+        }
+        "get" => Cmd::ObjectGet(guid(value)?),
+        "hide" => Cmd::ObjectEnable(guid(value)?, false, false),
+        "show" => Cmd::ObjectEnable(guid(value)?, true, false),
+        "logic" => {
+            let (object, state) = value
+                .split_once(':')
+                .ok_or("write <guid>:on or <guid>:off")?;
+            let on = match state.trim() {
+                "on" => true,
+                "off" => false,
+                other => return Err(format!("`{other}` is neither on nor off")),
+            };
+            Cmd::ObjectEnable(guid(object)?, on, true)
+        }
+        "undo" => Cmd::ObjectUndo(None),
+        _ => return Err("unknown item".to_owned()),
+    })
 }
 
 fn vec3_text(v: [f32; 3]) -> String {
@@ -725,7 +826,10 @@ impl BrowserApp {
         &mut self,
         root: &Path,
         options: &LiveOptions,
-        redirects: Vec<live::proto::files::Redirect>,
+        (redirects, resources): (
+            Vec<live::proto::files::Redirect>,
+            Vec<live::proto::resources::PatchLine>,
+        ),
     ) -> Option<ModuleInstall> {
         let Some(path) = live::module_binary() else {
             self.notify(Level::Warning, tr("live.no_module").to_owned());
@@ -737,6 +841,7 @@ impl BrowserApp {
             config.journal = false;
         }
         config.redirects = redirects;
+        config.resources = resources;
         let result = std::fs::read(&path)
             .map_err(|e| e.to_string())
             .and_then(|bytes| {
@@ -1089,6 +1194,7 @@ impl BrowserApp {
             .as_ref()
             .is_some_and(|h| h.writes && h.edition_ok);
         self.live_edits_section(ui, writes_on);
+        self.live_profile_section(ui, busy);
         if !streams.is_empty() {
             egui::CollapsingHeader::new(trf("live.streams_list", &[("count", &streams.len())]))
                 .show(ui, |ui| {
@@ -1273,11 +1379,12 @@ impl BrowserApp {
                     ("position", &vec3_text([m[12], m[13], m[14]])),
                 ],
             ),
-            Cmd::ObjectEnable(g, on) => trf(
-                if *on {
-                    "live.confirm_object_show"
-                } else {
-                    "live.confirm_object_hide"
+            Cmd::ObjectEnable(g, on, logic) => trf(
+                match (*logic, *on) {
+                    (false, true) => "live.confirm_object_show",
+                    (false, false) => "live.confirm_object_hide",
+                    (true, true) => "live.confirm_logic_on",
+                    (true, false) => "live.confirm_logic_off",
                 },
                 &[("object", &proto::guid_hex(g))],
             ),
@@ -1290,6 +1397,7 @@ impl BrowserApp {
                 )],
             ),
             Cmd::State(_)
+            | Cmd::Profile { .. }
             | Cmd::ObjectGet(_)
             | Cmd::Objects(_)
             | Cmd::Streams
@@ -1339,7 +1447,8 @@ impl BrowserApp {
                 self.play.live.send(Cmd::ObjectMove(g, m, true));
             }
             A::Move(g, m, gizmo) => self.play.live.confirm = Some(Cmd::ObjectMove(g, m, gizmo)),
-            A::Enable(g, on) => self.play.live.confirm = Some(Cmd::ObjectEnable(g, on)),
+            A::Enable(g, on) => self.play.live.confirm = Some(Cmd::ObjectEnable(g, on, false)),
+            A::Logic(g, on) => self.play.live.confirm = Some(Cmd::ObjectEnable(g, on, true)),
             A::Undo(g) => self.play.live.confirm = Some(Cmd::ObjectUndo(g)),
             A::ToWorkspace => self.live_to_workspace(tab),
         }
@@ -1399,6 +1508,145 @@ impl BrowserApp {
                 trf("level.cannot_edit", &[("error", &e.to_string())]),
             ),
         }
+    }
+
+    /// Stage 103: the game measured from inside — frame and present times,
+    /// CPU of the threads, reads of files, textures, memory — as the
+    /// `live_profile` tool of the MCP server and `live profile` read it.
+    fn live_profile_section(&mut self, ui: &mut egui::Ui, busy: bool) {
+        let (ok, text) = {
+            let s = shared(&self.play.live.shared);
+            (s.profile_ok, s.profile.clone())
+        };
+        if !ok {
+            return;
+        }
+        egui::CollapsingHeader::new(tr("live.profile"))
+            .id_salt("live-profile")
+            .default_open(true)
+            .show(ui, |ui| {
+                let live = &mut self.play.live;
+                let sample = live.profile_sample.trim();
+                let sample_ms: Option<u32> = if sample.is_empty() {
+                    Some(0)
+                } else {
+                    sample
+                        .parse()
+                        .ok()
+                        .filter(|ms| *ms <= proto::profile::MAX_SAMPLE_MS)
+                };
+                let mut send = None;
+                ui.horizontal_wrapped(|ui| {
+                    let can = !busy && sample_ms.is_some();
+                    if ui
+                        .add_enabled(can, egui::Button::new(tr("live.profile_measure")))
+                        .on_hover_text(tr("live.profile_measure_hint"))
+                        .clicked()
+                    {
+                        send = Some(false);
+                    }
+                    if ui
+                        .add_enabled(can, egui::Button::new(tr("live.profile_reset")))
+                        .on_hover_text(tr("live.profile_reset_hint"))
+                        .clicked()
+                    {
+                        send = Some(true);
+                    }
+                    ui.checkbox(&mut live.profile_memory, tr("live.profile_memory"))
+                        .on_hover_text(tr("live.profile_memory_hint"));
+                    ui.label(tr("live.profile_sample"));
+                    ui.add(
+                        egui::TextEdit::singleline(&mut live.profile_sample)
+                            .hint_text("0")
+                            .desired_width(50.0),
+                    )
+                    .on_hover_text(trf(
+                        "live.profile_sample_hint",
+                        &[("max", &proto::profile::MAX_SAMPLE_MS)],
+                    ));
+                });
+                if let (Some(reset), Some(sample_ms)) = (send, sample_ms) {
+                    live.send(Cmd::Profile {
+                        reset,
+                        memory: live.profile_memory,
+                        sample_ms,
+                    });
+                }
+                match &text {
+                    Some(text) => {
+                        egui::ScrollArea::vertical()
+                            .id_salt("live-profile-text")
+                            .max_height(360.0)
+                            .show(ui, |ui| {
+                                ui.add(
+                                    egui::Label::new(RichText::new(text).monospace().small())
+                                        .selectable(true),
+                                );
+                            });
+                    }
+                    None => {
+                        ui.label(RichText::new(tr("live.profile_none")).weak().small());
+                    }
+                }
+            });
+    }
+
+    /// `DOCTOR_TOOLKIT_GUI_LIVE_DO=<item>[,…]` (with
+    /// `DOCTOR_TOOLKIT_GUI_LIVE=PORT[:TOKEN]`): once the link is up, sends
+    /// the items one after another without asking — the variable is the
+    /// consent — and stops at the first one the game refuses:
+    /// `profile[=reset|memory|sample:<ms>]`, `get=<guid>`,
+    /// `logic=<guid>:on|off`, `hide=<guid>`, `show=<guid>`, `undo`.
+    pub(super) fn live_do_preset(&mut self) {
+        if self.play.live.todo.is_none() {
+            let items = std::env::var("DOCTOR_TOOLKIT_GUI_LIVE_DO")
+                .map(|spec| {
+                    super::wizard::split_preset(&spec)
+                        .into_iter()
+                        .filter(|i| !i.is_empty())
+                        .collect()
+                })
+                .unwrap_or_default();
+            self.play.live.todo = Some(items);
+        }
+        if !self.play.live.live_do_pending() {
+            return;
+        }
+        let (connected, busy, result) = {
+            let s = shared(&self.play.live.shared);
+            (s.connected, s.busy, s.result.clone())
+        };
+        if !connected || busy {
+            return;
+        }
+        if self.play.live.todo_waiting {
+            match result {
+                None => return,
+                Some((true, _)) => self.play.live.todo_waiting = false,
+                Some((false, text)) => {
+                    self.live_do_failed(&text);
+                    return;
+                }
+            }
+        }
+        let Some(item) = self.play.live.todo.as_mut().and_then(VecDeque::pop_front) else {
+            return;
+        };
+        match live_do_cmd(&item) {
+            Ok(cmd) => {
+                shared(&self.play.live.shared).result = None;
+                self.play.live.todo_waiting = true;
+                self.play.live.send(cmd);
+            }
+            Err(why) => self.live_do_failed(&format!("{item}: {why}")),
+        }
+    }
+
+    /// An item of the preset failed: the rest is dropped.
+    fn live_do_failed(&mut self, text: &str) {
+        self.play.live.todo = Some(VecDeque::new());
+        self.play.live.todo_waiting = false;
+        self.notify(Level::Error, format!("DOCTOR_TOOLKIT_GUI_LIVE_DO: {text}"));
     }
 
     /// The edits of the running game the link made (stage 47): undo there.
@@ -1902,7 +2150,7 @@ mod tests {
             true,
         ));
         assert!(wait_for(&state, |s| s.edits.len() == 1));
-        state.send(Cmd::ObjectEnable(g, false));
+        state.send(Cmd::ObjectEnable(g, false, false));
         assert!(wait_for(&state, |s| s
             .object
             .as_ref()
@@ -1924,5 +2172,124 @@ mod tests {
         assert!(wait_for(&state, |s| s.connected && !s.edits_ok));
         assert!(!state.edit_info().reads);
         state.disconnect();
+    }
+
+    /// Stage 103: the logic of an object is stopped and started from the
+    /// level tabs, and the Profile section measures the game.
+    #[test]
+    fn the_logic_of_an_object_and_the_profile_of_the_fake_game() {
+        let game = FakeGame::start(live::Config {
+            port: 0,
+            token: "t".into(),
+            writes: true,
+            ..Default::default()
+        })
+        .unwrap();
+        let ctx = egui::Context::default();
+        let mut state = LiveState::default();
+        state.connect(game.endpoint("t"), &ctx);
+        assert!(wait_for(&state, |s| s.connected
+            && s.edits_ok
+            && s.profile_ok));
+        let g = [3u8; 16];
+        state.send(Cmd::ObjectGet(g));
+        assert!(wait_for(&state, |s| s
+            .object
+            .as_ref()
+            .is_some_and(|o| o.guid == g && o.listening)));
+        // Stop the logic: a write, recorded as an edit of the link.
+        assert!(Cmd::ObjectEnable(g, false, true).writes());
+        state.send(Cmd::ObjectEnable(g, false, true));
+        assert!(wait_for(&state, |s| s
+            .object
+            .as_ref()
+            .is_some_and(|o| !o.listening && !o.hidden_by_link)));
+        assert_eq!(state.edit_info().edits, 1);
+        // Stopping it twice is refused by the game: the panel shows why.
+        state.send(Cmd::ObjectEnable(g, false, true));
+        assert!(wait_for(&state, |s| matches!(&s.result, Some((false, _)))));
+        state.send(Cmd::ObjectEnable(g, true, true));
+        assert!(wait_for(&state, |s| s
+            .object
+            .as_ref()
+            .is_some_and(|o| o.listening)));
+        // The profile: a read; its text is kept for the panel.
+        let measure = Cmd::Profile {
+            reset: false,
+            memory: true,
+            sample_ms: 0,
+        };
+        assert!(!measure.writes());
+        state.send(measure);
+        assert!(wait_for(&state, |s| s.profile.is_some()));
+        let text = shared(&state.shared).profile.clone().unwrap();
+        assert!(text.lines().count() > 3, "{text}");
+        // An old module does not measure: the section is not shown and the
+        // command says why.
+        state.disconnect();
+        game.world.lock().unwrap().protocol = 6;
+        state.connect(game.endpoint("t"), &ctx);
+        assert!(wait_for(&state, |s| s.connected && !s.profile_ok));
+        shared(&state.shared).result = None;
+        state.send(Cmd::Profile {
+            reset: false,
+            memory: false,
+            sample_ms: 0,
+        });
+        assert!(wait_for(&state, |s| matches!(&s.result, Some((false, _)))));
+        state.disconnect();
+    }
+
+    #[test]
+    fn items_of_the_live_preset_become_commands() {
+        let g = "03030303030303030303030303030303";
+        assert_eq!(
+            live_do_cmd("profile").unwrap(),
+            Cmd::Profile {
+                reset: false,
+                memory: false,
+                sample_ms: 0
+            }
+        );
+        assert_eq!(
+            live_do_cmd("profile=reset+memory+sample:250").unwrap(),
+            Cmd::Profile {
+                reset: true,
+                memory: true,
+                sample_ms: 250
+            }
+        );
+        assert_eq!(
+            live_do_cmd(&format!("logic={g}:off")).unwrap(),
+            Cmd::ObjectEnable([3; 16], false, true)
+        );
+        assert_eq!(
+            live_do_cmd(&format!("logic={g}:on")).unwrap(),
+            Cmd::ObjectEnable([3; 16], true, true)
+        );
+        assert_eq!(
+            live_do_cmd(&format!("hide={g}")).unwrap(),
+            Cmd::ObjectEnable([3; 16], false, false)
+        );
+        assert_eq!(
+            live_do_cmd(&format!("get={g}")).unwrap(),
+            Cmd::ObjectGet([3; 16])
+        );
+        assert_eq!(live_do_cmd("undo").unwrap(), Cmd::ObjectUndo(None));
+        for bad in [
+            "explode",
+            "logic=zz:on",
+            &format!("logic={g}"),
+            &format!("logic={g}:maybe"),
+            "profile=sample:999999",
+            "profile=fast",
+        ] {
+            assert!(live_do_cmd(bad).is_err(), "{bad}");
+        }
+        // The queue of the preset: pending until sent and answered.
+        let mut state = LiveState::default();
+        assert!(!state.live_do_pending());
+        state.todo = Some(["profile".to_owned()].into());
+        assert!(state.live_do_pending());
     }
 }

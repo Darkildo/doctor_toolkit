@@ -43,6 +43,9 @@ pub enum ObjectAction {
     Move(Guid, Matrix, bool),
     /// Hide (`false`) or show it.
     Enable(Guid, bool),
+    /// Stop (`false`) or start its logic: its listener takes no messages
+    /// while stopped (stage 103).
+    Logic(Guid, bool),
     /// Undo the latest edit of the link (of this object).
     Undo(Option<Guid>),
     /// Write the moves of the link into the workspace.
@@ -125,6 +128,17 @@ pub fn object_section(
             .clicked()
         {
             action = Some(ObjectAction::Enable(guid, hidden));
+        }
+        // The logic of the object: its listener of messages, on or off.
+        if let Some(s) = state.filter(|s| s.supported()) {
+            let mut on = s.listening;
+            if ui
+                .add_enabled(can, egui::Checkbox::new(&mut on, tr("level.live_logic")))
+                .on_hover_text(tr("level.live_logic_hint"))
+                .changed()
+            {
+                action = Some(ObjectAction::Logic(guid, on));
+            }
         }
         if ui
             .add_enabled(

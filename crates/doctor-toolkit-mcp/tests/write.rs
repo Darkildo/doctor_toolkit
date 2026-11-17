@@ -21,7 +21,7 @@ use doctor_toolkit::workspace::{Workspace, WorkspaceLock};
 use doctor_toolkit_mcp::Config;
 use doctor_toolkit_mcp::game::XServer;
 
-const EDIT_TOOLS: [&str; 31] = [
+const EDIT_TOOLS: [&str; 51] = [
     "set_attribute",
     "move_object",
     "duplicate_object",
@@ -52,14 +52,35 @@ const EDIT_TOOLS: [&str; 31] = [
     "import_video",
     "edit_subtitle",
     "logic_connect",
+    // Stage 104 (packages B, D, E, G).
+    "set_tunables",
+    "voice_add",
+    "partsdb_add_part",
+    "partsdb_allow",
+    "set_material",
+    "pack",
+    "project_pull",
+    "revert",
+    "remove_zone_cell",
+    "sbk_edit",
+    "sound_add",
+    "set_speech_events",
+    "set_mix",
+    "apx_edit",
+    "import_animation",
+    "clip_events",
+    "set_animation_graph",
+    "cutscene_camera",
+    "cutscene_actor",
+    "cutscene_command",
     // Not an edit tool: listed to check the count below.
     "workspace_diff",
 ];
 
 /// Tools of a server without flags (reading, the live link, the editor).
-const READ_TOOLS: usize = 31;
+const READ_TOOLS: usize = 47;
 
-const GAME_TOOLS: [&str; 17] = [
+const GAME_TOOLS: [&str; 23] = [
     "apply",
     "unapply",
     "play",
@@ -77,6 +98,12 @@ const GAME_TOOLS: [&str; 17] = [
     "live_object_enable",
     "live_object_undo",
     "mods_manage",
+    "restore_originals",
+    "pause",
+    "resume",
+    "breakpoints",
+    "camera",
+    "push_textures",
 ];
 
 struct Fixture {
@@ -189,7 +216,16 @@ async fn the_flags_turn_the_writing_tools_on() {
         let name = t["name"].as_str().unwrap();
         let read_only = ["scripts", "validate"].contains(&name)
             || !EDIT_TOOLS.contains(&name)
-                && !["editor_open", "editor_show_object", "export", "media"].contains(&name)
+                && ![
+                    "editor_open",
+                    "editor_show_object",
+                    "export",
+                    "media",
+                    "unpack",
+                    "project_new",
+                    "animation_graph",
+                ]
+                .contains(&name)
             || name == "workspace_diff";
         assert_eq!(t["annotations"]["readOnlyHint"], read_only, "{t}");
         assert_eq!(t["annotations"]["openWorldHint"], false, "{t}");

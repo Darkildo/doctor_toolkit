@@ -8,18 +8,12 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use doctor_toolkit::level::navgraph::{GraphRef, save_graph};
+use doctor_toolkit::import::file::{self, FileOptions, FileTarget};
 use doctor_toolkit::logic_graph::{BuildOptions, GraphBuilder, LogicSchema, PinRef, edit, scope};
-use doctor_toolkit::resource::audio::{Sample, parse_sbk};
-use doctor_toolkit::resource::audio_encode::{encode_like, encode_snu_like, replace_sbk_sound};
-use doctor_toolkit::resource::dlg::Dialogue;
-use doctor_toolkit::resource::graph::{Graph, TYPE_GRAPH};
-use doctor_toolkit::resource::lh2::StringTable;
-use doctor_toolkit::resource::logic_import;
-use doctor_toolkit::resource::names::type_tags;
+use doctor_toolkit::resource::audio::parse_sbk;
+use doctor_toolkit::resource::audio_encode::{encode_like, replace_sbk_sound};
 use doctor_toolkit::resource::video::import::{AudioSource, build_from_files, read_audio_file};
 use doctor_toolkit::resource::video::{self, vp6::EncoderConfig};
-use doctor_toolkit::resource::{dlg, lua, speech};
 use doctor_toolkit::workspace::{FileKey, ResourceKey, Workspace};
 
 use super::Output;
@@ -83,10 +77,24 @@ pub struct ImportVideoParams {
 #[derive(Debug, Default, Deserialize, JsonSchema)]
 pub struct EditSubtitleParams {
     /// The speech file of the archives (`audiostreams\b3_xxx_0\…exa.snu`;
-    /// `media` with `kind: sounds` shows its subtitles).
+    /// `media` with `kind: sounds` shows its subtitles), or the sound track
+    /// of a cut-scene (`audiostreams\igc16\aud_igc16….exa.snu`; `cutscenes`
+    /// with `stream` lists the tracks and their lines).
     pub entry: String,
-    /// New texts by language column, e.g. `{"en": "Hello"}`.
+    /// New texts of a speech file by language column, e.g. `{"en": "Hello"}`.
+    #[serde(default)]
     pub texts: std::collections::BTreeMap<String, String>,
+    /// A line of a cut-scene's subtitle table to retime (its number in the
+    /// list of `cutscenes`); its text is a string of the cut-scene's string
+    /// table (`edit_string`).
+    #[serde(default)]
+    pub line: Option<usize>,
+    /// With `line`: the new start in milliseconds from the start of the sound.
+    #[serde(default)]
+    pub start_ms: Option<u32>,
+    /// With `line`: the new length in milliseconds.
+    #[serde(default)]
+    pub duration_ms: Option<u32>,
 }
 
 #[derive(Debug, Default, Deserialize, JsonSchema)]
@@ -104,181 +112,66 @@ pub struct LogicConnectParams {
 // ------------------------------------------------------------ import_file
 
 /// The resource to write: in the game files, or added by the workspace.
-enum Target {
-    Game(usize, usize, ResourceKey),
-    Added(ResourceKey),
-}
-
-impl Target {
-    fn key(&self) -> &ResourceKey {
-        match self {
-            Self::Game(_, _, k) | Self::Added(k) => k,
-        }
-    }
-}
-
-fn target(kit: &Toolkit, ws: &Workspace, text: &str) -> ToolResult<Target> {
+fn target(kit: &Toolkit, ws: &Workspace, text: &str) -> ToolResult<FileTarget> {
     let text = text.trim();
     if let Ok(key) = text.parse::<ResourceKey>()
         && ws.change(&key).is_some_and(|c| c.is_added())
     {
-        return Ok(Target::Added(key));
+        return Ok(FileTarget::Added(key));
     }
     let at = game_resource(kit, text)?;
-    let file = kit.game.open_stream(at.stream)?;
-    let header = file
-        .layout()
-        .resources
-        .get(at.resource)
-        .ok_or_else(|| ToolError(format!("the stream has no resource {}", at.resource)))?
-        .header;
-    let key = ResourceKey::new(&kit.game.streams()[at.stream].stream_name(), &header);
-    Ok(Target::Game(at.stream, at.resource, key))
+    Ok(FileTarget::game(&kit.game, at.stream, at.resource)?)
 }
 
-fn current(kit: &Toolkit, ws: &Workspace, t: &Target) -> ToolResult<Vec<u8>> {
-    Ok(match t {
-        Target::Game(s, r, _) => ws.current_data(&kit.game, *s, *r)?,
-        Target::Added(k) => ws
-            .data(k)?
-            .ok_or_else(|| ToolError(format!("{k} has no data in the workspace")))?,
-    })
+fn current(kit: &Toolkit, ws: &Workspace, t: &FileTarget) -> ToolResult<Vec<u8>> {
+    Ok(t.current(&kit.game, ws)?)
 }
 
 fn record(
     kit: &Toolkit,
     ws: &mut Workspace,
-    t: &Target,
+    t: &FileTarget,
     data: Vec<u8>,
     label: &str,
 ) -> ToolResult<()> {
-    match t {
-        Target::Game(s, r, _) => {
-            ws.set_resource(&kit.game, *s, *r, data, label)?;
-        }
-        Target::Added(k) => {
-            ws.change_resources_and_added(&kit.game, label, &[], &[], &[(k.clone(), Some(data))])?;
-        }
-    }
-    Ok(())
+    Ok(t.record(&kit.game, ws, data, label)?)
 }
 
-fn read_json(path: &std::path::Path) -> ToolResult<Value> {
-    let text = std::fs::read_to_string(path)
-        .map_err(|e| ToolError(format!("cannot read {}: {e}", path.display())))?;
-    serde_json::from_str(&text)
-        .map_err(|e| ToolError(format!("{} is not JSON: {e}", path.display())))
-}
-
+/// `import_file`: the reading by type is the library's
+/// ([`doctor_toolkit::import::file::import_file`]), shared with the editor.
 pub fn import_file(kit: &Toolkit, p: ImportFileParams) -> ToolResult<Output> {
     let path = input_file(&p.file)?;
     let mut access =
         kit.write_workspace(&format!("import_file: {} into {}", p.file, p.resource))?;
     let ws = &mut access.ws;
     let t = target(kit, ws, &p.resource)?;
-    let key = t.key().clone();
-    let tag = type_tags().display(key.type_id).to_string();
-    let label = format!(
-        "Import {} into {key}",
-        path.file_name().unwrap_or_default().to_string_lossy()
-    );
-    let data = current(kit, ws, &t)?;
     let since = ws.head();
-    let mut notes: Vec<String> = Vec::new();
-    let new = if p.raw.unwrap_or(false) {
-        std::fs::read(&path)
-            .map_err(|e| ToolError(format!("cannot read {}: {e}", path.display())))?
-    } else {
-        match key.type_id {
-            doctor_toolkit::text::TYPE_LH2 => {
-                let mut table = StringTable::parse(&data)?;
-                let changed = doctor_toolkit::text::import_json(&mut table, &read_json(&path)?)?;
-                notes.push(format!("{changed} string(s) changed"));
-                table.to_bytes()?
-            }
-            TYPE_GRAPH => {
-                let mut graph: Graph = serde_json::from_value(read_json(&path)?)
-                    .map_err(|e| ToolError(format!("{} is not a graph: {e}", path.display())))?;
-                let old = Graph::parse(&data)?;
-                if graph.guid != old.guid {
-                    return fail(format!(
-                        "the file is graph {}, not {} ({key})",
-                        graph.guid, old.guid
-                    ));
-                }
-                notes.extend(graph.repair_derived());
-                if let Target::Game(s, r, _) = &t {
-                    // Links of other graphs into this one follow it.
-                    let g = GraphRef {
-                        stream: *s,
-                        resource: *r,
-                        graph,
-                    };
-                    save_graph(&kit.game, ws, &g, None, &label)?;
-                    return finish(
-                        ws,
-                        since,
-                        &label,
-                        json!({ "resource": key.to_string(), "notes": notes }),
-                    );
-                }
-                graph.to_bytes()?
-            }
-            lua::TYPE_LUA => {
-                let bytes = std::fs::read(&path)
-                    .map_err(|e| ToolError(format!("cannot read {}: {e}", path.display())))?;
-                if path
-                    .extension()
-                    .is_some_and(|e| e.eq_ignore_ascii_case("luac"))
-                {
-                    lua::Chunk::parse(&bytes)?;
-                    bytes
-                } else {
-                    let old = lua::Chunk::parse(&data)?;
-                    let name = old.main.source.clone().unwrap_or_default();
-                    let chunk = lua::compile(&bytes, &name, old.number_size).map_err(|e| {
-                        ToolError(format!("{}:{}: {}", path.display(), e.line, e.message))
-                    })?;
-                    notes.push(format!(
-                        "{} function(s), {} instruction(s)",
-                        chunk.main.function_count(),
-                        chunk.main.instruction_count()
-                    ));
-                    chunk.to_bytes()
-                }
-            }
-            dlg::TYPE_DLG => {
-                let doc = read_json(&path)?;
-                let part = doc.get("data").cloned().unwrap_or(doc);
-                let d: Dialogue = serde_json::from_value(part)
-                    .map_err(|e| ToolError(format!("{}: not a dialogue: {e}", path.display())))?;
-                d.to_bytes()?
-            }
-            t if logic_import::is_supported(t) => {
-                let imported = logic_import::apply_json(t, &data, &read_json(&path)?)?;
-                notes.extend(imported.changes.iter().map(ToString::to_string));
-                imported.data
-            }
-            _ => {
-                return fail(format!(
-                    "{tag} resources have no import from a file here; textures: import_texture, \
-                     models: import_model, sounds: import_sound; `raw: true` takes the data as stored"
-                ));
-            }
-        }
+    let options = FileOptions {
+        raw: p.raw.unwrap_or(false),
     };
-    if new == data {
+    let done = file::import_file(&kit.game, ws, &t, &path, &options).map_err(|e| {
+        // The tools that do import what this one does not.
+        let text = e.to_string();
+        if text.contains("have no import from a file by type") {
+            ToolError(format!(
+                "{text} (textures: import_texture, models: import_model, sounds: import_sound; \
+                 `raw: true` takes the data as stored)"
+            ))
+        } else {
+            ToolError(text)
+        }
+    })?;
+    if !done.changed {
         return Ok(Output::Json(json!({
             "changed": false,
             "note": "the file gives what the resource already holds",
         })));
     }
-    record(kit, ws, &t, new, &label)?;
     finish(
         ws,
         since,
-        &label,
-        json!({ "resource": key.to_string(), "type": tag, "notes": notes }),
+        &done.label,
+        json!({ "resource": done.resource, "type": done.type_tag, "notes": done.notes }),
     )
 }
 
@@ -330,20 +223,17 @@ pub fn import_sound(kit: &Toolkit, p: ImportSoundParams) -> ToolResult<Output> {
         );
     }
     let key = FileKey::archive_entry(p.target.trim());
-    let original = ws.current_file(&kit.game, &key)?;
-    let data = encode_snu_like(&pcm, &original)?;
-    let header = Sample::parse_snu(&data)?.header;
+    let info = doctor_toolkit::sound::replace_archive_sound(&kit.game, ws, &p.target, &pcm)?;
     let label = format!("Import sound {}", key.name());
-    ws.set_file(&kit.game, &key, data, &label)?;
     finish(
         ws,
         since,
         &label,
         json!({
             "file": key.name(),
-            "channels": header.channels,
-            "sample_rate": header.sample_rate,
-            "seconds": f64::from(header.sample_count) / f64::from(header.sample_rate),
+            "channels": info.channels,
+            "sample_rate": info.sample_rate,
+            "seconds": info.seconds,
         }),
     )
 }
@@ -390,31 +280,50 @@ pub fn import_video(kit: &Toolkit, p: ImportVideoParams) -> ToolResult<Output> {
 }
 
 pub fn edit_subtitle(kit: &Toolkit, p: EditSubtitleParams) -> ToolResult<Output> {
-    if p.texts.is_empty() {
-        return fail("give `texts` by language, e.g. {\"en\": \"Hello\"}");
-    }
     let key = FileKey::archive_entry(p.entry.trim());
+    if let Some(line) = p.line {
+        // The times of a line of a cut-scene's subtitle table.
+        if !p.texts.is_empty() {
+            return fail(
+                "`line` retimes a subtitle of a cut-scene; its text is a string of the \
+                 cut-scene's string table: change it with edit_string",
+            );
+        }
+        let edit = doctor_toolkit::cutscene::ops::SubtitleEdit {
+            line,
+            start_ms: p.start_ms,
+            duration_ms: p.duration_ms,
+        };
+        let mut access = kit.write_workspace(&format!("edit_subtitle: {}", key.name()))?;
+        let ws = &mut access.ws;
+        let since = ws.head();
+        let what = key.name().rsplit('\\').next().unwrap_or("").to_owned();
+        let done = doctor_toolkit::cutscene::ops::retime(&kit.game, ws, key.name(), &what, &edit)?;
+        let label = done.label.clone();
+        return finish(ws, since, &label, serde_json::to_value(&done)?);
+    }
+    if p.start_ms.is_some() || p.duration_ms.is_some() {
+        return fail("`start_ms` and `duration_ms` need `line`: the subtitle to retime");
+    }
+    if p.texts.is_empty() {
+        return fail(
+            "give `texts` by language, e.g. {\"en\": \"Hello\"}, or `line` with `start_ms` \
+             and (or) `duration_ms`",
+        );
+    }
     let mut access = kit.write_workspace(&format!("edit_subtitle: {}", key.name()))?;
     let ws = &mut access.ws;
-    let data = ws.current_file(&kit.game, &key)?;
-    let mut table = speech::subtitles(&data)?
-        .ok_or_else(|| ToolError(format!("{} has no subtitles", key.name())))?;
-    for (lang, text) in &p.texts {
-        let col = speech::language_column(&table, lang).ok_or_else(|| {
-            ToolError(format!(
-                "no `{lang}` column ({})",
-                table.languages.join(" ")
-            ))
-        })?;
-        table.strings[col][0] = text.clone();
-    }
-    let new = speech::with_subtitles(&data, &table)?;
+    let texts: Vec<(String, String)> = p
+        .texts
+        .iter()
+        .map(|(lang, text)| (lang.clone(), text.clone()))
+        .collect();
     let label = format!(
         "Subtitle of {}",
         key.name().rsplit('\\').next().unwrap_or("")
     );
     let since = ws.head();
-    ws.set_file(&kit.game, &key, new, &label)?;
+    doctor_toolkit::sound::set_subtitles(&kit.game, ws, &p.entry, &texts)?;
     finish(
         ws,
         since,

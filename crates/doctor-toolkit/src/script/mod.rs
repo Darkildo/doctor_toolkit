@@ -12,6 +12,7 @@ pub mod deploy;
 pub mod graph;
 pub mod library;
 pub mod sim;
+pub mod trial;
 
 pub use compile::{Compiled, Diagnostic, Severity, compile};
 pub use graph::{Link, Node, PinRef, PinType, ScriptGraph, Variable};

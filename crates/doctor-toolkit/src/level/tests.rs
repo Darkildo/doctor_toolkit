@@ -701,3 +701,458 @@ fn a_new_stream_gets_a_simgroup_with_objects_and_a_cloned_model() {
         order.len() - 1
     );
 }
+
+/// 103-clone-fix: a model is cloned into a stream the workspace creates
+/// before the stream is written into the game and after it (when the game
+/// folder has its file as well).
+#[test]
+fn models_are_cloned_into_a_new_stream_before_and_after_apply() {
+    use super::edit::{self, GroupAt, ModelChoice};
+    let (dir, game) = zone_game();
+    let index = game.build_index(|_| {}).0;
+    let zone = game.find_stream("gf2/zone").unwrap();
+    let group = Location {
+        stream: zone,
+        resource: 1,
+    };
+    let mm_at = Location {
+        stream: zone,
+        resource: 0,
+    };
+    let mut ws =
+        crate::workspace::Workspace::for_game(&game, Some(&dir.path().join("ws"))).unwrap();
+    let none = |_: &Guid| false;
+    let stream =
+        crate::create::new_stream(&game, &ws, "gf2/doctor/area", "gf2/zone", false, &[], None)
+            .unwrap();
+    ws.add_stream(&game, stream).unwrap();
+    let made = edit::add_group(&game, &index, &mut ws, "gf2/doctor/area", None, &none).unwrap();
+    let at = GroupAt::Added(made.key.clone());
+    let template = (&GroupAt::Game(group), 0);
+    let first = edit::add_at(
+        &game,
+        &index,
+        &mut ws,
+        &at,
+        template,
+        ModelChoice::Clone(mm_at),
+        None,
+        &none,
+        true,
+    )
+    .unwrap();
+    assert!(first.cloned.iter().all(|k| k.stream == "gf2/doctor/area"));
+
+    // Written into the game: the stream is in the game folder and still new
+    // in the workspace. The clone must not ask for a place in it.
+    ws.apply(&game, Default::default()).unwrap();
+    let game = GameInstance::open(dir.path()).unwrap();
+    let index = game.build_index(|_| {}).0;
+    assert!(game.find_stream("gf2/doctor/area").is_some());
+    let zone = game.find_stream("gf2/zone").unwrap();
+    let mm_at = Location {
+        stream: zone,
+        resource: 0,
+    };
+    let group = Location {
+        stream: zone,
+        resource: 1,
+    };
+    let second = edit::add_at(
+        &game,
+        &index,
+        &mut ws,
+        &at,
+        (&GroupAt::Game(group), 0),
+        ModelChoice::Clone(mm_at),
+        None,
+        &none,
+        true,
+    )
+    .unwrap();
+    assert_ne!(second.model, first.model);
+    let (id, keys) = edit::clone_model(&game, &index, &mut ws, mm_at, "gf2/doctor/area").unwrap();
+    assert_ne!(Some(id), second.model);
+    assert!(keys.iter().all(|k| k.stream == "gf2/doctor/area"));
+    ws.apply(&game, Default::default()).unwrap();
+    let layout = game
+        .open_stream(game.find_stream("gf2/doctor/area").unwrap())
+        .unwrap()
+        .layout()
+        .clone();
+    assert_eq!(layout.resources.len(), 4);
+    assert_eq!(layout.resources[3].header.type_id, TYPE_SIMGROUP);
+}
+
+/// 103-zone-fix: a stream the workspace creates is a zone of the staged
+/// game, with a stream number and resource positions, before anything is
+/// written into the game; edits by location work on it.
+#[test]
+fn a_new_stream_is_a_zone_of_the_staged_game() {
+    use super::edit::{self, ModelChoice};
+    let (dir, disk) = zone_game();
+    let disk_index = disk.build_index(|_| {}).0;
+    let mut ws =
+        crate::workspace::Workspace::for_game(&disk, Some(&dir.path().join("ws"))).unwrap();
+    let none = |_: &Guid| false;
+    assert!(!ws.stage(&disk).unwrap().has_staged());
+    let stream =
+        crate::create::new_stream(&disk, &ws, "gf2/doctor/area", "gf2/zone", false, &[], None)
+            .unwrap();
+    let hash = stream.hash;
+    ws.add_stream(&disk, stream).unwrap();
+    // An empty stream is staged too, but is not a zone yet.
+    let game = ws.stage(&disk).unwrap();
+    let area = game.find_stream("gf2/doctor/area").unwrap();
+    assert_eq!(area, disk.streams().len());
+    assert!(game.is_staged(area));
+    assert_eq!(game.open_stream(area).unwrap().layout().resources.len(), 0);
+    assert!(
+        Catalog::new(&game, &game.staged_index(&disk_index))
+            .under("gf2/doctor")
+            .next()
+            .is_none()
+    );
+
+    edit::add_group(&game, &disk_index, &mut ws, "gf2/doctor/area", None, &none).unwrap();
+    let game = ws.stage(&game).unwrap();
+    let index = game.staged_index(&disk_index);
+    assert_eq!(index.entries.len(), disk_index.entries.len() + 1);
+    // The streams of the game folder keep their numbers.
+    let zone = game.find_stream("gf2/zone").unwrap();
+    assert_eq!(Some(zone), disk.find_stream("gf2/zone"));
+    let catalog = Catalog::new(&game, &index);
+    let found: Vec<&str> = catalog
+        .under("gf2/doctor")
+        .map(|z| z.name.as_str())
+        .collect();
+    assert_eq!(found, ["gf2/doctor/area"]);
+    assert_eq!(game.stream_hash("gf2/doctor/area").unwrap(), Some(hash));
+    assert_eq!(
+        game.stream_parents().unwrap()["gf2/doctor/area"],
+        ["gf2/zone"]
+    );
+    assert_eq!(disk.stream_hash("gf2/doctor/area").unwrap(), None);
+
+    // An object with a clone of the zone's model, by location.
+    let group = Location {
+        stream: area,
+        resource: 0,
+    };
+    let template = Location {
+        stream: zone,
+        resource: 1,
+    };
+    let mm_at = Location {
+        stream: zone,
+        resource: 0,
+    };
+    let added = edit::add(
+        &game,
+        &index,
+        &mut ws,
+        group,
+        (template, 0),
+        ModelChoice::Clone(mm_at),
+        None,
+        &none,
+        true,
+    )
+    .unwrap();
+    assert!(added.cloned.iter().all(|k| k.stream == "gf2/doctor/area"));
+    // The layout changed: the model comes before the SimGroup now.
+    let before = game.clone();
+    let game = ws.stage(&game).unwrap();
+    assert_ne!(
+        before.streams()[area].path,
+        game.streams()[area].path,
+        "a staged file is never rewritten"
+    );
+    let index = game.staged_index(&disk_index);
+    let lookup = Lookup::new(&index);
+    let groups: Vec<usize> = lookup.in_stream(area, TYPE_SIMGROUP).collect();
+    assert_eq!(groups, [1]);
+    let group = Location {
+        stream: area,
+        resource: 1,
+    };
+    assert_eq!(
+        lookup.locations(TYPE_METAMODEL, added.model.unwrap()),
+        [Location {
+            stream: area,
+            resource: 0
+        }]
+    );
+    let g = edit::current_group(&game, &ws, group).unwrap();
+    assert_eq!(g.objects.len(), 1);
+    let (copy, _) = edit::duplicate(&game, &mut ws, group, 0, [0.0; 3], &none).unwrap();
+    assert_eq!(copy, 1);
+    // The same layout: nothing to stage again, and the edit is read through
+    // the workspace.
+    let layout = ws.staged_layout();
+    assert_eq!(layout.len(), 1);
+    assert_eq!(layout[0].1.len(), 2);
+    let g = edit::current_group(&game, &ws, group).unwrap();
+    assert_eq!(g.objects.len(), 2);
+    // The level reads the zone with its parents in scope.
+    let scope = Scope::new(&game, &game.stream_parents().unwrap(), &[area]);
+    assert!(scope.contains(zone));
+
+    // Direct writes refuse a staged stream; the game folder is untouched.
+    assert!(
+        game.replace_resources(area, &[], Default::default())
+            .is_err()
+    );
+    assert!(!dir.path().join("gf2/doctor/area.str").exists());
+    assert_eq!(game.on_disk().streams(), disk.streams());
+
+    // Applying through the staged game writes the same stream, and once it
+    // is in the game folder the staged file takes its place in the list.
+    ws.apply(&game, Default::default()).unwrap();
+    let written = StreamFile::open(dir.path().join("gf2/doctor/area.str")).unwrap();
+    let keys: Vec<_> = written
+        .layout()
+        .resources
+        .iter()
+        .map(|r| crate::workspace::ResourceKey::new("gf2/doctor/area", &r.header))
+        .collect();
+    assert_eq!(keys, layout[0].1);
+    let disk = GameInstance::open(dir.path()).unwrap();
+    let on_disk = disk.find_stream("gf2/doctor/area").unwrap();
+    let game = ws.stage(&disk).unwrap();
+    assert_eq!(game.streams().len(), disk.streams().len());
+    assert!(game.is_staged(on_disk));
+    assert_ne!(game.streams()[on_disk].path, disk.streams()[on_disk].path);
+    assert_eq!(game.on_disk().streams(), disk.streams());
+    // Removing the stream removes its staged file.
+    ws.remove_stream("gf2/doctor/area").unwrap();
+    assert!(!ws.stage(&disk).unwrap().has_staged());
+    let left = std::fs::read_dir(dir.path().join("ws/staged"))
+        .unwrap()
+        .count();
+    assert_eq!(left, 0);
+}
+
+/// The town of the miniature game loads as a level, and the operations of a
+/// new zone work on it end to end without the game being written: a stream,
+/// a SimGroup, a cell of the world grid, a prop of the neighbouring zone
+/// cloned with new collision, a raw resource; and all of it is undone.
+#[test]
+fn a_new_zone_is_built_from_operations_on_the_staged_game() {
+    use crate::testing as mini;
+    use crate::zone_ops::{self, StreamLoad};
+    let dir = tempfile::tempdir().unwrap();
+    mini::write_game(dir.path()).unwrap();
+    mini::write_town(dir.path()).unwrap();
+    let disk = GameInstance::open(dir.path()).unwrap();
+    let disk_index = disk.build_index(|_| {}).0;
+    let yard = disk.find_stream(mini::YARD).unwrap();
+    // The fixture: a level with one object showing a model with collision.
+    let source = Arc::new(LevelSource::new(
+        Arc::new(disk.clone()),
+        Arc::new(Lookup::new(&disk_index)),
+        Overrides::default(),
+        Scope::new(&disk, &disk.stream_parents().unwrap(), &[yard]),
+    ));
+    let level = Level::load(source, &[yard]).unwrap();
+    assert_eq!(level.coverage().objects, 1);
+    assert_eq!(level.coverage().meshes, 1, "{:?}", level.coverage());
+    let model = disk
+        .open_stream(yard)
+        .unwrap()
+        .resource_data(mini::YARD_MODEL)
+        .unwrap();
+    assert_eq!(
+        crate::import::collision::collision_references(&model)
+            .unwrap()
+            .len(),
+        1
+    );
+
+    let mut ws =
+        crate::workspace::Workspace::for_game(&disk, Some(&dir.path().join("ws"))).unwrap();
+    let none = |_: &Guid| false;
+    let start = ws.head();
+    let stream = zone_ops::add_stream(
+        &disk,
+        &mut ws,
+        &zone_ops::NewStreamParams {
+            name: "gf2/town/doctor".into(),
+            parent: mini::TOWN.into(),
+            load: StreamLoad::OnDemand,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let made = zone_ops::add_simgroup(
+        &disk,
+        &disk_index,
+        &mut ws,
+        &zone_ops::NewGroupParams {
+            stream: stream.name.clone(),
+            ..Default::default()
+        },
+        &none,
+    )
+    .unwrap();
+    let cell = zone_ops::add_zone_cell(
+        &disk,
+        &mut ws,
+        &zone_ops::ZoneCellParams {
+            level: mini::TOWN.into(),
+            stream: stream.name.clone(),
+            min: [30.0, 0.0, 30.0],
+            max: [50.0, 10.0, 50.0],
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(cell.hash, stream.hash);
+    let cells = zone_ops::zone_cells(&disk, &ws, mini::TOWN).unwrap();
+    assert_eq!(cells.len(), 2);
+    assert!(cells.iter().any(|c| c.stream == "gf2/town/doctor" && c.new));
+    // A box that is not one, and a cell twice.
+    assert!(
+        zone_ops::add_zone_cell(
+            &disk,
+            &mut ws,
+            &zone_ops::ZoneCellParams {
+                level: mini::TOWN.into(),
+                stream: stream.name.clone(),
+                min: [1.0; 3],
+                max: [0.0; 3],
+                ..Default::default()
+            },
+        )
+        .is_err()
+    );
+
+    // Staged: the zone has a number, its SimGroup a place.
+    let game = ws.stage(&disk).unwrap();
+    let index = game.staged_index(&disk_index);
+    let zone = game.find_stream("gf2/town/doctor").unwrap();
+    let group = match zone_ops::parse_group(&game, &made.key.to_string()).unwrap() {
+        edit::GroupAt::Game(at) => at,
+        other => panic!("{other:?}"),
+    };
+    assert_eq!(
+        group,
+        Location {
+            stream: zone,
+            resource: 0
+        }
+    );
+    // The crate of the yard, cloned with collision of its own, at a place.
+    let added = edit::add(
+        &game,
+        &index,
+        &mut ws,
+        group,
+        (
+            Location {
+                stream: yard,
+                resource: mini::YARD_SIMGROUP,
+            },
+            0,
+        ),
+        edit::ModelChoice::CloneWithCollision(
+            Location {
+                stream: yard,
+                resource: mini::YARD_MODEL,
+            },
+            crate::resource::hkx::collision::CollisionKind::Box,
+            None,
+        ),
+        Some([40.0, 0.0, 40.0]),
+        &none,
+        true,
+    )
+    .unwrap();
+    let types: Vec<u32> = added.cloned.iter().map(|k| k.type_id).collect();
+    assert!(types.contains(&TYPE_HKX), "{types:?}");
+    assert!(types.contains(&TYPE_METAMODEL));
+    assert!(types.contains(&TYPE_MESH));
+    // Resources of the yard cloned as they are, and a raw resource.
+    let cloned = zone_ops::clone_resources(
+        &game,
+        &index,
+        &mut ws,
+        &zone_ops::CloneParams {
+            stream: mini::YARD.into(),
+            indices: vec![mini::YARD_MODEL, mini::YARD_MESH],
+            to: Some(stream.name.clone()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert!(cloned.clones.iter().all(|(_, to)| to.stream == stream.name));
+    assert!(cloned.clones.len() >= 2);
+    let raw = dir.path().join("raw.bin");
+    std::fs::write(&raw, b"raw data").unwrap();
+    let key = zone_ops::add_resource(
+        &game,
+        &index,
+        &mut ws,
+        &zone_ops::AddResourceParams {
+            stream: stream.name.clone(),
+            type_tag: "lh2".into(),
+            file: raw.clone(),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(key.stream, stream.name);
+    // No place in a new stream.
+    let refused = zone_ops::add_resource(
+        &game,
+        &index,
+        &mut ws,
+        &zone_ops::AddResourceParams {
+            stream: stream.name.clone(),
+            type_tag: "lh2".into(),
+            file: raw,
+            ids: Some("77".into()),
+            before: Some(0),
+            ..Default::default()
+        },
+    );
+    assert!(refused.unwrap_err().to_string().contains("is new"));
+
+    // The level of the staged game shows the new zone with its object.
+    let game = Arc::new(ws.stage(&game).unwrap());
+    let index = game.staged_index(&disk_index);
+    let catalog = Catalog::new(&game, &index);
+    assert!(catalog.zones.iter().any(|z| z.name == "gf2/town/doctor"));
+    let zone = game.find_stream("gf2/town/doctor").unwrap();
+    let source = Arc::new(LevelSource::new(
+        game.clone(),
+        Arc::new(Lookup::new(&index)),
+        Overrides::default(),
+        Scope::new(&game, &game.stream_parents().unwrap(), &[zone]),
+    ));
+    let level = Level::load(source, &[zone]).unwrap();
+    let coverage = level.coverage();
+    assert_eq!(coverage.objects, 1);
+    assert_eq!(coverage.meshes, 1, "{coverage:?}");
+    let object = &level.groups[0].objects[0];
+    assert_eq!(object.transform.unwrap()[3][..3], [40.0, 0.0, 40.0]);
+    // Nothing of this is in the game folder.
+    assert!(!dir.path().join("gf2/town/doctor.str").exists());
+    assert_eq!(
+        GameInstance::open(dir.path()).unwrap().streams(),
+        disk.streams()
+    );
+
+    // The cell goes, then the stream with everything in it.
+    zone_ops::remove_zone_cell(&game, &mut ws, mini::TOWN, &stream.name).unwrap();
+    assert_eq!(
+        zone_ops::zone_cells(&game, &ws, mini::TOWN).unwrap().len(),
+        1
+    );
+    let removed = zone_ops::remove_stream(&mut ws, &stream.name).unwrap();
+    assert!(removed >= 6, "{removed}");
+    assert!(zone_ops::remove_stream(&mut ws, &stream.name).is_err());
+    assert!(!ws.stage(&game).unwrap().has_staged());
+    ws.rollback(start).unwrap();
+    assert!(ws.is_empty());
+}

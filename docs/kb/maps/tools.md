@@ -3,7 +3,7 @@ type: map
 status: known
 confidence: data
 editions: ["1.0.789.0"]
-stages: [72]
+stages: [72, 102]
 sources: []
 tags: [map, tools]
 updated: 2026-11-16
@@ -20,6 +20,7 @@ updated: 2026-11-16
 - [Уровни](../../levels.md), [граф логики](../../logic-graph.md), [скрипты](../../scripts.md).
 - Модели: [форматы моделей](../../model-formats.md), [импорт моделей](../../model-import.md), [Blender](../../blender.md), [внешние редакторы](../../external-editors.md).
 - [Привязки Python](../../python.md).
+- [Что где доступно](../../parity.md) — каждая возможность тулкита по поверхностям: MCP, редактор, командная строка, Python; заметка: [инвентаризация поверхностей](../research/stage-102.md).
 
 ## Для агентов
 

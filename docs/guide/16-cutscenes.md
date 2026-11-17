@@ -248,6 +248,15 @@ doctor-toolkit cutscene show "$GAME" $F --shot igc01_s03          # один к�
 doctor-toolkit cutscene move "$GAME" $F --shot igc01_s03 --command 51 --time 3.0
 doctor-toolkit cutscene clip "$GAME" $F --shot igc01_s03 --actor igc01_roth \
     --clip igc01_waiter_igc01_s03_shot03
+doctor-toolkit cutscene show "$GAME" $F --shot igc01_s03 --time 1.5 # где камера и актёры в этот момент
+doctor-toolkit cutscene camera "$GAME" $F --shot igc01_s03 --time 1.5 \
+    --position=-12.4,1.7,3.0 --rotation=-5,90,0 --focal 35           # ключ камеры в момент
+doctor-toolkit cutscene camera "$GAME" $F --shot igc01_s03 --offset=0,1.5,0 --focal 28  # весь кадр
+doctor-toolkit cutscene camera "$GAME" $F --shot igc01_s03 --time 1.5 --delete-key
+doctor-toolkit cutscene actor "$GAME" $F --shot igc01_s03 --actor igc01_roth --offset=-1.2,0,0
+doctor-toolkit cutscene actor "$GAME" $F --shot igc01_s03 --actor igc01_roth --time 2 \
+    --position=-11,0,4 --rotation=0,180,0
+doctor-toolkit cutscene command "$GAME" $F --shot igc01_s03 --command 51 --set seconds=2.5
 doctor-toolkit cutscene subtitle "$GAME" $F --line 0 --start 2500 --duration 6000
 doctor-toolkit cutscene export "$GAME" $F --shot igc01_s03 -o s03.json   # JSON для правки
 doctor-toolkit cutscene import "$GAME" $F --shot igc01_s03 s03.json
@@ -257,6 +266,26 @@ doctor-toolkit cutscene render "$GAME" $F --shot igc01_s03 -o s03.vp6    # ви�
 
 Правки пишутся в рабочее пространство; `--direct` сразу записывает их в
 игру, `--workspace-dir` выбирает другое пространство.
+
+`camera` и `actor` (этап 104) — те же правки ключей, что поля Details и
+гизмо в виде уровня (§15.3a). С `--time` меняется ключ в этот момент
+кадра (нет ключа — добавляется на пути; не заданное берётся с пути),
+`--delete-key` убирает ключи в этот момент. Без `--time` меняется весь
+кадр: `--offset` и `--turn` сдвигают каждый ключ пути камеры (у актёра —
+место создания и все ключи), `--focal` (мм) или `--fov` (градусы по
+вертикали кадра 16:9) ставят объектив на каждый ключ. Отрицательные числа
+пишутся через `=`: `--offset=-1.2,0,0`. `command --set ПОЛЕ=ЗНАЧЕНИЕ`
+меняет поле команды (как она записана в JSON кадра: `text`, `seconds`,
+`color`, `speed`, `state`, …), `--time` заодно переносит её.
+
+**Время субтитра и размер мода.** `cutscene subtitle` печатает размер
+звукового файла: время субтитров лежит в его заголовке, а файл архива
+заменяется целиком, поэтому мод с такой правкой несёт весь звук ролика
+(у `igc16` — 10,5 МБ). Сборка мода напоминает об этом строкой `note:`.
+Текст субтитра (глава 4, мастер «Править тексты») в мод идёт одной строкой.
+
+Те же действия есть у ИИ-помощника (глава 22): `cutscenes`,
+`cutscene_camera`, `cutscene_actor`, `cutscene_command`, `edit_subtitle`.
 
 ## 15.5 Экспорт в glTF
 

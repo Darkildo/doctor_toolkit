@@ -132,6 +132,10 @@ fn requests() -> Vec<Request> {
             value: -3,
         },
         Request::Files,
+        Request::Resources,
+        Request::Resource {
+            ids: [0, 0x4802_E0A7, 3, 4],
+        },
         Request::Object { guid: [3; 16] },
         Request::ObjectTransform {
             guid: [4; 16],
@@ -482,6 +486,38 @@ fn responses() -> Vec<(u16, Response)> {
         ),
         (kind::FILES, Response::Files(Files::default())),
         (
+            kind::RESOURCES,
+            Response::Resources(Resources {
+                hooked: true,
+                total: 1,
+                open: 1,
+                streams: vec![StreamUse {
+                    from: "gf2/cuba.str".into(),
+                    to: "Z:\\cache\\gf2\\cuba.str".into(),
+                    opens: 2,
+                    replaced: 15,
+                    added: 1,
+                    original_len: 0x60_0000,
+                    virtual_len: 0x62_0000,
+                    data_size: 9_000_000,
+                    compose_micros: 1500,
+                    bytes_read: 0x62_0000,
+                    ..StreamUse::default()
+                }],
+            }),
+        ),
+        (kind::RESOURCE, Response::Resource(None)),
+        (
+            kind::RESOURCE,
+            Response::Resource(Some(Loaded {
+                record: 0x0B00_0000,
+                data: 0x0C00_0000,
+                size: 4096,
+                refs: 2,
+                flags: 2,
+            })),
+        ),
+        (
             kind::OBJECT,
             Response::Object(ObjectState {
                 guid: [6; 16],
@@ -594,6 +630,27 @@ fn responses() -> Vec<(u16, Response)> {
                             listeners: 3,
                             receivers: vec![[5; 16]],
                             origin: MessageOrigin::Link,
+                            from: None,
+                        },
+                    },
+                    Event {
+                        seq: 46,
+                        frame: 903,
+                        sim_time_ms: 12_160,
+                        body: EventBody::Message {
+                            hash: 0x1234_5678,
+                            data: 0x0019_F000,
+                            forced: false,
+                            listeners: 1,
+                            receivers: Vec::new(),
+                            origin: MessageOrigin::Game,
+                            from: Some(MessageFrom {
+                                site: 0x0047_7F61,
+                                cause: 0x0BAD_CAFE,
+                                sender: Some([7; 16]),
+                                data_object: None,
+                                direct: true,
+                            }),
                         },
                     },
                     Event {
@@ -727,7 +784,7 @@ fn writes_are_marked() {
             false, false, false, false, false, false, false, true, true, true, true, true, false,
             false, false, false, false, false, false, false, false, true, true, true, false, true,
             true, false, true, true, false, false, true, true, false, false, false, false, true,
-            false, false, true, true, true, true, false, false, false, false
+            false, false, false, false, true, true, true, true, false, false, false, false
         ]
     );
 }
@@ -737,7 +794,7 @@ fn header_layout_is_fixed() {
     let bytes = Request::Status.to_frame(0x0102_0304);
     assert_eq!(
         bytes,
-        [b'D', b'T', b'L', b'V', 7, 0, 2, 0, 4, 3, 2, 1, 0, 0, 0, 0]
+        [b'D', b'T', b'L', b'V', 9, 0, 2, 0, 4, 3, 2, 1, 0, 0, 0, 0]
     );
     // A client of stage 34 sends version 1, and gets its answer in it.
     let old = Request::Status.to_frame_of(1, 0x0102_0304);
@@ -760,8 +817,8 @@ fn header_layout_is_fixed() {
 
 #[test]
 fn versions_and_their_requests() {
-    assert!((1..=7).all(supported));
-    assert!(!supported(0) && !supported(8));
+    assert!((1..=9).all(supported));
+    assert!(!supported(0) && !supported(10));
     assert_eq!(OLDEST_PROTOCOL_VERSION, 1);
     for r in requests() {
         let since = match r {
@@ -791,6 +848,7 @@ fn versions_and_their_requests() {
             | Request::ObjectEdits
             | Request::ObjectForget { .. } => 6,
             Request::Profile { .. } => 7,
+            Request::Resources | Request::Resource { .. } => 9,
             _ => 1,
         };
         assert_eq!(r.since(), since, "{r:?}");

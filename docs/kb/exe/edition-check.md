@@ -3,8 +3,8 @@ type: exe
 status: known
 confidence: exe
 editions: ["1.0.789.0"]
-stages: [72, 34, 46, 58, 59]
-sources: ["docs/analysis/live-link.md вводная часть", "docs/analysis/live-link.md §6", "docs/analysis/live-link.md §14.2", "docs/analysis/live-link.md §16.5", "docs/analysis/live-link.md §9", "crates/doctor-toolkit-live/src/edition.rs", "crates/doctor-toolkit-live/src/render.rs", "crates/doctor-toolkit-render-asi/src/lib.rs"]
+stages: [72, 34, 46, 58, 59, 99]
+sources: ["docs/analysis/live-link.md вводная часть", "docs/analysis/live-link.md §6", "docs/analysis/live-link.md §14.2", "docs/analysis/live-link.md §16.5", "docs/analysis/live-link.md §9", "crates/doctor-toolkit-live/src/edition.rs", "crates/doctor-toolkit-live/src/render.rs", "crates/doctor-toolkit-render-asi/src/lib.rs", "docs/analysis/crash-reports.md §4", "crates/doctor-toolkit-live/src/crash.rs"]
 tags: [exe, edition, hooks]
 updated: 2026-11-16
 ---
@@ -17,6 +17,8 @@ updated: 2026-11-16
 | `0x00400000` | база образа `godfather2.exe` (перемещаемых адресов нет) | live-link.md вводная часть; crates/doctor-toolkit-live/src/edition.rs |
 | `0x01232000` | конец образа (база + `SizeOfImage`); модуль рендера принимает адреса только до него | crates/doctor-toolkit-render-asi/src/lib.rs |
 | `0x00608930`, `0x0069DE10`, `0x0069E840`, `0x00682860`, `0x009BCB30` | функции, которые перехватывает мод игрока GF2ASI (вместе с `0x00403A50`, `0x00608250`, `0x006817C0`); с модулем уживается — места разные | live-link.md §9 |
+
+Модуль падений (`doctor_crash.asi`, этап 99) сверяет тот же заголовок и четыре своих места: два перехвата и две функции менеджера потоков — см. [перехват падений](crash-handler.md).
 
 ## Подробнее
 

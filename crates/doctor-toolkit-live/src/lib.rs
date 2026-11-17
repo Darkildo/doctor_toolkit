@@ -30,21 +30,33 @@
 //!   loop, the presents, reads of files, CPU time, textures, memory and a
 //!   sampler of its threads (stage 58);
 //! - [`render`]: the graphics module `doctor_render.asi` — its patches,
-//!   configuration and checks (stage 59).
+//!   configuration and checks (stage 59);
+//! - [`resources`]: resources of mods put into the streams the game reads,
+//!   in memory — the resource patch of a stream, the layout of the virtual
+//!   stream the module answers the game's reads from (stage 100);
+//! - [`crash`]: the crash module `doctor_crash.asi` — its files, the
+//!   places it hooks, the table of named addresses and the report
+//!   (stage 99);
+//! - [`platform`]: the platform module `doctor_platform.asi` — new classes,
+//!   Lua functions and hooks of native mods, and the registry of every
+//!   place the modules patch (stage 80).
 //!
 //! The crate has no dependencies: the module builds it for
 //! `i686-pc-windows-gnu`, the editor for the host.
 
 pub mod addr;
 pub mod config;
+pub mod crash;
 pub mod debug;
 pub mod edit;
 pub mod edition;
 pub mod files;
 pub mod journal;
+pub mod platform;
 pub mod profile;
 pub mod proto;
 pub mod render;
+pub mod resources;
 pub mod state;
 mod wire;
 pub mod world;

@@ -8,6 +8,7 @@ use egui::Color32;
 
 use doctor_toolkit::mods::ModManager;
 use doctor_toolkit::mods::manager::{Clash, InstalledMod, Problem, Subject};
+use doctor_toolkit::mods::native::{NativeBlock, NativeState};
 use doctor_toolkit::mods::version::Condition;
 
 use crate::Overview;
@@ -84,6 +85,11 @@ pub enum ModState {
     Off,
     /// Needs a newer mod manager: the condition.
     NeedsUpdate(String),
+    /// Carries executable code nobody answered about yet: nothing
+    /// executable is installed; `required` — and nothing else of the mod.
+    CodeWaiting { required: bool },
+    /// Does not work without its code, and the code cannot be installed.
+    CodeBlocked(NativeBlock),
     /// Needs other mods that are not there as needed.
     NeedsMods(Vec<Need>),
     /// Not tested on this edition of the game: the editions it is tested
@@ -128,6 +134,17 @@ impl ModState {
             _ => None,
         }) {
             return Self::NeedsUpdate(required);
+        }
+        if let Some((block, required)) = mine().find_map(|i| match &i.problem {
+            Problem::Native { block, required } => Some((block.clone(), *required)),
+            _ => None,
+        }) {
+            if block == NativeBlock::Unasked {
+                return Self::CodeWaiting { required };
+            }
+            if i_is_fatal(&block, required) {
+                return Self::CodeBlocked(block);
+            }
         }
         let needs: Vec<Need> = mine()
             .filter_map(|i| {
@@ -209,7 +226,11 @@ impl ModState {
         if !rivals.is_empty() {
             return Self::Conflict(rivals);
         }
-        if !written(m, overview) {
+        let code_waits = overview
+            .code
+            .iter()
+            .any(|c| c.question.id == m.id && c.state == Some(NativeState::NotWritten));
+        if !written(m, overview) || code_waits {
             return Self::NotWritten;
         }
         Self::Ready
@@ -221,6 +242,8 @@ impl ModState {
             Self::Damaged(_) => tr("mods.state_damaged").to_owned(),
             Self::Off => tr("mods.state_off").to_owned(),
             Self::NeedsUpdate(_) => tr("mods.state_needs_update").to_owned(),
+            Self::CodeWaiting { .. } => tr("mods.state_code_waiting").to_owned(),
+            Self::CodeBlocked(_) => tr("mods.state_code_blocked").to_owned(),
             Self::NeedsMods(needs) => {
                 let first = &needs[0];
                 let mut text = match &first.kind {
@@ -276,6 +299,14 @@ impl ModState {
                     ("version", &doctor_toolkit::mods::version::manager_version()),
                 ],
             ),
+            Self::CodeWaiting { required: true } => {
+                tr("mods.state_code_waiting_required_hint").to_owned()
+            }
+            Self::CodeWaiting { required: false } => tr("mods.state_code_waiting_hint").to_owned(),
+            Self::CodeBlocked(block) => trf(
+                "mods.state_code_blocked_hint",
+                &[("why", &crate::native::block_words(block))],
+            ),
             Self::NeedsMods(needs) => needs.iter().map(Need::hint).collect::<Vec<_>>().join("\n"),
             Self::WrongEdition { tested, game } => trf(
                 "mods.state_edition_hint",
@@ -324,14 +355,20 @@ impl ModState {
             | Self::Clash(_)
             | Self::NeedsUpdate(_)
             | Self::NeedsMods(_)
+            | Self::CodeBlocked(_)
             | Self::WrongEdition { .. }
             | Self::Incompatible(_) => crate::BAD,
-            Self::Conflict(_) => crate::WARN,
+            Self::Conflict(_) | Self::CodeWaiting { .. } => crate::WARN,
             Self::NotWritten => crate::theme::FOCUS,
             Self::Ready => crate::GOOD,
             Self::Off => Color32::GRAY,
         }
     }
+}
+
+/// Whether a mod whose code is blocked like this cannot be written at all.
+fn i_is_fatal(block: &NativeBlock, required: bool) -> bool {
+    doctor_toolkit::mods::native::is_fatal(block, required)
 }
 
 /// The enabled mods that change resources of `m` with other data.

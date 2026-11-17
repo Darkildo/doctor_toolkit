@@ -16,6 +16,9 @@
 //! - the **field of view** of the player's camera;
 //! - **post-effects** over the finished frame: FXAA and sharpening (CAS),
 //!   instead of the plain copy of the scene into the back buffer;
+//! - **fewer draw calls** (stage 101, off unless asked for): draws that
+//!   follow each other with nothing changed between them go to Direct3D as
+//!   one; a trace of every Direct3D call of one frame;
 //! - a **memory test** for Large Address Aware: it reserves the free
 //!   addresses below 2 GB so that the game's memory goes above.
 //!
@@ -173,6 +176,30 @@ pub struct RenderConfig {
     /// Test aid: logs which calls of `SetFov` (`0x00422FB0`) the game makes
     /// and with what angle. Off unless the file says `fov_trace=1`.
     pub fov_trace: bool,
+    /// Fewer draw calls (stage 101, `docs/analysis/renderer.md` §11):
+    /// draws that follow each other with nothing changed between them go
+    /// to Direct3D as one draw. 0 — off; 1 — runs of three draws and more;
+    /// N of 2 and more — runs of N draws and more. It turns `draw_filter`
+    /// on too.
+    pub draw_merge: u32,
+    /// Calls of Direct3D that set what is already set do not reach the
+    /// device. Off unless the file says `draw_filter=1` (or `draw_merge`).
+    pub draw_filter: bool,
+    /// Seconds between lines about the draw calls of a frame in the log
+    /// (draws, calls, processor time of the render thread); 0 — none.
+    pub draw_log: u32,
+    /// Test aid: a file `doctor_render_trace.go` next to the module makes
+    /// it write every Direct3D call of one frame to
+    /// `doctor_render_trace.bin`. Off unless the file says `draw_trace=1`.
+    pub draw_trace: bool,
+    /// Test aid: `draw_merge` and `draw_filter` turn off and on every this
+    /// many seconds, with a line in the log for each half; 0 — no
+    /// alternation.
+    pub draw_ab: u32,
+    /// Test aid, bits: 1 — joined runs are built anew every time (no reuse
+    /// of the module's buffer); 2 — every use of a copy of an index buffer
+    /// compares it with the buffer and logs a difference.
+    pub draw_debug: u32,
 }
 
 impl Default for RenderConfig {
@@ -189,6 +216,12 @@ impl Default for RenderConfig {
             memory_log: 0,
             force_vsync: false,
             fov_trace: false,
+            draw_merge: 0,
+            draw_filter: false,
+            draw_log: 0,
+            draw_trace: false,
+            draw_ab: 0,
+            draw_debug: 0,
         }
     }
 }
@@ -255,6 +288,28 @@ impl RenderConfig {
                 }
                 "force_vsync" => out.force_vsync = flag(out.force_vsync),
                 "fov_trace" => out.fov_trace = flag(out.fov_trace),
+                "draw_merge" => {
+                    if let Some(n) = number {
+                        out.draw_merge = n.min(64);
+                    }
+                }
+                "draw_filter" => out.draw_filter = flag(out.draw_filter),
+                "draw_log" => {
+                    if let Some(n) = number {
+                        out.draw_log = n.min(3600);
+                    }
+                }
+                "draw_trace" => out.draw_trace = flag(out.draw_trace),
+                "draw_debug" => {
+                    if let Some(n) = number {
+                        out.draw_debug = n.min(255);
+                    }
+                }
+                "draw_ab" => {
+                    if let Some(n) = number {
+                        out.draw_ab = n.min(3600);
+                    }
+                }
                 _ => {}
             }
         }
@@ -283,7 +338,14 @@ impl RenderConfig {
              # test of Large Address Aware: megabytes left free below 2 GB; 0: off\r\n\
              low_memory={}\r\n\
              # seconds between lines about memory in doctor_render.log; 0: none\r\n\
-             memory_log={}\r\n",
+             memory_log={}\r\n\
+             # fewer draw calls (stage 101): draws with nothing changed between them\r\n\
+             # go to Direct3D as one; 0: off, 1: on, N: only runs of N draws and more\r\n\
+             draw_merge={}\r\n\
+             # Direct3D calls that set what is already set are dropped\r\n\
+             draw_filter={}\r\n\
+             # seconds between lines about draw calls in doctor_render.log; 0: none\r\n\
+             draw_log={}\r\n",
             b(self.time_of_day),
             b(self.vsync_one),
             b(self.limiter_sleep),
@@ -293,7 +355,27 @@ impl RenderConfig {
             self.sharpen,
             self.low_memory,
             self.memory_log,
+            self.draw_merge,
+            b(self.draw_filter),
+            self.draw_log,
         );
+        if self.draw_trace {
+            text.push_str(
+                "# test: doctor_render_trace.go makes the module write one frame of calls\r\ndraw_trace=1\r\n",
+            );
+        }
+        if self.draw_ab > 0 {
+            text.push_str(&format!(
+                "# test: draw_merge and draw_filter turn off and on every this many seconds\r\ndraw_ab={}\r\n",
+                self.draw_ab
+            ));
+        }
+        if self.draw_debug > 0 {
+            text.push_str(&format!(
+                "# test: checks of the merging of draws\r\ndraw_debug={}\r\n",
+                self.draw_debug
+            ));
+        }
         if self.force_vsync {
             text.push_str(
                 "# test: the game's limiter waits as with its vsync on\r\nforce_vsync=1\r\n",
@@ -308,6 +390,15 @@ impl RenderConfig {
     /// Whether the module replaces the copy of the frame with its pass.
     pub fn post(&self) -> bool {
         self.fxaa || self.sharpen > 0
+    }
+
+    /// Whether the module stands in the methods of the Direct3D device.
+    pub fn draws(&self) -> bool {
+        self.draw_merge > 0
+            || self.draw_filter
+            || self.draw_trace
+            || self.draw_log > 0
+            || self.draw_ab > 0
     }
 
     /// Seconds between memory lines in the log.
@@ -348,12 +439,35 @@ impl RenderConfig {
         if self.low_memory > 0 {
             parts.push(format!("low memory test ({} MB left)", self.low_memory));
         }
+        if self.draw_merge > 0 {
+            parts.push("draws merged".to_owned());
+        } else if self.draw_filter {
+            parts.push("draw filter".to_owned());
+        }
         if parts.is_empty() {
             "nothing".to_owned()
         } else {
             parts.join(", ")
         }
     }
+}
+
+/// Appends the triangle strip `part` to the triangle strip `out` so that
+/// one draw of `out` draws the triangles of both, each with the winding it
+/// had (stage 101, `renderer.md` §11.5). The last index of `out` and the
+/// first of `part` are repeated: the triangles between the strips have two
+/// equal corners, no area, and draw nothing. In a strip every second
+/// triangle is wound the other way, so `part` must start on an even index:
+/// one more repeat when it would not.
+pub fn stitch_strip(out: &mut Vec<u16>, part: &[u16]) {
+    if let (Some(&last), Some(&first)) = (out.last(), part.first()) {
+        out.push(last);
+        out.push(first);
+        if out.len() % 2 == 1 {
+            out.push(first);
+        }
+    }
+    out.extend_from_slice(part);
 }
 
 /// The game's horizontal angle at 16:9 (`renderer.md` §5).
@@ -553,6 +667,12 @@ mod tests {
             memory_log: 5,
             force_vsync: true,
             fov_trace: true,
+            draw_merge: 4,
+            draw_filter: true,
+            draw_log: 7,
+            draw_trace: true,
+            draw_ab: 15,
+            draw_debug: 3,
         };
         assert_eq!(RenderConfig::parse(&c.to_text()), c);
         assert_eq!(RenderConfig::parse(""), RenderConfig::default());
@@ -563,6 +683,9 @@ mod tests {
         let d = RenderConfig::default();
         assert!(d.time_of_day && d.vsync_one && d.limiter_sleep);
         assert!(!d.post() && d.fps == 0 && d.fov == 0 && d.memory_interval() == 0);
+        assert!(!d.draws() && !d.draw_filter && d.draw_merge == 0);
+        assert!(RenderConfig::parse("draw_merge=1").draws());
+        assert_eq!(RenderConfig::parse("draw_merge=500").draw_merge, 64);
         let odd = RenderConfig::parse("fps=5\nfov=500\nsharpen=300\nfxaa=maybe # x\nvsync_one=off");
         assert_eq!(odd.fps, 10);
         assert_eq!(odd.fov, 120);
@@ -586,6 +709,67 @@ mod tests {
         let before = (15f32.to_radians()).tan() / (30f32.to_radians()).tan();
         assert!((ratio - before).abs() < 1e-4);
         assert!(scale_angle(3.1, 10.0) <= 3.0);
+    }
+
+    /// The triangles a strip draws, each from its smallest corner in its
+    /// winding; those with two equal corners draw nothing.
+    fn strip_triangles(strip: &[u16]) -> Vec<[u16; 3]> {
+        strip
+            .windows(3)
+            .enumerate()
+            .filter(|(_, w)| w[0] != w[1] && w[1] != w[2] && w[0] != w[2])
+            .map(|(i, w)| {
+                let t = if i % 2 == 0 {
+                    [w[0], w[1], w[2]]
+                } else {
+                    [w[1], w[0], w[2]]
+                };
+                let k = (0..3).min_by_key(|k| t[*k]).unwrap();
+                [t[k], t[(k + 1) % 3], t[(k + 2) % 3]]
+            })
+            .collect()
+    }
+
+    #[test]
+    fn stitched_strips_draw_the_same_triangles_in_the_same_order() {
+        // A small generator: strips of every length from 3 to 12 in every
+        // order of odd and even, with repeated indices inside some.
+        let mut seed = 0x2545_F491u32;
+        let mut next = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 17;
+            seed ^= seed << 5;
+            seed
+        };
+        for round in 0..2000 {
+            let parts: Vec<Vec<u16>> = (0..1 + next() % 6)
+                .map(|_| {
+                    let len = 3 + next() % 10;
+                    (0..len).map(|_| (next() % 40) as u16).collect()
+                })
+                .collect();
+            let mut joined = Vec::new();
+            let mut expected = Vec::new();
+            for part in &parts {
+                stitch_strip(&mut joined, part);
+                expected.extend(strip_triangles(part));
+            }
+            assert_eq!(
+                strip_triangles(&joined),
+                expected,
+                "round {round}: {parts:?}"
+            );
+        }
+        // One strip stays as it is; an odd one before an even one takes
+        // three repeats, an even one two.
+        let mut one = Vec::new();
+        stitch_strip(&mut one, &[1, 2, 3]);
+        assert_eq!(one, [1, 2, 3]);
+        stitch_strip(&mut one, &[7, 8, 9]);
+        assert_eq!(one, [1, 2, 3, 3, 7, 7, 7, 8, 9]);
+        let mut two = vec![1, 2, 3, 4];
+        stitch_strip(&mut two, &[7, 8, 9]);
+        assert_eq!(two, [1, 2, 3, 4, 4, 7, 7, 8, 9]);
     }
 
     #[test]

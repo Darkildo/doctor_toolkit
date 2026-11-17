@@ -59,6 +59,9 @@ impl BrowserApp {
                 self.movies.open = true;
                 self.movies.ui(ui, details);
             }
+            Pane::Findings => self.findings_pane(ui),
+            Pane::Hashes => self.hashes_pane(ui),
+            Pane::Knowledge => self.knowledge_pane(ui),
             Pane::Documents => {}
         }
     }

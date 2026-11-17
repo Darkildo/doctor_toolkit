@@ -236,10 +236,10 @@ confidence = "data"
 docs = ["docs/formats/audio.md §3", "docs/formats/resource-types.md §8"]
 
 [type.score]
-summary = "гипотеза: база событий счёта и достижений, подписанная на шину сообщений (два одинаковых ресурса, около 1200 имён сообщений)"
+summary = "документ счёта: таблица имён величин и событий (1 130 строк) и списки действий; действие вида 1 шлёт сообщение на шину (74 сообщения, 89 действий); остальные виды действий не разобраны (два одинаковых ресурса)"
 parse = "нет"
-status = "hypothesis"
-confidence = "guess"
+status = "partial"
+confidence = "exe"
 docs = ["docs/formats/resource-types.md §8", "docs/formats/mission-logic.md", "docs/logic-graph.md §8"]
 
 [type.shk]

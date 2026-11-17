@@ -743,6 +743,13 @@ fn opened_redirects_are_counted_from_the_module_log() {
         [frame 9] files: CreateFileW from 0x00acf5c8 gf2/cuba.toc -> Z:\\o\\cuba.toc\n";
     assert_eq!(redirected_in_log(log), 2);
     assert_eq!(redirected_in_log(""), 0);
+    // Stage 100: streams composed from resource patches, and those that
+    // could not be.
+    let log = "[frame 0] resources: 2 stream(s) composed from a resource patch; the file device's seek hooked: on\n\
+        [frame 2] resources: gf2/cuba.str composed in 310 us: 7 resources of the game (15 blocks, 1 reads), 1 replaced, 0 added; 131072 -> 131072 bytes in 5 pieces, data size 100269\n\
+        [frame 2] resources: gf2/cuba/local.str is not composed, the game reads its own file: the patch was made for a stream of 1 bytes, the game's has 9043968\n";
+    assert_eq!(composed_in_log(log), (1, 1));
+    assert_eq!(composed_in_log(""), (0, 0));
 }
 
 /// Protocol 6 (stage 47): an object moved, turned, hidden and its logic

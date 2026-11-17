@@ -75,24 +75,7 @@ fn model(asset: Option<std::sync::Arc<DraggedAsset>>) -> Option<DraggedAsset> {
 /// object stands on the ground in front of the wall). `None` when the ray
 /// hits nothing.
 pub fn ground_point(world: &World, origin: V3, dir: V3) -> Option<V3> {
-    let (toi, normal) = world.cast(origin, dir, REACH)?;
-    let hit = math::add(origin, math::scale(dir, toi));
-    if normal[1] > 0.5 {
-        return Some(hit);
-    }
-    // Under a roof: down from just below it; at a wall: back from it along
-    // the ray's horizontal direction.
-    let above = if normal[1] < -0.5 {
-        [hit[0], hit[1] - 0.05, hit[2]]
-    } else {
-        let flat = math::normalize_or([dir[0], 0.0, dir[2]], [0.0; 3]);
-        let back = math::sub(hit, math::scale(flat, toi.min(0.3)));
-        [back[0], back[1] + 0.5, back[2]]
-    };
-    match world.cast(above, [0.0, -1.0, 0.0], 1000.0) {
-        Some((down, _)) => Some([above[0], above[1] - down, above[2]]),
-        None => Some(hit),
-    }
+    doctor_toolkit::level::walk::ground_point(world, origin, dir, REACH)
 }
 
 /// The object a dropped model copies: the selected one; else the nearest

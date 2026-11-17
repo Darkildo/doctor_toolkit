@@ -22,6 +22,7 @@ use serde::Deserialize;
 use super::{
     Confidence, Kb, Meta, Note, NoteType, Status, TARGET_EDITION, io_error, split_front_matter,
 };
+use crate::game_types::behavior::{Behaviors, ClassBehavior, MsgRef, ReadStatus, Unit};
 use crate::game_types::{self, EnumDef, EnumKind, MessageCatalog, MessageId, SemanticType, Usage};
 use crate::hash::{sdbm, string_id};
 use crate::logic_graph::schema::{self, AttrPin, LogicSchema, PinKind};
@@ -42,6 +43,26 @@ const STAGE: u32 = 72;
 /// The stage that typed messages and attributes: its notes and the notes it
 /// changed carry it.
 const TYPES_STAGE: u32 = 73;
+/// The stage that read the message bus in the executable: senders in the
+/// code and the data word.
+const BUS_STAGE: u32 = 78;
+/// Stage that read the behaviour of classes in the executable.
+const BEHAVIOR_STAGE: u32 = 79;
+
+/// The data word of a message as the notes show it.
+fn data_cell(data: &str) -> String {
+    if data == "unknown" {
+        return "неизвестно".to_owned();
+    }
+    data.split(" | ")
+        .map(|k| match k {
+            "unknown" => "не прочитано".to_owned(),
+            "none" => "нет".to_owned(),
+            k => format!("`{k}`"),
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
 
 /// The data the notes are made of.
 #[derive(Debug, Clone, Copy)]
@@ -60,6 +81,8 @@ pub struct Inputs<'a> {
     pub tunables: &'a str,
     /// `resource_types.ru.toml`: what every resource type is.
     pub resource_types: &'a str,
+    /// `class_behavior.toml`: what classes do, read in the executable.
+    pub class_behavior: &'a str,
 }
 
 impl Inputs<'static> {
@@ -73,6 +96,7 @@ impl Inputs<'static> {
             type_tags: include_str!("../../../../data/gf2/type_tags.txt"),
             tunables: include_str!("../../../../data/gf2/tunables.toml"),
             resource_types: include_str!("../../../../data/gf2/resource_types.ru.toml"),
+            class_behavior: include_str!("../../../../data/gf2/class_behavior.toml"),
         }
     }
 }
@@ -290,11 +314,89 @@ fn semantic_cell(ty: SemanticType, all: &BTreeMap<u32, ClassInfo>) -> String {
     }
 }
 
+/// A message of a reaction, for a table cell.
+fn msg_ref_cell(m: &MsgRef, class: &ClassBehavior, behaviors: &Behaviors) -> String {
+    match m {
+        MsgRef::Engine(name) => format!("`{}`", cell(name)),
+        MsgRef::Attr {
+            packet_name,
+            packet,
+            index,
+        } => {
+            let name = behaviors
+                .attr(*packet, *index)
+                .map_or_else(String::new, |a| format!(" `{}`", cell(&a.name)));
+            if *packet == class.hash {
+                format!("атрибут {index}{name}")
+            } else {
+                format!("атрибут {index}{name} пакета `{}`", cell(packet_name))
+            }
+        }
+    }
+}
+
+/// The «Поведение» section of a class note.
+fn behavior_section(b: &mut String, c: &ClassBehavior, behaviors: &Behaviors) {
+    let _ = writeln!(b, "\n## Поведение\n\n{}\n", c.summary.trim());
+    let _ = writeln!(
+        b,
+        "- Код класса прочитан {} (`data/gf2/class_behavior.toml`; адреса — издание 1.0.789.0).",
+        match c.status {
+            ReadStatus::Full =>
+                "полностью: конструктор, читатель атрибутов, обработчик сообщений и обновление",
+            ReadStatus::Partial => "частично: что осталось — в списке ниже",
+        }
+    );
+    let code: Vec<String> = [
+        ("конструктор", &c.ctor),
+        ("читатель атрибутов", &c.reader),
+        ("обработчик сообщений", &c.handler),
+    ]
+    .iter()
+    .filter_map(|(what, addr)| addr.as_ref().map(|a| format!("{what} `{a}`")))
+    .collect();
+    if !code.is_empty() {
+        let _ = writeln!(b, "- Код: {}.", code.join(", "));
+    }
+    let _ = writeln!(b, "- Обновление: {}", c.update.trim());
+    let _ = writeln!(b, "- Когда срабатывает: {}", c.fires.trim());
+    if !c.on.is_empty() {
+        b.push_str(
+            "\nРеакции обработчика сообщений:\n\n| Сообщение | Что делает | Шлёт | Код |\n|---|---|---|---|\n",
+        );
+        for r in &c.on {
+            let sends = if r.sends.is_empty() {
+                "—".to_owned()
+            } else {
+                r.sends
+                    .iter()
+                    .map(|m| msg_ref_cell(m, c, behaviors))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            };
+            let _ = writeln!(
+                b,
+                "| {} | {} | {sends} | `{}` |",
+                msg_ref_cell(&r.msg, c, behaviors),
+                cell(&r.does),
+                r.addr
+            );
+        }
+    }
+    if !c.open.is_empty() {
+        b.push_str("\nЧто не выяснено:\n\n");
+        for o in &c.open {
+            let _ = writeln!(b, "- {}", o.trim());
+        }
+    }
+}
+
 fn class_note(
     hash: u32,
     info: &ClassInfo,
     all: &BTreeMap<u32, ClassInfo>,
     tunables: &[Tunable],
+    behaviors: &Behaviors,
 ) -> Draft {
     let link = |class: u32| {
         let other = &all[&class];
@@ -371,7 +473,17 @@ fn class_note(
             links.join(", ")
         );
     }
-    b.push_str("- Поведение класса (обработчики сообщений, обновление) здесь не описано: см. ручной раздел и карту [логики](../maps/logic.md).\n");
+    let behavior = behaviors.class(hash);
+    let uses = behaviors.packet_attrs(hash);
+    match behavior {
+        Some(_) => b.push_str(
+            "- Поведение прочитано в коде `godfather2.exe`: раздел «Поведение» ниже.\n",
+        ),
+        None => b.push_str("- Поведение класса (обработчики сообщений, обновление) здесь не описано: см. ручной раздел и карту [логики](../maps/logic.md).\n"),
+    }
+    if let Some(c) = behavior {
+        behavior_section(&mut b, c, behaviors);
+    }
 
     b.push_str("\n## Атрибуты\n\n");
     if info.attrs.is_empty() {
@@ -443,6 +555,39 @@ fn class_note(
         }
     }
 
+    if !uses.is_empty() {
+        b.push_str(
+            "\n## Атрибуты по коду\n\nКак значение использует код читателя класса \
+             (`data/gf2/class_behavior.toml`): вид — `int`, `float`, `bool` (важно только \
+             «ноль или нет»), `flags` (проверяются отдельные биты), `enum`, `hash`, `string`, \
+             `guid`, `vec3`, `matrix`, `msg_in` (сообщение, которое объект слушает), `msg_out` \
+             (сообщение, которое он шлёт); поле — куда читатель кладёт значение в объекте. \
+             Атрибут, которого в пакете объекта нет, читатель получает как 0 или пустую \
+             строку. Уверенность `guess` — имя условное.\n\n",
+        );
+        b.push_str(
+            "| № | Имя | Вид по коду | Поле | Что делает | Код | Уверенность |\n|---:|---|---|---|---|---|---|\n",
+        );
+        for a in &uses {
+            let _ = writeln!(
+                b,
+                "| {} | `{}` | {} | {} | {} | `{}` | {} |",
+                a.index,
+                cell(&a.name),
+                match a.unit {
+                    Some(Unit::Seconds) => format!("{}, секунды", a.kind.name()),
+                    None => a.kind.name().to_owned(),
+                },
+                a.field
+                    .as_deref()
+                    .map_or_else(|| "—".to_owned(), |f| format!("`{}`", cell(f))),
+                cell(&a.does),
+                a.addr,
+                conf_name(a.conf),
+            );
+        }
+    }
+
     let mine: Vec<&Tunable> = tunables.iter().filter(|t| t.class == hash).collect();
     if !mine.is_empty() {
         b.push_str(
@@ -504,6 +649,14 @@ fn class_note(
     if typed {
         sources.push("data/gf2/attr_types.toml".to_owned());
         draft.meta.stages.push(TYPES_STAGE);
+    }
+    if behavior.is_some() || !uses.is_empty() {
+        sources.push("data/gf2/class_behavior.toml".to_owned());
+        draft.meta.stages.push(BEHAVIOR_STAGE);
+        draft.meta.confidence = Confidence::Exe;
+    }
+    if behavior.is_some_and(|c| c.status == ReadStatus::Full && c.open.is_empty()) {
+        draft.meta.status = Status::Known;
     }
     sources.append(&mut draft.meta.sources);
     draft.meta.sources = sources;
@@ -740,11 +893,28 @@ fn engine_messages(inputs: &Inputs) -> Draft {
          (см. [сообщения файлов игры](game-messages.md)).\n\n\
          «Слушают» и «шлют» — атрибуты классов SimGroup по всем файлам игры \
          (`data/gf2/game_messages.tsv`: `Класс.атрибут ×число объектов`); объекты SimGroup \
-         используют {used} из этих имён. Какой код движка шлёт сообщение и что лежит в его \
-         данных, здесь не указано: данные сообщений пока неизвестны — см. \
-         [шину сообщений](../engine/message-bus.md).\n\n\
-         | Сообщение | Хэш | Слушают в SimGroup | Шлют в SimGroup | Ещё называют |\n|---|---|---|---|---|\n",
+         используют {used} из этих имён.\n\n\
+         «Шлёт код» — места `godfather2.exe`, которые кладут сообщение на шину \
+         (`data/gf2/bus_sites.tsv`, его строит `research/bus_sites.py`): адрес вызова; \
+         «→1» — доставка одному слушателю (`0x00408BF0`), «⏱» — очередь задержки \
+         (`0x00440590`); в скобках — сколько мест кода подписывают слушателя. Отправитель в \
+         коде найден у {with_sender} имён, слушатель — у {with_listener}. «Данные» — что эти \
+         места кладут в слово данных: ключи [видов данных](game-messages.md) \
+         (`data/gf2/messages.toml`), «нет» — слово равно 0, «не прочитано» — проход по коду \
+         значение не проследил. См. [шину сообщений](../engine/message-bus.md) и \
+         [разбор шины](../../analysis/message-bus.md).\n\n\
+         | Сообщение | Хэш | Шлёт код | Данные | Слушают в SimGroup | Шлют в SimGroup | Ещё называют |\n|---|---|---|---|---|---|---|\n",
         names.len(),
+        with_sender =
+            names
+                .iter()
+                .filter(|n| game_types::message::fact(string_id(n))
+                    .is_some_and(|f| !f.sites.is_empty()))
+                .count(),
+        with_listener = names
+            .iter()
+            .filter(|n| game_types::message::fact(string_id(n)).is_some_and(|f| f.listens > 0))
+            .count(),
     );
     for name in names {
         let (heard, sent, mentions) = match catalog.by_name(name) {
@@ -755,19 +925,53 @@ fn engine_messages(inputs: &Inputs) -> Draft {
             ),
             None => ("—".to_owned(), "—".to_owned(), "—".to_owned()),
         };
+        let fact = game_types::message::fact(string_id(name));
+        let code = match fact {
+            Some(f) if !f.sites.is_empty() || f.listens > 0 => {
+                let mut list: Vec<String> = f
+                    .sites
+                    .iter()
+                    .take(3)
+                    .map(|(site, how)| {
+                        format!(
+                            "`0x{site:08X}`{}",
+                            match how {
+                                1 => " →1",
+                                2 => " ⏱",
+                                _ => "",
+                            }
+                        )
+                    })
+                    .collect();
+                if f.sites.len() > 3 {
+                    list.push(format!("… ещё {}", f.sites.len() - 3));
+                }
+                if f.listens > 0 {
+                    list.push(format!("(слушают: {})", f.listens));
+                }
+                list.join(", ")
+            }
+            _ => "—".to_owned(),
+        };
+        let info = MessageId::from_name(name).info();
         let _ = writeln!(
             b,
-            "| `{}` | `0x{:08x}` | {heard} | {sent} | {mentions} |",
+            "| `{}` | `0x{:08x}` | {code} | {} | {heard} | {sent} | {mentions} |",
             cell(name),
-            string_id(name)
+            string_id(name),
+            data_cell(&info.data),
         );
     }
-    b.push_str("\n## Подробнее\n\n- [Сообщения](index.md)\n- [Сообщения файлов игры](game-messages.md)\n- [Граф логики](../../logic-graph.md) §1\n- [Заметки Ghidra](../../../research/ghidra/README.md)\n");
+    b.push_str("\n## Подробнее\n\n- [Сообщения](index.md)\n- [Сообщения файлов игры](game-messages.md)\n- [Разбор шины сообщений](../../analysis/message-bus.md)\n- [Граф логики](../../logic-graph.md) §1\n- [Заметки Ghidra](../../../research/ghidra/README.md)\n");
     draft.body = b;
     draft.meta.confidence = Confidence::Exe;
     draft.meta.stages.push(TYPES_STAGE);
+    draft.meta.stages.push(BUS_STAGE);
     draft.meta.sources = vec![
         "data/gf2/engine_messages.txt".to_owned(),
+        "data/gf2/bus_sites.tsv".to_owned(),
+        "research/bus_sites.py".to_owned(),
+        "data/gf2/messages.toml".to_owned(),
         "data/gf2/game_messages.tsv".to_owned(),
         "research/ghidra/README.md".to_owned(),
         "research/message_catalog.py".to_owned(),
@@ -821,6 +1025,16 @@ fn game_messages() -> Draft {
         .iter()
         .filter(|(h, _)| catalog.get(*h).is_none())
         .count();
+    let (mut data_known, mut data_full) = (0usize, 0usize);
+    for m in catalog.iter() {
+        let data = MessageId::from_hash(m.hash).info().data;
+        if data != "unknown" {
+            data_known += 1;
+            if !data.split(" | ").any(|k| k == "unknown") {
+                data_full += 1;
+            }
+        }
+    }
     let top = |map: &HashMap<&str, u64>| {
         let mut rows: Vec<(&str, u64)> = map.iter().map(|(c, n)| (*c, *n)).collect();
         rows.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(b.0)));
@@ -845,12 +1059,18 @@ fn game_messages() -> Draft {
          | `Unknown(хэш)` | известен только хэш (сообщение с шины запущенной игры) | — | — |\n\n\
          Про каждое известное сообщение инструменты отдают: кто его шлёт и кто слушает \
          (класс и номер атрибута, число объектов), область — общий каталог потоков, где оно \
-         встречается, число потоков, какие ещё ресурсы его называют, данные и уверенность. \
-         **Данные сообщения (слово `u32`) пока неизвестны для всех сообщений** — в выдаче стоит \
-         `unknown`; см. [вопрос о данных](../questions/lua-message-data.md).\n\n\
+         встречается, число потоков, какие ещё ресурсы его называют, кто шлёт его помимо \
+         объектов SimGroup (места кода движка, скрипты Lua, ролики, документ счёта), данные и \
+         уверенность. Слово данных известно у {data_known} сообщений каталога (у {data_full} — \
+         для всех отправителей, у остальных — для части): оно выводится из того, что кладут \
+         классы-отправители (таблица ниже); у остальных {data_unknown} в выдаче стоит `unknown`. \
+         См. [вопрос о данных](../questions/lua-message-data.md).\n\n\
          ## Как используются\n\n| Состояние по всей игре | Сообщений |\n|---|---:|\n",
         catalog.len(),
         game_types::message::engine_messages().len(),
+        data_known = data_known,
+        data_full = data_full,
+        data_unknown = catalog.len() - data_known,
     );
     let mut usage: Vec<(&str, usize)> = by_usage.into_iter().collect();
     usage.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(b.0)));
@@ -873,6 +1093,38 @@ fn game_messages() -> Draft {
         top(&senders),
         top(&listeners)
     );
+    b.push_str("\n## Слово данных\n\nСлово данных сообщения — 0 или указатель на объект, который отправитель собирает у себя на стеке; первое слово объекта — таблица методов. Имён этих классов в exe нет: ключи — тулкита (`data_type` в `data/gf2/messages.toml`).\n\n| Ключ | Таблица методов | Что это | Уверенность | Источник |\n|---|---|---|---|---|\n");
+    for t in game_types::message::data_types() {
+        let table = if t.table == 0 {
+            "—".to_owned()
+        } else {
+            format!("`0x{:08X}`", t.table)
+        };
+        let _ = writeln!(
+            b,
+            "| `{}` | {table} | {} | `{}` | {} |",
+            t.key,
+            cell(t.ru),
+            t.conf.name(),
+            cell(t.source)
+        );
+    }
+    b.push_str("\nЧто кладут в слово данных выходы классов SimGroup (`class_data`; прочитано в обработчиках):\n\n| Класс | Данные | Чей объект | Уверенность | Источник |\n|---|---|---|---|---|\n");
+    for c in game_types::message::class_data() {
+        let _ = writeln!(
+            b,
+            "| `{}` | `{}` | {} | `{}` | {} |",
+            c.class,
+            c.data,
+            if c.who_ru.is_empty() {
+                "—".to_owned()
+            } else {
+                cell(c.who_ru)
+            },
+            c.conf.name(),
+            cell(c.source)
+        );
+    }
     b.push_str("\n## Сообщения с описанием\n\nО немногих сообщениях известно больше, чем список отправителей: их описания лежат в `data/gf2/messages.toml`.\n\n| Сообщение | Группа | Что делает | Кто шлёт кроме SimGroup | Данные | Уверенность | Источник |\n|---|---|---|---|---|---|---|\n");
     let mut notes: Vec<&game_types::MessageNote> = game_types::message::notes().iter().collect();
     notes.sort_by_key(|n| n.name.to_ascii_lowercase());
@@ -882,11 +1134,7 @@ fn game_messages() -> Draft {
         } else {
             cell(&n.sent_by_ru.join("; "))
         };
-        let data = if n.data == "unknown" {
-            "неизвестно"
-        } else {
-            n.data
-        };
+        let data = data_cell(&MessageId::from_hash(n.hash).info().data);
         let _ = writeln!(
             b,
             "| `{}` | `{}` | {} | {sent_by} | {data} | `{}` | {} |",
@@ -908,15 +1156,141 @@ fn game_messages() -> Draft {
     );
     draft.body = b;
     draft.meta.confidence = Confidence::Data;
-    draft.meta.stages = vec![TYPES_STAGE];
+    draft.meta.stages = vec![TYPES_STAGE, BUS_STAGE];
     draft.meta.sources = vec![
         "data/gf2/game_messages.tsv".to_owned(),
         "data/gf2/engine_messages.txt".to_owned(),
         "data/gf2/messages.toml".to_owned(),
+        "data/gf2/bus_sites.tsv".to_owned(),
+        "data/gf2/message_senders.tsv".to_owned(),
         "research/message_catalog.py".to_owned(),
         "docs/logic-graph.md §2.1".to_owned(),
     ];
     draft.meta.tags = vec!["messages".to_owned(), "types".to_owned()];
+    draft
+}
+
+// ------------------------------------------------------------ Lua functions
+
+/// Stage that listed the Lua functions of the exe.
+const LUA_API_STAGE: u32 = 74;
+
+/// Every function and table the exe registers for Lua (`data/gf2/lua_api.toml`).
+fn lua_functions() -> Draft {
+    use game_types::lua_api::{LuaConfidence, LuaFunctionKind, LuaTableKind, lua_api};
+    let api = lua_api();
+    let mut draft = Draft::new(
+        "exe/lua-functions.md".to_owned(),
+        NoteType::Exe,
+        "Функции и таблицы Lua из exe: полный список".to_owned(),
+    );
+    let described: Vec<_> = api.functions.iter().filter(|f| f.is_described()).collect();
+    let on_bench = described
+        .iter()
+        .filter(|f| f.conf == LuaConfidence::Bench)
+        .count();
+    let globals = api
+        .functions
+        .iter()
+        .filter(|f| f.is_game_global() && f.kind == LuaFunctionKind::C)
+        .count();
+    let mut b = format!(
+        "Всё, что `godfather2.exe` (PC 1.0.789.0) регистрирует в состоянии Lua игры: {} функций и {} таблиц. \
+         Из них функций самой игры {} ({globals} глобальных функций C, методы таблиц и метатаблиц, {} функций \
+         встроенного текста Lua), стандартных функций Lua 5.0 и tolua — {}. У всех функций игры подпись прочитана \
+         в коде; в запущенной игре проверено {on_bench}. Адреса — виртуальные; «регистрация» — вызов \
+         `lua_pushstring` с именем или запись массива `{{имя, функция}}`.\n\n\
+         Источник — `data/gf2/lua_api.toml` (адреса находит и сверяет `research/lua_api.py`); из него же \
+         делается заглушка `data/gf2/schema/gf2-lua-api.lua`. Как устроена регистрация, данные сообщений, \
+         объекты и группы — [Lua-API движка](../../analysis/lua-api.md).\n",
+        api.functions.len(),
+        api.tables.len(),
+        described.len(),
+        api.functions
+            .iter()
+            .filter(|f| f.kind == LuaFunctionKind::Lua)
+            .count(),
+        api.functions.len() - described.len(),
+    );
+    b.push_str("\n## Таблицы\n\n| Таблица | Что это | Описание |\n|---|---|---|\n");
+    for t in &api.tables {
+        let kind = match t.kind {
+            LuaTableKind::Global => "глобальная таблица",
+            LuaTableKind::Metatable => "метатаблица userdata",
+            LuaTableKind::Library => "библиотека",
+            LuaTableKind::Lua => "таблица встроенного Lua",
+        };
+        writeln!(b, "| `{}` | {kind} | {} |", t.name, cell(&t.ru)).unwrap();
+    }
+    for group in &api.groups {
+        let functions: Vec<_> = api
+            .functions
+            .iter()
+            .filter(|f| f.group == group.key)
+            .collect();
+        if functions.is_empty() {
+            continue;
+        }
+        writeln!(b, "\n## {}\n", group.ru).unwrap();
+        if functions.iter().all(|f| !f.is_described()) {
+            // A standard library: names and addresses are enough.
+            let list: Vec<String> = functions
+                .iter()
+                .map(|f| format!("`{}` `{}`", f.full_name(), f.implementation))
+                .collect();
+            writeln!(b, "{}.", list.join(", ")).unwrap();
+            continue;
+        }
+        b.push_str("| Вызов | Аргументы | Результат | Что делает | Регистрация | Уверенность |\n|---|---|---|---|---|---|\n");
+        for f in functions {
+            let place = match f.kind {
+                LuaFunctionKind::Lua => format!("текст Lua `{}`", f.source),
+                _ => f
+                    .register
+                    .iter()
+                    .map(|r| format!("`{r}`"))
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            };
+            let conf = match f.conf {
+                LuaConfidence::Exe => "exe".to_owned(),
+                LuaConfidence::Bench => format!("bench ({})", f.bench),
+                LuaConfidence::Guess => "guess".to_owned(),
+            };
+            let args = if f.args.is_empty() {
+                "—".to_owned()
+            } else {
+                format!("`{}`", cell(&f.args))
+            };
+            writeln!(
+                b,
+                "| `{}` | {args} | `{}` | {} | {place} | {conf} |",
+                f.full_name(),
+                cell(&f.returns),
+                // Code like `vtbl[+0x10](name)` must not read as a link.
+                cell(&f.ru).replace("](", "] (").replace("[[", "[ ["),
+            )
+            .unwrap();
+        }
+    }
+    b.push_str("\n## Чего в exe нет\n\n");
+    for m in &api.missing {
+        writeln!(b, "- `{}` — {}", m.name, m.ru).unwrap();
+    }
+    b.push_str(
+        "\n## Подробнее\n\n- [Lua-API движка](../../analysis/lua-api.md)\n- [Lua в игре](../engine/lua.md)\n\
+         - [Lua 5.0 в exe: состояние, загрузка и вызов](lua-runtime.md)\n- [Визуальные скрипты](../../scripts.md) §3\n",
+    );
+    draft.body = b;
+    draft.meta.confidence = Confidence::Exe;
+    draft.meta.stages = vec![LUA_API_STAGE];
+    draft.meta.sources = vec![
+        "data/gf2/lua_api.toml".to_owned(),
+        "research/lua_api.py".to_owned(),
+        "docs/analysis/lua-api.md §1".to_owned(),
+        "docs/analysis/game-bench.md §35".to_owned(),
+    ];
+    draft.meta.tags = vec!["exe".to_owned(), "lua".to_owned(), "scripts".to_owned()];
     draft
 }
 
@@ -1238,17 +1612,19 @@ fn apply(kb_dir: &Path, draft: &Draft, today: &str, check: bool, out: &mut Outco
 /// `check` nothing is written: the outcome says what a run would change.
 /// `today` (`YYYY-MM-DD`) becomes `updated` of the notes that change.
 pub fn run(kb_dir: &Path, inputs: &Inputs, today: &str, check: bool) -> Result<Outcome> {
+    let behaviors = Behaviors::parse(inputs.class_behavior)?;
     let logic = LogicSchema::parse(inputs.logic_schema, inputs.engine_messages)?;
     let tunables = tunables::parse(inputs.tunables)?;
     let all = classes(inputs, &logic)?;
     let mut drafts: Vec<Draft> = all
         .iter()
-        .map(|(&hash, info)| class_note(hash, info, &all, &tunables))
+        .map(|(&hash, info)| class_note(hash, info, &all, &tunables, &behaviors))
         .collect();
     drafts.push(class_index(&all));
     drafts.extend(resource_notes(inputs)?);
     drafts.push(engine_messages(inputs));
     drafts.push(game_messages());
+    drafts.push(lua_functions());
     drafts.extend(game_types::enums().iter().map(|e| enum_note(e, &all)));
 
     let mut out = Outcome::default();
@@ -1344,6 +1720,43 @@ confidence = "data"
 docs = ["docs/formats/geometry.md §2"]
 "#;
 
+    const BEHAVIOR: &str = r#"
+[class.Gun]
+status = "partial"
+reader = "0x00401000"
+handler = "0x00402000"
+summary = "Стреляет по сообщению."
+update = "нет"
+fires = "По сообщению атрибута 0."
+open = ["Отдача не прочитана."]
+
+[[class.Gun.on]]
+msg = "attr:Gun:0"
+does = "Стреляет | один раз."
+sends = ["attr:Gun:3", "iMsgA"]
+addr = "0x00402000"
+conf = "exe"
+
+[[class.Gun.attr]]
+packet = "Gun"
+i = 0
+name = "shoot"
+kind = "msg_in"
+field = "+0x50"
+does = "Сообщение выстрела."
+addr = "0x00401000"
+conf = "exe"
+
+[[class.Gun.attr]]
+packet = "Gun"
+i = 3
+name = "on_shot"
+kind = "msg_out"
+does = "Шлётся после выстрела."
+addr = "0x00401000"
+conf = "exe"
+"#;
+
     fn inputs(schema: &'static str) -> Inputs<'static> {
         Inputs {
             sim_classes: SIM_CLASSES,
@@ -1353,6 +1766,7 @@ docs = ["docs/formats/geometry.md §2"]
             type_tags: "mesh\n",
             tunables: TUNABLES,
             resource_types: TYPES,
+            class_behavior: BEHAVIOR,
         }
     }
 
@@ -1373,9 +1787,10 @@ docs = ["docs/formats/geometry.md §2"]
         let first = run(kb, &inputs(schema), "2026-11-16", false).unwrap();
         // Widget, Gun, the packet 8a157691 of the layout, 0000beef; the class
         // list; mesh and the type list; the engine messages and the
-        // catalogue of the game's; the value lists; eight folder lists.
+        // catalogue of the game's and the Lua functions; the value lists;
+        // eight folder lists.
         let lists = crate::game_types::enums().len();
-        assert_eq!(first.total, 4 + 1 + 2 + 2 + lists + 8);
+        assert_eq!(first.total, 4 + 1 + 2 + 3 + lists + 8);
         assert_eq!(first.changed.len(), first.total);
         let gun = std::fs::read_to_string(kb.join("classes/Gun.md")).unwrap();
         for part in [
@@ -1383,6 +1798,12 @@ docs = ["docs/formats/geometry.md §2"]
             "категория в графе логики: `object`",
             "[0x8a157691](class-8a157691.md) (1), [0x0000beef](class-0000beef.md) (2)",
             "| 0 | string | вход (сообщение, которое объект слушает) | `fire` | `MsgIn` | роль: exe, имя: guess | 9 |",
+            "## Поведение\n\nСтреляет по сообщению.",
+            "- Код: читатель атрибутов `0x00401000`, обработчик сообщений `0x00402000`.",
+            "| атрибут 0 `shoot` | Стреляет \\| один раз. | атрибут 3 `on_shot`, `iMsgA` | `0x00402000` |",
+            "- Отдача не прочитана.",
+            "| 3 | `on_shot` | msg_out | — | Шлётся после выстрела. | `0x00401000` | exe |",
+            "data/gf2/class_behavior.toml",
             "задержка — атрибут 4",
             "| 6 | float | — | `damage` | — | имя: data | 4 |",
             "| `weapons.pistol.damage` | 6 | float | Pistol: damage \\| one bullet |",
@@ -1468,7 +1889,7 @@ docs = ["docs/formats/geometry.md §2"]
         let names = class_note_names(&Inputs::gf2()).unwrap();
         assert!(names.len() > 300, "{}", names.len());
         let lists = crate::game_types::enums().len();
-        assert_eq!(out.total, names.len() + 1 + 45 + 1 + 2 + lists + 8);
+        assert_eq!(out.total, names.len() + 1 + 45 + 1 + 3 + lists + 8);
         let family = std::fs::read_to_string(dir.path().join("enums/family.md")).unwrap();
         assert!(family.contains("| `corleone` | `0x0637b907` |"), "{family}");
         assert!(

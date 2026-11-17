@@ -1,7 +1,7 @@
 ---
 type: class
 status: partial
-confidence: data
+confidence: exe
 editions: ["1.0.789.0"]
 stages: [72]
 sources: ["data/gf2/simgroup_schema.txt", "data/gf2/logic_schema.toml"]
@@ -23,7 +23,7 @@ updated: 2026-11-16
 
 | № | Вид | Роль | Имя | Смысл | Уверенность | Значений |
 |---:|---|---|---|---|---|---:|
-| 2 | string | вход (сообщение, которое объект слушает) | — | `MsgIn` | роль: data | 8 |
+| 2 | string | параметр | `score_event` | — | роль: exe, имя: guess | 8 |
 | 3 | int | — | — | — | — | 15 |
 
 ## Подробнее

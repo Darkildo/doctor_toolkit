@@ -74,9 +74,14 @@ doctor-toolkit dialogues "$GAME" --search "Rosato"   # поиск
 doctor-toolkit dialogue "$GAME" 0c6576f0             # дерево с речью и субтитрами
 doctor-toolkit dialogue "$GAME" 0c6576f0 --json > d.json
 doctor-toolkit dialogue-import "$GAME" d.json        # правленое дерево (поле data)
+doctor-toolkit dialogue-import "$GAME" d.json --raw d.dlg   # дерево → файл ресурса, для нового диалога
 doctor-toolkit dialogue-export "$GAME" -o dialogues
 doctor-toolkit subtitle "$GAME" 'audiostreams\b4_xxx_0\d_mob4_xxx_0001cc7.exa.snu' --set en="New line"
 ```
 
 Все команды правки пишут в рабочее пространство; `--direct` сразу
 применяет изменения к игре.
+
+Новый диалог — это новый поток: как его собрать и как выбор в разговоре
+превратить в меню с покупками, показывает пример `examples/trader/`
+(`docs/formats/dialogues.md` §7, `docs/analysis/handing-out.md` §7).

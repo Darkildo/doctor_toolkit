@@ -1035,47 +1035,52 @@ fn parse_clip(
     ))
 }
 
+/// A bank with one entry, one clip with one event and one event object.
+#[cfg(test)]
+pub(crate) fn sample_image() -> BankImage {
+    let mut graph = Block::default();
+    // Entry {ptr name, ptr root}, name, root node (type 0x16, clip).
+    let entry = graph.push(&[0; 8], 16);
+    let name = graph.push(b"idle\0", 16);
+    let node = graph.push(&[0x16, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], 16);
+    graph.pointers.insert(entry, Target::Graph(name));
+    graph.pointers.insert(entry + 4, Target::Graph(node));
+    graph.pointers.insert(node + 12, Target::Clip(0));
+    let mut tail = Block::default();
+    let object = tail.push(&[4, 0, 0, 0, 0, 0, 0, 0], 16);
+    let mut clip = ClipImage {
+        record: ClipImage::new_record(0x1234, 2, 0x78E0_3D81, 0x8000_0004),
+        streams: vec![0x2C, 0x00, 0, 0, 0],
+        events: Vec::new(),
+    };
+    clip.events.push(EventImage {
+        frame: 1.0,
+        name: Target::Tail(0),
+        signature: 0x0300_0001,
+        args: Some(vec![(1, ArgValue::Word(2.0f32.to_bits()))]),
+    });
+    let mut bank = BankImage {
+        hash: 0xABCD,
+        skeleton: 0x50F9_2C54,
+        words: [0, 0, 0, 1],
+        node_count: 1,
+        entries: vec![Target::Graph(entry)],
+        event_objects: vec![Target::Tail(object)],
+        graph,
+        clips: vec![clip],
+        tail,
+    };
+    let footstep = bank.tail.intern("footstep");
+    bank.clips[0].events[0].name = Target::Tail(footstep);
+    bank
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// A bank with one entry, one clip with one event and one event object.
     pub(crate) fn sample() -> BankImage {
-        let mut graph = Block::default();
-        // Entry {ptr name, ptr root}, name, root node (type 0x16, clip).
-        let entry = graph.push(&[0; 8], 16);
-        let name = graph.push(b"idle\0", 16);
-        let node = graph.push(&[0x16, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], 16);
-        graph.pointers.insert(entry, Target::Graph(name));
-        graph.pointers.insert(entry + 4, Target::Graph(node));
-        graph.pointers.insert(node + 12, Target::Clip(0));
-        let mut tail = Block::default();
-        let object = tail.push(&[4, 0, 0, 0, 0, 0, 0, 0], 16);
-        let mut clip = ClipImage {
-            record: ClipImage::new_record(0x1234, 2, 0x78E0_3D81, 0x8000_0004),
-            streams: vec![0x2C, 0x00, 0, 0, 0],
-            events: Vec::new(),
-        };
-        clip.events.push(EventImage {
-            frame: 1.0,
-            name: Target::Tail(0),
-            signature: 0x0300_0001,
-            args: Some(vec![(1, ArgValue::Word(2.0f32.to_bits()))]),
-        });
-        let mut bank = BankImage {
-            hash: 0xABCD,
-            skeleton: 0x50F9_2C54,
-            words: [0, 0, 0, 1],
-            node_count: 1,
-            entries: vec![Target::Graph(entry)],
-            event_objects: vec![Target::Tail(object)],
-            graph,
-            clips: vec![clip],
-            tail,
-        };
-        let footstep = bank.tail.intern("footstep");
-        bank.clips[0].events[0].name = Target::Tail(footstep);
-        bank
+        super::sample_image()
     }
 
     #[test]

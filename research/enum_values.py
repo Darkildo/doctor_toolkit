@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Builds data/gf2/enums.toml: the value lists of The Godfather II (PC
 1.0.789.0) — families, cities, venues, building types, weapons, crew
-specialties, sound categories, emotions.
+specialties, crew ranks, weapon licences, sound categories, emotions.
 
 Usage: enum_values.py <simgroup_dump_dir> <auc.bin> <pad.bin> > data/gf2/enums.toml
 
@@ -25,6 +25,11 @@ Where each list comes from:
   (guns, thrown and melee weapons, pick-ups), with the item type (`Item` 3);
 - crew_specialty: the bits tested by 0x009630E0 of godfather2.exe, which
   returns `$crew_specialty_<name>` for each (CREW_SPECIALTIES below);
+- crew_rank: the ranks the places of the player's family tree ask for
+  (0x0090B0A0 and the reader of `AddPlayerFamilyMember`, 0x0090A1D0, which
+  keeps 3..5; CREW_RANKS below);
+- weapon_licence: the level of a made man the game keeps with his honours
+  (0x008BCE30) and shows as "Weapon License" (WEAPON_LICENCES below);
 - sound_category: the 49 records of the `auc` resource (name, parent group);
 - emotion: the records of the `pad` resource (set `pedestrian`); each record
   holds `sdbm(lower(name))` before the name.
@@ -51,6 +56,14 @@ CREW_SPECIALTIES = [
     (0x40, 'medic'),
     (0x80, 'bruiser'),
 ]
+
+# Rank of a made man: the places of the family tree ask for 3, 3, 3, 3, 4, 4, 5;
+# 0x0090B330 counts a promotion to 4 and to 5 apart. Names as the game shows them.
+CREW_RANKS = [(3, 'soldier'), (4, 'capo'), (5, 'underboss')]
+
+# 0x008BCE30: the level rises when the honours reach 10, 25 and 70; names as
+# the game shows them on the upgrade screen.
+WEAPON_LICENCES = [(1, 'basic'), (2, 'advanced'), (3, 'expert'), (4, 'master')]
 
 
 def sdbm_lower(s):
@@ -256,6 +269,21 @@ def main(root, auc, pad):
             'биты поля +0x10 места команды, которые проверяет 0x009630E0 в godfather2.exe и возвращает '
             'ключ текста $crew_specialty_<имя>', 'exe',
             [{'name': n, 'value': b} for b, n in CREW_SPECIALTIES])
+
+    section('crew_rank', 'Ranks of made men', 'Ранги людей чести', 'int',
+            'rank a place of the family tree of the player asks for (0x0090B0A0); AddPlayerFamilyMember 2 '
+            '(the reader 0x0090A1D0 keeps 3..5), Sentient 1 of a character template',
+            'ранг, которого просит место древа семьи игрока (0x0090B0A0); AddPlayerFamilyMember 2 '
+            '(читатель 0x0090A1D0 оставляет 3…5), Sentient 1 шаблона персонажа', 'exe',
+            [{'name': n, 'value': v} for v, n in CREW_RANKS])
+
+    section('weapon_licence', 'Weapon licences', 'Оружейные лицензии', 'int',
+            'level of a made man in the record of his honours (0x008BCF90, byte +0x28): it starts from '
+            'the flags of his SimNpc (0x00790150: bit 3 gives 2, bit 4 gives 3) and rises with honours '
+            '(0x008BCE30: 10, 25, 70)',
+            'уровень человека чести в записи его заслуг (0x008BCF90, байт +0x28): начальный — по флагам '
+            'его SimNpc (0x00790150: бит 3 — 2, бит 4 — 3), растёт с заслугами (0x008BCE30: 10, 25, 70)',
+            'exe', [{'name': n, 'value': v} for v, n in WEAPON_LICENCES])
 
     section('sound_category', 'Sound categories', 'Категории звука', 'name',
             'records of the auc resource (gf2/globals_global, gf2/frontend): name[64], parent group[36]',

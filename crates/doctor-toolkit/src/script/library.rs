@@ -299,14 +299,36 @@ fn build() -> Vec<NodeDef> {
             def!("game.car_police", "Car police intensity", C::Game, "GetCarPoliceIntensity()",
             in [], out [("value", Number, "")], params [])
         ),
-        unverified!(
-            def!("game.vehicle_speed", "Vehicle speed", C::Game, "GetVehicleSpeed(): speed of the player's vehicle",
-            in [], out [("value", Number, "")], params [])
-        ),
-        unverified!(
-            def!("game.vehicle_type", "Vehicle type", C::Game, "GetVehicleType()",
-            in [], out [("value", Any, "")], params [])
-        ),
+        def!("game.vehicle_speed", "Vehicle speed", C::Game,
+            "GetVehicleSpeed(): speed of the player's vehicle; 0 on foot",
+            in [], out [("value", Number, "")], params []),
+        def!("game.vehicle_type", "Vehicle type", C::Game,
+            "GetVehicleType(): the kind of the player's vehicle (the game's scripts know 1 sports car … 9 police van); 0 on foot",
+            in [], out [("value", Any, "")], params []),
+        def!("game.in_vehicle", "In a vehicle", C::Game,
+            "The second result of GetVehicleSpeed(): false on foot",
+            in [], out [("value", Bool, "")], params []),
+        def!("game.vehicle_speed_delta", "Vehicle speed change", C::Game,
+            "GetVehicleSpeedDelta(); 0 on foot",
+            in [], out [("value", Number, "")], params []),
+        def!("game.vehicle_acceleration", "Vehicle acceleration", C::Game,
+            "GetVehicleAcceleration(); 0 on foot",
+            in [], out [("value", Number, "")], params []),
+        def!("game.vehicle_skid", "Vehicle skid energy", C::Game,
+            "GetVehicleSkidEnergy(); 0 on foot",
+            in [], out [("value", Number, "")], params []),
+        def!("game.vehicle_health", "Vehicle health", C::Game,
+            "GetVehicleHealth(); 0 on foot",
+            in [], out [("value", Number, "")], params []),
+        unverified!(def!("object.from_guid", "Object by GUID", C::Game,
+            "Base(guid): a reference to a game object by its GUID as text, {xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx}; empty when the game finds none",
+            in [("guid", Str, "GUID")], out [("object", Any, "")], params [])),
+        def!("object.valid", "Object exists", C::Game,
+            "Whether a reference made by Object by GUID found an object (tostring of an empty reference is nil)",
+            in [("object", Any, "Object")], out [("result", Bool, "")], params []),
+        unverified!(def!("object.guid", "Object GUID", C::Game,
+            "tostring(object): the GUID of a referenced object as text",
+            in [("object", Any, "Object")], out [("guid", Str, "")], params [])),
         def!("game.platform", "Platform", C::Game, "GetPlatform()", in [], out [("value", Any, "")], params []),
         // ------------------------------------------------------------ groups
         unverified!(
@@ -341,26 +363,25 @@ fn build() -> Vec<NodeDef> {
         def!("action.send_message", "Send message", C::Message,
             "Sends a game message (SendMessage): triggers, MultiManagers, other scripts listening to it.",
             in [EXEC_IN, ("message", Str, "Message")], out [THEN], params []),
-        unverified!(
-            def!("action.send_message_data", "Send message with data", C::Message,
-            "SendMessage(message, type, data)",
-            in [EXEC_IN, ("message", Str, "Message"), ("type", Str, "Data type"), ("data", Any, "Data")], out [THEN], params [])
-        ),
-        unverified!(def!("action.query", "Ask the game", C::Message,
+        def!("action.send_message_data", "Send message with data", C::Message,
+            "SendMessage(message, type, data): the listener gets a pointer to the number, text or position; the type must be any text, or no data is sent",
+            in [EXEC_IN, ("message", Str, "Message"), ("type", Str, "Data type"), ("data", Any, "Data")], out [THEN], params []),
+        def!("action.query", "Ask the game", C::Message,
             "SendMessageEx(message, data): messages answered by the game, e.g. iMsgLuaGetPlayerVenue",
             in [EXEC_IN, ("message", Str, "Message"), ("data", Any, "Data")],
-            out [THEN, ("r1", Any, "Result 1"), ("r2", Any, "Result 2"), ("r3", Any, "Result 3")], params [])),
+            out [THEN, ("r1", Any, "Result 1"), ("r2", Any, "Result 2"), ("r3", Any, "Result 3")], params []),
+        def!("message.data_number", "Number of message data", C::Message,
+            "The number a script sent with Send message with data (the data of On message): the first value at the pointer (GetPositionValues)",
+            in [("data", Any, "Data")], out [("value", Number, "")], params []),
         // ------------------------------------------------------------ timers
         def!("timer.start", "Start timer", C::Timer, "Starts (or restarts) an On timer event of this script.",
             in [EXEC_IN], out [THEN], params [p("timer", K::Name, "Timer", "\"timer\"")]),
         def!("timer.stop", "Stop timer", C::Timer, "Stops an On timer event of this script.",
             in [EXEC_IN], out [THEN], params [p("timer", K::Name, "Timer", "\"timer\"")]),
         // ------------------------------------------------------------- audio
-        unverified!(
-            def!("audio.play_emx", "Play sound", C::Audio, "PlayEmx(name, volume): a sound emitter (.emx)",
+        def!("audio.play_emx", "Play sound", C::Audio, "PlayEmx(name, volume): a sound emitter (.emx)",
             in [EXEC_IN, ("sound", Str, "Sound (.emx)"), ("volume", Number, "Volume")],
-            out [THEN, ("handle", Any, "Handle")], params [])
-        ),
+            out [THEN, ("handle", Any, "Handle")], params []),
         unverified!(
             def!("audio.stop_emx", "Stop sound", C::Audio, "StopEmx(handle)",
             in [EXEC_IN, ("handle", Any, "Handle")], out [THEN], params [])
@@ -369,14 +390,32 @@ fn build() -> Vec<NodeDef> {
             def!("audio.emx_volume", "Sound volume", C::Audio, "SetEmxVolume(handle, volume)",
             in [EXEC_IN, ("handle", Any, "Handle"), ("volume", Number, "Volume")], out [THEN], params [])
         ),
-        unverified!(
-            def!("audio.play_stream", "Play stream", C::Audio, "PlayEarsAudioStream(name, volume): music or speech (.stx)",
+        def!("audio.play_stream", "Play stream", C::Audio,
+            "PlayEarsAudioStream(name, volume): a stream by name (.stx is added); an unknown name gives an empty handle and no sound",
             in [EXEC_IN, ("stream", Str, "Stream (.stx)"), ("volume", Number, "Volume")],
-            out [THEN, ("handle", Any, "Handle")], params [])
+            out [THEN, ("handle", Any, "Handle")], params []),
+        def!("audio.stop_stream", "Stop stream", C::Audio, "StopEarsAudioStream(handle)",
+            in [EXEC_IN, ("handle", Any, "Handle")], out [THEN], params []),
+        def!("audio.prime_stream", "Prepare stream", C::Audio,
+            "PrimeEarsAudioStream(name, volume): loads a stream without playing it; Start prepared stream plays it",
+            in [EXEC_IN, ("stream", Str, "Stream (.stx)"), ("volume", Number, "Volume")],
+            out [THEN, ("handle", Any, "Handle")], params []),
+        def!("audio.start_stream", "Start prepared stream", C::Audio,
+            "PlayEarsAudioStream(handle): plays a stream made by Prepare stream",
+            in [EXEC_IN, ("handle", Any, "Handle")], out [THEN], params []),
+        def!("audio.stream_stop_message", "Message when stream stops", C::Audio,
+            "SetEarsAudioStreamStopMessage(handle, message): the game sends the message when the stream stops",
+            in [EXEC_IN, ("handle", Any, "Handle"), ("message", Str, "Message")], out [THEN], params []),
+        def!("audio.handle_valid", "Sound found", C::Audio,
+            "Whether Play sound, Play stream or Prepare stream found what it was asked for (the handle is not empty)",
+            in [("handle", Any, "Handle")], out [("result", Bool, "")], params []),
+        unverified!(
+            def!("audio.apply_mix", "Apply mix", C::Audio, "ApplyMix(name, true): a mixer snapshot (.mix)",
+            in [EXEC_IN, ("mix", Str, "Mix (.mix)")], out [THEN], params [])
         ),
         unverified!(
-            def!("audio.stop_stream", "Stop stream", C::Audio, "StopEarsAudioStream(handle)",
-            in [EXEC_IN, ("handle", Any, "Handle")], out [THEN], params [])
+            def!("audio.remove_mix", "Remove mix", C::Audio, "RemoveMix(name)",
+            in [EXEC_IN, ("mix", Str, "Mix (.mix)")], out [THEN], params [])
         ),
         // --------------------------------------------------------------- lua
         def!("lua.call", "Call game function", C::Lua,
@@ -410,7 +449,10 @@ pub fn input_default(kind: &str, pin: &str) -> Option<Json> {
         ("math.random", "max") => Json::from(100),
         ("math.div" | "math.mod", "b") => Json::from(1),
         ("math.clamp", "max") => Json::from(1),
-        ("audio.play_emx" | "audio.play_stream" | "audio.emx_volume", "volume") => Json::from(1),
+        (
+            "audio.play_emx" | "audio.play_stream" | "audio.prime_stream" | "audio.emx_volume",
+            "volume",
+        ) => Json::from(1),
         _ => return None,
     })
 }

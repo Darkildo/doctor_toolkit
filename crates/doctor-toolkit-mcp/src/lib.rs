@@ -8,6 +8,7 @@
 //!
 //! The command line starts it as `doctor-toolkit mcp GAME`.
 
+pub mod authoring;
 pub mod bridge;
 pub mod game;
 pub mod output;

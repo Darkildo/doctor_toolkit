@@ -545,3 +545,496 @@ fn mods_of_format_3_build_install_order_and_switch() {
     let (ok, text) = mods_run(&["mods", "disable", r, "base", "--force"], &logs);
     assert!(ok, "{text}");
 }
+
+/// `dialogue-import --raw` writes the `dlg` resource of a tree without a game:
+/// the data of a dialogue that gets a stream of its own.
+#[test]
+fn dialogue_import_raw_writes_the_resource() {
+    use doctor_toolkit::resource::dlg::{
+        Animation, Dialogue, KIND_ASSIGN, KIND_CHOICE, KIND_END, Node,
+    };
+    const NONE: u32 = u32::MAX;
+    let mut menu = vec![0x4416_0000, 0, 0, 0, 0, 0x40102, 0, 0, 0x1080, 8, 8];
+    menu.extend([0, 1, NONE, NONE, NONE]);
+    let tree = Dialogue {
+        nodes: vec![
+            Node {
+                kind: KIND_ASSIGN,
+                children: vec![Some(1)],
+                payload: Some(vec![0, 0, 0x49, 1]),
+            },
+            Node {
+                kind: KIND_CHOICE,
+                children: vec![Some(2), Some(3), None, Some(3), None],
+                payload: Some(menu),
+            },
+            Node {
+                kind: KIND_ASSIGN,
+                children: vec![Some(1)],
+                payload: Some(vec![0, 0, 0x23, 1]),
+            },
+            Node {
+                kind: KIND_END,
+                children: vec![],
+                payload: None,
+            },
+        ],
+        groups: vec![vec![0]],
+        animations: vec![Animation {
+            name: "f2f_player_talk_neutral_1".into(),
+            flags: 0x40044,
+        }],
+        labels: vec![
+            "doctor_buy".into(),
+            "doctor_leave".into(),
+            String::new(),
+            String::new(),
+            String::new(),
+        ],
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let json = dir.path().join("tree.json");
+    let raw = dir.path().join("tree.dlg");
+    let document = serde_json::json!({ "stream": "gf2/globalfolder/dlg/new", "data": tree });
+    std::fs::write(&json, serde_json::to_string(&document).unwrap()).unwrap();
+    let out = run(
+        &[
+            "dialogue-import".as_ref(),
+            dir.path().as_os_str(),
+            json.as_os_str(),
+            "--raw".as_ref(),
+            raw.as_os_str(),
+        ],
+        dir.path(),
+    );
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(String::from_utf8_lossy(&out.stdout).contains("4 node(s)"));
+    assert_eq!(
+        Dialogue::parse(&std::fs::read(&raw).unwrap()).unwrap(),
+        tree
+    );
+}
+
+/// Stage 81: a mod with executable code (format version 5) is built,
+/// shown, installed — and its code waits for the answer; on the miniature
+/// game, which is not the edition 1.0.789.0, the code is never installed.
+#[test]
+fn mods_with_code_wait_for_the_answer() {
+    use doctor_toolkit::testing::{self, MESH};
+    use doctor_toolkit::workspace::{ResourceEdit, StorageChoice, Workspace};
+
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("game");
+    let logs = dir.path().join("logs");
+    testing::write_game(&root).unwrap();
+    let game = doctor_toolkit::game::GameInstance::open(&root).unwrap();
+    let level = game.find_stream(testing::LEVEL).unwrap();
+    let mut ws = Workspace::create(Workspace::default_dir(&root), &game).unwrap();
+    let edit = ResourceEdit {
+        index: MESH,
+        data: vec![0x5A; 300],
+        storage: StorageChoice::Keep,
+    };
+    ws.set_resources(&game, "edit", level, &[edit]).unwrap();
+    drop(ws);
+    // The smallest file that passes for a 32-bit DLL, and one that does not.
+    let mut dll = vec![0u8; 0x100];
+    dll[..2].copy_from_slice(b"MZ");
+    dll[0x3C] = 0x40;
+    dll[0x40..0x44].copy_from_slice(b"PE\0\0");
+    dll[0x44..0x46].copy_from_slice(&0x014Cu16.to_le_bytes());
+    dll[0x56..0x58].copy_from_slice(&0x2102u16.to_le_bytes());
+    let dll_path = dir.path().join("My_Mod.dll");
+    std::fs::write(&dll_path, &dll).unwrap();
+    let text_path = dir.path().join("notes.dll");
+    std::fs::write(&text_path, "not a DLL").unwrap();
+    let r = root.to_str().unwrap();
+    let zip = dir.path().join("code.zip");
+    let z = zip.to_str().unwrap();
+    let build = |native: &str, extra: &[&str]| {
+        let mut args = vec![
+            "mods", "build", r, "-o", z, "--name", "Code", "--native", native,
+        ];
+        args.extend_from_slice(extra);
+        mods_run(&args, &logs)
+    };
+
+    let (ok, text) = build(text_path.to_str().unwrap(), &[]);
+    assert!(!ok && text.contains("not a Windows DLL"), "{text}");
+    let (ok, text) = build(&format!("../evil.asi={}", dll_path.display()), &[]);
+    assert!(!ok && text.contains("bad module name"), "{text}");
+    let (ok, text) = build(&format!("doctor_live.asi={}", dll_path.display()), &[]);
+    assert!(!ok && text.contains("bad module name"), "{text}");
+
+    // The name of the module is made from the file name.
+    let (ok, text) = build(dll_path.to_str().unwrap(), &[]);
+    assert!(ok && text.contains("format 5"), "{text}");
+    assert!(text.contains("1 module(s) of executable code"), "{text}");
+    assert!(text.contains("does not export doctor_mod_init"), "{text}");
+    let (ok, text) = mods_run(&["mods", "info", z], &logs);
+    assert!(ok, "{text}");
+    assert!(
+        text.contains("EXECUTABLE CODE for the edition 1.0.789.0"),
+        "{text}"
+    );
+    assert!(
+        text.contains("code scripts/my_mod.asi  256 byte(s)  sha256 "),
+        "{text}"
+    );
+    assert!(!text.contains("not used by any resource"), "{text}");
+
+    // Installed: the question is printed, nothing is asked of the keyboard.
+    let (ok, text) = mods_run(&["mods", "install", r, z], &logs);
+    assert!(ok && text.contains("contains EXECUTABLE CODE"), "{text}");
+    assert!(
+        text.contains("mods native") && text.contains("--allow"),
+        "{text}"
+    );
+    let (ok, text) = mods_run(&["mods", "native", r], &logs);
+    assert!(ok && text.contains("waits for your consent"), "{text}");
+    // Without an answer the data is written and nothing executable is.
+    let (ok, text) = mods_run(&["mods", "apply", r], &logs);
+    assert!(ok && text.contains("waits for your consent"), "{text}");
+    assert!(!root.join("scripts").exists());
+    assert!(!root.join("dinput8.dll").exists());
+    // The answer is recorded by the hash of the file …
+    let (ok, text) = mods_run(&["mods", "native", r, "code", "--allow"], &logs);
+    assert!(
+        ok && text.contains("agreed: scripts/my_mod.asi  sha256 "),
+        "{text}"
+    );
+    let record = std::fs::read_to_string(root.join("_doctor_toolkit/mods/native.json")).unwrap();
+    assert!(record.contains("\"code\""), "{record}");
+    // … and still the miniature game is not the edition the code is for.
+    let (ok, text) = mods_run(&["mods", "apply", r], &logs);
+    assert!(
+        ok && text.contains("only for the edition 1.0.789.0"),
+        "{text}"
+    );
+    assert!(!root.join("scripts").exists());
+    let (ok, text) = mods_run(&["mods", "native", r, "code", "--forget"], &logs);
+    assert!(ok && text.contains("forgotten"), "{text}");
+    assert!(!root.join("_doctor_toolkit/mods/native.json").exists());
+
+    // A mod that needs its code is not written at all without it.
+    let (ok, text) = build(dll_path.to_str().unwrap(), &["--native-required"]);
+    assert!(ok, "{text}");
+    let (ok, text) = mods_run(&["mods", "install", r, z], &logs);
+    assert!(
+        ok && text.contains("does not work without its code"),
+        "{text}"
+    );
+    let (ok, text) = mods_run(&["mods", "native", r, "code", "--data-only"], &logs);
+    assert!(
+        !ok && text.contains("does not work without its code"),
+        "{text}"
+    );
+    let (ok, text) = mods_run(&["mods", "unapply", r], &logs);
+    assert!(ok, "{text}");
+    let (ok, text) = mods_run(&["mods", "apply", r], &logs);
+    assert!(!ok && text.contains("waits for your consent"), "{text}");
+    let (ok, text) = mods_run(&["mods", "apply", r, "--ignore-compatibility"], &logs);
+    assert!(!ok, "{text}");
+}
+
+/// Stage 103: `check-edits` is the check of the workspace's edits the MCP
+/// tool `validate` and the editor make (`doctor_toolkit::validate`).
+#[test]
+fn check_edits_reports_what_is_wrong_and_fails_on_errors() {
+    use doctor_toolkit::testing::{self, SIMGROUP, STRINGS};
+    use doctor_toolkit::workspace::{ResourceEdit, StorageChoice, Workspace};
+
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("game");
+    let logs = dir.path().join("logs");
+    testing::write_game(&root).unwrap();
+    let check = |extra: &[&str]| {
+        let mut args: Vec<&std::ffi::OsStr> = vec!["check-edits".as_ref(), root.as_os_str()];
+        args.extend(extra.iter().map(|a| std::ffi::OsStr::new(*a)));
+        let out = run(&args, &logs);
+        (
+            out.status.success(),
+            String::from_utf8_lossy(&out.stdout).into_owned(),
+        )
+    };
+    // No workspace: nothing to check.
+    let (ok, text) = check(&[]);
+    assert!(ok && text.contains("nothing to check"), "{text}");
+    let game = doctor_toolkit::game::GameInstance::open(&root).unwrap();
+    let level = game.find_stream(testing::LEVEL).unwrap();
+    let mut ws = Workspace::create(Workspace::default_dir(&root), &game).unwrap();
+    let mut edit = |index: usize, data: Vec<u8>| {
+        let edit = ResourceEdit {
+            index,
+            data,
+            storage: StorageChoice::Keep,
+        };
+        ws.set_resources(&game, "edit", level, &[edit]).unwrap();
+    };
+    // A good edit of the string table.
+    edit(
+        STRINGS,
+        testing::sample_table(["Patch", "Text"]).to_bytes().unwrap(),
+    );
+    let (ok, text) = check(&[]);
+    assert!(ok, "{text}");
+    assert!(
+        text.contains("1 change(s) checked") && text.contains("0 error(s)"),
+        "{text}"
+    );
+    // A SimGroup that cannot be read: an error, a failure, the same in JSON.
+    edit(SIMGROUP, vec![1, 2, 3]);
+    let (ok, text) = check(&[]);
+    assert!(!ok, "{text}");
+    assert!(
+        text.contains("error: gf2/level:") && text.contains("cannot be read"),
+        "{text}"
+    );
+    assert!(text.contains("2 change(s) checked"), "{text}");
+    let (ok, text) = check(&["--json"]);
+    assert!(!ok);
+    let report: serde_json::Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(report["ok"], false);
+    assert_eq!(report["checked_changes"], 2);
+    assert_eq!(report["errors"].as_array().unwrap().len(), 1);
+    assert!(
+        report["errors"][0]["key"]
+            .as_str()
+            .unwrap()
+            .starts_with("gf2/level:")
+    );
+    // Only the changes whose key has the text.
+    let (ok, text) = check(&["--filter", "lh2"]);
+    assert!(ok && text.contains("1 change(s) checked"), "{text}");
+}
+
+/// Stage 103: `material` lists the parameters of a material and sets them
+/// (`doctor_toolkit::resource::material::set_params`, as the editor does).
+#[test]
+fn material_shows_and_sets_parameters() {
+    use doctor_toolkit::resource::material::{Material, ParamValue};
+    use doctor_toolkit::testing::{self, MATERIAL, MATERIAL_NAME};
+    use doctor_toolkit::workspace::Workspace;
+
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("game");
+    let logs = dir.path().join("logs");
+    testing::write_game(&root).unwrap();
+    let material = |extra: &[&str]| {
+        let mut args: Vec<&std::ffi::OsStr> = vec![
+            "material".as_ref(),
+            root.as_os_str(),
+            testing::LEVEL.as_ref(),
+        ];
+        args.extend(extra.iter().map(|a| std::ffi::OsStr::new(*a)));
+        let out = run(&args, &logs);
+        (
+            out.status.success(),
+            String::from_utf8_lossy(&out.stdout).into_owned()
+                + &String::from_utf8_lossy(&out.stderr),
+        )
+    };
+    // By name: the parameters as `--set` takes them.
+    let (ok, text) = material(&[MATERIAL_NAME]);
+    assert!(ok, "{text}");
+    assert!(
+        text.contains("g_BaseSampler") && text.contains("tex:"),
+        "{text}"
+    );
+    assert!(text.contains("g_Color"), "{text}");
+    assert!(
+        !Workspace::exists(&Workspace::default_dir(&root)),
+        "nothing recorded"
+    );
+    let game = doctor_toolkit::game::GameInstance::open(&root).unwrap();
+    let level = game.find_stream(testing::LEVEL).unwrap();
+    let before = game
+        .open_stream(level)
+        .unwrap()
+        .resource_data(MATERIAL)
+        .unwrap();
+    let ParamValue::Floats(old) = Material::parse(&before).unwrap().params[1].value.clone() else {
+        panic!("g_Color is a number");
+    };
+    let new: Vec<String> = (0..old.len()).map(|i| format!("0.{}", i + 1)).collect();
+    // A wrong count of numbers and an unknown parameter are refused.
+    let (ok, text) = material(&[MATERIAL_NAME, "--set", "g_Color=1,2,3,4,5,6,7"]);
+    assert!(!ok && text.contains("holds"), "{text}");
+    let (ok, text) = material(&["2", "--set", "g_Nothing=1"]);
+    assert!(!ok && text.contains("no parameter"), "{text}");
+    // By index, two parameters in one operation.
+    let set = format!("g_Color={}", new.join(","));
+    let (ok, text) = material(&["2", "--set", &set, "--set", "g_BaseSampler=tex:0x000000aa"]);
+    assert!(ok, "{text}");
+    let ws = Workspace::open(Workspace::default_dir(&root)).unwrap();
+    assert_eq!(ws.head(), 1, "one operation");
+    let m = Material::parse(&ws.current_data(&game, level, MATERIAL).unwrap()).unwrap();
+    assert_eq!(m.params[0].value, ParamValue::Texture(0xaa));
+    assert_eq!(
+        m.floats("g_Color").unwrap(),
+        new.iter()
+            .map(|v| v.parse::<f32>().unwrap())
+            .collect::<Vec<_>>()
+    );
+    // The same values again: nothing to record.
+    let (ok, text) = material(&["2", "--set", &set]);
+    assert!(ok && text.contains("nothing changed"), "{text}");
+    // Not a material.
+    let (ok, text) = material(&["0"]);
+    assert!(!ok && text.contains("not a material"), "{text}");
+}
+
+/// Stage 103: a zone made with the command line is seen by `level …` and
+/// the commands that address resources by stream and index before
+/// `workspace apply`, and a model is cloned into it before and after
+/// (`level add --clone-model` into a stream the workspace created).
+#[test]
+fn a_new_zone_is_seen_by_the_level_commands_before_apply() {
+    use doctor_toolkit::testing as mini;
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("game");
+    let logs = dir.path().join("logs");
+    std::fs::create_dir_all(&root).unwrap();
+    mini::write_game(&root).unwrap();
+    mini::write_town(&root).unwrap();
+    let zone = "gf2/town/doctor";
+    let run_ok = |args: &[&str]| -> String {
+        let mut all: Vec<&std::ffi::OsStr> = vec![args[0].as_ref()];
+        // The game directory follows the command words.
+        let words = if ["level", "world-grid", "workspace"].contains(&args[0]) {
+            2
+        } else {
+            1
+        };
+        all.extend(args[1..words].iter().map(|a| std::ffi::OsStr::new(*a)));
+        all.push(root.as_ref());
+        all.extend(args[words..].iter().map(|a| std::ffi::OsStr::new(*a)));
+        let out = run(&all, &logs);
+        let text = String::from_utf8_lossy(&out.stdout).into_owned();
+        assert!(
+            out.status.success(),
+            "{args:?}: {text}{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        text
+    };
+    run_ok(&["add-stream", zone, "--parent", mini::TOWN]);
+    let made = run_ok(&["add-simgroup", zone]);
+    assert!(made.contains("new SimGroup"), "{made}");
+    assert!(made.contains(&format!("resource 0 of {zone}")), "{made}");
+    run_ok(&[
+        "world-grid",
+        "add",
+        mini::TOWN,
+        zone,
+        "--min",
+        "30,0,30",
+        "--max",
+        "50,10,50",
+    ]);
+    // The zone is listed and read before anything is written.
+    assert!(!root.join("gf2/town/doctor.str").exists());
+    let list = run_ok(&["level", "list"]);
+    assert!(list.contains(zone), "{list}");
+    assert!(list.contains(mini::YARD), "{list}");
+    let empty = run_ok(&["level", "objects", zone]);
+    assert!(!empty.contains("Entity"), "{empty}");
+
+    // The crate of the yard as the template, its model cloned with
+    // collision of its own into the new zone.
+    let yard_model = format!("{}:{}", mini::YARD, mini::YARD_MODEL);
+    let yard_group = mini::YARD_SIMGROUP.to_string();
+    let add = |group: &str, position: &str| {
+        run_ok(&[
+            "level",
+            "add",
+            zone,
+            group,
+            "0",
+            "--template-stream",
+            mini::YARD,
+            "--template-resource",
+            &yard_group,
+            "--clone-model",
+            &yard_model,
+            "--collision",
+            "box",
+            "--position",
+            position,
+        ])
+    };
+    let added = add("0", "40,0,40");
+    assert!(added.contains("added object 0"), "{added}");
+    assert!(added.contains(&format!("cloned {zone}:hkx:")), "{added}");
+    // The clones went before the SimGroup: it is resource 3 now (mesh, its
+    // collision, metamodel).
+    let info = run_ok(&["level", "info", zone]);
+    assert!(info.contains("objects 1:"), "{info}");
+    let objects = run_ok(&["level", "objects", zone]);
+    assert!(objects.contains("40.0"), "{objects}");
+    let copy = run_ok(&["level", "duplicate", zone, "3", "0", "--offset", "2,0,0"]);
+    assert!(copy.contains("duplicated as 1"), "{copy}");
+    // Resources cloned from the yard, and inside the new stream.
+    let cloned = run_ok(&["clone-resource", mini::YARD, "--index", "0", "--to", zone]);
+    assert!(cloned.contains(&format!("-> {zone}:mesh:")), "{cloned}");
+    run_ok(&["clone-resource", zone, "--index", "0"]);
+    // A second SimGroup with a copy of an object of the first.
+    let second = run_ok(&[
+        "add-simgroup",
+        zone,
+        "--copy-of",
+        &format!("{zone}#5"),
+        "--object",
+        "1",
+    ]);
+    assert!(second.contains("with 1 object"), "{second}");
+    let refs = run_ok(&["check-refs", zone]);
+    assert!(refs.contains("unresolved reference"), "{refs}");
+    assert!(!root.join("gf2/town/doctor.str").exists());
+
+    // Written into the game: the same zone, and the same commands go on.
+    run_ok(&["workspace", "apply"]);
+    assert!(root.join("gf2/town/doctor.str").is_file());
+    let objects = run_ok(&["level", "objects", zone]);
+    assert!(objects.contains("40.0"), "{objects}");
+    let group = {
+        let data = std::fs::read(root.join("gf2/town/doctor.str")).unwrap();
+        let layout = doctor_toolkit::container::ustream::StreamLayout::parse(&data).unwrap();
+        let simgroup = sdbm(b"simgroup");
+        layout
+            .resources
+            .iter()
+            .position(|r| r.header.type_id == simgroup)
+            .unwrap()
+            .to_string()
+    };
+    let again = add(&group, "44,0,40");
+    assert!(again.contains("added object 2"), "{again}");
+    run_ok(&["workspace", "apply"]);
+}
+
+/// Writes the miniature game with its town into the folder named by
+/// `DOCTOR_TOOLKIT_MINI_GAME`, for manual runs and screenshots of the editor
+/// on a game that is not the real one:
+/// `DOCTOR_TOOLKIT_MINI_GAME=/tmp/mini cargo test -p doctor-toolkit-cli --test cli -- --ignored write_the_miniature_game`.
+#[test]
+#[ignore = "writes the miniature game into $DOCTOR_TOOLKIT_MINI_GAME"]
+fn write_the_miniature_game() {
+    use doctor_toolkit::testing as mini;
+    let Some(dir) = std::env::var_os("DOCTOR_TOOLKIT_MINI_GAME") else {
+        return;
+    };
+    let dir = PathBuf::from(dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    mini::write_game(&dir).unwrap();
+    mini::write_town(&dir).unwrap();
+    std::fs::write(
+        dir.join("box.glb"),
+        mini::box_glb([2.0, 2.0, 2.0], mini::MATERIAL_NAME),
+    )
+    .unwrap();
+}

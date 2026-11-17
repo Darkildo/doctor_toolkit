@@ -275,6 +275,47 @@ impl NavLayer {
         })
     }
 
+    /// Builds the R-tree of graph `g` again from its nodes (stage 103; as
+    /// `rebuild_rtree` of the MCP tool `graph_edit`).
+    pub fn rebuild_rtree(&self, g: usize) -> Result<LevelAction, String> {
+        if g >= self.graphs.len() {
+            return Err(tr("navgraph.no_graph").to_owned());
+        }
+        self.edit(g, tr("navgraph.rtree_rebuilt").to_owned(), |graph| {
+            graph.rebuild_rtree();
+            Ok(None)
+        })
+    }
+
+    /// Sets the type flags of graph `g` (stage 103).
+    pub fn set_graph_flags(&self, g: usize, flags: u16) -> Result<LevelAction, String> {
+        if g >= self.graphs.len() {
+            return Err(tr("navgraph.no_graph").to_owned());
+        }
+        self.edit(g, tr("navgraph.graph_flags_set").to_owned(), |graph| {
+            graph.flags = flags;
+            Ok(None)
+        })
+    }
+
+    /// An edit of the graph of the selected node for a run without input:
+    /// `rtree` or `flags:<hexadecimal>` (`act=nav-rtree`, `act=nav-flags:11`).
+    pub fn preset_edit(&self, text: &str) -> Result<LevelAction, String> {
+        let g = self
+            .selected
+            .ok_or("no node of a navigation graph is selected")?
+            .graph;
+        match text.split_once(':').unwrap_or((text, "")) {
+            ("rtree", "") => self.rebuild_rtree(g),
+            ("flags", value) => {
+                let flags = u16::from_str_radix(value.trim_start_matches("0x"), 16)
+                    .map_err(|_| format!("`{value}` is not a hexadecimal number of flags"))?;
+                self.set_graph_flags(g, flags)
+            }
+            _ => Err("unknown action".to_owned()),
+        }
+    }
+
     /// Ends a gizmo drag of a node.
     pub fn moved(&mut self, r: NodeRef, to: [f32; 3]) -> Result<LevelAction, String> {
         self.preview = None;
@@ -452,6 +493,24 @@ impl NavLayer {
         ui.separator();
         ui.label(RichText::new(title).strong());
         ui.label(RichText::new(stats).weak());
+        // The graph of the node: its type flags and its R-tree (stage 103).
+        let graph_flags_now = self.graphs[r.graph].graph.flags;
+        ui.horizontal_wrapped(|ui| {
+            ui.label(tr("navgraph.graph_flags"));
+            for (bit, name) in graph_flags::NAMES {
+                let mut on = graph_flags_now & bit != 0;
+                if ui.checkbox(&mut on, name).changed() {
+                    action = Some(self.set_graph_flags(r.graph, graph_flags_now ^ bit));
+                }
+            }
+        });
+        if ui
+            .button(tr("navgraph.rebuild_rtree"))
+            .on_hover_text(tr("navgraph.rebuild_rtree_hint"))
+            .clicked()
+        {
+            action = Some(self.rebuild_rtree(r.graph));
+        }
         let mut pos = self.position(r).unwrap_or(node.position);
         let mut commit = false;
         ui.horizontal(|ui| {
@@ -588,5 +647,48 @@ impl NavLayer {
             self.confirm_remove = false;
             self.generation += 1;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use doctor_toolkit::resource::graph::RTree;
+    use doctor_toolkit::resource::simgroup::Guid;
+
+    /// Stage 103: the R-tree of a graph is built again and its type flags
+    /// are set, each as one edit of the graph.
+    #[test]
+    fn the_rtree_is_rebuilt_and_the_graph_flags_are_set() {
+        let mut graph = Graph::new(Guid([7; 16]), graph_flags::PED);
+        graph.add_node([0.0, 0.0, 0.0], 1.0).unwrap();
+        graph.add_node([5.0, 0.0, 0.0], 1.0).unwrap();
+        graph.rtree = RTree::Empty;
+        let mut layer = NavLayer {
+            graphs: vec![GraphRef {
+                stream: 0,
+                resource: 3,
+                graph,
+            }],
+            names: vec!["test".to_owned()],
+            ..NavLayer::default()
+        };
+        // Nothing selected: an edit without input has no graph.
+        assert!(layer.preset_edit("rtree").is_err());
+        layer.selected = Some(NodeRef { graph: 0, node: 1 });
+        let Ok(LevelAction::Graph { graph, label, .. }) = layer.preset_edit("rtree") else {
+            panic!("an edit of the graph");
+        };
+        assert!(!matches!(graph.graph.rtree, RTree::Empty), "built again");
+        assert!(label.contains("test"), "{label}");
+        let flags = graph_flags::PED | graph_flags::PATROL;
+        let Ok(LevelAction::Graph { graph, .. }) = layer.preset_edit(&format!("flags:{flags:x}"))
+        else {
+            panic!("an edit of the graph");
+        };
+        assert_eq!(graph.graph.flags, flags);
+        assert!(layer.preset_edit("flags:zz").is_err());
+        assert!(layer.preset_edit("explode").is_err());
+        assert!(layer.rebuild_rtree(4).is_err());
     }
 }

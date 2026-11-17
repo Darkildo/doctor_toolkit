@@ -54,6 +54,14 @@ pub fn show(ui: &mut egui::Ui, info: &PartInfo, id: impl std::hash::Hash + std::
             );
         }
     });
+    if info.material.is_some()
+        && ui
+            .small_button(tr("material.edit"))
+            .on_hover_text(tr("material.edit_hint"))
+            .clicked()
+    {
+        crate::material_view::ask_edit(ui.ctx(), info.material_hash);
+    }
     let Some(shading) = &info.shading else {
         return;
     };

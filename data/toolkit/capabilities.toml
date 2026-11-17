@@ -1,0 +1,2129 @@
+# What the toolkit can do and where: one row per capability, with the MCP
+# tools, the editor actions, the commands of the command line and the Python
+# names that give it. The one source of docs/parity.md (`doctor-toolkit
+# parity-gen`); the tests of the MCP server, the editor and the command line
+# fail when a tool or a command is in no row, or a row names one that does
+# not exist (crates/doctor-toolkit/src/parity).
+#
+# A surface of a row ([cap.mcp], [cap.editor], [cap.cli], [cap.python]):
+#   use     names checked against the code: MCP tools; editor command keys
+#           (`cmd.*`, `project.cmd`) and wizards (`wizard.<slug>`); command
+#           paths of the command line (`level add`); Python names
+#           (`Workspace.undo`, `logic_graph`)
+#   at      where else it is, in words (a panel and its button, a resource)
+#   input   editor: menu, form (fields, buttons), key, mouse (pointer only);
+#           several joined with `+`
+#   preset  editor: the DOCTOR_TOOLKIT_GUI_* preset that does it hands-free
+#   partial what is missing when only a part is there
+#   never   why it is not there on purpose
+#   gap     what closing the hole takes: add, size (S, M, L), why, needs,
+#           bench (true when checking needs the game bench), package
+# A surface left out does not have the capability. A hole between MCP and the
+# editor must have a `gap` or a `never`.
+
+# --- Areas -----------------------------------------------------------------
+
+[[area]]
+key = "game"
+title = "Игра: обзор, поиск, навигация"
+
+[[area]]
+key = "resources"
+title = "Ресурсы и потоки"
+
+[[area]]
+key = "models"
+title = "Модели, текстуры, материалы, коллизия"
+
+[[area]]
+key = "level"
+title = "Уровень и зоны"
+
+[[area]]
+key = "logic"
+title = "Логика"
+
+[[area]]
+key = "scripts"
+title = "Скрипты: Lua и визуальные"
+
+[[area]]
+key = "text"
+title = "Тексты, диалоги, субтитры"
+
+[[area]]
+key = "sound"
+title = "Звук"
+
+[[area]]
+key = "cutscenes"
+title = "Ролики и видео"
+
+[[area]]
+key = "characters"
+title = "Персонажи, анимации, параметры игры"
+
+[[area]]
+key = "workspace"
+title = "Рабочее пространство и проект"
+
+[[area]]
+key = "mods"
+title = "Моды"
+
+[[area]]
+key = "play"
+title = "Запуск игры"
+
+[[area]]
+key = "live"
+title = "Живая связь с игрой"
+
+[[area]]
+key = "diag"
+title = "Проверки, сохранения, диагностика"
+
+[[area]]
+key = "kb"
+title = "База знаний и справочные данные"
+
+[[area]]
+key = "shell"
+title = "Окно редактора и служебное"
+
+# --- Packages of work of stages 103 and 104 --------------------------------
+
+[[package]]
+key = "104-A"
+stage = 104
+title = "Ролики в MCP: вывод ролика в видео (кадры, камеры, ключи, актёры, команды и время субтитров сделаны)"
+size = "M"
+why = "рендер делает программа редактора без окна; серверу нужна схема долгих задач"
+
+[[package]]
+key = "104-G"
+stage = 104
+title = "Смысловые эквиваленты действий мышью: несколько объектов, на землю, маршрут, снимок вида"
+size = "L"
+why = "коллизия для ходьбы и отрисовка вида живут в крейте редактора (rapier, wgpu): для инструмента их надо вынести или дать редактору работать без окна"
+
+# --- MCP tools by the flag of the server ------------------------------------
+
+[mcp_gates]
+edits = [
+    "set_attribute", "move_object", "duplicate_object", "add_object", "remove_object",
+    "edit_string", "add_string", "edit_script", "scripts", "graph_edit", "undo", "redo",
+    "project_build", "mod_build", "validate", "live_objects_to_workspace", "add_stream",
+    "remove_stream", "add_zone_cell", "add_simgroup", "add_resource", "clone_resource",
+    "import_model", "import_texture", "collision_build", "import_file", "import_sound",
+    "import_video", "edit_subtitle", "logic_connect",
+    # Stage 104 (packages B, D, E, G).
+    "set_tunables", "voice_add", "partsdb_add_part", "partsdb_allow", "set_material", "pack",
+    "project_pull", "revert", "remove_zone_cell", "sbk_edit", "sound_add", "set_speech_events",
+    "set_mix", "apx_edit", "import_animation", "clip_events", "set_animation_graph",
+    "cutscene_camera", "cutscene_actor", "cutscene_command",
+]
+game = [
+    "apply", "unapply", "play", "stop", "screenshot", "teleport", "send_message", "lua",
+    "set_time", "set_money", "set_variable", "stream_load", "stream_unload",
+    "move_live_object", "live_object_enable", "live_object_undo", "mods_manage",
+    "restore_originals",
+    "pause", "resume", "breakpoints", "camera", "push_textures",
+]
+
+# --- Game: overview, search, navigation -------------------------------------
+
+[[cap]]
+id = "game.open"
+area = "game"
+title = "Открыть игру и получить обзор: профиль, потоки, типы ресурсов, области, миссии"
+[cap.mcp]
+use = ["game_info"]
+[cap.editor]
+use = ["cmd.open_game"]
+at = "экран Welcome"
+input = "menu"
+[cap.cli]
+use = ["types"]
+partial = "только таблица типов ресурсов; обзора областей и миссий одной командой нет"
+[cap.python]
+use = ["Game.new", "Game.profile", "Game.root"]
+
+[[cap]]
+id = "game.detect"
+area = "game"
+title = "Найти установленные копии игры и их издание"
+[cap.mcp]
+use = ["detect_games"]
+[cap.editor]
+use = ["cmd.find_games"]
+at = "экран Welcome → Search again"
+input = "menu"
+[cap.cli]
+use = ["detect"]
+
+[[cap]]
+id = "game.streams"
+area = "game"
+title = "Список потоков и таблиц содержимого"
+[cap.mcp]
+use = ["list_streams"]
+[cap.editor]
+use = ["cmd.open_stream", "cmd.toggle_files"]
+input = "menu"
+[cap.cli]
+use = ["toc", "info"]
+[cap.python]
+use = ["Game.streams", "Game.stream_files", "Game.tocs", "Game.toc", "Game.has_stream"]
+
+[[cap]]
+id = "game.stream-resources"
+area = "game"
+title = "Список ресурсов потока"
+[cap.mcp]
+use = ["search"]
+at = "фильтр stream:"
+[cap.editor]
+at = "вкладка потока: таблица ресурсов"
+input = "form"
+preset = "SELECT=N выбирает ресурс по номеру (по id или имени — нет)"
+[cap.cli]
+use = ["list"]
+[cap.python]
+use = ["Game.stream", "Stream.resources", "Game.resources"]
+
+[[cap]]
+id = "game.search"
+area = "game"
+title = "Поиск по всей игре: имя, шаблон, хеш, ключ, тип, поток, текст строк"
+[cap.mcp]
+use = ["search"]
+[cap.editor]
+use = ["cmd.search", "cmd.new_search", "cmd.all_resources", "cmd.palette", "cmd.content_drawer", "cmd.new_content_browser"]
+input = "menu+form"
+preset = "SEARCH=<запрос>; SHELL=palette=<текст>; CONTENT=<место>"
+[cap.cli]
+use = ["search"]
+[cap.python]
+use = ["Index.search", "Index.count", "Index.keys"]
+
+[[cap]]
+id = "game.index"
+area = "game"
+title = "Построить или обновить индекс игры"
+[cap.mcp]
+at = "строится сам при запуске сервера"
+[cap.editor]
+use = ["cmd.rebuild_index"]
+input = "menu"
+preset = "SHELL=index"
+[cap.cli]
+use = ["index"]
+[cap.python]
+use = ["Game.index", "Index.refresh"]
+
+[[cap]]
+id = "game.resource-info"
+area = "game"
+title = "Сведения о ресурсе: имена, хеши, что использует и кто использует, копии"
+[cap.mcp]
+use = ["resource_info"]
+[cap.editor]
+use = ["cmd.toggle_details", "cmd.new_details", "cmd.back", "cmd.forward"]
+at = "панель Details: Refers to / Referred to by"
+input = "menu+form"
+[cap.cli]
+use = ["refs"]
+[cap.python]
+use = ["Index.refs", "Index.record", "Game.resource"]
+
+[[cap]]
+id = "game.resource-contents"
+area = "game"
+title = "Содержимое ресурса по его типу (дерево, JSON, исходник)"
+[cap.mcp]
+use = ["resource_json"]
+[cap.editor]
+at = "вкладка ресурса: просмотрщик по типу"
+input = "form"
+[cap.cli]
+use = ["logic-export", "skeletons", "fonts"]
+partial = "только файлами; на экран — свои команды по типам (graph-info, sbk-info, dialogue, partsdb show…)"
+[cap.python]
+use = ["Resource.parse", "Resource.to_dict", "decode"]
+
+[[cap]]
+id = "game.hash"
+area = "game"
+title = "Имена хеша и хеши имени под каждой хеш-функцией движка"
+[cap.mcp]
+use = ["lookup_hash"]
+[cap.editor]
+use = ["cmd.hashes"]
+at = "панель Hashes: имя под каждой хеш-функцией, имена хеша, где хеш встречается; поиск и палитра находят ресурсы по хешу"
+input = "menu+form"
+preset = "SHELL=hash=<имя или хеш>"
+[cap.cli]
+use = ["hash", "lookup"]
+[cap.python]
+use = ["hash_all", "lookup", "sdbm", "crc32", "fnv1a", "Index.lookup"]
+
+[[cap]]
+id = "game.hash-unknown"
+area = "game"
+title = "Список хешей игры без известного имени"
+[cap.cli]
+use = ["unknown-hashes"]
+[cap.mcp]
+never = "исследовательская сводка для пополнения словаря имён тулкита, а не действие над игрой или модом"
+[cap.editor]
+never = "то же: нужна разработчику тулкита, не автору мода"
+
+[[cap]]
+id = "game.raw"
+area = "game"
+title = "Сырые данные ресурса: сохранить, посмотреть в hex"
+[cap.mcp]
+use = ["export"]
+at = "format: raw"
+[cap.editor]
+at = "панель Details → Save data…, Load hex"
+input = "form"
+[cap.cli]
+use = ["extract", "dump"]
+[cap.python]
+use = ["Game.read", "Resource.read", "Stream.read"]
+
+# --- Resources and streams --------------------------------------------------
+
+[[cap]]
+id = "res.export"
+area = "resources"
+title = "Экспорт ресурса в обычный формат: PNG/DDS, glTF/OBJ/FBX/USD, WAV, JSON, Lua"
+[cap.mcp]
+use = ["export"]
+[cap.editor]
+use = ["cmd.export"]
+at = "меню ресурса и Content Browser → Export; кнопки Export в просмотрщиках"
+input = "menu+form"
+[cap.cli]
+use = ["textures", "models", "logic-export", "text-export", "audio", "fonts", "skeletons", "lua-decompile", "lua-export", "collision-export", "graph-export", "dialogue-export", "apx-export"]
+[cap.python]
+use = ["Texture.to_png", "Texture.to_dds", "Model.to_glb", "Model.export", "Sound.to_wav", "Workspace.export_model"]
+
+[[cap]]
+id = "res.unpack"
+area = "resources"
+title = "Распаковать потоки в папку файлов и записать изменённые файлы обратно"
+[cap.mcp]
+use = ["unpack", "pack"]
+at = "unpack пишет в папку вывода сервера (--output-dir); pack — одна операция"
+[cap.editor]
+use = ["cmd.unpack", "cmd.pack"]
+input = "menu"
+[cap.cli]
+use = ["unpack", "pack"]
+[cap.python]
+use = ["Game.unpack", "Game.pack"]
+
+[[cap]]
+id = "res.import-file"
+area = "resources"
+title = "Вернуть отредактированный экспорт: JSON строк, логики, графа, диалога, исходник Lua, сырые данные"
+[cap.mcp]
+use = ["import_file"]
+[cap.editor]
+at = "меню Asset ресурса (вкладка, контекстное меню вкладки, Details): «Replace with a file…» — разбор по типу, как import_file (JSON строк, логики, графа навигации, диалога, исходник или байт-код Lua), и «Replace with raw data…»; кроме того Import JSON в просмотрщиках, Load… у Lua, Save у таблицы строк"
+input = "menu+form"
+preset = "RESOURCE=import=<файл> | raw=<файл>"
+[cap.cli]
+use = ["text-import", "logic-import", "graph-import", "dialogue-import", "lua-import"]
+[cap.python]
+use = ["Workspace.set_data", "Workspace.set_many", "Workspace.set_string_table"]
+
+[[cap]]
+id = "res.add-raw"
+area = "resources"
+title = "Добавить в поток новый ресурс из файла сырых данных"
+[cap.mcp]
+use = ["add_resource"]
+[cap.editor]
+use = ["cmd.add_resource"]
+at = "окно «New zone: streams and resources», форма Add resource; Content Browser → контекстное меню потока → Add a resource from a file here…"
+input = "menu+form"
+preset = "ZONE=resource:stream=,type=,file=[,ids=][,policy=][,compress]"
+[cap.cli]
+use = ["add-resource"]
+
+[[cap]]
+id = "res.clone"
+area = "resources"
+title = "Клонировать ресурсы под новыми id: в тот же или другой поток, с перенацеливанием ссылок"
+[cap.mcp]
+use = ["clone_resource"]
+[cap.editor]
+use = ["cmd.clone_resources"]
+at = "форма Clone resources: несколько ресурсов, целевой поток (в том числе новый), перенацеливание; Content Browser → контекстное меню ресурса → Clone, Clone to another stream…"
+input = "menu+form"
+preset = "ZONE=clone:stream=,index=1+2[,to=][,retarget=][,keep]"
+[cap.cli]
+use = ["clone-resource"]
+
+[[cap]]
+id = "res.stream-new"
+area = "resources"
+title = "Создать новый поток (.str) с записями в таблицах содержимого"
+[cap.mcp]
+use = ["add_stream"]
+[cap.editor]
+use = ["cmd.new_stream", "cmd.wizard_zone", "wizard.zone"]
+at = "форма New stream: имя, родитель, способ загрузки; мастер New zone — поток, SimGroup и ячейка сетки одной операцией"
+input = "menu+form"
+preset = "ZONE=stream:name=,parent=[,load=on_demand|with_parent|auto_load]; WIZARD=zone,name=,parent=,min=,max=,step=3"
+[cap.cli]
+use = ["add-stream"]
+
+[[cap]]
+id = "res.stream-remove"
+area = "resources"
+title = "Удалить поток, созданный рабочим пространством, со всем добавленным в него"
+[cap.mcp]
+use = ["remove_stream"]
+[cap.editor]
+at = "Tools → New stream… → список новых потоков → Remove; Content Browser → контекстное меню нового потока → Remove the new stream"
+input = "form"
+preset = "ZONE=remove-stream:name="
+[cap.cli]
+use = ["remove-stream"]
+
+[[cap]]
+id = "res.direct-write"
+area = "resources"
+title = "Переписать поток или ресурс прямо в папке игры, минуя рабочее пространство"
+[cap.cli]
+use = ["repack", "rewrite", "replace"]
+[cap.mcp]
+never = "запись мимо рабочего пространства: без истории, отмены и diff. Сервер и окно пишут в игру только через apply"
+[cap.editor]
+never = "то же: окно пишет в игру только через рабочее пространство"
+
+[[cap]]
+id = "res.external"
+area = "resources"
+title = "Править ресурс во внешней программе: каждое сохранение импортируется"
+[cap.editor]
+at = "полоса Open in external editor над просмотрщиком; вкладка Project → Open in external editor"
+input = "form"
+preset = "EXTERNAL=<формат>"
+[cap.cli]
+use = ["edit"]
+[cap.mcp]
+never = "следить за сохранениями чужой программы агенту незачем: он сам делает export → правка файла → import_file"
+
+# --- Models, textures, materials, collision ---------------------------------
+
+[[cap]]
+id = "model.replace"
+area = "models"
+title = "Заменить меши модели игры файлом модели (glTF, OBJ, FBX, USD)"
+[cap.mcp]
+use = ["import_model"]
+[cap.editor]
+use = ["cmd.wizard_model", "wizard.model"]
+at = "Details ресурса mesh или metamodel → Import model…"
+input = "form"
+preset = "WIZARD=model,file=,collision=; IMPORT=<файл> только открывает окно с планом"
+[cap.cli]
+use = ["model-import"]
+[cap.python]
+use = ["Workspace.import_model"]
+
+[[cap]]
+id = "model.new-set"
+area = "models"
+title = "Импортировать модель как новый набор (metamodel, меши, материалы, текстуры) в поток образца"
+[cap.mcp]
+use = ["import_model"]
+at = "name"
+[cap.editor]
+use = ["cmd.wizard_place", "wizard.place"]
+at = "окно Import model → New model set"
+input = "form"
+preset = "WIZARD=place,file=,collision="
+[cap.cli]
+use = ["model-import"]
+at = "--new"
+[cap.python]
+use = ["Workspace.import_model"]
+
+[[cap]]
+id = "model.new-set-stream"
+area = "models"
+title = "Импортировать новую модель в другой поток (например, новый) с коллизией из геометрии"
+[cap.mcp]
+use = ["import_model"]
+at = "stream, collision"
+[cap.editor]
+at = "окно Import model → New model set → Into stream (поток игры или новый) и Collision (mesh, hull, box)"
+input = "form"
+preset = "ZONE=import:file=,template=<поток>#<ресурс>,name=,stream=,collision="
+[cap.cli]
+use = ["model-import"]
+at = "--new ИМЯ --to ПОТОК"
+
+[[cap]]
+id = "model.file-info"
+area = "models"
+title = "Что импортёр читает из файла модели и план импорта без записи"
+[cap.mcp]
+use = ["import_model"]
+at = "dry_run"
+[cap.editor]
+at = "окно Import model показывает план до записи"
+input = "form"
+preset = "IMPORT=<файл>"
+[cap.cli]
+use = ["model-info"]
+[cap.python]
+use = ["read_model"]
+
+[[cap]]
+id = "model.collision"
+area = "models"
+title = "Построить коллизию Havok для metamodel: mesh, hull или box"
+[cap.mcp]
+use = ["collision_build"]
+[cap.editor]
+at = "меню Asset у metamodel и у её коллизии hkx (вкладка, Details) → Build collision → mesh, hull или box из собственного меша metamodel; переключатель коллизии в мастерах Replace a model и Place an object; флажок Own collision у клона в Add object"
+input = "menu+form"
+preset = "RESOURCE=[source=<файл модели>,]collision=mesh|hull|box"
+[cap.cli]
+use = ["collision-build"]
+
+[[cap]]
+id = "model.view"
+area = "models"
+title = "Посмотреть модель, коллизию, скелет в 3D"
+[cap.mcp]
+use = ["resource_json", "export"]
+at = "смысловой эквивалент просмотра: данные и файл модели"
+[cap.editor]
+at = "вкладка ресурса: вид модели, панель материалов, вид коллизии"
+input = "mouse+form"
+preset = "MODEL=…"
+
+[[cap]]
+id = "texture.replace"
+area = "models"
+title = "Заменить пиксели текстуры файлом PNG или DDS"
+[cap.mcp]
+use = ["import_texture"]
+[cap.editor]
+at = "просмотрщик текстуры → Import…"
+input = "form"
+[cap.cli]
+use = ["texture-import"]
+[cap.python]
+use = ["Workspace.import_texture", "Texture.replaced_by"]
+
+[[cap]]
+id = "texture.retexture"
+area = "models"
+title = "Перекрасить модель: заменить текстуру во всех потоках, где лежат её копии"
+[cap.mcp]
+use = ["import_texture"]
+at = "параметр all_copies: все копии текстуры одной операцией"
+[cap.editor]
+use = ["cmd.wizard_retexture", "wizard.retexture"]
+input = "form+mouse"
+preset = "WIZARD=retexture,set=,image=,only=N (текстура — только номером строки)"
+[cap.cli]
+use = ["texture-import"]
+at = "флаг --all-copies"
+
+[[cap]]
+id = "material.params"
+area = "models"
+title = "Изменить параметры материала: оттенки g_TintColor и другие"
+[cap.mcp]
+use = ["set_material", "import_model"]
+at = "set_material — материал игры или добавленный рабочим пространством; material_params у import_model — оттенки новых материалов импорта"
+[cap.editor]
+at = "редактор ресурса material (вкладка и Details): числа и цвета полями, текстуры хешем, Apply — одна операция; «Edit material…» в панели материала просмотрщика модели и персонажа; оттенки нового материала — в мастере New outfit"
+input = "form"
+preset = "RESOURCE=param=<имя>=<n>/<n>/…,param=<имя>=tex:<хеш>; WIZARD=outfit,…,tint=<0..2>:<r>/<g>/<b>"
+[cap.cli]
+use = ["material"]
+
+[[cap]]
+id = "apx.edit"
+area = "models"
+title = "Интерфейс Flash (apx): заменить вложенную текстуру, ролик .apt, таблицу .const"
+[cap.mcp]
+use = ["export", "apx_edit"]
+at = "export пишет ролик .apt, таблицу .const и вложенные текстуры; apx_edit кладёт изменённую часть обратно"
+[cap.editor]
+at = "просмотрщик apx: Export, Import"
+input = "form"
+[cap.cli]
+use = ["apx-export", "apx-import"]
+
+# --- Level and zones ---------------------------------------------------------
+
+[[cap]]
+id = "level.zones"
+area = "level"
+title = "Зоны уровня: список, что покажет 3D-вид"
+[cap.mcp]
+use = ["level_objects", "list_streams"]
+[cap.editor]
+use = ["cmd.level_editor", "cmd.new_level", "cmd.toggle_zones"]
+input = "menu+form"
+preset = "LEVEL=<зона>[+<зона>]"
+[cap.cli]
+use = ["level list", "level info"]
+
+[[cap]]
+id = "level.objects"
+area = "level"
+title = "Список размещённых объектов: класс, имя, GUID, позиция, модель"
+[cap.mcp]
+use = ["level_objects"]
+[cap.editor]
+use = ["cmd.toggle_outliner"]
+input = "menu+form"
+preset = "LEVEL=…;select=G:O"
+[cap.cli]
+use = ["level objects"]
+
+[[cap]]
+id = "level.view"
+area = "level"
+title = "3D-вид уровня: камера, слои показа, выбор объекта щелчком и рамкой"
+[cap.mcp]
+use = ["level_objects", "editor_show_object"]
+at = "смысловой эквивалент: объекты у точки (near, radius) и показ объекта в открытом окне"
+partial = "картинки вида нет: агент не видит, как зона выглядит до запуска игры"
+[cap.mcp.gap]
+add = "инструмент level_view: снимок вида уровня из точки с правками рабочего пространства — запуском редактора без рук на своём X-сервере (предустановки LEVEL=…;eye=;look= и CAPTURE) либо запросом к открытому редактору через мост"
+size = "L"
+why = "отрисовка живёт в крейте редактора (wgpu) и требует окна или своей поверхности; коллизия и лучи уже в библиотеке (level::walk), ground и walk_route отвечают на вопросы «что под точкой» и «пройдёт ли игрок» без картинки"
+package = "104-G"
+[cap.editor]
+at = "вкладка уровня; панель Zones → Show; меню Level"
+input = "mouse+form"
+preset = "LEVEL=…;eye=;look=;yaw=;pitch=;fov=;top;grid;stats;collision;…"
+
+[[cap]]
+id = "level.transform"
+area = "level"
+title = "Переместить, повернуть, масштабировать объект уровня"
+[cap.mcp]
+use = ["move_object"]
+[cap.editor]
+use = ["cmd.gizmo_select", "cmd.gizmo_move", "cmd.gizmo_rotate", "cmd.gizmo_scale", "cmd.gizmo_local", "cmd.gizmo_snap"]
+at = "гизмо в виде; Details → Transform → Location, Rotation, Scale"
+input = "mouse+form"
+preset = "LEVEL=…;select=G:O;act=move:dx,dy,dz | act=turn:град (нет масштаба и абсолютной позиции)"
+[cap.cli]
+use = ["simgroup-set"]
+
+[[cap]]
+id = "level.duplicate"
+area = "level"
+title = "Дублировать объект в его SimGroup"
+[cap.mcp]
+use = ["duplicate_object"]
+[cap.editor]
+at = "Details → Duplicate; Ctrl+D; Alt+перетаскивание гизмо"
+input = "form+key+mouse"
+preset = "LEVEL=…;act=duplicate"
+[cap.cli]
+use = ["level duplicate"]
+
+[[cap]]
+id = "level.remove"
+area = "level"
+title = "Удалить объект из SimGroup"
+[cap.mcp]
+use = ["remove_object"]
+[cap.editor]
+at = "Details → Remove; клавиша Delete"
+input = "form+key"
+preset = "LEVEL=…;act=remove"
+[cap.cli]
+use = ["level remove"]
+
+[[cap]]
+id = "level.add"
+area = "level"
+title = "Добавить объект по образцу: с моделью образца, другой моделью или её клоном со своей коллизией"
+[cap.mcp]
+use = ["add_object"]
+[cap.editor]
+use = ["cmd.wizard_place", "wizard.place"]
+at = "Details → Add object (Metamodel id, Clone it, Own collision, Add to — SimGroup другой загруженной зоны, в том числе новой); перетаскивание модели из Content Browser в вид"
+input = "form+mouse"
+preset = "LEVEL=…;act=add:<id>[:clone][:collision][:into=<зона>][:at=X/Y/Z]; WIZARD=place,model=,zones="
+[cap.cli]
+use = ["level add"]
+
+[[cap]]
+id = "level.add-empty"
+area = "level"
+title = "Добавить объект класса с пустыми атрибутами (без образца)"
+[cap.editor]
+at = "Details → Add object → Empty object of class (в SimGroup объекта или в выбранную в «Add to»)"
+input = "form"
+preset = "LEVEL=…;act=empty:<класс>[:into=<зона>]"
+[cap.cli]
+use = ["simgroup-add"]
+[cap.mcp]
+use = ["add_object"]
+at = "параметр class вместо template"
+
+[[cap]]
+id = "level.attributes"
+area = "level"
+title = "Изменить атрибуты или модель объекта SimGroup"
+[cap.mcp]
+use = ["set_attribute"]
+[cap.editor]
+at = "Details → Advanced → Attributes; Details → Model → Choose another model; просмотрщик SimGroup"
+input = "form"
+[cap.cli]
+use = ["simgroup-set"]
+
+[[cap]]
+id = "level.many"
+area = "level"
+title = "Перенести, дублировать, удалить несколько объектов одной отменяемой операцией"
+[cap.mcp]
+use = ["move_object", "duplicate_object", "remove_object"]
+at = "параметр objects: список объектов, одна операция"
+[cap.editor]
+at = "множественное выделение в Outliner или рамкой в виде, затем те же действия"
+input = "mouse+key"
+
+[[cap]]
+id = "level.to-ground"
+area = "level"
+title = "Опустить объект на землю под ним"
+[cap.mcp]
+use = ["move_object", "add_object", "ground"]
+at = "параметр on_ground; ground — земля под точкой или точка на земле по лучу (то, что делает указатель)"
+[cap.editor]
+at = "клавиша End в виде уровня; перетаскивание модели ставит её на землю под указателем"
+input = "key+mouse"
+
+[[cap]]
+id = "level.simgroup-new"
+area = "level"
+title = "Добавить в поток новую SimGroup: пустую или с копиями объектов другой"
+[cap.mcp]
+use = ["add_simgroup"]
+[cap.editor]
+use = ["cmd.new_simgroup", "cmd.wizard_zone", "wizard.zone"]
+at = "форма New SimGroup: пустая или копия объектов другой; мастер New zone; Content Browser → контекстное меню потока"
+input = "menu+form"
+preset = "ZONE=simgroup:stream=[,copy=<поток>#<ресурс>][,objects=0+1]"
+[cap.cli]
+use = ["add-simgroup"]
+
+[[cap]]
+id = "level.grid-add"
+area = "level"
+title = "Добавить поток в мировую сетку уровня (wgi): игра грузит его у игрока"
+[cap.mcp]
+use = ["add_zone_cell"]
+[cap.editor]
+use = ["cmd.zone_cell", "cmd.wizard_zone", "wizard.zone"]
+at = "форма World grid cell: уровень, поток, коробка, сетка, имя ZoneStreamEnable; мастер New zone, шаг World grid"
+input = "menu+form"
+preset = "ZONE=cell:level=,stream=,min=X/Y/Z,max=X/Y/Z[,lod=][,name=][,on_enable]"
+[cap.cli]
+use = ["world-grid add"]
+
+[[cap]]
+id = "level.grid-info"
+area = "level"
+title = "Мировая сетка уровня: показать ячейки, убрать ячейку потока"
+[cap.editor]
+use = ["cmd.zone_cell"]
+at = "форма World grid cell → List the cells: ячейки уровня с кнопкой Remove у каждой"
+input = "menu+form"
+preset = "ZONE=remove-cell:level=,stream= (список — только в окне)"
+[cap.cli]
+use = ["world-grid info", "world-grid remove"]
+[cap.mcp]
+use = ["zone_cells", "remove_zone_cell"]
+
+[[cap]]
+id = "level.navgraph"
+area = "level"
+title = "Править навигационный граф (пути ИИ): узлы, связи, флаги, R-дерево"
+[cap.mcp]
+use = ["graph_edit"]
+[cap.editor]
+at = "панель Zones → Navigation graphs: Pick nodes, Add node in front, Connect selected object, панель узла (тип графа, Rebuild R-tree); перетаскивание узла"
+input = "mouse+form"
+preset = "LEVEL=…;nav=G:N;act=nav-rtree | act=nav-flags:<hex> (узлы и связи — только мышью и полями)"
+[cap.cli]
+use = ["graph-edit", "graph-info", "graph-export", "graph-import"]
+[cap.python]
+use = ["navigation_graph", "navigation_graph_bytes"]
+
+[[cap]]
+id = "level.walk"
+area = "level"
+title = "Пройти по уровню и проверить маршрут из A в B по коллизии"
+[cap.mcp]
+use = ["walk_route"]
+at = "смысловой эквивалент: проверка прямого маршрута из A в B той же физикой, что у панели Walk; свободной ходьбы с клавиатуры нет"
+[cap.editor]
+at = "панель Zones → Walk: Walk from the camera, A here, B here, Walk from A to B, список Problems"
+input = "form+key"
+preset = "LEVEL=…;walk;route=ax,ay,az,bx,by,bz"
+
+[[cap]]
+id = "level.spawn-here"
+area = "level"
+title = "Создать точку появления в месте камеры и запустить игру в ней"
+[cap.mcp]
+use = ["play"]
+at = "параметр position (нужен --allow-edits)"
+[cap.editor]
+at = "панель Zones → Play from here → Make a point here and play; контекстное меню вида"
+input = "form+mouse"
+
+# --- Logic ------------------------------------------------------------------
+
+[[cap]]
+id = "logic.graph"
+area = "logic"
+title = "Граф логики: объекты, пины, сообщения, кто шлёт и кто слышит; миссии"
+[cap.mcp]
+use = ["logic_graph"]
+[cap.editor]
+use = ["cmd.logic_editor"]
+at = "Details объекта → Logic graph"
+input = "menu+mouse"
+preset = "LOGIC=<область>;find;show"
+[cap.cli]
+use = ["logic-graph", "messages", "logic-missions"]
+[cap.python]
+use = ["logic_graph", "logic_messages", "logic_missions"]
+
+[[cap]]
+id = "logic.connect"
+area = "logic"
+title = "Соединить пин отправителя с пином слушателя или разорвать связь"
+[cap.mcp]
+use = ["logic_connect"]
+[cap.editor]
+at = "граф логики: провод перетаскиванием между пинами; узел из образца правой кнопкой, Delete, Ctrl+D"
+input = "mouse"
+[cap.cli]
+use = ["logic-connect"]
+
+[[cap]]
+id = "logic.schema"
+area = "logic"
+title = "Схема пинов SimGroup: какие атрибуты — сообщения и ссылки"
+[cap.mcp]
+at = "ресурс doctor-toolkit://schema/logic_schema.toml"
+[cap.editor]
+at = "пины узлов графа логики и подсказки значений при правке атрибутов"
+input = "form"
+[cap.cli]
+use = ["logic-schema"]
+[cap.python]
+use = ["logic_schema"]
+
+[[cap]]
+id = "logic.run"
+area = "logic"
+title = "Прогнать логику миссии без игры: сообщения, переменные, таймеры, Lua"
+[cap.mcp]
+use = ["logic_run"]
+at = "журнал страницами; прогон повторяем, следующая страница — тот же вызов с offset"
+[cap.editor]
+at = "вкладка логики → Run mode: шаг, до времени, входы, точки останова, журнал"
+input = "form"
+preset = "LOGIC=…;run=<события>;until=<с>"
+[cap.cli]
+use = ["logic-run"]
+[cap.python]
+use = ["logic_run"]
+
+# --- Scripts ----------------------------------------------------------------
+
+[[cap]]
+id = "lua.read"
+area = "scripts"
+title = "Прочитать скрипт Lua игры: декомпиляция, листинг байткода"
+[cap.mcp]
+use = ["resource_json", "export"]
+[cap.editor]
+at = "просмотрщик Lua"
+input = "form"
+preset = "LUA=…"
+[cap.cli]
+use = ["lua-decompile", "lua-export", "lua-list"]
+[cap.python]
+use = ["lua_decompile", "lua_listing"]
+
+[[cap]]
+id = "lua.edit"
+area = "scripts"
+title = "Изменить скрипт Lua игры: исходник компилируется в байткод игры"
+[cap.mcp]
+use = ["import_file"]
+[cap.editor]
+at = "просмотрщик Lua: редактор текста, Save, Load…"
+input = "form"
+[cap.cli]
+use = ["lua-import", "lua-compile"]
+[cap.python]
+use = ["lua_compile"]
+
+[[cap]]
+id = "script.deploy"
+area = "scripts"
+title = "Визуальный скрипт: создать, изменить, поставить в уровень, убрать"
+[cap.mcp]
+use = ["edit_script"]
+[cap.editor]
+use = ["cmd.script_editor"]
+at = "редактор скриптов: палитра узлов, провода, Deploy, Remove"
+input = "mouse+form"
+preset = "SCRIPT=<graph.json> открывает граф, но не ставит"
+[cap.cli]
+use = ["script-deploy", "script-remove", "script-compile"]
+[cap.python]
+use = ["script_compile"]
+
+[[cap]]
+id = "script.list"
+area = "scripts"
+title = "Визуальные скрипты уровня и виды их узлов"
+[cap.mcp]
+use = ["scripts"]
+at = "параметр node_kinds; формат графа — ресурс doctor-toolkit://docs/scripts.md"
+[cap.editor]
+use = ["cmd.script_editor"]
+at = "File → Open, палитра узлов"
+input = "menu+form"
+[cap.cli]
+use = ["script-list", "script-nodes"]
+
+[[cap]]
+id = "script.run"
+area = "scripts"
+title = "Прогнать визуальный скрипт или файл Lua на макете игры"
+[cap.mcp]
+use = ["script_run"]
+[cap.editor]
+at = "редактор скриптов → пробный прогон"
+input = "form"
+[cap.cli]
+use = ["script-run"]
+
+# --- Texts, dialogues, subtitles ---------------------------------------------
+
+[[cap]]
+id = "text.search"
+area = "text"
+title = "Найти локализованную строку по тексту или хешу во всех таблицах и языках"
+[cap.mcp]
+use = ["strings"]
+[cap.editor]
+use = ["cmd.search"]
+at = "запрос text:; просмотрщик таблицы строк с фильтром"
+input = "form"
+[cap.cli]
+use = ["search", "text-export"]
+[cap.python]
+use = ["Workspace.string_table", "StringTable.items", "StringTable.get"]
+
+[[cap]]
+id = "text.edit"
+area = "text"
+title = "Изменить текст строки"
+[cap.mcp]
+use = ["edit_string"]
+[cap.editor]
+use = ["cmd.wizard_texts", "wizard.texts"]
+at = "просмотрщик таблицы строк: ячейка, Save; флажок «In all tables and languages» у Save и в мастере — запись во все таблицы и языки одной операцией; в мастере — поиск и замена, CSV"
+input = "form"
+preset = "WIZARD=texts,table=,find=,replace=,replace_all[,everywhere]; RESOURCE=[language=<код>,]string=<имя или 0xхеш>:<текст> (запятая в значении — \\, или значение строкой JSON)"
+[cap.cli]
+use = ["text-import"]
+partial = "только через JSON таблицы: команды для одной записи нет"
+[cap.python]
+use = ["Workspace.edit_strings", "Workspace.set_string_table", "StringTable.set"]
+
+[[cap]]
+id = "text.add"
+area = "text"
+title = "Добавить новую строку в таблицы языков с переводами"
+[cap.mcp]
+use = ["add_string"]
+[cap.editor]
+at = "просмотрщик таблицы строк → Add string (имя, текст, every language, «+ text of one language» — текст отдельного языка по коду); Add string в редакторе диалога"
+input = "form"
+preset = "RESOURCE=add_string=<имя>:<текст>[,tr=<код языка>:<текст>…]"
+[cap.cli]
+use = ["text-add"]
+
+[[cap]]
+id = "text.apx-refs"
+area = "text"
+title = "Ссылки $name ролика интерфейса на строки: показать, перенаправить"
+[cap.mcp]
+use = ["resource_json", "apx_edit"]
+at = "ссылки $name — в resource_json ролика; перенаправление — text_refs у apx_edit"
+[cap.cli]
+use = ["apx-text-refs"]
+[cap.editor]
+at = "просмотрщик apx → Text references $name: список ссылок с хешем и числом, поле другой строки, Point"
+input = "form"
+preset = "RESOURCE=apx=<старое имя>:<новое имя>"
+
+[[cap]]
+id = "dialogue.read"
+area = "text"
+title = "Диалоги: список, поиск, дерево реплик с речью и текстами"
+[cap.mcp]
+use = ["resource_json", "search"]
+[cap.editor]
+at = "вкладка диалога (dlg)"
+input = "form"
+preset = "DIALOGUE=…"
+[cap.cli]
+use = ["dialogues", "dialogue", "dialogue-export"]
+
+[[cap]]
+id = "dialogue.edit"
+area = "text"
+title = "Изменить дерево диалога: реплики, варианты, флаги, тексты"
+[cap.mcp]
+use = ["import_file"]
+at = "JSON диалога целиком"
+[cap.editor]
+at = "вкладка диалога: говорящий, текст, речь, варианты, вставить и убрать узел, Save"
+input = "form"
+[cap.cli]
+use = ["dialogue-import"]
+
+[[cap]]
+id = "subtitle.text"
+area = "text"
+title = "Изменить текст субтитров речевого файла архива по языкам"
+[cap.mcp]
+use = ["edit_subtitle"]
+[cap.editor]
+use = ["cmd.sounds"]
+at = "окно Sound → Archives → звук → субтитры по языкам → Apply subtitles; вкладка диалога → субтитр реплики"
+input = "form"
+preset = "SOUND=select=<файл>,subtitle=<язык>:<текст>,apply"
+[cap.cli]
+use = ["subtitle"]
+
+[[cap]]
+id = "subtitle.timing"
+area = "text"
+title = "Изменить начало и длину субтитра"
+[cap.mcp]
+use = ["edit_subtitle"]
+at = "параметры line, start_ms, duration_ms; строки и дорожки показывает cutscenes"
+[cap.editor]
+at = "вкладка ролика → дорожка Subtitles: Start, Length, Apply; перетаскивание по шкале времени"
+input = "form+mouse"
+preset = "CUTSCENE=select=sub:N только выбирает"
+[cap.cli]
+use = ["cutscene subtitle"]
+
+# --- Sound ------------------------------------------------------------------
+
+[[cap]]
+id = "sound.replace-bank"
+area = "sound"
+title = "Заменить звук банка sbk файлом WAV"
+[cap.mcp]
+use = ["import_sound"]
+[cap.editor]
+at = "вкладка банка sbk → Samples → Import… у строки"
+input = "form"
+[cap.cli]
+use = ["sound-import", "sound-encode"]
+[cap.python]
+use = ["Workspace.import_sound", "Sound.to_snu", "sound_from_snu"]
+
+[[cap]]
+id = "sound.replace-stream"
+area = "sound"
+title = "Заменить потоковый звук или речь архива .viv"
+[cap.mcp]
+use = ["import_sound"]
+[cap.editor]
+use = ["cmd.sounds"]
+at = "окно Sound → Archives → звук → Replace…; вкладка диалога → Replace audio… у реплики"
+input = "form"
+preset = "SOUND=select=<файл>,replace=<звуковой файл>"
+[cap.cli]
+use = ["sound-import"]
+[cap.python]
+use = ["Workspace.import_sound", "Workspace.set_file"]
+
+[[cap]]
+id = "sound.archives"
+area = "sound"
+title = "Потоковые звуки и речь архивов .viv: список, сведения, экспорт в WAV"
+[cap.mcp]
+use = ["media"]
+[cap.editor]
+use = ["cmd.sounds"]
+at = "окно Sound → Archives: список с фильтром, сведения, Play, Export WAV…; Export WAV у реплики во вкладке диалога"
+input = "form"
+preset = "SOUND=filter=<текст>,select=<файл>,export=<file.wav>"
+[cap.cli]
+use = ["viv-list", "audio"]
+[cap.python]
+use = ["Game.archive_entries", "Game.archive_sound"]
+
+[[cap]]
+id = "sound.bank-edit"
+area = "sound"
+title = "Банк звуков: параметры звука, новые вариации и эмиттеры"
+[cap.mcp]
+use = ["resource_json", "sbk_edit", "sound_add"]
+[cap.editor]
+at = "вкладка банка sbk → Structure: громкость, высота, спад, приоритет, Add sound…, New emitter, Save"
+input = "form"
+[cap.cli]
+use = ["sbk-info", "sbk-edit", "sound-add"]
+[cap.python]
+use = ["sound_bank"]
+
+[[cap]]
+id = "sound.voice-line"
+area = "sound"
+title = "Новая реплика из записи: звук, запись речевого банка, строка набора говорящего, событие"
+[cap.mcp]
+use = ["voice_add", "speech"]
+at = "speech с show: speakers перечисляет говорящих"
+[cap.editor]
+use = ["cmd.wizard_voice", "wizard.voice"]
+input = "form"
+preset = "WIZARD=voice,chv=,file=,event=,name=,subtitle=,only"
+[cap.cli]
+use = ["voice-add"]
+
+[[cap]]
+id = "sound.speech-tables"
+area = "sound"
+title = "Речевые банки и таблица событий речи: показать, добавить запись, изменить паузу и приоритет"
+[cap.mcp]
+use = ["speech", "set_speech_events"]
+[cap.cli]
+use = ["speech-bank", "speech-events"]
+[cap.editor]
+use = ["cmd.sounds"]
+at = "окно Sound → Speech banks (записи банков, фильтр) и Speech events (Set / add the record: пауза, приоритет, флаги, ранг); вид ресурсов smb и get с кнопкой Open in the Sound window"
+input = "form"
+preset = "SOUND=page=banks,filter=<текст>; SOUND=event=<ИМЯ>,cooldown=,priority=,flags=,rank=,apply"
+
+[[cap]]
+id = "sound.mix"
+area = "sound"
+title = "Аудиоконфигурация и снимки микшера: категории, громкость, фильтр"
+[cap.mcp]
+use = ["mix", "set_mix"]
+[cap.cli]
+use = ["audio-config", "mix"]
+[cap.editor]
+use = ["cmd.sounds"]
+at = "окно Sound → Audio configuration (категории, пулы, приглушения; новая категория) и Mixes (громкость, время, частота канала, новый канал); вид ресурсов auc и mix с кнопкой Open in the Sound window"
+input = "form"
+preset = "SOUND=category=<ИМЯ>,parent=<ИМЯ>,apply; SOUND=mix=<имя>,channel=<КАТЕГОРИЯ>,volume=,time=,frequency=,apply"
+
+# --- Cut-scenes and movies ---------------------------------------------------
+
+[[cap]]
+id = "cine.read"
+area = "cutscenes"
+title = "Ролики на движке: список кадров, шкала времени, актёры, звук, субтитры; предпросмотр"
+[cap.mcp]
+use = ["cutscenes", "resource_json", "search"]
+partial = "список роликов, кадр, шкала времени, актёры, звук и субтитры есть; предпросмотра (картинки кадра) нет"
+[cap.mcp.gap]
+add = "снимок кадра ролика: вместе со снимком вида уровня (level.view)"
+size = "L"
+why = "отрисовка живёт в крейте редактора (wgpu) и требует окна или своей поверхности"
+package = "104-G"
+[cap.editor]
+use = ["cmd.toggle_timeline", "cmd.toggle_cutscene_preview", "cmd.cutscene_play"]
+at = "вкладка ролика; Open in the level view"
+input = "menu+form"
+preset = "CUTSCENE=time,play,preview,…; CINE=time=,characters,through,view="
+[cap.cli]
+use = ["cutscene list", "cutscene show"]
+
+[[cap]]
+id = "cine.camera"
+area = "cutscenes"
+title = "Камера кадра: позиция, поворот, фокусное расстояние, ключи"
+[cap.mcp]
+use = ["cutscene_camera", "cutscenes"]
+[cap.editor]
+use = ["cmd.cutscene_key_from_view"]
+at = "Details → Transform и Lens полями; Delete key, < Key, Key >; гизмо на камере"
+input = "form+mouse"
+[cap.cli]
+use = ["cutscene export", "cutscene import", "cutscene camera"]
+
+[[cap]]
+id = "cine.actor"
+area = "cutscenes"
+title = "Актёр в кадре: позиция, поворот, клип анимации"
+[cap.mcp]
+use = ["cutscene_actor"]
+[cap.editor]
+at = "Details выбранного актёра полями; гизмо на актёре"
+input = "form+mouse"
+[cap.cli]
+use = ["cutscene clip", "cutscene export", "cutscene import", "cutscene actor"]
+
+[[cap]]
+id = "cine.commands"
+area = "cutscenes"
+title = "Команды кадра на шкале времени: текст на экране, время суток, сообщение, тени, масштаб времени"
+[cap.mcp]
+use = ["cutscene_command", "import_file"]
+[cap.editor]
+at = "вкладка ролика → инспектор команды: Kind, Text, Seconds, ключи кривой, Apply; сдвиг перетаскиванием"
+input = "form+mouse"
+preset = "CUTSCENE=select=… только выбирает"
+[cap.cli]
+use = ["cutscene move", "cutscene export", "cutscene import", "cutscene command"]
+
+[[cap]]
+id = "cine.export"
+area = "cutscenes"
+title = "Вывести ролик: видео через камеры кадров, glTF с камерой и актёрами"
+[cap.mcp]
+use = ["export"]
+partial = "glTF кадра с камерой и актёрами есть (format glb); вывода в видео нет"
+[cap.mcp.gap]
+add = "инструмент cutscene_render: видео через камеры кадров — долгая задача с опросом состояния"
+size = "M"
+why = "рендер делает программа редактора без окна (--render-cutscene, нужна видеокарта): серверу нужна схема долгих задач и путь к этой программе"
+package = "104-A"
+[cap.editor]
+at = "Details → Export video: Size, Frames/s, Save as…"
+input = "form"
+[cap.cli]
+use = ["cutscene render", "cutscene gltf"]
+
+[[cap]]
+id = "video.replace"
+area = "cutscenes"
+title = "Заменить ролик .vp6: картинка и/или звуковая дорожка"
+[cap.mcp]
+use = ["import_video"]
+[cap.editor]
+use = ["cmd.movies"]
+at = "вкладка Movies → Import video…, Replace audio only…"
+input = "menu+form"
+preset = "MOVIES=<ролик> только открывает"
+[cap.cli]
+use = ["video-import"]
+
+[[cap]]
+id = "video.read"
+area = "cutscenes"
+title = "Ролики .vp6: список, сведения, кадры в PNG, звук в WAV"
+[cap.mcp]
+use = ["media"]
+[cap.editor]
+use = ["cmd.movies"]
+at = "проигрыватель, Export audio (WAV)…, Export frame (PNG)…"
+input = "menu+form"
+[cap.cli]
+use = ["video-info", "video-export"]
+
+# --- Characters, animations, game parameters ---------------------------------
+
+[[cap]]
+id = "char.partsdb"
+area = "characters"
+title = "База частей персонажей: группы, наборы, слоты, варианты, части"
+[cap.mcp]
+use = ["resource_json"]
+[cap.editor]
+at = "вкладка partsdb: набор, варианты"
+input = "form"
+preset = "CHARACTER=set,lod,choose,select"
+[cap.cli]
+use = ["partsdb list", "partsdb show"]
+
+[[cap]]
+id = "char.assemble"
+area = "characters"
+title = "Собрать персонажа из набора и вывести одной моделью glTF"
+[cap.mcp]
+use = ["export"]
+at = "формат glb для partsdb с параметрами set, choices, lod"
+[cap.editor]
+at = "вкладка partsdb: Random, Export"
+input = "form"
+[cap.cli]
+use = ["partsdb character"]
+[cap.python]
+use = ["character_glb"]
+
+[[cap]]
+id = "char.outfit"
+area = "characters"
+title = "Новая часть одежды: модель, материалы с оттенками, часть и вариант, разрешить в наборах"
+[cap.mcp]
+use = ["import_model", "partsdb_add_part", "partsdb_allow", "set_material"]
+at = "import_model с name делает меш и материалы (оттенки — material_params), partsdb_add_part — часть, вариант и наборы"
+[cap.editor]
+use = ["cmd.wizard_outfit", "wizard.outfit"]
+input = "form+mouse"
+preset = "WIZARD=outfit,slot=,set=,template=<часть-образец>,file=,lod=<файл второго уровня детализации>,name=,tint=<0..2>:<r>/<g>/<b>,tags=,only"
+[cap.cli]
+use = ["partsdb add-part", "partsdb allow"]
+
+[[cap]]
+id = "anim.read"
+area = "characters"
+title = "Банки анимаций: клипы, события, граф узлов; экспорт клипов"
+[cap.mcp]
+use = ["resource_json", "export"]
+[cap.editor]
+at = "вкладка банка bnk: клипы, Graph, Export"
+input = "form"
+preset = "ANIM=clip,frame,graph,node"
+[cap.cli]
+use = ["anim list", "anim export", "anim node-types"]
+[cap.python]
+use = ["animation_bank", "animation_graph", "animation_glb"]
+
+[[cap]]
+id = "anim.edit"
+area = "characters"
+title = "Импортировать клип анимации (заменить или добавить), изменить события клипа и граф узлов"
+[cap.mcp]
+use = ["import_animation", "clip_events", "animation_graph", "set_animation_graph"]
+[cap.editor]
+at = "вкладка банка bnk: Import clip…, Replace clip, Add clip, петля; Graph: узлы, параметры, Apply"
+input = "form+mouse"
+preset = "ANIM=import=<файл>,add=<имя>"
+[cap.cli]
+use = ["anim import", "anim events", "anim graph"]
+[cap.python]
+use = ["Workspace.import_animation", "Workspace.set_clip_events", "Workspace.set_animation_graph"]
+
+[[cap]]
+id = "params.tunables"
+area = "characters"
+title = "Изменить параметры игры из курируемого списка во всех копиях атрибута"
+[cap.mcp]
+use = ["tunables", "set_tunables"]
+[cap.editor]
+use = ["cmd.wizard_params", "wizard.params"]
+input = "form"
+preset = "WIZARD=params,add=,category=,value=,factor=,find="
+[cap.cli]
+use = ["tunables"]
+
+# --- Workspace and project ---------------------------------------------------
+
+[[cap]]
+id = "ws.status"
+area = "workspace"
+title = "Состояние рабочего пространства: изменения, новые потоки, история операций"
+[cap.mcp]
+use = ["workspace_status"]
+[cap.editor]
+use = ["cmd.toggle_changes", "cmd.toggle_history"]
+input = "menu+form"
+preset = "CHANGES=1; SHELL=drawer=history"
+[cap.cli]
+use = ["workspace status", "workspace log", "workspace init"]
+[cap.python]
+use = ["Game.workspace", "Game.init_workspace", "Workspace.status", "Workspace.changes", "Workspace.history"]
+
+[[cap]]
+id = "ws.diff"
+area = "workspace"
+title = "Что каждое изменение делает против оригинала"
+[cap.mcp]
+use = ["workspace_diff"]
+[cap.editor]
+use = ["cmd.toggle_changes"]
+at = "панель Changes: строка изменения → диапазоны и строки"
+input = "form"
+[cap.cli]
+use = ["workspace diff"]
+[cap.python]
+use = ["Workspace.diff"]
+
+[[cap]]
+id = "ws.undo"
+area = "workspace"
+title = "Отменить и вернуть операцию"
+[cap.mcp]
+use = ["undo", "redo"]
+[cap.editor]
+use = ["cmd.undo", "cmd.redo"]
+at = "панель History: щелчок по операции"
+input = "menu"
+[cap.cli]
+use = ["workspace undo", "workspace redo"]
+[cap.python]
+use = ["Workspace.undo", "Workspace.redo"]
+
+[[cap]]
+id = "ws.revert"
+area = "workspace"
+title = "Убрать одно изменение или все из рабочего пространства"
+[cap.mcp]
+use = ["revert"]
+[cap.editor]
+at = "панель Changes → Revert this change, Discard all changes"
+input = "form"
+[cap.cli]
+use = ["workspace revert"]
+[cap.python]
+use = ["Workspace.revert", "Workspace.revert_files", "Workspace.revert_all"]
+
+[[cap]]
+id = "ws.save"
+area = "workspace"
+title = "Сохранить несохранённые правки открытых просмотрщиков в рабочее пространство"
+[cap.editor]
+use = ["cmd.save"]
+input = "menu"
+[cap.mcp]
+never = "у инструмента нет несохранённого состояния: каждый вызов сразу записан операцией"
+
+[[cap]]
+id = "ws.apply"
+area = "workspace"
+title = "Записать рабочее пространство в файлы игры"
+[cap.mcp]
+use = ["apply"]
+[cap.editor]
+use = ["cmd.apply"]
+at = "панель Changes → Apply to game"
+input = "menu"
+[cap.cli]
+use = ["workspace apply"]
+[cap.python]
+use = ["Workspace.apply"]
+
+[[cap]]
+id = "ws.unapply"
+area = "workspace"
+title = "Вернуть файлам игры исходный вид, оставив правки в рабочем пространстве"
+[cap.mcp]
+use = ["unapply"]
+[cap.editor]
+use = ["cmd.revert_game"]
+at = "панель Changes → Revert game"
+input = "menu"
+[cap.python]
+use = ["Workspace.unapply"]
+[cap.cli]
+use = ["workspace revert"]
+at = "флаг --game"
+
+[[cap]]
+id = "ws.restore"
+area = "workspace"
+title = "Восстановить оригиналы всех файлов, которые менял тулкит"
+[cap.mcp]
+use = ["restore_originals"]
+at = "под --allow-game; отказ при запущенной игре"
+[cap.editor]
+use = ["cmd.restore"]
+input = "menu"
+[cap.cli]
+use = ["restore"]
+
+[[cap]]
+id = "project.build"
+area = "workspace"
+title = "Проект мода: состояние исходных файлов и сборка изменённых в рабочее пространство"
+[cap.mcp]
+use = ["project_status", "project_build"]
+[cap.editor]
+use = ["project.cmd"]
+at = "вкладка Project → Build, Refresh"
+input = "menu+form"
+preset = "PROJECT=<папка>"
+[cap.cli]
+use = ["project status", "project build"]
+[cap.python]
+use = ["Project.status", "Project.build", "Project.entries"]
+
+[[cap]]
+id = "project.new"
+area = "workspace"
+title = "Создать проект из потоков игры или изменений; записать версию рабочего пространства в файлы проекта"
+[cap.mcp]
+use = ["project_new", "project_pull"]
+at = "project_new пишет в папку вывода сервера (--output-dir); project_pull — в проект сервера (--project)"
+[cap.editor]
+use = ["project.cmd"]
+at = "вкладка Project → Create, Open, Pull (версия рабочего пространства — в файлы проекта)"
+input = "form"
+preset = "PROJECT=<папка> и SHELL=pull"
+[cap.cli]
+use = ["project new", "project pull"]
+[cap.python]
+use = ["Project.create", "Project.pull"]
+
+# --- Mods -------------------------------------------------------------------
+
+[[cap]]
+id = "mods.build"
+area = "mods"
+title = "Собрать файл мода из изменений: имя, id, версия, автор, связи, издания, выбор изменений"
+[cap.mcp]
+use = ["mod_build"]
+[cap.editor]
+use = ["cmd.wizard_package", "wizard.package"]
+at = "окно Mods → раздел сборки; вкладка Project → Build mod"
+input = "form+mouse"
+preset = "WIZARD=package,name=,author=,description=,out= (нет id, версии, издания, связей)"
+[cap.cli]
+use = ["mods build", "project mod"]
+[cap.python]
+use = ["Workspace.build_mod", "Project.build_mod"]
+
+[[cap]]
+id = "mods.build-native"
+area = "mods"
+title = "Собрать мод с исполняемым кодом (формат 5): модули .asi, «код обязателен», файлы классов"
+[cap.mcp]
+use = ["mod_build"]
+at = "параметры native, native_required, native_plain"
+[cap.editor]
+at = "окно Mods → раздел сборки: Native modules (строки имя=путь), code required; мастер Package a mod → связи"
+input = "form"
+[cap.cli]
+use = ["mods build", "class-schema"]
+at = "--native, --native-required"
+
+[[cap]]
+id = "mods.read"
+area = "mods"
+title = "Менеджер модов: установленные моды, состояние в игре, конфликты, совместимость"
+[cap.mcp]
+use = ["mods"]
+[cap.editor]
+use = ["cmd.mods"]
+at = "окно Mods: карточки, Details"
+input = "menu+form"
+preset = "MODS=1"
+[cap.cli]
+use = ["mods list", "mods status", "mods conflicts", "mods check"]
+[cap.python]
+use = ["Game.mods", "ModManager.mods", "ModManager.status", "ModManager.conflicts", "ModManager.clashes", "ModManager.check"]
+
+[[cap]]
+id = "mods.info"
+area = "mods"
+title = "Что в файле мода (.zip, .vpat) до установки, и его проверка"
+[cap.mcp]
+use = ["mods"]
+at = "действие info (на сервере с --allow-edits или --allow-game: читает файл по пути)"
+[cap.cli]
+use = ["mods info"]
+[cap.python]
+use = ["mod_info"]
+[cap.editor]
+at = "окно Mods → Install…: вопрос перед установкой показывает, что в каждом файле (ресурсы, потоки, связи, код), и проверяет его"
+input = "form"
+preset = "MODS=info=<файл>"
+
+[[cap]]
+id = "mods.manage"
+area = "mods"
+title = "Установить, удалить, включить, выключить мод; порядок загрузки и сортировка по правилам"
+[cap.mcp]
+use = ["mods_manage"]
+[cap.editor]
+use = ["cmd.mods"]
+at = "окно Mods: Install…, перетаскивание файла и карточек, переключатель, контекстное меню, Sort"
+input = "form+mouse"
+[cap.cli]
+use = ["mods install", "mods uninstall", "mods enable", "mods disable", "mods move", "mods sort"]
+[cap.python]
+use = ["ModManager.install", "ModManager.uninstall", "ModManager.enable", "ModManager.move", "ModManager.sort"]
+
+[[cap]]
+id = "mods.apply"
+area = "mods"
+title = "Записать включённые моды в игру и снять их"
+[cap.mcp]
+use = ["mods_manage"]
+[cap.editor]
+use = ["cmd.mods"]
+at = "окно Mods → Apply, Unapply"
+input = "form"
+preset = "DOCTOR_TOOLKIT_MODS_ASK=write открывает вопрос"
+[cap.cli]
+use = ["mods apply", "mods unapply"]
+[cap.python]
+use = ["ModManager.apply", "ModManager.unapply"]
+
+[[cap]]
+id = "mods.install-workspace"
+area = "mods"
+title = "Поставить изменения рабочего пространства как мод"
+[cap.mcp]
+use = ["mods_manage"]
+at = "действие install_workspace"
+[cap.editor]
+use = ["cmd.mods"]
+at = "окно Mods → раздел сборки → Install workspace"
+input = "form"
+[cap.cli]
+use = ["mods install-workspace"]
+[cap.python]
+use = ["ModManager.install_workspace"]
+
+[[cap]]
+id = "mods.old"
+area = "mods"
+title = "Перенять игру, пропатченную старым тулкитом, и её патчи как моды"
+[cap.mcp]
+use = ["mods_manage"]
+at = "действие import_old"
+[cap.editor]
+use = ["cmd.mods"]
+at = "окно Mods → More → импорт старых модов; вопрос первого запуска"
+input = "form"
+[cap.cli]
+use = ["mods import-old"]
+
+[[cap]]
+id = "mods.export"
+area = "mods"
+title = "Записать установленный мод файлом мода"
+[cap.mcp]
+use = ["mods_manage"]
+at = "действие export (в папку --output-dir)"
+[cap.cli]
+use = ["mods export"]
+[cap.python]
+use = ["ModManager.export"]
+[cap.editor]
+at = "окно Mods → меню карточки мода → Save as file…"
+input = "menu"
+preset = "MODS=export=<id>:<файл>"
+
+[[cap]]
+id = "mods.sets"
+area = "mods"
+title = "Наборы модов: сохранить, выбрать, удалить"
+[cap.mcp]
+use = ["mods_manage", "mods"]
+at = "действия save_set, use_set, delete_set; mods: sets"
+[cap.editor]
+use = ["cmd.mods"]
+at = "окно Mods: выбор набора, Save, удалить"
+input = "form"
+
+[[cap]]
+id = "mods.native-state"
+area = "mods"
+title = "Исполняемый код модов: состояние и что мод поставил бы в игру"
+[cap.mcp]
+use = ["mods"]
+at = "действие native; поле code у list"
+[cap.editor]
+use = ["cmd.mods"]
+at = "окно Mods: значок на карточке, состояние Waiting for your consent"
+input = "form"
+[cap.cli]
+use = ["mods native"]
+
+[[cap]]
+id = "mods.native-consent"
+area = "mods"
+title = "Согласие игрока на исполняемый код мода: разрешить, только данные, забыть"
+[cap.editor]
+use = ["cmd.mods"]
+at = "окно вопроса: Allow, Disable, Later, Forget"
+input = "mouse"
+[cap.cli]
+use = ["mods native"]
+at = "--allow, --data-only, --forget"
+[cap.mcp]
+never = "согласие даёт человек: агент не может разрешить запуск чужого кода на машине игрока"
+
+[[cap]]
+id = "crash.consent"
+area = "mods"
+title = "Согласие на модуль отчётов о падениях в игре: оставить или убрать"
+[cap.editor]
+at = "вопрос при первом запуске; флажок в Play options и в Mods → More"
+input = "mouse"
+[cap.cli]
+use = ["crash-report install", "crash-report uninstall"]
+[cap.mcp]
+never = "согласие даёт человек: модуль остаётся в игре игрока и после работы агента"
+
+# --- Starting the game -------------------------------------------------------
+
+[[cap]]
+id = "play.start"
+area = "play"
+title = "Запустить игру с правками (обычно или сразу в потоке уровня у точки появления) и остановить"
+[cap.mcp]
+use = ["play", "stop"]
+[cap.editor]
+use = ["cmd.play", "cmd.play_options"]
+at = "вкладка Game: Play, Stop, Restart; панель Zones → Play from here"
+input = "menu+form"
+preset = "SHELL=play только открывает окно параметров"
+[cap.cli]
+use = ["play"]
+
+[[cap]]
+id = "play.options"
+area = "play"
+title = "Параметры запуска: способ (Steam, Proton, своя команда), графический модуль, окно"
+[cap.mcp]
+use = ["play"]
+at = "size, render, fps, fov, fxaa, sharpen, draw_merge, laa, dxvk, vulkan_driver"
+[cap.editor]
+use = ["cmd.play_options"]
+input = "form"
+[cap.cli]
+use = ["play", "render config", "render install", "render uninstall", "render log"]
+
+[[cap]]
+id = "play.screenshot"
+area = "play"
+title = "Снимок кадра запущенной игры"
+[cap.mcp]
+use = ["screenshot"]
+[cap.editor]
+at = "вкладка Game → Screenshot (игра во вкладке)"
+input = "form"
+
+[[cap]]
+id = "crash.reports"
+area = "play"
+title = "Отчёты о падениях игры: список, показать, состояние модуля, адрес по базе знаний"
+[cap.mcp]
+use = ["crash_reports", "kb_search"]
+[cap.editor]
+use = ["cmd.crash_reports"]
+at = "Tools → Crash reports: список отчётов (новые сверху), текст отчёта с именами сообщений, состояние модуля, папка; Play options → Last crash"
+input = "menu+form"
+preset = "SHELL=crashes[=<номер или имя отчёта>]"
+[cap.cli]
+use = ["crash-report show", "crash-report list", "crash-report status", "crash-report log", "crash-report lookup"]
+
+# --- Live link ---------------------------------------------------------------
+
+[[cap]]
+id = "live.status"
+area = "live"
+title = "Связь с запущенной игрой: есть ли она, состояние цикла, загруженные потоки"
+[cap.mcp]
+use = ["live_status"]
+[cap.editor]
+at = "вкладка Game → Link: Connect, Disconnect, Streams"
+input = "form"
+preset = "LIVE=PORT[:TOKEN]"
+[cap.cli]
+use = ["live status", "live streams", "live stream list"]
+
+[[cap]]
+id = "live.module"
+area = "live"
+title = "Поставить модуль связи в папку игры и убрать его"
+[cap.mcp]
+use = ["play", "stop"]
+at = "play ставит модуль сам, stop убирает"
+[cap.editor]
+at = "вкладка Game → Link: Live link: put the module into the game for Play"
+input = "form"
+[cap.cli]
+use = ["live install", "live uninstall"]
+
+[[cap]]
+id = "live.player"
+area = "live"
+title = "Игрок и камера игры: позиция, направление, поле зрения"
+[cap.mcp]
+use = ["player"]
+[cap.editor]
+at = "панель Link: Player, Camera"
+input = "form"
+[cap.cli]
+use = ["live player", "live camera"]
+
+[[cap]]
+id = "live.objects"
+area = "live"
+title = "Объекты запущенной игры: рядом с точкой, по GUID, по имени"
+[cap.mcp]
+use = ["objects_near", "live_object"]
+[cap.editor]
+at = "панель Link: Objects nearby, All objects → List, Find; Details → In the running game → Read"
+input = "form"
+[cap.cli]
+use = ["live objects", "live find", "live object get"]
+
+[[cap]]
+id = "live.state"
+area = "live"
+title = "Состояние игры: время суток, погода, деньги, команда, контрольная точка, переменные сюжета"
+[cap.mcp]
+use = ["game_state", "variables"]
+[cap.editor]
+at = "панель Link → World and state: Read"
+input = "form"
+[cap.cli]
+use = ["live time", "live weather", "live money", "live family", "live mission", "live var get"]
+
+[[cap]]
+id = "live.teleport"
+area = "live"
+title = "Перенести игрока в точку"
+[cap.mcp]
+use = ["teleport"]
+[cap.editor]
+at = "панель Link → Teleport…; в виде уровня — Player here"
+input = "form"
+[cap.cli]
+use = ["live teleport"]
+
+[[cap]]
+id = "live.send"
+area = "live"
+title = "Отправить сообщение на шину SimGroup: всем слушателям или одному объекту"
+[cap.mcp]
+use = ["send_message"]
+[cap.editor]
+at = "панель Link → Message, to, Send…"
+input = "form"
+[cap.cli]
+use = ["live send"]
+
+[[cap]]
+id = "live.lua"
+area = "live"
+title = "Выполнить Lua в запущенной игре"
+[cap.mcp]
+use = ["lua"]
+[cap.editor]
+at = "панель Link → Lua 5.0 in the game, Run…"
+input = "form"
+[cap.cli]
+use = ["live lua"]
+
+[[cap]]
+id = "live.set-state"
+area = "live"
+title = "Задать время суток и его скорость, деньги, переменную сюжета"
+[cap.mcp]
+use = ["set_time", "set_money", "set_variable"]
+[cap.editor]
+at = "панель Link → World and state: Set time, Set rate, Money Set / Add, Story variables Set"
+input = "form"
+[cap.cli]
+use = ["live time", "live money", "live var set"]
+
+[[cap]]
+id = "live.streams"
+area = "live"
+title = "Загрузить и выгрузить поток в запущенной игре"
+[cap.mcp]
+use = ["stream_load", "stream_unload"]
+[cap.editor]
+at = "панель Link → World and state → Streams: Load, Unload"
+input = "form"
+[cap.cli]
+use = ["live stream load", "live stream unload"]
+
+[[cap]]
+id = "live.object-edit"
+area = "live"
+title = "Править мир на ходу: сдвинуть, повернуть, скрыть объект, включить и выключить его логику, отменить"
+[cap.mcp]
+use = ["move_live_object", "live_object_enable", "live_object_undo", "live_object_edits"]
+[cap.editor]
+at = "Details → In the running game: Gizmo moves it in the game too, Place in the game, скрыть и показать, флажок Logic (логика объекта), Undo in the game; панель Link → Edits of the world"
+input = "form+mouse"
+preset = "LIVE=PORT[:TOKEN] и LIVE_DO=get=<guid>,hide=<guid>,show=<guid>,logic=<guid>:on|off,undo (без вопроса: переменная — согласие)"
+[cap.cli]
+use = ["live object move", "live object rotate", "live object disable", "live object enable", "live object undo", "live object edits"]
+
+[[cap]]
+id = "live.commit"
+area = "live"
+title = "Записать сдвинутые в игре объекты в рабочее пространство"
+[cap.mcp]
+use = ["live_objects_to_workspace"]
+[cap.editor]
+at = "Details → In the running game → Move into the workspace"
+input = "form"
+[cap.cli]
+use = ["live object commit"]
+
+[[cap]]
+id = "live.profile"
+area = "live"
+title = "Измерить игру изнутри: время кадра, ЦП потоков, чтения файлов, текстуры, память"
+[cap.mcp]
+use = ["live_profile"]
+[cap.cli]
+use = ["live profile"]
+[cap.editor]
+at = "вкладка Game → панель Link → Profile: Measure, Measure and reset, Memory, Sample; замер текстом, как у live profile"
+input = "form"
+preset = "LIVE=PORT[:TOKEN] и LIVE_DO=profile[=reset+memory+sample:<мс>]"
+
+[[cap]]
+id = "live.freecam"
+area = "live"
+title = "Свободная камера: игра рисует из заданной точки; камера редактора ↔ камера игры"
+[cap.mcp]
+use = ["camera", "player"]
+[cap.editor]
+at = "вид уровня: Follow the game's camera, Camera → game, Game's camera"
+input = "form"
+preset = "LIVE_FOLLOW=1 (только следование)"
+[cap.cli]
+use = ["live freecam"]
+
+[[cap]]
+id = "live.debug"
+area = "live"
+title = "Отладка вживую: пауза, шаг, точки останова на сообщении, печати и ошибке Lua; логика и скрипты вживую"
+[cap.mcp]
+use = ["pause", "resume", "breakpoints"]
+[cap.editor]
+at = "панель Link → Debug: Pause, Continue, Step, Add breakpoint; вкладка логики → Live; редактор скриптов: Stop the game at this node"
+input = "form"
+preset = "LOGIC=…;live"
+[cap.cli]
+use = ["live pause", "live continue", "live break"]
+
+[[cap]]
+id = "live.log"
+area = "live"
+title = "Журнал игры: печать, ошибки Lua со стеком, сообщения шины"
+[cap.mcp]
+use = ["game_log"]
+[cap.editor]
+at = "панель Link → Game journal; вкладка логики → Live, Save…"
+input = "form"
+[cap.cli]
+use = ["live log"]
+
+[[cap]]
+id = "live.texture"
+area = "live"
+title = "Отправить изменённые текстуры рабочего пространства в запущенную игру без перезапуска"
+[cap.mcp]
+use = ["push_textures"]
+[cap.editor]
+at = "панель Link → Debug → Send edited textures"
+input = "form"
+[cap.cli]
+use = ["live texture"]
+
+[[cap]]
+id = "live.internals"
+area = "live"
+title = "Диагностика связи: файлы и ресурсы, которые модуль отдаёт игре, сверка ресурсов в памяти, чтение памяти"
+[cap.cli]
+use = ["live files", "live resources", "live resource", "live resource-check", "live peek"]
+[cap.mcp]
+never = "диагностика самого модуля связи для разработчиков тулкита; состояние игры агенту дают live_status и live_profile"
+[cap.editor]
+never = "то же: диагностика модуля, не работа с игрой"
+
+# --- Checks, saves, diagnostics ----------------------------------------------
+
+[[cap]]
+id = "check.validate"
+area = "diag"
+title = "Проверить правки перед записью в игру: ресурсы читаются, модели подходят классам, ссылки сходятся, сообщения, конфликты"
+[cap.mcp]
+use = ["validate"]
+[cap.editor]
+use = ["cmd.check_edits"]
+at = "панель Findings; та же проверка перед Apply to game (ошибки держат запись до «Apply anyway») и на шаге Check мастера Package a mod"
+input = "menu+form"
+preset = "SHELL=check (ошибки в правках — ненулевой код выхода)"
+[cap.cli]
+use = ["check-edits", "logic-check"]
+[cap.python]
+use = ["logic_check"]
+partial = "только проверка сообщений"
+
+[[cap]]
+id = "check.refs"
+area = "diag"
+title = "Проверить ссылки потоков игры: всё названное лежит в потоке или в загруженном раньше"
+[cap.mcp]
+use = ["check_refs"]
+[cap.cli]
+use = ["check-refs"]
+[cap.editor]
+at = "Content Browser → меню потока или папки → Check references; находки — в панели Findings"
+input = "menu"
+preset = "SHELL=refs=<поток или папка>"
+
+[[cap]]
+id = "check.integrity"
+area = "diag"
+title = "Сверить файлы игры с оригиналами: кто что менял"
+[cap.mcp]
+use = ["integrity"]
+[cap.editor]
+use = ["cmd.integrity"]
+at = "окно Mods → More → Check integrity"
+input = "menu"
+[cap.cli]
+use = ["integrity"]
+[cap.python]
+use = ["Game.integrity"]
+
+[[cap]]
+id = "check.container"
+area = "diag"
+title = "Проверить, что каждый поток и таблица содержимого папки игры читаются"
+[cap.cli]
+use = ["validate"]
+[cap.mcp]
+never = "проверка разбора контейнера — тест самого тулкита; целостность файлов игры даёт integrity"
+[cap.editor]
+never = "то же; в окне целостность проверяет «Check game files»"
+
+[[cap]]
+id = "save.read"
+area = "diag"
+title = "Заглянуть в файл сохранения: сводка, переменные, деньги, семьи, здания (только чтение)"
+[cap.mcp]
+use = ["save_info"]
+[cap.editor]
+use = ["cmd.save_file"]
+input = "menu+form"
+preset = "SAVE=<файл>"
+[cap.cli]
+use = ["save"]
+
+# --- Knowledge base and reference data ---------------------------------------
+
+[[cap]]
+id = "kb.read"
+area = "kb"
+title = "База знаний: поиск по заметкам и чтение заметки"
+[cap.mcp]
+use = ["kb_search", "kb_note"]
+at = "ресурсы doctor-toolkit://kb/…"
+[cap.editor]
+use = ["cmd.kb"]
+at = "вкладка Knowledge base: поиск, заметка, переход по ссылкам; ссылка «Knowledge base note» в Details объекта (класс) и ресурса (тип)"
+input = "menu+form"
+preset = "SHELL=kb=<слова через +> | kb=<заметка.md>"
+
+[[cap]]
+id = "kb.game-types"
+area = "kb"
+title = "Типизированные данные игры: списки значений, сведения о сообщении, смысл атрибутов класса"
+[cap.mcp]
+use = ["game_types"]
+[cap.editor]
+at = "вкладка Knowledge base → Data types: списки значений, сообщения по части имени, атрибуты класса; выбор значения из списка при правке атрибута"
+input = "form"
+preset = "SHELL=types=<список> | types=message:<текст> | types=class:<имя>"
+[cap.cli]
+use = ["game-types enums", "game-types message", "game-types attrs", "game-types stats"]
+[cap.python]
+use = ["enum_values", "message_info", "message_search", "attr_types"]
+
+[[cap]]
+id = "kb.docs"
+area = "kb"
+title = "Документы тулкита: форматы файлов, руководство"
+[cap.mcp]
+at = "ресурсы doctor-toolkit://docs/…"
+[cap.editor]
+use = ["cmd.guide"]
+input = "menu"
+
+# --- The editor window and housekeeping --------------------------------------
+
+[[cap]]
+id = "shell.window"
+area = "shell"
+title = "Окно редактора: панели, вкладки, раскладки, темы, масштаб, настройки, справка по клавишам"
+[cap.editor]
+use = [
+    "cmd.toggle_log", "cmd.welcome", "cmd.close_tab", "cmd.quit", "cmd.preferences", "cmd.theme_dark",
+    "cmd.theme_light", "cmd.theme_system", "cmd.zoom_in", "cmd.zoom_out", "cmd.zoom_reset",
+    "cmd.maximize", "cmd.fullscreen", "cmd.save_layout", "cmd.reset_layout", "cmd.shortcuts",
+    "cmd.show_log", "cmd.about", "cmd.tasks",
+]
+input = "menu"
+preset = "SHELL=prefs,about,shortcuts,welcome,log,layout=,drawer=,max,…; SHOT=<файл> — снимок окна и выход"
+[cap.mcp]
+never = "состояние окна человека — раскладка, тема, масштаб — к игре и правкам отношения не имеет"
+
+[[cap]]
+id = "shell.bridge"
+area = "shell"
+title = "Мост агента к открытому окну: что выделил человек, показать ему ресурс или объект"
+[cap.mcp]
+use = ["editor_selection", "editor_open", "editor_show_object"]
+[cap.editor]
+never = "для человека это и есть выделение и переход в окне; редактор только отвечает на мост (и спрашивает, прежде чем одолжить рабочее пространство)"
+
+[[cap]]
+id = "shell.mcp-server"
+area = "shell"
+title = "Запустить MCP-сервер для клиента ИИ"
+[cap.cli]
+use = ["mcp"]
+[cap.mcp]
+never = "сервер запускает клиент ИИ"
+[cap.editor]
+never = "сервер запускает клиент ИИ, а не окно; окно отвечает ему через мост"
+
+[[cap]]
+id = "shell.generated"
+area = "shell"
+title = "Служебное для разработчиков тулкита: генерация и проверка базы знаний, типов данных и этой таблицы"
+[cap.cli]
+use = ["kb-gen", "kb-lint", "types-gen", "parity-gen"]
+[cap.mcp]
+never = "команды работают с рабочей копией репозитория тулкита, а не с игрой"
+[cap.editor]
+never = "то же"
+
+[[cap]]
+id = "shell.selftest"
+area = "shell"
+title = "Служебные проверки: кодек анимаций туда-обратно, ответчик вместо игры, падение игры нарочно"
+[cap.cli]
+use = ["anim encode-test", "live fake", "crash-report test"]
+[cap.mcp]
+never = "проверки самого тулкита для его разработчиков"
+[cap.editor]
+never = "то же"

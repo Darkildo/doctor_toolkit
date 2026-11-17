@@ -81,6 +81,52 @@ pub struct SyncProgress<'a> {
     pub stream: &'a str,
 }
 
+/// The resource patch of a stream ([`doctor_toolkit_live::resources`]):
+/// the replaced and added resources that [`ustream::rebuild_with`] would
+/// put into the rebuilt file, and the data size of the stream the live
+/// module composes from the original and the patch. The patch is composed
+/// here once, so what the module cannot compose fails now. `base` names the
+/// file `original` was read from when that is not the stream of the game
+/// folder itself.
+pub fn resource_patch(
+    original: &[u8],
+    layout: &StreamLayout,
+    replacements: &[Replacement],
+    insertions: &[Insertion],
+    base: Option<&str>,
+) -> Result<(Vec<u8>, u64)> {
+    use doctor_toolkit_live::resources::{Header, Op, Patch, compose_files};
+    let header = |h: &ResourceHeader| Header {
+        mem_policy: h.mem_policy,
+        alignment: h.alignment,
+        type_id: h.type_id,
+        ids: h.ids,
+        data_size: h.data_size,
+    };
+    let mut entries: Vec<(Op, Header, &[u8])> =
+        Vec::with_capacity(replacements.len() + insertions.len());
+    for r in replacements {
+        let resource = layout.resources.get(r.index).ok_or_else(|| {
+            Error::InvalidArgument(format!("resource index {} out of range", r.index))
+        })?;
+        entries.push((Op::Replace, header(&resource.header), r.data));
+    }
+    for i in insertions {
+        let before = layout
+            .resources
+            .get(i.before)
+            .map(|r| (r.header.type_id, r.header.ids));
+        entries.push((Op::Add { before }, header(&i.header), i.data));
+    }
+    let patch = Patch::build(original.len() as u64, base, &entries).ok_or_else(|| {
+        Error::InvalidArgument("resource data larger than 4 GiB, or a path too long".into())
+    })?;
+    let (mut o, mut p) = (original, &patch[..]);
+    let (_, _, composed) = compose_files(&mut o, &mut p)
+        .map_err(|e| Error::InvalidArgument(format!("resource patch: {e}")))?;
+    Ok((patch, composed.data_size))
+}
+
 /// No new streams.
 fn no_streams() -> &'static BTreeMap<String, NewStream> {
     static EMPTY: BTreeMap<String, NewStream> = BTreeMap::new();
@@ -629,14 +675,49 @@ impl Deployment {
                     storage: *storage,
                 })
                 .collect();
-            let rebuilt =
-                ustream::rebuild_with(&original, &original_layout, &replacements, &insertions)?;
-            let data_size = StreamLayout::parse(&rebuilt)?.total_data_size();
-            (
-                rebuilt,
-                StreamAction::Rebuilt(wanted.len()),
-                Some(data_size),
-            )
+            if game.resource_patches() {
+                // A staged copy for the live module (stage 100): only the
+                // changed resources, the module composes the stream.
+                // The module composes from the stream the game has at this
+                // path; when the original is another file (the backup of a
+                // stream written into the game earlier), the patch names it.
+                let same_file = match (
+                    fs::canonicalize(&original_path),
+                    fs::canonicalize(&file.path),
+                ) {
+                    (Ok(a), Ok(b)) => a == b,
+                    _ => original_path == file.path,
+                };
+                let base = if same_file {
+                    None
+                } else {
+                    let path =
+                        fs::canonicalize(&original_path).unwrap_or_else(|_| original_path.clone());
+                    Some(path.to_str().map(str::to_owned).ok_or_else(|| {
+                        Error::InvalidArgument(format!(
+                            "{}: not a path the live module can be given",
+                            path.display()
+                        ))
+                    })?)
+                };
+                let (patch, data_size) = resource_patch(
+                    &original,
+                    &original_layout,
+                    &replacements,
+                    &insertions,
+                    base.as_deref(),
+                )?;
+                (patch, StreamAction::Rebuilt(wanted.len()), Some(data_size))
+            } else {
+                let rebuilt =
+                    ustream::rebuild_with(&original, &original_layout, &replacements, &insertions)?;
+                let data_size = StreamLayout::parse(&rebuilt)?.total_data_size();
+                (
+                    rebuilt,
+                    StreamAction::Rebuilt(wanted.len()),
+                    Some(data_size),
+                )
+            }
         };
         if let Some(size) = data_size {
             sizes.push((file.stream_name(), size));

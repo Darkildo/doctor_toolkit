@@ -92,6 +92,7 @@ doctor-toolkit kb-lint          # проверить всю базу
 - `resources/<тег>.md` — заметку на каждый тип ресурса из `type_tags.txt` и `resource_types.ru.toml`;
 - `messages/engine-messages.md` — полный список сообщений движка из `engine_messages.txt` с тем, кто их слушает и шлёт в SimGroup;
 - `messages/game-messages.md` — сводку каталога сообщений файлов игры (`game_messages.tsv`, `messages.toml`);
+- `exe/lua-functions.md` — все функции и таблицы, которые exe регистрирует для Lua, из `lua_api.toml` (адреса, подписи, описания, уверенность);
 - `enums/<ключ>.md` — заметку на каждое перечисление из `enums.toml`: значения, хэши, источник, атрибуты, где оно встречается (`attr_types.toml`);
 - `<папка>/index.md` — список заметок каждой папки.
 

@@ -1,10 +1,10 @@
 ---
 type: class
 status: partial
-confidence: data
+confidence: exe
 editions: ["1.0.789.0"]
-stages: [72, 73]
-sources: ["data/gf2/sim_classes.txt", "data/gf2/simgroup_schema.txt", "data/gf2/logic_schema.toml", "data/gf2/attr_types.toml"]
+stages: [72, 73, 79]
+sources: ["data/gf2/sim_classes.txt", "data/gf2/simgroup_schema.txt", "data/gf2/logic_schema.toml", "data/gf2/attr_types.toml", "data/gf2/class_behavior.toml"]
 tags: [simgroup, class, object]
 updated: 2026-11-16
 ---
@@ -16,7 +16,36 @@ updated: 2026-11-16
 - Класс объектов; категория в графе логики: `object`.
 - Пакеты нового объекта, базовый класс первым (в скобках — число атрибутов): [CAttributeHandler](CAttributeHandler.md) (1), [Base](Base.md) (1), [CSystemCommands](CSystemCommands.md) (5), [Entity](Entity.md) (5), [StandardDamageComponent](StandardDamageComponent.md) (8), [Destructible](Destructible.md) (21).
 - Пакет этого класса есть у объектов классов (5): [BuildingWindow](BuildingWindow.md), [CSADestructible](CSADestructible.md), [DamagedDestructible](DamagedDestructible.md), [RewardDestructible](RewardDestructible.md), [TrafficLight](TrafficLight.md).
-- Поведение класса (обработчики сообщений, обновление) здесь не описано: см. ручной раздел и карту [логики](../maps/logic.md).
+- Поведение прочитано в коде `godfather2.exe`: раздел «Поведение» ниже.
+
+## Поведение
+
+Разрушаемый предмет мира: по iMsgPostSpawnInitialize берёт компонент здоровья и встаёт на учёт как цель; при привязке к зданию (venue) ломается вместе с ним и получает урон при отключении электричества.
+
+- Код класса прочитан частично: что осталось — в списке ниже (`data/gf2/class_behavior.toml`; адреса — издание 1.0.789.0).
+- Код: конструктор `0x008BA220`, читатель атрибутов `0x008BB320`, обработчик сообщений `0x008BADD0`.
+- Обновление: не найдено: подписок на тики в конструкторе, читателе 0x008B9590 и обработчике нет; iMsgBroadcastDestructibleDanger сам себя перезаводит через очередь раз в 1 с
+- Когда срабатывает: Сообщений из атрибутов не шлёт. iMsgHandleStimulus (0x008B9170) и iMsgDamage самому себе (0x008B9050) — см. реакции.
+
+Реакции обработчика сообщений:
+
+| Сообщение | Что делает | Шлёт | Код |
+|---|---|---|---|
+| `iMsgPostSpawnInitialize` | Тип цели (атрибут 1) 0 — ставит бит 15 флагов; иначе 0x008B8F10(тип, дальность) ставит объект на учёт целей (бит 3). Берёт компонент здоровья (+0x210) и вешает свои обратные вызовы. При бите 24 флагов (атрибут 7, бит 6) и venue ≠ 0: если здание уже взорвано (бит 22 поля +0x34 здания) — сразу ломается (0x008B9250); подписывается на iMsgBuildingLoaded, iMsgBuildingElectricityChange, iMsgBuildingExploded. При бите 19 (атрибут 7, бит 3) подписывается на iMsgBroadcastDestructibleDanger. Отписывается от iMsgPostSpawnInitialize. | — | `0x008BADD0` |
+| `iMsgBuildingExploded` | Для здания своего venue при бите 24: 0x008B9250 — здоровье в 0, состояние «разрушен» (метод +0x154(0), компонент +0x130 метод +0x2C), снятие с учёта целей. | — | `0x008BADD0` |
+| `iMsgBuildingLoaded` | Для здания своего venue при бите 24, если здание взорвано (бит 22): 0x008B9250, как выше. | — | `0x008BADD0` |
+| `iMsgBuildingElectricityChange` | Для здания своего venue при бите 24, когда байт +8 данных равен 0: 0x008B9050(0) шлёт самому себе iMsgDamage (тип 0xB, величина — метод +0xC0 объекта) через 0x00408BB0. | `iMsgDamage` | `0x008BADD0` |
+| `iMsgBroadcastDestructibleDanger` | При битах 19 и 21 и без бита 22: 0x008B9170 рассылает iMsgHandleStimulus (стимул 0x12763BCA в точке объекта, виновник — из компонента здоровья) и ставит это же сообщение себе в очередь через 1.0 с (флаг 4). | `iMsgHandleStimulus`, `iMsgBroadcastDestructibleDanger` | `0x008BADD0` |
+| `iMsgFadeOutDestructible` | 0x004704D0(2000, 1, 0) — затухание объекта; ставит бит 22 флагов. | — | `0x008BADD0` |
+| `iMsgNotifyDeleteEntity` | До базового обработчика: без бита 8 флагов — компонент +0x130 метод +0x48(0x2C2EAE66, 0), с битом — метод +0x2C. Потом базовый обработчик 0x0046EFC0 (он зовётся для любого сообщения). | — | `0x008BADD0` |
+| `iMsgHostMigrationEnd` | Сетевая игра: если доля здоровья меньше 1, заново выставляет здоровье и метод +0x154. | — | `0x008BADD0` |
+
+Что не выяснено:
+
+- Урон и смерть идут через базовый обработчик Entity 0x0046EFC0 (iMsgDamage) и виртуальные методы (+0x154, компонент здоровья +0x210); они не прочитаны.
+- Использование полей атрибутов 2, 6, 8, 9, 10-20 не читалось: записано только, куда читатель их кладёт.
+- Внутренние биты флагов +0x18C, в которые читатель раскладывает биты атрибута 7 (10, 14, 18, 19, 20, 23, 24, 17, 25), прочитаны только для 19 и 24.
+- Методы таблицы 0x008B8680, 0x008B9A40, 0x008B9A50, 0x008B8570, 0x008BBA90, 0x008B88C0, 0x008B8650, 0x008B8270 не читались.
 
 ## Атрибуты
 
@@ -24,24 +53,55 @@ updated: 2026-11-16
 
 | № | Вид | Роль | Имя | Смысл | Уверенность | Значений |
 |---:|---|---|---|---|---|---:|
-| 0 | int | — | `CMD_SetDestroyOnDeath` | `Bool` | имя: data, смысл: guess | 2355 |
-| 1 | int | — | `CMD_SetTargetType` | — | имя: data | 737 |
-| 2 | float | — | `CMD_SetTargetingRange` | — | имя: data | 3198 |
-| 3 | int | — | `CMD_SetFadeOnDeath` | `Bool` | имя: data, смысл: guess | 2055 |
-| 4 | int | — | `CMD_SetVenueID` | [`Enum<venue>`](../enums/venue.md) | имя: data, смысл: data | 616 |
-| 5 | int | — | `CMD_SetDestroyMetamodelOnDeath` | `Bool` | имя: data, смысл: guess | 216 |
-| 6 | float | — | — | — | — | 3198 |
-| 7 | int | — | `CMD_SetThrowableFlags` | — | имя: data | 1117 |
-| 10 | string | — | `CMD_SetBounceImpactType` | — | имя: data | 1086 |
-| 11 | guid | ссылка на ресурс | `CMD_SetBounceVFXAsset` | [`Res<vfx>`](../resources/vfx.md) | роль: data, имя: data, смысл: data | 991 |
-| 12 | float | — | — | — | — | 3198 |
-| 13 | float | — | `CMD_SetImpactDamage` | — | имя: data | 3198 |
-| 14 | float | — | — | — | — | 3198 |
-| 15 | float | — | `CMD_SetAngularVelocityMult` | — | имя: data | 3198 |
-| 16 | float | — | `CMD_SetTranslationX` | — | имя: data | 113 |
-| 17 | float | — | `CMD_SetTranslationY` | — | имя: data | 73 |
-| 18 | float | — | `CMD_SetTranslationZ` | — | имя: data | 113 |
-| 19 | vec3 | — | `CMD_SetTargetingOffset` | — | имя: data | 454 |
+| 0 | int | параметр | `destroy_on_death` | `Bool` | имя: exe, смысл: exe | 2355 |
+| 1 | int | параметр | `target_type` | — | имя: exe | 737 |
+| 2 | float | параметр | `targeting_range` | — | имя: exe | 3198 |
+| 3 | int | параметр | `fade_on_death` | `Bool` | имя: exe, смысл: exe | 2055 |
+| 4 | int | параметр | `venue_id` | [`Enum<venue>`](../enums/venue.md) | имя: exe, смысл: data | 616 |
+| 5 | int | параметр | `destroy_metamodel_on_death` | `Bool` | имя: exe, смысл: exe | 216 |
+| 6 | float | параметр | `value_190` | — | имя: guess | 3198 |
+| 7 | int | параметр | `throwable_flags` | — | имя: exe | 1117 |
+| 8 | — | параметр | `guid_1b4` | — | имя: guess | — |
+| 9 | — | параметр | `guid_1c4` | — | имя: guess | — |
+| 10 | string | параметр | `bounce_impact_type` | — | имя: exe | 1086 |
+| 11 | guid | ссылка на ресурс | `bounce_vfx_asset` | [`Res<vfx>`](../resources/vfx.md) | роль: data, имя: exe, смысл: data | 991 |
+| 12 | float | параметр | `value_1ec` | — | имя: guess | 3198 |
+| 13 | float | параметр | `impact_damage` | — | имя: guess | 3198 |
+| 14 | float | параметр | `value_1f0` | — | имя: guess | 3198 |
+| 15 | float | параметр | `angular_velocity_mult` | — | имя: guess | 3198 |
+| 16 | float | параметр | `translation_x` | — | имя: exe | 113 |
+| 17 | float | параметр | `translation_y` | — | имя: exe | 73 |
+| 18 | float | параметр | `translation_z` | — | имя: exe | 113 |
+| 19 | vec3 | параметр | `targeting_offset` | — | имя: guess | 454 |
+| 20 | — | параметр | `value_208` | — | имя: guess | — |
+
+## Атрибуты по коду
+
+Как значение использует код читателя класса (`data/gf2/class_behavior.toml`): вид — `int`, `float`, `bool` (важно только «ноль или нет»), `flags` (проверяются отдельные биты), `enum`, `hash`, `string`, `guid`, `vec3`, `matrix`, `msg_in` (сообщение, которое объект слушает), `msg_out` (сообщение, которое он шлёт); поле — куда читатель кладёт значение в объекте. Атрибут, которого в пакете объекта нет, читатель получает как 0 или пустую строку. Уверенность `guess` — имя условное.
+
+| № | Имя | Вид по коду | Поле | Что делает | Код | Уверенность |
+|---:|---|---|---|---|---|---|
+| 0 | `destroy_on_death` | bool | `+0x18C` | Не ноль — бит 0 флагов +0x18C, ноль — бит снят. Конструктор бит ставит (по умолчанию да). | `0x008B9590` | exe |
+| 1 | `target_type` | int | `+0x214` | 0 — не цель (бит 15 флагов); иначе передаётся в учёт целей 0x008B8F10 как байт типа. В данных только 1. | `0x008BADD0` | exe |
+| 2 | `targeting_range` | float | `+0x218` | Дальность цели: 0x008B8F10 возводит в квадрат, если ≥ 0. | `0x008B8F10` | exe |
+| 3 | `fade_on_death` | bool | `+0x18C` | Не ноль — бит 1 флагов +0x18C. | `0x008B9590` | exe |
+| 4 | `venue_id` | int | `+0x194` | Номер здания (0x006B0EE0); с ним сравнивается здание в сообщениях iMsgBuilding*. Работает только при бите 6 атрибута 7. | `0x008BADD0` | exe |
+| 5 | `destroy_metamodel_on_death` | bool | `+0x18C` | Не ноль — бит 4 флагов +0x18C. | `0x008B9590` | exe |
+| 6 | `value_190` | float | `+0x190` | Хранится как есть; использование не найдено. Конструктор кладёт 1.0, в данных всегда 1.0. | `0x008B9590` | guess |
+| 7 | `throwable_flags` | flags | `+0x18C` | Читатель раскладывает биты по флагам +0x18C: бит 0 → 10, 1 → 14, 2 → 18, 3 → 19 (подписка на iMsgBroadcastDestructibleDanger), 4 → 20, 5 → 23, 6 → 24 (привязка к зданию venue), 7 → 17, 8 → 25. Смысл остальных не прочитан. | `0x008B9590` | exe |
+| 8 | `guid_1b4` | guid | `+0x1B4` | 16 байт; использование не найдено. | `0x008B9590` | guess |
+| 9 | `guid_1c4` | guid | `+0x1C4` | 16 байт; использование не найдено. | `0x008B9590` | guess |
+| 10 | `bounce_impact_type` | string | `+0x280` | Строка-имя: 0x004353D0 ищет по ней запись, указатель кладётся в +0x280; если найдена — байт +0x21F = 1. | `0x008B9590` | exe |
+| 11 | `bounce_vfx_asset` | guid | `+0x1D8` | 16 байт; не ноль — байты +0x21C и +0x21F = 1. Проигрывание не читалось. | `0x008B9590` | exe |
+| 12 | `value_1ec` | float | `+0x1EC` | Хранится как есть; использование не найдено. В данных всегда 10.0. | `0x008B9590` | guess |
+| 13 | `impact_damage` | float | `+0x1F4` | Хранится как есть; использование не читалось (имя по данным). | `0x008B9590` | guess |
+| 14 | `value_1f0` | float | `+0x1F0` | Хранится как есть; использование не найдено. В данных всегда 20.0. | `0x008B9590` | guess |
+| 15 | `angular_velocity_mult` | float | `+0x1F8` | Хранится как есть; использование не читалось (имя по данным). | `0x008B9590` | guess |
+| 16 | `translation_x` | float | `+0x1FC` | Смещение по X: 0x008B9B90 прибавляет вектор +0x1FC..+0x204, повёрнутый матрицей, к положению при привязке к родителю. | `0x008B9B90` | exe |
+| 17 | `translation_y` | float | `+0x200` | Смещение по Y, см. атрибут 16. | `0x008B9B90` | exe |
+| 18 | `translation_z` | float | `+0x204` | Смещение по Z, см. атрибут 16. | `0x008B9B90` | exe |
+| 19 | `targeting_offset` | vec3 | `+0x284` | Три float подряд (12 байт, читает 0x0043ABE0); использование не читалось (имя по данным). | `0x008B9590` | guess |
+| 20 | `value_208` | int | `+0x208` | 32 бита как есть; использование не найдено, в данных не встречается. | `0x008B9590` | guess |
 
 ## Подробнее
 

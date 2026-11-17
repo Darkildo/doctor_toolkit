@@ -292,6 +292,8 @@ pub struct Content {
     made_for: Option<MadeFor>,
     /// The game files changed: the tree, marks and sources are made again.
     stale: bool,
+    /// [`Self::restaged`] was called since the last sync.
+    restaged: bool,
     preset: Option<Preset>,
     sound: Option<Receiver<(ResourceKey, Result<Pcm, String>)>>,
     /// The asset being dragged out of a browser.
@@ -312,6 +314,7 @@ impl Content {
             revision: 0,
             made_for: None,
             stale: false,
+            restaged: false,
             preset: Preset::from_env(),
             sound: None,
             dragging: None,
@@ -362,7 +365,9 @@ impl Content {
             return;
         }
         self.stale = false;
-        let new_game = self.made_for.is_none_or(|(g, _)| g != made_for.0);
+        // The same game with its new streams staged again is not a new game.
+        let restaged = std::mem::take(&mut self.restaged);
+        let new_game = self.made_for.is_none_or(|(g, _)| g != made_for.0) && !restaged;
         self.made_for = Some(made_for);
         self.tree = Arc::new(FolderTree::of_game(game, ws));
         self.marks = Arc::new(Marks::of(ws));
@@ -379,6 +384,13 @@ impl Content {
                 *state = fresh;
             }
         }
+    }
+
+    /// The new streams of the workspace were staged again: the next game is
+    /// the same one, the browsers stay where they are.
+    pub fn restaged(&mut self) {
+        self.restaged = true;
+        self.files_changed();
     }
 
     /// The game files changed: previews are made again.
@@ -507,9 +519,18 @@ enum Act {
     Details(Location),
     Open(Asset),
     OpenStream(usize),
+    /// Check the references of the streams at this path (a stream or a
+    /// folder; stage 103).
+    CheckRefs(String),
     Reveal(Asset),
     CopyKey(String),
     Clone(Asset),
+    /// "Clone to another stream…": the clone form for this asset.
+    CloneTo(Asset),
+    /// A form of the zone window for this stream.
+    ZoneForm(super::zone::Form, String),
+    /// "Remove the new stream".
+    RemoveStream(String),
     Export(Location),
     Play(Asset),
     /// A cut-scene shot: its cut-scene in the level view (stage 62).
@@ -653,6 +674,9 @@ impl BrowserApp {
                     None => self.open_key(&asset.key),
                 },
                 Act::OpenStream(i) => self.open_file(FileSel::Stream(i), false),
+                Act::CheckRefs(path) => {
+                    self.check_refs_at(&path);
+                }
                 Act::Reveal(asset) => match asset.at {
                     Some(loc) => {
                         self.open_location(loc);
@@ -665,6 +689,21 @@ impl BrowserApp {
                     ctx.copy_text(text);
                 }
                 Act::Clone(asset) => self.content_clone(&asset),
+                Act::CloneTo(asset) => {
+                    if let Some(at) = asset.at {
+                        self.open_clone_form(&asset.key.stream, at.resource);
+                    }
+                }
+                Act::ZoneForm(form, stream) => self.open_zone_form_for(form, &stream),
+                Act::RemoveStream(stream) => {
+                    let done = self.zone_action(super::zone::ZoneAction::RemoveStream(stream));
+                    if let Err(error) = done {
+                        self.notify(
+                            super::Level::Error,
+                            trf("zone.failed", &[("error", &error)]),
+                        );
+                    }
+                }
                 Act::Export(loc) => self.nav.export(game, vec![loc]),
                 Act::OpenInLevel(loc) => self.cine_open = Some(loc),
                 Act::Play(asset) => self.content.play(game.clone(), &asset),
@@ -692,50 +731,29 @@ impl BrowserApp {
     /// Clones an asset (with its companions) into its stream in the
     /// workspace: one undoable operation.
     fn content_clone(&mut self, asset: &Asset) {
-        use doctor_toolkit::create::{self, CloneOptions};
-        use doctor_toolkit::workspace::{NewResourceEdit, StorageChoice};
+        use doctor_toolkit::zone_ops::{self, CloneParams};
         let (Some(game), Some(index), Some(loc)) =
             (self.game.clone(), self.index.clone(), asset.at)
         else {
             return;
         };
         let result = (|| -> Result<(String, usize), String> {
-            let file = game.open_stream(loc.stream).map_err(|e| e.to_string())?;
             let name = game.streams()[loc.stream].stream_name();
             let ws = self.workspace_mut()?;
-            let mut used = ws.used_ids(&index);
-            let options = CloneOptions {
-                seed: name.clone(),
-                rewrite_references: true,
-                storage: None,
-            };
-            let (clones, _) = create::clone_resources(&file, &[loc.resource], &mut used, &options)
-                .map_err(|e| e.to_string())?;
-            let last = clones.iter().filter_map(|c| c.source).max().unwrap_or(0);
-            let before = file
-                .layout()
-                .resources
-                .get(last + 1)
-                .map(|r| ResourceKey::new(&name, &r.header));
-            let additions: Vec<NewResourceEdit> = clones
-                .iter()
-                .map(|c| NewResourceEdit {
+            let done = zone_ops::clone_resources(
+                &game,
+                &index,
+                ws,
+                &CloneParams {
                     stream: name.clone(),
-                    header: c.header,
-                    data: c.data.clone(),
-                    storage: match c.storage {
-                        doctor_toolkit::container::ustream::Storage::Raw => StorageChoice::Raw,
-                        doctor_toolkit::container::ustream::Storage::RefPack => {
-                            StorageChoice::Refpack
-                        }
-                    },
-                    before: before.clone(),
-                })
-                .collect();
+                    indices: vec![loc.resource],
+                    seed: Some(name),
+                    ..Default::default()
+                },
+            )
+            .map_err(|e| e.to_string())?;
             let label = trf("content.clone_label", &[("name", &asset.name)]);
-            ws.add_resources(&game, &label, &additions)
-                .map_err(|e| e.to_string())?;
-            Ok((label, additions.len()))
+            Ok((label, done.clones.len()))
         })();
         match result {
             Ok((label, count)) => {
@@ -1256,7 +1274,7 @@ fn node(
         }
         for stream in &folder.streams {
             let on = matches!(place, Place::Stream(p) if *p == stream.path);
-            let text = if stream.game.is_none() {
+            let text = if stream.new {
                 RichText::new(format!("{}  ({})", stream.name, tr("content.badge_new"))).color(NEW)
             } else {
                 RichText::new(&stream.name)
@@ -1406,11 +1424,7 @@ fn list(
                         tr("content.stream").to_owned(),
                         s.path.clone(),
                         size_text(s.size),
-                        if s.game.is_none() {
-                            Mark::New
-                        } else {
-                            Mark::None
-                        },
+                        if s.new { Mark::New } else { Mark::None },
                         theme::ACCENT,
                     )
                 }
@@ -1594,11 +1608,7 @@ fn tile_ui(
                 s.name.clone(),
                 size_text(s.size),
                 theme::ACCENT,
-                if s.game.is_none() {
-                    Mark::New
-                } else {
-                    Mark::None
-                },
+                if s.new { Mark::New } else { Mark::None },
             )
         }
         Item::Asset(a) => {
@@ -1766,6 +1776,9 @@ fn interact(response: &egui::Response, item: &Item, acts: &mut Vec<Act>) {
                 if ui.button(tr("content.open_folder")).clicked() {
                     acts.push(Act::Go(Place::Folder(f.path.clone())));
                 }
+                if ui.button(tr("content.check_refs")).clicked() {
+                    acts.push(Act::CheckRefs(f.path.clone()));
+                }
                 if ui.button(tr("content.copy_path")).clicked() {
                     acts.push(Act::CopyKey(f.path.clone()));
                 }
@@ -1790,8 +1803,31 @@ fn interact(response: &egui::Response, item: &Item, acts: &mut Vec<Act>) {
                 {
                     acts.push(Act::OpenStream(i));
                 }
+                if s.game.is_some() && ui.button(tr("content.check_refs")).clicked() {
+                    acts.push(Act::CheckRefs(s.path.clone()));
+                }
                 if ui.button(tr("content.copy_path")).clicked() {
                     acts.push(Act::CopyKey(s.path.clone()));
+                }
+                ui.separator();
+                use super::zone::Form;
+                for (form, key) in [
+                    (Form::Group, "content.new_simgroup_here"),
+                    (Form::Resource, "content.add_resource_here"),
+                    (Form::Clone, "content.clone_into_here"),
+                    (Form::Cell, "content.zone_cell_here"),
+                ] {
+                    if ui.button(tr(key)).clicked() {
+                        acts.push(Act::ZoneForm(form, s.path.clone()));
+                    }
+                }
+                if s.new
+                    && ui
+                        .button(tr("content.remove_stream"))
+                        .on_hover_text(tr("zone.remove_stream_hint"))
+                        .clicked()
+                {
+                    acts.push(Act::RemoveStream(s.path.clone()));
                 }
             });
         }
@@ -1846,6 +1882,13 @@ fn interact(response: &egui::Response, item: &Item, acts: &mut Vec<Act>) {
                     .clicked()
                 {
                     acts.push(Act::Clone((*a).clone()));
+                }
+                if ui
+                    .add_enabled(a.at.is_some(), egui::Button::new(tr("content.clone_to")))
+                    .on_hover_text(tr("content.clone_to_hint"))
+                    .clicked()
+                {
+                    acts.push(Act::CloneTo((*a).clone()));
                 }
                 if let Some(at) = a.at
                     && ui.button(tr("content.export")).clicked()

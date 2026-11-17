@@ -495,3 +495,181 @@ fn traced_nodes_print_when_they_run() {
     assert!(g.to_json().contains("trace_nodes"));
     assert!(!ScriptGraph::new("x").to_json().contains("trace_nodes"));
 }
+
+/// Stage 74: the nodes follow what the game's functions really do.
+#[test]
+fn groups_take_objects_by_guid_and_skip_empty_references() {
+    // `Base` of the game reads four bytes of a GUID (`sim::guid_the_game_reads`):
+    // only an object with such a GUID can be found.
+    const GUID: &str = "{00000011-0022-0000-3300-000044000000}";
+    let mut g = ScriptGraph::new("groups");
+    let start = g.add(node("event.load"));
+    let reg = g.add(node("group.register").input("name", "doctor_group"));
+    let add = g.add(node("group.add").input("member", GUID));
+    // No such object: in the game AddMember would crash on the empty reference.
+    let missing =
+        g.add(node("group.add").input("member", "{00000000-0000-0000-0000-000000000001}"));
+    let obj = g.add(node("object.from_guid").input("guid", GUID.to_lowercase()));
+    let has = g.add(node("group.contains"));
+    let count = g.add(node("group.count"));
+    let enough = g.add(node("compare.eq").input("b", 1));
+    let both = g.add(node("logic.and"));
+    let br = g.add(node("flow.branch"));
+    let yes = g.add(node("action.send_message").input("message", "one_member"));
+    let clear = g.add(node("group.clear"));
+    let count2 = g.add(node("group.count"));
+    let text = g.add(node("string.from"));
+    let after = g.add(node("action.send_message"));
+    for n in [add, missing, has, count, clear, count2] {
+        g.connect((reg, "group"), (n, "group"));
+    }
+    g.connect((start, "then"), (reg, "exec"));
+    g.connect((reg, "then"), (add, "exec"));
+    g.connect((add, "then"), (missing, "exec"));
+    g.connect((missing, "then"), (br, "exec"));
+    g.connect((obj, "object"), (has, "member"));
+    g.connect((count, "result"), (enough, "a"));
+    g.connect((has, "result"), (both, "a"));
+    g.connect((enough, "result"), (both, "b"));
+    g.connect((both, "result"), (br, "condition"));
+    g.connect((br, "true"), (yes, "exec"));
+    g.connect((yes, "then"), (clear, "exec"));
+    g.connect((clear, "then"), (after, "exec"));
+    g.connect((count2, "result"), (text, "value"));
+    g.connect((text, "result"), (after, "message"));
+    let c = compile(&g);
+    assert!(!c.has_errors(), "{:#?}", c.diagnostics);
+    let mut sim = Sim::new();
+    assert!(sim.add_object(GUID));
+    assert_eq!(
+        super::sim::guid_the_game_reads("{32C8D726-FA3D-AA11-464F-574C45523130}"),
+        "{00000026-003D-0000-4600-000045000000}"
+    );
+    sim.load(c.chunk.as_ref().unwrap()).unwrap();
+    sim.start("groups.lua").unwrap();
+    sim.advance(0.001).unwrap();
+    assert_eq!(sim.sent(), ["one_member", "0"], "{:?}", sim.take_log());
+}
+
+#[test]
+fn streams_get_their_extension_a_stop_message_and_a_check_of_the_handle() {
+    let mut g = ScriptGraph::new("streams");
+    let start = g.add(node("event.load"));
+    let play = g.add(node("audio.play_stream").input("stream", "accomplishment_01"));
+    let ok = g.add(node("audio.handle_valid"));
+    let br = g.add(node("flow.branch"));
+    let stop_msg = g.add(node("audio.stream_stop_message").input("message", "music_done"));
+    let prime = g.add(node("audio.prime_stream").input("stream", "next.STX"));
+    let go = g.add(node("audio.start_stream"));
+    g.connect((start, "then"), (play, "exec"));
+    g.connect((play, "then"), (br, "exec"));
+    g.connect((play, "handle"), (ok, "handle"));
+    g.connect((ok, "result"), (br, "condition"));
+    g.connect((br, "true"), (stop_msg, "exec"));
+    g.connect((play, "handle"), (stop_msg, "handle"));
+    g.connect((stop_msg, "then"), (prime, "exec"));
+    g.connect((prime, "then"), (go, "exec"));
+    g.connect((prime, "handle"), (go, "handle"));
+    let sim = run(&g);
+    let calls: Vec<_> = sim
+        .take_log()
+        .into_iter()
+        .filter_map(|e| match e {
+            SimEvent::Call { function, args, .. } => Some(format!(
+                "{function}({})",
+                args.first().cloned().unwrap_or_default()
+            )),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(calls[0], "PlayEarsAudioStream(accomplishment_01.stx)");
+    assert!(
+        calls[1].starts_with("SetEarsAudioStreamStopMessage("),
+        "{calls:?}"
+    );
+    assert_eq!(calls[2], "PrimeEarsAudioStream(next.STX)");
+    assert!(calls[3].starts_with("PlayEarsAudioStream("), "{calls:?}");
+}
+
+#[test]
+fn message_data_timers_and_the_mock_follow_the_game() {
+    // A number sent with a message is read back from the data of On message.
+    let mut g = ScriptGraph::new("data");
+    let start = g.add(node("event.load"));
+    let send = g.add(
+        node("action.send_message_data")
+            .input("message", "doctor_number")
+            .input("type", "number")
+            .input("data", 5),
+    );
+    let on = g.add(node("event.message").param("message", "doctor_number"));
+    let num = g.add(node("message.data_number"));
+    let text = g.add(node("string.from"));
+    let echo = g.add(node("action.send_message"));
+    let car = g.add(node("game.in_vehicle"));
+    let br = g.add(node("flow.branch"));
+    let foot = g.add(node("action.send_message").input("message", "on_foot"));
+    g.connect((start, "then"), (send, "exec"));
+    g.connect((on, "data"), (num, "data"));
+    g.connect((num, "value"), (text, "value"));
+    g.connect((text, "result"), (echo, "message"));
+    g.connect((on, "then"), (echo, "exec"));
+    g.connect((echo, "then"), (br, "exec"));
+    g.connect((car, "value"), (br, "condition"));
+    g.connect((br, "false"), (foot, "exec"));
+    let sim = run(&g);
+    assert_eq!(sim.sent(), ["doctor_number", "5", "on_foot"]);
+
+    // The mock answers as the game does (docs/analysis/lua-api.md).
+    let mut sim = Sim::new();
+    sim.answer(
+        "iMsgLuaGetPlayerVenue",
+        vec![crate::resource::lua::vm::Value::str("4")],
+    );
+    let chunk = crate::resource::lua::compile_for_game(
+        br#"
+        fired = ""
+        function cb(handle) fired = fired .. handle .. ";" end
+        once = CreateTimer("cb", true)
+        again = CreateTimer("cb", false)
+        missing = CreateTimer("no_such_function", false)
+        bad = CreateTimer("cb")
+        left = StartTimer(once, 500)
+        StartTimer(again, 700)
+        StartTimer(missing, 300)
+        last = SendMessage("m", "t", 7)
+        venue = SendMessageEx("iMsgLuaGetPlayerVenue")
+        none = SendMessageEx("other")
+        empty = Base("{00000000-0000-0000-0000-000000000001}")
+        ok, crash = pcall(function() return GroupManager:RegisterGroup("g"):AddMember(empty) end)
+        "#,
+        b"mock.lua",
+    )
+    .unwrap();
+    sim.load(&chunk).unwrap();
+    sim.advance(2.0).unwrap();
+    let mut get = |name: &str| sim.vm_global_text(name);
+    assert_eq!(get("fired"), "0;1;1;");
+    assert_eq!(get("bad"), "-1");
+    assert_eq!(get("left"), "500");
+    assert_eq!(get("last"), "7");
+    assert_eq!(get("venue"), "4");
+    assert_eq!(get("none"), "nil");
+    assert_eq!(get("empty"), "nil");
+    let crash = get("crash");
+    assert!(crash.contains("0x00469F85"), "{crash}");
+}
+
+#[test]
+fn the_mock_has_every_function_of_the_game() {
+    let sim = Sim::new();
+    let api = crate::game_types::lua_api::lua_api();
+    for f in &api.functions {
+        if f.is_game_global() {
+            assert!(sim.has_global(&f.name), "the mock lacks {}", f.name);
+        }
+    }
+    for method in ["RegisterGroup", "FindGroup", "RemoveFromAllGroups"] {
+        assert!(sim.has_table_field("GroupManager", method), "{method}");
+    }
+}

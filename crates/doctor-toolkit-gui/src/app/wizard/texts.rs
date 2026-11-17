@@ -37,6 +37,9 @@ pub(crate) struct Texts {
     pub match_case: bool,
     /// Show the changed strings only.
     pub changed_only: bool,
+    /// Record gives the changed entries their text in every table and
+    /// language of the game that has them (stage 103).
+    pub everywhere: bool,
     /// The table as CSV, open in a spreadsheet.
     pub csv: Option<Watched>,
     pub message: Option<String>,
@@ -75,6 +78,7 @@ impl Texts {
             replace: String::new(),
             match_case: false,
             changed_only: false,
+            everywhere: false,
             csv: None,
             message: None,
         };
@@ -99,6 +103,7 @@ impl Texts {
             "find" => self.find = value.to_owned(),
             "replace" => self.replace = value.to_owned(),
             "changed" => self.changed_only = true,
+            "everywhere" => self.everywhere = true,
             "replace_all" => {
                 self.replace_all();
             }
@@ -288,6 +293,8 @@ impl Texts {
             ui.label(tr("wizard.texts.search"));
             ui.text_edit_singleline(&mut self.search);
             ui.checkbox(&mut self.changed_only, tr("wizard.texts.changed_only"));
+            ui.checkbox(&mut self.everywhere, tr("text.save_everywhere"))
+                .on_hover_text(tr("text.save_everywhere_hint"));
             ui.label(
                 RichText::new(trf(
                     "wizard.texts.count",
@@ -468,6 +475,30 @@ impl Task for Texts {
         };
         let game = app.game.clone().ok_or(tr("edits.no_game"))?;
         let count = self.changes().len();
+        if self.everywhere {
+            // Every table of the game that has the entries, this one among
+            // them: one operation of the library.
+            let index = app.index.clone().ok_or(tr("edits.no_game"))?;
+            let mut edits: Vec<doctor_toolkit::text::StringEdit> = Vec::new();
+            for (hash, _, text) in self.changes() {
+                if !edits.iter().any(|e| e.hash == hash) {
+                    edits.push(doctor_toolkit::text::StringEdit {
+                        hash,
+                        text,
+                        language: None,
+                    });
+                }
+            }
+            let ws = app.workspace_mut()?;
+            let tables = doctor_toolkit::text::all_tables(&index);
+            let plan = doctor_toolkit::text::plan_edits(&game, ws, &tables, &edits)
+                .map_err(|e| e.to_string())?;
+            plan.commit(ws, &game).map_err(|e| e.to_string())?;
+            return Ok(trf(
+                "wizard.texts.label_everywhere",
+                &[("strings", &edits.len()), ("tables", &plan.tables())],
+            ));
+        }
         app.workspace_mut()?
             .set_string_table(&game, loc.stream, loc.resource, table)
             .map_err(|e| e.to_string())?;

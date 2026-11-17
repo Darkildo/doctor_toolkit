@@ -33,4 +33,5 @@ updated: 2026-11-16
 - Новая строка и новое событие проверены в игре — [опыт](../experiments/new-voice-line.md); какой набор говорит — [вопрос](../questions/dialogue-which-chv-speaks.md).
 
 Источники: docs/formats/dialogues.md §3.1, [адреса](../exe/speech.md).
+- После загрузки данные в памяти отличаются от потока (стенд этапа 100, первые 4 КБ) — [образ ресурса после загрузки](../engine/resource-images.md).
 <!-- kb:manual:end -->

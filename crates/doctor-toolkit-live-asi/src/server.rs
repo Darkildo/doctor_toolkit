@@ -152,6 +152,10 @@ fn answer(request: Request, config: &Config, version: u16) -> Response {
         Request::SetCamera { camera } => return crate::debug::set_camera(camera),
         // The files the game opens (stage 46): counters of the hooks.
         Request::Files => return Response::Files(crate::files::state()),
+        // The streams composed from resource patches (stage 100), and a
+        // record of the game's table of resources: checked reads.
+        Request::Resources => return Response::Resources(crate::resources::state()),
+        Request::Resource { ids } => return Response::Resource(crate::resources::loaded(ids)),
         // The journal of edits of the world (stage 47) is the module's own.
         Request::ObjectEdits => return crate::edit::edits(),
         Request::ObjectForget { guid } => return crate::edit::forget(guid),

@@ -1,6 +1,8 @@
 //! A miniature game for the tests of programs built on the library (feature
 //! `testing`): a few streams with a texture, a material, a mesh that uses
-//! them, a SimGroup, a parts database, a rig and string tables.
+//! them, a SimGroup, a parts database, a rig and string tables; on demand a
+//! level with a world grid and a zone that places a prop with collision
+//! ([`write_town`]).
 
 use std::fs;
 use std::path::Path;
@@ -419,6 +421,33 @@ pub fn write_game(root: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Gives the miniature game of [`write_game`] its list of languages: an
+/// `lhr` resource in [`TEXT`] that names that stream as the table of `en`,
+/// so that [`crate::text::language_tables`] finds one table. (Call it
+/// before [`write_extra_streams`], which lists the streams again.)
+pub fn write_languages(root: &Path) -> Result<()> {
+    let mut text = StreamWriter::new(&FileHeader::GF2_PC, Endian::Little);
+    text.push_resource(
+        &header(b"lh2", [2; 4]),
+        &sample_table(["Yes", "No"]).to_bytes()?,
+        Storage::Raw,
+    )?;
+    let languages = format!("1\r\nen\r\n{}\r\n0\r\n", TEXT.replace('/', "\\"));
+    text.push_resource(&header(b"lhr", [3; 4]), languages.as_bytes(), Storage::Raw)?;
+    let text = text.finish();
+    let path = root.join(format!("{TEXT}.str"));
+    fs::write(&path, &text).map_err(|e| Error::io(&path, e))?;
+    let size = |rel: &str| -> Result<u64> {
+        let path = root.join(format!("{rel}.str"));
+        let data = fs::read(&path).map_err(|e| Error::io(&path, e))?;
+        Ok(StreamLayout::parse(&data)?.total_data_size())
+    };
+    let table = Toc::parse(&toc_bytes(&[(LEVEL, size(LEVEL)?), (TEXT, size(TEXT)?)]))?;
+    let path = root.join("gf2/level.toc");
+    fs::write(&path, table.to_bytes()?).map_err(|e| Error::io(&path, e))?;
+    Ok(())
+}
+
 /// Stream with a navigation graph, added by [`write_extra_streams`].
 pub const NAV: &str = "gf2/nav";
 
@@ -591,7 +620,7 @@ pub fn write_cutscene(root: &Path) -> Result<()> {
     }
     fs::write(&path, &data).map_err(|e| Error::io(&path, e))?;
     let mut streams = Vec::new();
-    for rel in [LEVEL, TEXT, NAV, GLOBALS, CUTSCENE] {
+    for rel in [LEVEL, TEXT, NAV, GLOBALS, CUTSCENE, SOUND] {
         let path = root.join(format!("{rel}.str"));
         if let Ok(data) = fs::read(&path) {
             streams.push((rel, StreamLayout::parse(&data)?.total_data_size()));
@@ -601,6 +630,606 @@ pub fn write_cutscene(root: &Path) -> Result<()> {
     let path = root.join("gf2/level.toc");
     fs::write(&path, table.to_bytes()?).map_err(|e| Error::io(&path, e))?;
     Ok(())
+}
+
+// [`SOUND`] is also the stream [`write_sound`] writes (in a game folder of
+// its own): a speech bank (`smb`), the speech event table (`get`), the
+// audio configuration (`auc`) and a mixer snapshot (`mix`), in this order.
+/// The speech file of the archive of [`write_sound`]: half a second at
+/// 32 kHz with subtitles (`EN`: "Hello there.").
+pub const SPEECH_ENTRY: &str = "audiostreams\\d_one\\d_one.exa.snu";
+/// The streamed sound without subtitles of the archive of [`write_sound`].
+pub const MUSIC_ENTRY: &str = "audiostreams\\music\\theme.exa.snu";
+/// The speech event with a record in the table of [`write_sound`].
+pub const SPEECH_EVENT: &str = "F2F_HELLO";
+/// The mixer snapshot of [`write_sound`]: one channel, `DIALOG` at 0.5.
+pub const MIX_NAME: &str = "occlusion.mix";
+
+/// A tone of `seconds` at `rate`, mono.
+pub fn tone(seconds: f64, rate: u32) -> crate::resource::video::input::Pcm {
+    let n = (seconds * f64::from(rate)) as usize;
+    crate::resource::video::input::Pcm {
+        channels: 1,
+        sample_rate: rate,
+        samples: (0..n)
+            .map(|i| ((i as f64 * 0.3).sin() * 12_000.0) as i16)
+            .collect(),
+    }
+}
+
+/// Adds sound to the miniature game of [`write_game`]: the archive
+/// `GODFATH0.viv` with [`SPEECH_ENTRY`] and [`MUSIC_ENTRY`], and the stream
+/// [`SOUND`] with a speech bank of one entry (the speech file), an event
+/// table with [`SPEECH_EVENT`], an audio configuration with the categories
+/// `DIALOG` and `CHATTER` and the mix [`MIX_NAME`]; the table of contents
+/// lists every stream of the game written so far.
+pub fn write_sound(root: &Path) -> Result<()> {
+    use crate::resource::auc::{AudioConfig, BankPool, Category, Duck};
+    use crate::resource::audio_encode::{SampleSpec, build_snu};
+    use crate::resource::get::{SpeechEvent, SpeechEventTable};
+    use crate::resource::mix::{Mix, MixChannel};
+    use crate::resource::smb::{self, SpeechBank, SpeechBankEntry};
+    use crate::resource::speech;
+
+    let spec = |rate| SampleSpec {
+        channels: 1,
+        sample_rate: rate,
+        kind: 1,
+        loop_start: None,
+    };
+    let speech_file = build_snu(&tone(0.5, 32_000), &spec(32_000), None)?;
+    let table = speech::new_table("d_one", &[("EN".to_owned(), "Hello there.".to_owned())])?;
+    let speech_file = speech::attach_subtitles(&speech_file, &table)?;
+    let music = build_snu(&tone(1.0, 44_100), &spec(44_100), None)?;
+    let archive = crate::container::big::build_archive(&[
+        (SPEECH_ENTRY.to_owned(), speech_file),
+        (MUSIC_ENTRY.to_owned(), music),
+    ])?;
+    let path = root.join("GODFATH0.viv");
+    fs::write(&path, archive).map_err(|e| Error::io(&path, e))?;
+
+    let bank = SpeechBank {
+        version: smb::VERSION,
+        entries: vec![SpeechBankEntry {
+            tag: smb::ENTRY_TAG,
+            flags: 0x49,
+            id: [0x0900_0001; 4],
+            reserved: 0,
+            settings: [3.0, 45.0, 0.0, 0.0, 0.056, 1.219],
+            level: 80,
+            category: crate::hash::string_id("CHATTER"),
+            category2: crate::hash::string_id("DIALOG"),
+            duck: 0,
+            file: "d_one.exa".into(),
+            extra: 0,
+            name_hash: smb::name_hash("d_one.exa"),
+        }],
+    };
+    let mut events = SpeechEventTable {
+        version: 3,
+        events: Vec::new(),
+    };
+    events.insert(SpeechEvent::new(SPEECH_EVENT));
+    let category = |name: &str, parent: &str| Category {
+        name: name.into(),
+        second: String::new(),
+        parent: parent.into(),
+        value: 0,
+    };
+    let config = AudioConfig {
+        version: crate::resource::auc::VERSION,
+        categories: vec![category("DIALOG", "DIALOG"), category("CHATTER", "DIALOG")],
+        pools: vec![BankPool {
+            name: "audio_bank_00".into(),
+            size: 1536,
+            kind: 1,
+        }],
+        ducks: vec![Duck {
+            levels: [95, 50],
+            filler: *b"rsion='1",
+            name: "WEAPON_DUCK".into(),
+            mix: "combine_weapon_duck.mix".into(),
+        }],
+        chains: 0,
+        tail: Vec::new(),
+    };
+    let mix = Mix {
+        stamp: 0x7C90_EE18,
+        name: MIX_NAME.into(),
+        version: crate::resource::mix::VERSION,
+        flags: 0,
+        channels: vec![MixChannel {
+            category: crate::hash::string_id("DIALOG"),
+            levels: [-1.0, -1.0, 1.0, 0.5, 0.0, -1.0, 0.25, 0.25],
+            frequency: 6000,
+        }],
+    };
+    let mut stream = StreamWriter::new(&FileHeader::GF2_PC, Endian::Little);
+    for (tag, id, data) in [
+        (&b"smb"[..], 0x51, bank.to_bytes()?),
+        (b"get", 0x52, events.to_bytes()?),
+        (b"auc", 0x53, config.to_bytes()?),
+        (b"mix", 0x54, mix.to_bytes()?),
+    ] {
+        stream.push_resource(&header(tag, [id; 4]), &data, Storage::Raw)?;
+    }
+    let path = root.join(format!("{SOUND}.str"));
+    fs::write(&path, stream.finish()).map_err(|e| Error::io(&path, e))?;
+    let mut streams = Vec::new();
+    for rel in [LEVEL, TEXT, NAV, GLOBALS, CUTSCENE, SOUND] {
+        let path = root.join(format!("{rel}.str"));
+        if let Ok(data) = fs::read(&path) {
+            streams.push((rel, StreamLayout::parse(&data)?.total_data_size()));
+        }
+    }
+    let table = Toc::parse(&toc_bytes(&streams))?;
+    let path = root.join("gf2/level.toc");
+    fs::write(&path, table.to_bytes()?).map_err(|e| Error::io(&path, e))?;
+    Ok(())
+}
+
+/// Rewrites the table of contents to list every stream of the miniature
+/// game written so far.
+fn rewrite_toc(root: &Path) -> Result<()> {
+    let mut streams = Vec::new();
+    for rel in [LEVEL, TEXT, NAV, GLOBALS, CUTSCENE, SOUND] {
+        let path = root.join(format!("{rel}.str"));
+        if let Ok(data) = fs::read(&path) {
+            streams.push((rel, StreamLayout::parse(&data)?.total_data_size()));
+        }
+    }
+    let table = Toc::parse(&toc_bytes(&streams))?;
+    let path = root.join("gf2/level.toc");
+    fs::write(&path, table.to_bytes()?).map_err(|e| Error::io(&path, e))
+}
+
+/// Adds to [`GLOBALS`] (after [`write_extra_streams`]) the SimGroup the
+/// curated game parameters name (`gf2/globals_global:simgroup:00000000`)
+/// with the four pistols of `weapons.pistol.damage` as `Gun` objects:
+/// damage 25, 26, 27 and 28 (attribute 6), clip size 8 (attribute 7).
+pub fn write_tunable_globals(root: &Path) -> Result<()> {
+    use crate::resource::simgroup::{Guid, SimGroup, Value};
+    let path = root.join(format!("{GLOBALS}.str"));
+    let old = fs::read(&path).map_err(|e| Error::io(&path, e))?;
+    let layout = StreamLayout::parse(&old)?;
+    let mut stream = StreamWriter::new(&FileHeader::GF2_PC, Endian::Little);
+    for (index, resource) in layout.resources.iter().enumerate() {
+        stream.push_resource(
+            &resource.header,
+            &layout.resource_data(&old, index)?,
+            Storage::RefPack,
+        )?;
+    }
+    let pistols = crate::tunables::by_id("weapons.pistol.damage")?;
+    let gun = pistols.class;
+    let mut group = SimGroup::empty();
+    for (n, text) in pistols.objects.iter().enumerate() {
+        let mut guid = [0u8; 16];
+        for (i, byte) in guid.iter_mut().enumerate() {
+            *byte = u8::from_str_radix(&text[2 * i..2 * i + 2], 16)
+                .map_err(|_| Error::InvalidArgument(format!("bad GUID {text}")))?;
+        }
+        let o = group.push_object(gun, Guid(guid), &[(gun, 100)])?;
+        group.set_class_attr(o, gun, 6, Some(Value::Float(25.0 + n as f32)))?;
+        group.set_class_attr(o, gun, 7, Some(Value::Int(8)))?;
+    }
+    stream.push_resource(
+        &header(b"simgroup", [0; 4]),
+        &group.encode(),
+        Storage::RefPack,
+    )?;
+    fs::write(&path, stream.finish()).map_err(|e| Error::io(&path, e))?;
+    rewrite_toc(root)
+}
+
+/// The stream of sound, animation and interface data added by
+/// [`write_sound_stream`]; its resources are in the order of the constants
+/// below.
+pub const SOUND: &str = "gf2/sound";
+/// The chatter set of the one speaker: event `F2F_HELLO` with one line.
+pub const SOUND_CHV: usize = 0;
+/// The speech bank with the entry of that line (`d_one.exa`).
+pub const SOUND_SMB: usize = 1;
+/// The speech event table with the record of `F2F_HELLO`.
+pub const SOUND_GET: usize = 2;
+/// The audio configuration: categories DIALOG and CHATTER.
+pub const SOUND_AUC: usize = 3;
+/// The mixer snapshot `occlusion.mix` with channels CHATTER and DIALOG.
+pub const SOUND_MIX: usize = 4;
+/// A sound bank of two emitters, `a.emx` (two variations) and `b.emx`.
+pub const SOUND_SBK: usize = 5;
+/// An animation bank of two clips (hashes 0x10 and 0x20; the first has a
+/// `footstep` event) and the entry `idle`: a sequence of a random choice of
+/// the two.
+pub const SOUND_BNK: usize = 6;
+/// An interface file `hud` with a movie that names `$menu_start`, and constants.
+pub const SOUND_APX: usize = 7;
+
+/// Adds the stream [`SOUND`] to the miniature game (after [`write_game`]).
+pub fn write_sound_stream(root: &Path) -> Result<()> {
+    use crate::hash::string_id;
+    use crate::resource::apx::{AptFile, Block};
+    use crate::resource::chv::ChatterSet;
+    use crate::resource::get::{SpeechEvent, SpeechEventTable};
+    use crate::resource::mix::{Mix, MixChannel};
+    use crate::resource::smb::{ENTRY_TAG, SpeechBank, SpeechBankEntry, VERSION, name_hash};
+    let sound = 0x0900_0001;
+    let mut set = ChatterSet {
+        version: 3,
+        events: Vec::new(),
+    };
+    set.add_line("F2F_HELLO", sound, string_id("one"), 1.0)?;
+    let bank = SpeechBank {
+        version: VERSION,
+        entries: vec![SpeechBankEntry {
+            tag: ENTRY_TAG,
+            flags: 0x49,
+            id: [sound; 4],
+            reserved: 0,
+            settings: [3.0, 45.0, 0.0, 0.0, 0.056, 1.219],
+            level: 80,
+            category: string_id("CHATTER"),
+            category2: 0x3504_8678,
+            duck: 0,
+            file: "d_one.exa".into(),
+            extra: 0,
+            name_hash: name_hash("d_one.exa"),
+        }],
+    };
+    let mut events = SpeechEventTable {
+        version: 3,
+        events: Vec::new(),
+    };
+    events.insert(SpeechEvent::new("F2F_HELLO"));
+    let channel = |name: &str, volume: f32| MixChannel {
+        category: string_id(name),
+        levels: [-1.0, -1.0, 1.0, volume, 0.0, -1.0, 2.0, 2.0],
+        frequency: 6000,
+    };
+    let mix = Mix {
+        stamp: 0x7C90_EE18,
+        name: "occlusion.mix".into(),
+        version: crate::resource::mix::VERSION,
+        flags: 0,
+        channels: vec![channel("CHATTER", 0.6), channel("DIALOG", 0.6)],
+    };
+    let block = |tag: &[u8; 4], data: &[u8]| Block {
+        tag: *tag,
+        data: data.to_vec(),
+    };
+    let mut apx = AptFile {
+        blocks: vec![
+            block(b"titl", b"hud\0"),
+            block(b"apti", b"Apt Data:\x1a\0$menu_start\0\0\0\0\0"),
+            block(b"cons", b"Apt constant file\x1a\0"),
+        ],
+    };
+    apx.align_blocks();
+    let mut animations = crate::resource::anim_graph::sample_bank();
+    animations.set_events(
+        0,
+        &[crate::resource::anim::ClipEvent {
+            frame: 1.0,
+            name: "footstep".into(),
+            signature: 0x0300_0000,
+            args: vec![
+                crate::resource::anim::EventArg::Text("step.emx".into()),
+                crate::resource::anim::EventArg::Int(3),
+            ],
+        }],
+    )?;
+    let mut stream = StreamWriter::new(&FileHeader::GF2_PC, Endian::Little);
+    for (tag, id, data) in [
+        (&b"chv"[..], 0x18C7_062Eu32, set.to_bytes()?),
+        (b"smb", 0x51, bank.to_bytes()?),
+        (b"get", 0x52, events.to_bytes()?),
+        (b"auc", 0x53, crate::resource::auc::sample().to_bytes()?),
+        (b"mix", 0x54, mix.to_bytes()?),
+        (
+            b"sbk",
+            0x55,
+            crate::resource::sbk::samples::bank().to_bytes(),
+        ),
+        (b"bnk", 0x56, animations.encode()?),
+        (b"apx", 0x57, apx.to_bytes()?),
+    ] {
+        stream.push_resource(&header(tag, [id; 4]), &data, Storage::Raw)?;
+    }
+    let path = root.join(format!("{SOUND}.str"));
+    fs::write(&path, stream.finish()).map_err(|e| Error::io(&path, e))?;
+    rewrite_toc(root)
+}
+
+/// Root stream of the level added by [`write_town`]: its world grid (`wgi`,
+/// resource 0) has one cell, of [`YARD`].
+pub const TOWN: &str = "gf2/town";
+/// A zone of [`TOWN`], added by [`write_town`]: a crate (resources
+/// [`YARD_MESH`], [`YARD_HKX`], [`YARD_MODEL`]) placed by the one object of
+/// its SimGroup ([`YARD_SIMGROUP`]).
+pub const YARD: &str = "gf2/town/yard";
+pub const YARD_MESH: usize = 0;
+pub const YARD_HKX: usize = 1;
+pub const YARD_MODEL: usize = 2;
+pub const YARD_SIMGROUP: usize = 3;
+/// Id of the metamodel of the crate.
+pub const CRATE_MODEL_ID: u32 = 0x7001_0001;
+/// Id of the mesh of the crate.
+pub const CRATE_MESH_ID: u32 = 0x7001_0002;
+/// Where the crate stands.
+pub const CRATE_POSITION: [f32; 3] = [4.0, 0.0, 6.0];
+
+/// A metamodel with id `id` that shows mesh `mesh` and, with `hkx`, has
+/// collision in the `hkx` resource of that id: two resource references, one
+/// state and one `ModelPart` whose `Model` property is the mesh.
+pub fn prop_metamodel(id: u32, mesh: u32, hkx: Option<u32>) -> Vec<u8> {
+    const SIZE: usize = 0x240;
+    const T0: u32 = 0x200;
+    let mut d = vec![0u8; SIZE];
+    let put = |d: &mut Vec<u8>, at: usize, v: u32| d[at..at + 4].copy_from_slice(&v.to_le_bytes());
+    let put16 =
+        |d: &mut Vec<u8>, at: usize, v: u16| d[at..at + 2].copy_from_slice(&v.to_le_bytes());
+    put(&mut d, 0, crate::resource::metamodel::MAGIC);
+    put(&mut d, 4, 14);
+    put(&mut d, 8, SIZE as u32);
+    for k in 0..4 {
+        put(&mut d, 0x10 + 4 * k, id);
+    }
+    // Tables: resources, states, variables, properties, conditions, parts.
+    let resources = if hkx.is_some() { 2 } else { 1 };
+    for (i, (at, n)) in [
+        (T0, resources),
+        (0x88, 1),
+        (0xB8, 1),
+        (0xC4, 2),
+        (0xF4, 1),
+        (0x100, 1),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        put(&mut d, 0x34 + 4 * i, at);
+        put16(&mut d, 0x58 + 2 * i, n);
+    }
+    let strings = b"\0State\0S0\0health\0Model\0ModelPart\0CMD_LoadMatrix\0CSystemCommands\0P0\0";
+    d[0x150..0x150 + strings.len()].copy_from_slice(strings);
+    let s = |name: &str| {
+        let pos = strings
+            .windows(name.len() + 2)
+            .position(|w| {
+                w[0] == 0 && &w[1..=name.len()] == name.as_bytes() && w[name.len() + 1] == 0
+            })
+            .expect("a string of the table");
+        0x151 + pos as u32
+    };
+    // Resource references: the GUID is the id four times, as in the game.
+    let reference = |d: &mut Vec<u8>, at: usize, type_id: u32, id: u32| {
+        put(d, at, 0x1234);
+        put(d, at + 4, id);
+        put(d, at + 8, type_id);
+        for k in 0..4 {
+            put(d, at + 0xC + 4 * k, id);
+        }
+    };
+    reference(&mut d, T0 as usize, sdbm(b"mesh"), mesh);
+    if let Some(hkx) = hkx {
+        reference(
+            &mut d,
+            T0 as usize + 0x20,
+            crate::resource::hkx::TYPE_HKX,
+            hkx,
+        );
+    }
+    // The state: property list at 0x130, part list at 0x134, conditions at 0x138.
+    put(&mut d, 0x88, 0xFE60_4109);
+    put(&mut d, 0x8C, s("State"));
+    put(&mut d, 0x90, s("S0"));
+    d[0x94..0xA4].copy_from_slice(b"\x01\x02\x03\x04\x05\x06\x07\x08MMOPTIMI");
+    put(&mut d, 0xA4, 0x130);
+    put16(&mut d, 0xA8, 1);
+    put16(&mut d, 0xAA, 1);
+    put(&mut d, 0xAC, 0x134);
+    put(&mut d, 0xB0, 0x138);
+    put16(&mut d, 0xB4, 1);
+    put16(&mut d, 0xB6, 0);
+    put(&mut d, 0xB8, s("health"));
+    put(&mut d, 0xC0, 4);
+    // Properties: a matrix (identity, at 0x1C0) and the mesh of the part.
+    put(&mut d, 0xC4, 0x1C0);
+    put(&mut d, 0xC8, s("CMD_LoadMatrix"));
+    put(&mut d, 0xCC, s("CSystemCommands"));
+    put(&mut d, 0xD0, 1);
+    put(&mut d, 0xD8, 0x20);
+    put(&mut d, 0xDC, T0);
+    put(&mut d, 0xE0, s("Model"));
+    put(&mut d, 0xE4, s("ModelPart"));
+    put(&mut d, 0xE8, 1);
+    put(&mut d, 0xF0, 0x10);
+    put(&mut d, 0xF4, 50f32.to_bits());
+    put(&mut d, 0xF8, 0xB8);
+    put(&mut d, 0xFC, 3);
+    put(&mut d, 0x104, s("ModelPart"));
+    put(&mut d, 0x108, s("P0"));
+    put(&mut d, 0x11C, 0x13C);
+    put16(&mut d, 0x120, 1);
+    put16(&mut d, 0x122, 2);
+    put(&mut d, 0x130, 0xC4);
+    put(&mut d, 0x134, 0x100);
+    put(&mut d, 0x138, 0xF4);
+    put(&mut d, 0x13C, 0xDC);
+    for k in 0..4 {
+        put(&mut d, 0x1C0 + 20 * k, 1f32.to_bits());
+    }
+    d
+}
+
+/// Adds a level to the miniature game of [`write_game`]: [`TOWN`] with a
+/// world grid and its zone [`YARD`] with a crate that has a mesh, Havok
+/// collision and a metamodel, placed by an object at [`CRATE_POSITION`].
+/// Every stream of the miniature game goes into the table of contents.
+pub fn write_town(root: &Path) -> Result<()> {
+    use crate::resource::hkx::collision::{self, CollisionKind, CollisionMesh};
+    use crate::resource::simgroup::{CLASS_ENTITY, CLASS_SYSTEM_COMMANDS, Guid, SimGroup};
+    use crate::resource::wgi::{self, NewCell, WorldGrid};
+    let io = |path: &Path, e| Error::io(path, e);
+    let yard_guid = *b"\x21\x22\x23\x24\x25\x26\x27\x28DOCTORTK";
+    let mut grid = WorldGrid {
+        streams: Vec::new(),
+        cells: Vec::new(),
+        pool: Vec::new(),
+    };
+    grid.add_cell(&NewCell {
+        guid: yard_guid,
+        box_min: [0.0, -1.0, 0.0],
+        box_max: [20.0, 10.0, 20.0],
+        kind: wgi::KIND_WORLD,
+        flags: 0,
+        lod_mask: wgi::lod::HIGH,
+        name: None,
+        needs: None,
+    })?;
+    let mut town = StreamWriter::new(&FileHeader::GF2_PC, Endian::Little);
+    town.push_resource(
+        &ResourceHeader {
+            type_id: wgi::TYPE_WGI,
+            ..header(b"wgi", [0x77; 4])
+        },
+        &grid.to_bytes()?,
+        Storage::Raw,
+    )?;
+    let town = town.finish();
+
+    let (mesh, volatile) = quad_mesh("crate", MATERIAL_NAME)?;
+    let mut shape = CollisionMesh::default();
+    shape.append(
+        &[
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [1.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0],
+            [1.0, 0.0, 1.0],
+            [0.0, 1.0, 1.0],
+            [1.0, 1.0, 1.0],
+        ],
+        &[[0, 1, 2], [2, 1, 3], [4, 6, 5], [5, 6, 7]],
+    );
+    let (hkx, _) = collision::build(
+        &shape,
+        CollisionKind::Box,
+        collision::DEFAULT_MATERIAL,
+        "crate",
+    )?;
+    let hkx_id = 0x7001_0003;
+    let mut group = SimGroup::empty();
+    let object = group.push_object(
+        CLASS_ENTITY,
+        Guid(*b"\x31\x32\x33\x34\x35\x36\x37\x38DOCTORTK"),
+        &[(CLASS_SYSTEM_COMMANDS, 4), (CLASS_ENTITY, 4)],
+    )?;
+    let mut matrix = [[0.0f32; 4]; 4];
+    for (k, row) in matrix.iter_mut().enumerate() {
+        row[k] = 1.0;
+    }
+    matrix[3][..3].copy_from_slice(&CRATE_POSITION);
+    group.set_transform(object, matrix)?;
+    group.set_model(object, Some(CRATE_MODEL_ID))?;
+    let mut yard = StreamWriter::new(&FileHeader::GF2_PC, Endian::Little);
+    yard.push_resource(
+        &header(b"mesh", [CRATE_MESH_ID; 4]),
+        &mesh,
+        Storage::RefPack,
+    )?;
+    yard.push_resource(&header(b"hkx", [hkx_id; 4]), &hkx, Storage::RefPack)?;
+    yard.push_resource(
+        &header(b"metamodel", [CRATE_MODEL_ID; 4]),
+        &prop_metamodel(CRATE_MODEL_ID, CRATE_MESH_ID, Some(hkx_id)),
+        Storage::RefPack,
+    )?;
+    yard.push_resource(
+        &header(b"simgroup", [0x72; 4]),
+        &group.encode(),
+        Storage::RefPack,
+    )?;
+    if !volatile.is_empty() {
+        yard.push_resource(
+            &header(b"meshvolatile", [!CRATE_MESH_ID; 4]),
+            &volatile,
+            Storage::Raw,
+        )?;
+    }
+    let yard = yard.finish();
+
+    fs::create_dir_all(root.join(TOWN)).map_err(|e| io(root, e))?;
+    for (name, data) in [(TOWN, &town), (YARD, &yard)] {
+        let path = root.join(format!("{name}.str"));
+        fs::write(&path, data).map_err(|e| io(&path, e))?;
+    }
+    let mut listed = Vec::new();
+    for name in [LEVEL, TEXT, NAV, GLOBALS, CUTSCENE, TOWN, YARD] {
+        let path = root.join(format!("{name}.str"));
+        if let Ok(data) = fs::read(&path) {
+            listed.push((name, StreamLayout::parse(&data)?.total_data_size()));
+        }
+    }
+    let table = Toc::parse(&toc_bytes(&listed))?;
+    let path = root.join("gf2/level.toc");
+    fs::write(&path, table.to_bytes()?).map_err(|e| io(&path, e))
+}
+
+/// The sound track of the cut-scene added by [`write_cutscene_sound`].
+pub const CUTSCENE_SOUND: &str = "audiostreams\\igc99\\aud_igc99.exa.snu";
+
+/// A streamed sound of three seconds whose subtitle table has two lines
+/// (at 0.5 s for 0.4 s and at 1 s for 0.8 s) and whose sound data is `sound`.
+pub fn cutscene_sound(sound: &[u8]) -> Vec<u8> {
+    use crate::resource::tob::{Tob, TobEntry, TobGroup};
+    let table = Tob {
+        version: 1,
+        movie_hash: sdbm(b"igc99"),
+        groups: vec![TobGroup {
+            name_hash: sdbm(b"subtitles"),
+            name: Some("subtitles"),
+            entries: vec![
+                TobEntry {
+                    string: 0x1111,
+                    start_ms: 500,
+                    duration_ms: 400,
+                },
+                TobEntry {
+                    string: 0x2222,
+                    start_ms: 1000,
+                    duration_ms: 800,
+                },
+            ],
+        }],
+    }
+    .to_bytes();
+    let mut snu = vec![3u8, 4, 0, 2];
+    snu.extend_from_slice(&3000u32.to_le_bytes());
+    let blocks = (0x20 + table.len()).div_ceil(16) * 16;
+    snu.extend_from_slice(&(blocks as u32).to_le_bytes());
+    snu.resize(0x20, 0);
+    snu.extend_from_slice(&table);
+    snu.resize(blocks, 0);
+    snu.extend_from_slice(sound);
+    snu
+}
+
+/// Adds the archive `GODFATH1.viv` with the sound track of the cut-scene of
+/// [`write_cutscene`]: [`cutscene_sound`] with the sound data `sound`.
+pub fn write_cutscene_sound_with(root: &Path, sound: &[u8]) -> Result<()> {
+    let archive = crate::container::big::build_archive(&[(
+        CUTSCENE_SOUND.to_owned(),
+        cutscene_sound(sound),
+    )])?;
+    let path = root.join("GODFATH1.viv");
+    fs::write(&path, archive).map_err(|e| Error::io(&path, e))?;
+    Ok(())
+}
+
+/// [`write_cutscene_sound_with`] the sound data `SOUND DATA`.
+pub fn write_cutscene_sound(root: &Path) -> Result<()> {
+    write_cutscene_sound_with(root, b"SOUND DATA")
 }
 
 #[cfg(test)]

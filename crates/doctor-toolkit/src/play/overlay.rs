@@ -15,6 +15,14 @@
 //! game's own files are never written, so there is nothing to put back; the
 //! staged copy is removed after the game exits.
 //!
+//! Stage 100 ([`Streams::Patched`]): a changed stream of the game is staged
+//! as a **resource patch** — only its replaced and added resources
+//! ([`doctor_toolkit_live::resources`]) — and listed apart
+//! ([`Overlay::resources`]): the module composes the stream in memory from
+//! the game's own file and the patch, so no rebuilt copy of the stream is
+//! written. Tables of contents, created streams, archives and the launch
+//! options stay redirects.
+//!
 //! The module and its configuration still go into `scripts/` of the game
 //! for the launch (as with `play --live`) and are taken away afterwards.
 
@@ -24,6 +32,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use doctor_toolkit_live::files::{Redirect, line_safe};
+use doctor_toolkit_live::resources::PatchLine;
 
 use crate::game::GameInstance;
 use crate::mods::ModManager;
@@ -58,6 +67,38 @@ impl OverlayMode {
             Self::On => "on",
             Self::Off => "off",
         }
+    }
+}
+
+/// How the changed streams of the game reach it.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Streams {
+    /// Rebuilt whole in the toolkit's folder and opened from there (stage
+    /// 46).
+    #[default]
+    Rebuilt,
+    /// Only the changed resources are staged; the live module composes
+    /// each stream in memory when the game opens it (stage 100).
+    Patched,
+}
+
+impl Streams {
+    pub fn is_default(&self) -> bool {
+        *self == Self::Rebuilt
+    }
+
+    /// `rebuilt`, `patched`.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Rebuilt => "rebuilt",
+            Self::Patched => "patched",
+        }
+    }
+
+    /// From a switch: resources in memory or rebuilt streams.
+    pub fn in_memory(on: bool) -> Self {
+        if on { Self::Patched } else { Self::Rebuilt }
     }
 }
 
@@ -182,6 +223,7 @@ pub fn game_path(path: &Path) -> Option<String> {
 pub struct Overlay {
     dir: PathBuf,
     redirects: Vec<Redirect>,
+    resources: Vec<PatchLine>,
     report: ApplyReport,
     removed: bool,
 }
@@ -195,6 +237,17 @@ impl Overlay {
         cmd_txt: Option<&str>,
         dir: &Path,
     ) -> Result<Self> {
+        Self::build_with(game, source, cmd_txt, dir, Streams::Rebuilt)
+    }
+
+    /// [`Self::build`] with the way the changed streams are staged.
+    pub fn build_with(
+        game: &GameInstance,
+        source: Option<&Source>,
+        cmd_txt: Option<&str>,
+        dir: &Path,
+        streams: Streams,
+    ) -> Result<Self> {
         let root = std::path::absolute(game.root()).map_err(|e| Error::io(game.root(), e))?;
         remove_dir(dir)?;
         let staged_root = dir.join("game");
@@ -202,12 +255,16 @@ impl Overlay {
         let mut overlay = Self {
             dir: dir.to_path_buf(),
             redirects: Vec::new(),
+            resources: Vec::new(),
             report: ApplyReport::default(),
             removed: false,
         };
         mirror(&root, &staged_root, "")?;
         if let Some(source) = source {
-            let staged = GameInstance::open(&staged_root)?;
+            let mut staged = GameInstance::open(&staged_root)?;
+            if streams == Streams::Patched {
+                staged.stage_resource_patches();
+            }
             overlay.report = match source {
                 Source::Workspace(ws_dir) => {
                     let ws_dir = std::path::absolute(ws_dir).map_err(|e| Error::io(ws_dir, e))?;
@@ -234,18 +291,48 @@ impl Overlay {
         }
         let mut redirects = Vec::new();
         collect(&root, &staged_root, "", &mut redirects)?;
+        // A staged stream that is a resource patch is composed by the
+        // module, not opened in place of the game's.
+        let mut resources = Vec::new();
+        let mut kept = Vec::with_capacity(redirects.len());
+        for r in redirects {
+            let patch = (streams == Streams::Patched)
+                .then(|| patch_of(&root, &staged_root, &r))
+                .transpose()?
+                .flatten();
+            match patch {
+                Some(line) => resources.push(line),
+                None => kept.push(r),
+            }
+        }
+        let mut redirects = kept;
         if let Some(text) = cmd_txt {
             let path = dir.join(crate::play::start::CMD_FILE);
             crate::atomic::write(&path, text.as_bytes())?;
             redirects.push(redirect_to(crate::play::start::CMD_FILE, &path)?);
         }
         overlay.redirects = redirects;
+        overlay.resources = resources;
         Ok(overlay)
     }
 
     /// The redirects for the module's configuration.
     pub fn redirects(&self) -> &[Redirect] {
         &self.redirects
+    }
+
+    /// The streams the module composes in memory and their resource
+    /// patches (`resources=` lines of its configuration); empty unless
+    /// built with [`Streams::Patched`].
+    pub fn resources(&self) -> &[PatchLine] {
+        &self.resources
+    }
+
+    /// Puts the redirects and the resource patches into the configuration
+    /// of the module.
+    pub fn configure(&self, config: &mut doctor_toolkit_live::config::Config) {
+        config.redirects = self.redirects.clone();
+        config.resources = self.resources.clone();
     }
 
     /// What the workspace or the mod manager wrote into the staged copy.
@@ -277,6 +364,75 @@ impl Drop for Overlay {
             let _ = remove_dir(&self.dir);
         }
     }
+}
+
+/// The line of the module's configuration for the staged file of
+/// `redirect` when that file is a resource patch (`None`: it is a file the
+/// game opens as it is). A patch made for another file than the game's
+/// own stream (a backup) names it: a file of the game folder by its path
+/// there, any other by its absolute path.
+fn patch_of(root: &Path, staged_root: &Path, redirect: &Redirect) -> Result<Option<PatchLine>> {
+    use doctor_toolkit_live::resources::Patch;
+    if !redirect.from.ends_with(".str") {
+        return Ok(None);
+    }
+    // The key is lower case; the staged file has the game's spelling.
+    let Some(path) = find_ignoring_case(staged_root, &redirect.from) else {
+        return Ok(None);
+    };
+    let Ok(bytes) = std::fs::read(&path) else {
+        return Ok(None);
+    };
+    if !Patch::is_patch(&bytes) {
+        return Ok(None);
+    }
+    let patch = Patch::read(&mut &bytes[..])
+        .map_err(|e| Error::InvalidArgument(format!("{}: {e}", path.display())))?;
+    let base = match patch.base {
+        None => None,
+        Some(base) => {
+            let base = PathBuf::from(base);
+            let text = match base.strip_prefix(root) {
+                Ok(inside) => inside.to_string_lossy().replace('\\', "/"),
+                Err(_) => game_path(&base).ok_or_else(|| {
+                    Error::InvalidArgument(format!(
+                        "{}: not a path the game can open",
+                        base.display()
+                    ))
+                })?,
+            };
+            if !line_safe(&text) {
+                return Err(Error::InvalidArgument(format!(
+                    "{text}: the module's configuration cannot hold `#`, `|` or control characters"
+                )));
+            }
+            Some(text)
+        }
+    };
+    Ok(Some(PatchLine {
+        from: redirect.from.clone(),
+        to: redirect.to.clone(),
+        base,
+    }))
+}
+
+/// The file under `root` whose path is `rel` when case is ignored.
+fn find_ignoring_case(root: &Path, rel: &str) -> Option<PathBuf> {
+    let mut path = root.to_path_buf();
+    for part in rel.split('/') {
+        let direct = path.join(part);
+        if std::fs::symlink_metadata(&direct).is_ok() {
+            path = direct;
+            continue;
+        }
+        let entry = std::fs::read_dir(&path).ok()?.flatten().find(|e| {
+            e.file_name()
+                .to_str()
+                .is_some_and(|n| n.eq_ignore_ascii_case(part))
+        })?;
+        path = entry.path();
+    }
+    Some(path)
 }
 
 /// Removes a staged copy: its links, never what they point to.

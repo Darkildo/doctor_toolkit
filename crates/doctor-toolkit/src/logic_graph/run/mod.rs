@@ -16,6 +16,7 @@
 
 pub mod journal;
 mod model;
+mod spec;
 
 #[cfg(test)]
 mod tests;
@@ -36,6 +37,8 @@ use crate::{Error, Result};
 
 use super::scope::{self, LoadedGroup};
 use super::{LogicSchema, PinKind, ScopeSpec};
+
+pub use spec::RunSpec;
 
 pub use journal::{
     Comparison, Entry, GameMessage, Matched, Took, What, Who, compare, parse_game_journal,
@@ -96,6 +99,7 @@ impl Actor {
 /// A reaction the user gives an object (black boxes above all): when it
 /// gets `on` (any message when `None`), it sends `send`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct ManualReaction {
     /// The object: GUID, name, `#<actor>` or `<stream>#<resource>:<object>`.
     pub object: String,
@@ -106,6 +110,7 @@ pub struct ManualReaction {
 
 /// A message of a [`ManualReaction`].
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct ManualOut {
     pub message: String,
     #[serde(default)]
@@ -1219,20 +1224,32 @@ impl Run {
             let Model::Trigger {
                 on_enter,
                 on_exit,
+                on_leave,
+                remaining,
                 switch,
                 ..
-            } = &self.actors[i].model
+            } = &mut self.actors[i].model
             else {
                 continue;
             };
-            let (switch, out) = (
-                *switch,
-                if enter {
-                    on_enter.clone()
-                } else {
-                    on_exit.clone().map(|msg| Out { msg, delay: 0.0 })
-                },
-            );
+            // A touch sensor with `on_leave` sends its message when the
+            // touch ends; an enter/exit trigger has a message for each.
+            let out = match (enter, *on_leave) {
+                (true, false) | (false, true) => on_enter.clone(),
+                (true, true) => None,
+                (false, false) => on_exit.clone().map(|msg| Out { msg, delay: 0.0 }),
+            };
+            // The send count of a touch sensor: at 0 the object asks to be
+            // removed (`0x004C1260`).
+            let mut used_up = false;
+            if out.is_some() && *switch != Switch::Off && *remaining > 0 {
+                *remaining -= 1;
+                if *remaining == 0 {
+                    *switch = Switch::Off;
+                    used_up = true;
+                }
+            }
+            let switch = if used_up { Switch::On } else { *switch };
             let me = self.actors[i].who(i);
             let what = if enter {
                 "the player enters"
@@ -1260,6 +1277,9 @@ impl Run {
                 from: Who::input(),
                 took: Took::Known,
                 reaction: match &out {
+                    Some(o) if used_up => {
+                        format!("sends {}; used up (max_fires reached)", o.msg.name)
+                    }
                     Some(o) => format!("sends {}{note}", o.msg.name),
                     None => format!("nothing to send{note}"),
                 },

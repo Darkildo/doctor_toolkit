@@ -70,6 +70,8 @@ pub struct Nav {
     /// Status line of the last navigation job.
     pub status: Option<String>,
     indexing: Option<Running>,
+    /// The game to index once the running pass is done ([`Self::restage`]).
+    again: Option<Arc<GameInstance>>,
     exporting: Option<Running>,
     dictionary: Option<Dictionary>,
 
@@ -101,6 +103,7 @@ impl Nav {
             index: None,
             status: None,
             indexing: None,
+            again: None,
             exporting: None,
             dictionary: None,
             query: std::env::var("DOCTOR_TOOLKIT_GUI_SEARCH").unwrap_or_default(),
@@ -137,6 +140,17 @@ impl Nav {
     pub fn refresh(&mut self, game: Arc<GameInstance>) {
         if self.indexing.is_none() {
             self.start_indexing(game, tr("nav.updating"));
+        }
+    }
+
+    /// The list of streams changed (the workspace's new streams were staged
+    /// again): the index is read for `game`, after the running pass if one
+    /// is running.
+    pub fn restage(&mut self, game: Arc<GameInstance>) {
+        if self.indexing.is_none() {
+            self.start_indexing(game, tr("nav.updating"));
+        } else {
+            self.again = Some(game);
         }
     }
 
@@ -206,6 +220,9 @@ impl Nav {
                 } => {
                     self.indexing = None;
                     self.dictionary = None;
+                    if let Some(game) = self.again.take() {
+                        self.start_indexing(game, tr("nav.updating"));
+                    }
                     crate::profile::mark("index");
                     self.status = Some(trf(
                         "nav.indexed",
@@ -318,6 +335,15 @@ impl Nav {
         }
         (response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)))
             .then(|| NavAction::Search(self.query.clone()))
+    }
+
+    /// The names known for hashes, built on first use; `None` without an index.
+    pub fn dictionary(&mut self) -> Option<&Dictionary> {
+        let index = self.index.clone()?;
+        Some(
+            self.dictionary
+                .get_or_insert_with(|| Dictionary::for_game(&index)),
+        )
     }
 
     /// Resources whose name, key or text matches `text`, for quick opening.

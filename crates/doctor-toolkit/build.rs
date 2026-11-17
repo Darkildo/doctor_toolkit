@@ -1,7 +1,9 @@
 //! Turns the typed game data of `data/gf2/` into Rust: value lists
 //! (`enums.toml`), meanings of SimGroup attributes (`attr_types.toml`),
 //! messages named by the executable (`engine_messages.txt`), facts about
-//! single messages (`messages.toml`) and the catalogue of the messages of the
+//! single messages (`messages.toml`), the places of the executable that send
+//! them (`bus_sites.tsv`), the scripts, cut-scenes and score document that
+//! send them (`message_senders.tsv`) and the catalogue of the messages of the
 //! game files (`game_messages.tsv`, stored deflated).
 //!
 //! The generated file is included by `src/game_types/mod.rs`. The data is
@@ -58,6 +60,155 @@ struct AttrTypeFile {
 #[derive(Deserialize)]
 struct MessagesFile {
     message: BTreeMap<String, MessageNoteFile>,
+    #[serde(default)]
+    data_type: BTreeMap<String, DataTypeFile>,
+    #[serde(default)]
+    class_data: BTreeMap<String, ClassDataFile>,
+}
+
+#[derive(Deserialize)]
+struct DataTypeFile {
+    #[serde(default)]
+    table: String,
+    summary: String,
+    ru: String,
+    conf: String,
+    source: String,
+}
+
+#[derive(Deserialize)]
+struct ClassDataFile {
+    data: String,
+    #[serde(default)]
+    who: String,
+    #[serde(default)]
+    who_ru: String,
+    conf: String,
+    source: String,
+}
+
+fn note_confidence(what: &str, conf: &str) -> &'static str {
+    match conf {
+        "exe" => "NoteConfidence::Exe",
+        "data" => "NoteConfidence::Data",
+        "bench" => "NoteConfidence::Bench",
+        "guess" => "NoteConfidence::Guess",
+        c => panic!("messages.toml [{what}]: unknown confidence `{c}`"),
+    }
+}
+
+fn hex(text: &str, what: &str) -> u32 {
+    u32::from_str_radix(text.trim_start_matches("0x"), 16)
+        .unwrap_or_else(|_| panic!("{what}: `{text}` is not a hexadecimal number"))
+}
+
+/// What the places of the executable and the other resources of the game
+/// tell about each message: `MESSAGE_FACTS`.
+fn message_facts(
+    sites: &str,
+    senders: &str,
+    tables: &HashMap<u32, String>,
+    known: &dyn Fn(u32) -> bool,
+    out: &mut String,
+) {
+    #[derive(Default)]
+    struct Fact {
+        /// (site, kind): 0 broadcast, 1 to one listener, 2 delayed.
+        sites: Vec<(u32, u8)>,
+        data: std::collections::BTreeSet<String>,
+        listens: u32,
+        /// kind -> (places, resources).
+        other: BTreeMap<String, (u32, HashSet<String>)>,
+    }
+    let mut facts: BTreeMap<u32, Fact> = BTreeMap::new();
+    for line in list_lines_keep(sites) {
+        let f: Vec<&str> = line.split('\t').collect();
+        assert_eq!(f.len(), 7, "bus_sites.tsv: bad line `{line}`");
+        let (kind, name) = (f[0], f[4]);
+        if name == "?" || name.starts_with('[') || name.contains(":0x") {
+            continue;
+        }
+        let h = sdbm_lower(name);
+        assert!(
+            known(h),
+            "bus_sites.tsv: `{name}` is not in engine_messages.txt"
+        );
+        let fact = facts.entry(h).or_default();
+        let code = match kind {
+            "name" => continue,
+            "listen" => {
+                fact.listens += 1;
+                continue;
+            }
+            "send" => 0,
+            "direct" => 1,
+            "delayed" => 2,
+            k => panic!("bus_sites.tsv: unknown kind `{k}`"),
+        };
+        let site = hex(f[1], "bus_sites.tsv");
+        if !fact.sites.contains(&(site, code)) {
+            fact.sites.push((site, code));
+        }
+        fact.data.insert(match f[5] {
+            "none" => "none".to_owned(),
+            d if d.starts_with("obj:0x") => {
+                let table = hex(&d[4..], "bus_sites.tsv");
+                tables.get(&table).cloned().unwrap_or_else(|| {
+                    panic!(
+                        "bus_sites.tsv: no data_type of messages.toml has the table {table:#010x}"
+                    )
+                })
+            }
+            _ => "unknown".to_owned(),
+        });
+    }
+    for line in list_lines_keep(senders) {
+        let f: Vec<&str> = line.split('\t').collect();
+        assert_eq!(f.len(), 5, "message_senders.tsv: bad line `{line}`");
+        assert!(
+            matches!(f[1], "lua" | "cutscene" | "score"),
+            "message_senders.tsv: unknown kind `{}`",
+            f[1]
+        );
+        let fact = facts.entry(sdbm_lower(f[0])).or_default();
+        let other = fact.other.entry(f[1].to_owned()).or_default();
+        other.0 += 1;
+        other.1.insert(f[2].to_owned());
+        fact.data.insert(match f[4] {
+            "-" => "none".to_owned(),
+            _ => "unknown".to_owned(),
+        });
+    }
+    out.push_str("\n/// What `data/gf2/bus_sites.tsv` and `data/gf2/message_senders.tsv` tell about each message, sorted by hash.\n");
+    out.push_str("pub static MESSAGE_FACTS: &[MessageFact] = &[\n");
+    for (h, mut f) in facts {
+        f.sites.sort_unstable();
+        // The score document lies in two streams: count its places once.
+        let other: Vec<(String, u32, u32)> = f
+            .other
+            .iter()
+            .map(|(k, (places, resources))| {
+                let n = resources.len() as u32;
+                (
+                    k.clone(),
+                    if k == "score" {
+                        places / n.max(1)
+                    } else {
+                        *places
+                    },
+                    n,
+                )
+            })
+            .collect();
+        let data: Vec<&str> = f.data.iter().map(String::as_str).collect();
+        writeln!(
+            out,
+            "    MessageFact {{ hash: {h:#010x}, sites: &{:?}, listens: {}, other: &{:?}, data: &{:?} }},",
+            f.sites, f.listens, other, data
+        )
+        .unwrap();
+    }
+    out.push_str("];\n");
 }
 
 #[derive(Deserialize)]
@@ -460,13 +611,7 @@ fn main() {
             game.contains_key(&h) || engine.binary_search_by_key(&h, |e| e.0).is_ok(),
             "messages.toml: `{name}` is neither in engine_messages.txt nor in game_messages.tsv"
         );
-        let conf = match n.conf.as_str() {
-            "exe" => "NoteConfidence::Exe",
-            "data" => "NoteConfidence::Data",
-            "bench" => "NoteConfidence::Bench",
-            "guess" => "NoteConfidence::Guess",
-            c => panic!("messages.toml [{name}]: unknown confidence `{c}`"),
-        };
+        let conf = note_confidence(name, &n.conf);
         rows.push((
             h,
             format!(
@@ -480,6 +625,61 @@ fn main() {
         writeln!(out, "    {r},").unwrap();
     }
     out.push_str("];\n");
+
+    // What the data word can be, and what the outputs of a class put there.
+    let mut tables: HashMap<u32, String> = HashMap::new();
+    out.push_str("\n/// `data/gf2/messages.toml`, `data_type`: what the data word of a message can be, sorted by key.\n");
+    out.push_str("pub static DATA_TYPES: &[DataType] = &[\n");
+    for (key, t) in &notes.data_type {
+        let table = if t.table.is_empty() {
+            0
+        } else {
+            hex(&t.table, "messages.toml data_type")
+        };
+        if table != 0 {
+            assert!(
+                tables.insert(table, key.clone()).is_none(),
+                "messages.toml: two data types have the table {table:#010x}"
+            );
+        }
+        writeln!(
+            out,
+            "    DataType {{ key: {key:?}, table: {table:#010x}, summary: {:?}, ru: {:?}, conf: {}, source: {:?} }},",
+            t.summary,
+            t.ru,
+            note_confidence(key, &t.conf),
+            t.source
+        )
+        .unwrap();
+    }
+    out.push_str("];\n");
+    out.push_str("\n/// `data/gf2/messages.toml`, `class_data`: the data word the outputs of a SimGroup class send, sorted by class.\n");
+    out.push_str("pub static CLASS_DATA: &[ClassData] = &[\n");
+    for (class, c) in &notes.class_data {
+        assert!(
+            notes.data_type.contains_key(&c.data),
+            "messages.toml [class_data.{class}]: no data type `{}`",
+            c.data
+        );
+        writeln!(
+            out,
+            "    ClassData {{ class: {class:?}, data: {:?}, who: {:?}, who_ru: {:?}, conf: {}, source: {:?} }},",
+            c.data,
+            c.who,
+            c.who_ru,
+            note_confidence(class, &c.conf),
+            c.source
+        )
+        .unwrap();
+    }
+    out.push_str("];\n");
+    message_facts(
+        &read(&data, "bus_sites.tsv"),
+        &read(&data, "message_senders.tsv"),
+        &tables,
+        &|h| engine.binary_search_by_key(&h, |e| e.0).is_ok(),
+        &mut out,
+    );
 
     std::fs::write(out_dir.join("gf2_types.rs"), out).unwrap();
     println!("cargo:rerun-if-changed=build.rs");

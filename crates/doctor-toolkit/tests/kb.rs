@@ -40,6 +40,16 @@ fn the_generated_notes_are_up_to_date() {
 }
 
 #[test]
+fn the_table_of_named_addresses_is_up_to_date() {
+    let stale = doctor_toolkit::kb::symbols::run(&root(), &root().join(KB), true).unwrap();
+    assert!(
+        !stale,
+        "run `doctor-toolkit kb-gen`: {} is out of date",
+        doctor_toolkit::kb::symbols::SYMBOLS_FILE
+    );
+}
+
+#[test]
 fn every_section_has_notes_and_the_plan_is_there() {
     let kb = Kb::load(&root().join(KB)).unwrap();
     let count = |t: NoteType| {

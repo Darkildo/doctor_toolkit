@@ -188,6 +188,39 @@ pub struct GameInstance {
     streams: Vec<GameFile>,
     tocs: Vec<GameFile>,
     skipped: Vec<GameFile>,
+    /// A staged copy whose changed streams are resource patches
+    /// ([`Self::stage_resource_patches`]).
+    resource_patches: bool,
+    /// Streams that are not in the game folder ([`Self::with_staged`]).
+    staged: Vec<Staged>,
+}
+
+/// A stream that is not in the game folder yet (a stream a workspace
+/// creates), given to [`GameInstance::with_staged`]: readers see it as one
+/// more stream of the game.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StagedStream {
+    /// Stream name: lower case, forward slashes, no extension.
+    pub name: String,
+    /// The file that holds it, outside the game folder.
+    pub path: PathBuf,
+    /// The streams loaded before it, as the tables of contents will say.
+    pub parents: Vec<String>,
+    /// Its hash in the tables of contents.
+    pub hash: u32,
+}
+
+/// One staged stream of a [`GameInstance`].
+#[derive(Debug, Clone)]
+struct Staged {
+    /// Its index in `streams`.
+    index: usize,
+    /// The file of the game folder it stands for, when there is one (the
+    /// stream was written into the game earlier).
+    on_disk: Option<GameFile>,
+    name: String,
+    parents: Vec<String>,
+    hash: u32,
 }
 
 impl GameInstance {
@@ -224,7 +257,152 @@ impl GameInstance {
             streams,
             tocs,
             skipped,
+            resource_patches: false,
+            staged: Vec::new(),
         })
+    }
+
+    /// This game with `streams` shown as streams of it: readers
+    /// ([`Self::streams`], [`Self::find_stream`], [`Self::open_stream`],
+    /// [`Self::build_index`], [`Self::stream_parents`], [`Self::stream_hash`])
+    /// see the game as it will be once the streams are written into it.
+    ///
+    /// The streams of the game folder keep their indices: a staged stream is
+    /// listed after them, in the order given, or takes the place of the file
+    /// of the same name when the game folder has one. Staged streams of
+    /// `self` are dropped first. Nothing of the game folder is touched, and
+    /// the functions that write straight into the game refuse a staged
+    /// stream.
+    pub fn with_staged(&self, streams: &[StagedStream]) -> Result<Self> {
+        let mut game = self.on_disk();
+        for stream in streams {
+            let len = fs::metadata(&stream.path)
+                .map_err(|e| Error::io(&stream.path, e))?
+                .len();
+            let name =
+                String::from_utf8_lossy(&toc::normalize_name(stream.name.as_bytes())).into_owned();
+            let (index, on_disk) = match game.find_stream(&name) {
+                Some(index) => {
+                    if game.staged.iter().any(|s| s.index == index) {
+                        return Err(Error::InvalidArgument(format!(
+                            "stream {name} is staged twice"
+                        )));
+                    }
+                    let file = &mut game.streams[index];
+                    let on_disk = file.clone();
+                    file.path = stream.path.clone();
+                    file.len = len;
+                    (index, Some(on_disk))
+                }
+                None => {
+                    game.streams.push(GameFile {
+                        rel_path: format!("{name}.str"),
+                        path: stream.path.clone(),
+                        len,
+                    });
+                    (game.streams.len() - 1, None)
+                }
+            };
+            game.staged.push(Staged {
+                index,
+                on_disk,
+                name,
+                parents: stream.parents.clone(),
+                hash: stream.hash,
+            });
+        }
+        Ok(game)
+    }
+
+    /// The game as its folder has it: without the staged streams.
+    pub fn on_disk(&self) -> Self {
+        let mut game = self.clone();
+        let staged = std::mem::take(&mut game.staged);
+        let appended = staged.iter().filter(|s| s.on_disk.is_none()).count();
+        game.streams.truncate(game.streams.len() - appended);
+        for s in staged {
+            if let Some(file) = s.on_disk {
+                game.streams[s.index] = file;
+            }
+        }
+        game
+    }
+
+    /// Whether some streams are staged ([`Self::with_staged`]).
+    pub fn has_staged(&self) -> bool {
+        !self.staged.is_empty()
+    }
+
+    /// Whether stream `index` is staged: its file is not the game's.
+    pub fn is_staged(&self, index: usize) -> bool {
+        self.staged.iter().any(|s| s.index == index)
+    }
+
+    /// Indices of the staged streams.
+    pub fn staged_streams(&self) -> Vec<usize> {
+        self.staged.iter().map(|s| s.index).collect()
+    }
+
+    /// The number of streams the game folder has: every index below it is
+    /// the same with and without staging.
+    pub fn disk_stream_count(&self) -> usize {
+        self.streams.len() - self.staged.iter().filter(|s| s.on_disk.is_none()).count()
+    }
+
+    /// The index of this game from the index of the game folder
+    /// ([`Self::on_disk`]): the entries of the staged streams are read from
+    /// their files, the rest is copied.
+    pub fn staged_index(&self, on_disk: &ResourceIndex) -> ResourceIndex {
+        if self.staged.is_empty() {
+            return on_disk.clone();
+        }
+        let limit = self.disk_stream_count();
+        let mut entries: Vec<IndexEntry> = on_disk
+            .entries
+            .iter()
+            .filter(|e| (e.stream as usize) < limit && !self.is_staged(e.stream as usize))
+            .copied()
+            .collect();
+        for s in &self.staged {
+            if let Ok(stream) = self.open_stream(s.index) {
+                entries.extend(index_entries(s.index, &stream));
+            }
+        }
+        // Stable: the entries of one stream stay in the order of its resources.
+        entries.sort_by_key(|e| e.stream);
+        ResourceIndex { entries }
+    }
+
+    /// The file of stream `index` in the game folder: an error for a staged
+    /// stream, which the functions that write must not touch.
+    fn disk_file(&self, index: usize) -> Result<&GameFile> {
+        let entry = self
+            .streams
+            .get(index)
+            .ok_or_else(|| Error::InvalidArgument(format!("stream index {index} out of range")))?;
+        if self.is_staged(index) {
+            return Err(Error::InvalidArgument(format!(
+                "stream {} is new in the workspace and not in the game files: edit it \
+                 through the workspace",
+                entry.stream_name()
+            )));
+        }
+        Ok(entry)
+    }
+
+    /// Marks this instance as a staged copy of a game (stage 46,
+    /// [`crate::play::overlay`]) whose changed streams are written as
+    /// **resource patches** (stage 100, [`doctor_toolkit_live::resources`])
+    /// instead of rebuilt streams: the live module composes each stream in
+    /// memory from the game's own file and the patch. Never set for a real
+    /// game folder — the game cannot read a patch.
+    pub(crate) fn stage_resource_patches(&mut self) {
+        self.resource_patches = true;
+    }
+
+    /// Whether changed streams are written as resource patches.
+    pub fn resource_patches(&self) -> bool {
+        self.resource_patches
     }
 
     /// The game directory.
@@ -306,6 +484,14 @@ impl GameInstance {
                 }
             }
         }
+        for staged in &self.staged {
+            let list = parents.entry(staged.name.clone()).or_default();
+            for parent in &staged.parents {
+                if !list.contains(parent) {
+                    list.push(parent.clone());
+                }
+            }
+        }
         Ok(parents)
     }
 
@@ -325,6 +511,10 @@ impl GameInstance {
                 return Ok(Some(toc.names[found].hash));
             }
         }
+        let wanted = String::from_utf8_lossy(&toc::normalize_name(name.as_bytes())).into_owned();
+        if let Some(staged) = self.staged.iter().find(|s| s.name == wanted) {
+            return Ok(Some(staged.hash));
+        }
         Ok(None)
     }
 
@@ -340,6 +530,7 @@ impl GameInstance {
                     .filter(|&h| h != 0),
             );
         }
+        out.extend(self.staged.iter().map(|s| s.hash).filter(|&h| h != 0));
         Ok(out)
     }
 
@@ -356,21 +547,8 @@ impl GameInstance {
             .par_iter()
             .enumerate()
             .map(|(stream_index, file)| {
-                let result = StreamFile::open(&file.path).map(|stream| {
-                    let layout = stream.layout();
-                    layout
-                        .resources
-                        .iter()
-                        .enumerate()
-                        .map(|(resource_index, resource)| IndexEntry {
-                            stream: stream_index as u32,
-                            resource: resource_index as u32,
-                            header: resource.header,
-                            stored_size: layout.stored_size(resource_index) as u32,
-                            compressed: layout.is_compressed(resource_index),
-                        })
-                        .collect::<Vec<_>>()
-                });
+                let result =
+                    StreamFile::open(&file.path).map(|stream| index_entries(stream_index, &stream));
                 progress(file);
                 (stream_index, result)
             })
@@ -397,9 +575,7 @@ impl GameInstance {
         replacements: &[Replacement],
         options: ReplaceOptions,
     ) -> Result<ReplaceReport> {
-        let entry = self.streams.get(stream_index).ok_or_else(|| {
-            Error::InvalidArgument(format!("stream index {stream_index} out of range"))
-        })?;
+        let entry = self.disk_file(stream_index)?;
 
         let (rebuilt, old_data_size) = {
             let stream = StreamFile::open(&entry.path)?;
@@ -583,6 +759,15 @@ impl GameInstance {
         if let Some(parent) = backup.parent() {
             fs::create_dir_all(parent).map_err(|e| Error::io(parent, e))?;
         }
+        // A staged copy with resource patches keeps no copies of streams:
+        // the "backup" is a link to the game's own file (the file here is
+        // itself a link to it).
+        if self.resource_patches
+            && let Ok(target) = fs::canonicalize(&file.path)
+            && link_file(&target, &backup).is_ok()
+        {
+            return Ok(true);
+        }
         crate::atomic::copy(&file.path, &backup)?;
         Ok(true)
     }
@@ -593,6 +778,22 @@ impl GameInstance {
             game: self,
             steps: Vec::new(),
         }
+    }
+}
+
+fn link_file(target: &Path, at: &Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(target, at)
+    }
+    #[cfg(windows)]
+    {
+        std::os::windows::fs::symlink_file(target, at)
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = (target, at);
+        Err(std::io::Error::other("no symbolic links here"))
     }
 }
 
@@ -824,6 +1025,23 @@ impl GameInstance {
             let _ = fs::remove_file(self.root.join(BACKUP_DIR).join(rel_path));
         }
     }
+}
+
+/// The index entries of the resources of stream `stream_index`.
+fn index_entries(stream_index: usize, stream: &StreamFile) -> Vec<IndexEntry> {
+    let layout = stream.layout();
+    layout
+        .resources
+        .iter()
+        .enumerate()
+        .map(|(resource_index, resource)| IndexEntry {
+            stream: stream_index as u32,
+            resource: resource_index as u32,
+            header: resource.header,
+            stored_size: layout.stored_size(resource_index) as u32,
+            compressed: layout.is_compressed(resource_index),
+        })
+        .collect()
 }
 
 /// The ancestors of `name` in a map from [`GameInstance::stream_parents`],

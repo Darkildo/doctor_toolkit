@@ -22,6 +22,416 @@ macro_rules! out {
     };
 }
 
+/// `live resources`: the streams the module composes in memory from the
+/// game's files and resource patches (stage 100).
+pub fn resources(link: &LinkArgs) -> Result<()> {
+    let mut c = link.connect()?;
+    if !c.has_resources() {
+        bail!(
+            "the module speaks protocol {}: it composes no streams (stage 100 needs protocol 9)",
+            c.version()
+        );
+    }
+    let r = c.resources()?;
+    if link.json {
+        out!(
+            "{}",
+            json!({
+                "hooked": r.hooked,
+                "total": r.total,
+                "open": r.open,
+                "streams": r.streams.iter().map(|s| json!({
+                    "from": s.from, "to": s.to, "opens": s.opens, "failed": s.failed,
+                    "replaced": s.replaced, "added": s.added,
+                    "original_len": s.original_len, "virtual_len": s.virtual_len,
+                    "data_size": s.data_size, "compose_micros": s.compose_micros,
+                    "bytes_read": s.bytes_read, "error": s.error,
+                })).collect::<Vec<_>>(),
+            })
+        );
+        return Ok(());
+    }
+    if r.total == 0 {
+        out!("the module composes no streams (no `resources=` lines in doctor_live.cfg)");
+        return Ok(());
+    }
+    out!(
+        "{} stream(s) with a resource patch, {} opened by the game, {} open now; hooks {}",
+        r.total,
+        r.streams.iter().filter(|s| s.opens > 0).count(),
+        r.open,
+        if r.hooked { "on" } else { "OFF" }
+    );
+    for s in &r.streams {
+        if s.opens == 0 {
+            out!("  {}: not opened yet", s.from);
+            continue;
+        }
+        out!(
+            "  {}: {}x, {} replaced, {} added, {} -> {} bytes, data size {}, composed in {} us, {} bytes read{}{}",
+            s.from,
+            s.opens,
+            s.replaced,
+            s.added,
+            s.original_len,
+            s.virtual_len,
+            s.data_size,
+            s.compose_micros,
+            s.bytes_read,
+            if s.failed > 0 {
+                format!(", {} open(s) NOT composed", s.failed)
+            } else {
+                String::new()
+            },
+            if s.error.is_empty() {
+                String::new()
+            } else {
+                format!(" — {}", s.error)
+            }
+        );
+    }
+    if (r.streams.len() as u32) < r.total {
+        out!("  … and {} more", r.total - r.streams.len() as u32);
+    }
+    Ok(())
+}
+
+/// The four ids of a resource: one hex number or four joined by dots.
+fn resource_ids(text: &str) -> Result<[u32; 4]> {
+    let hex = |s: &str| {
+        u32::from_str_radix(s.trim_start_matches("0x"), 16)
+            .with_context(|| format!("`{s}` is not a hex number"))
+    };
+    let parts: Vec<&str> = text.split('.').collect();
+    match parts.as_slice() {
+        [one] => Ok([hex(one)?; 4]),
+        [a, b, c, d] => Ok([hex(a)?, hex(b)?, hex(c)?, hex(d)?]),
+        _ => bail!("`{text}`: expected one hex id or four joined by dots"),
+    }
+}
+
+/// `live resource IDS`: a loaded resource in the game's table of resources;
+/// its data in memory saved (`out`) or compared with a file (`compare`).
+pub fn resource(
+    link: &LinkArgs,
+    ids: &str,
+    out_file: Option<&std::path::Path>,
+    compare: Option<&std::path::Path>,
+) -> Result<()> {
+    let ids = resource_ids(ids)?;
+    let mut c = link.connect()?;
+    if !c.has_resources() {
+        bail!(
+            "the module speaks protocol {}: it does not read the table of resources (protocol 9)",
+            c.version()
+        );
+    }
+    let Some(l) = c.loaded_resource(ids)? else {
+        if link.json {
+            out!("{}", json!({ "loaded": false }));
+            return Ok(());
+        }
+        bail!("no loaded resource has these ids (its stream is not loaded)");
+    };
+    let mut data = Vec::new();
+    if out_file.is_some() || compare.is_some() {
+        data.reserve(l.size as usize);
+        while (data.len() as u32) < l.size {
+            let n = (l.size - data.len() as u32).min(0x8000) as u16;
+            let chunk = c
+                .peek(l.data + data.len() as u32, n)
+                .context("cannot read the data of the resource")?;
+            if chunk.is_empty() {
+                bail!("the module read nothing at {:#010x}", l.data);
+            }
+            data.extend_from_slice(&chunk);
+        }
+        if let Some(path) = out_file {
+            std::fs::write(path, &data).with_context(|| path.display().to_string())?;
+        }
+    }
+    let compared = match compare {
+        None => None,
+        Some(path) => {
+            let want = std::fs::read(path).with_context(|| path.display().to_string())?;
+            let differing = data.iter().zip(&want).filter(|(a, b)| a != b).count();
+            let first = data.iter().zip(&want).position(|(a, b)| a != b);
+            Some((want.len(), differing, first))
+        }
+    };
+    if link.json {
+        out!(
+            "{}",
+            json!({
+                "loaded": true,
+                "record": l.record, "data": l.data, "size": l.size,
+                "refs": l.refs, "flags": l.flags,
+                "compared": compared.map(|(len, differing, first)| json!({
+                    "file_len": len, "differing_bytes": differing, "first_difference": first,
+                    "same": differing == 0 && len == l.size as usize,
+                })),
+            })
+        );
+        return Ok(());
+    }
+    out!(
+        "record {:#010x}: data {:#010x}, {} bytes, {} reference(s), flags {:#06x}",
+        l.record,
+        l.data,
+        l.size,
+        l.refs,
+        l.flags
+    );
+    if let Some(path) = out_file {
+        out!("saved {} bytes to {}", data.len(), path.display());
+    }
+    if let Some((len, differing, first)) = compared {
+        if differing == 0 && len == l.size as usize {
+            out!("same as the file: {len} bytes");
+        } else {
+            out!(
+                "DIFFERS from the file: {} bytes in memory, {len} in the file, {differing} differing byte(s){}",
+                l.size,
+                first.map_or(String::new(), |at| format!(", the first at {at:#x}"))
+            );
+        }
+    }
+    Ok(())
+}
+
+/// What the comparison of one resource in memory gave.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum InMemory {
+    Same,
+    Differs,
+    OtherSize,
+    NotLoaded,
+    /// The record is there with its size, the pointer to the data is null:
+    /// the game gave the image back after the loader of the type took it
+    /// (textures go to the graphics card).
+    Released,
+    Unreadable,
+}
+
+/// Compares the first `limit` bytes of `want` with the data of the loaded
+/// resource `ids`; the number of differing bytes and the first of them.
+fn compare_loaded(
+    c: &mut Client,
+    ids: [u32; 4],
+    want: &[u8],
+    limit: usize,
+) -> Result<(InMemory, usize, Option<usize>, Option<proto::Loaded>)> {
+    let Some(l) = c.loaded_resource(ids)? else {
+        return Ok((InMemory::NotLoaded, 0, None, None));
+    };
+    if l.size as usize != want.len() {
+        return Ok((InMemory::OtherSize, 0, None, Some(l)));
+    }
+    if l.data == 0 {
+        return Ok((InMemory::Released, 0, None, Some(l)));
+    }
+    let len = want.len().min(limit);
+    let mut differing = 0usize;
+    let mut first = None;
+    let mut at = 0usize;
+    while at < len {
+        let n = (len - at).min(0x8000);
+        let Ok(chunk) = c.peek(l.data + at as u32, n as u16) else {
+            return Ok((InMemory::Unreadable, differing, first, Some(l)));
+        };
+        if chunk.len() != n {
+            return Ok((InMemory::Unreadable, differing, first, Some(l)));
+        }
+        for (i, (a, b)) in chunk.iter().zip(&want[at..at + n]).enumerate() {
+            if a != b {
+                differing += 1;
+                first.get_or_insert(at + i);
+            }
+        }
+        at += n;
+    }
+    let state = if differing == 0 {
+        InMemory::Same
+    } else {
+        InMemory::Differs
+    };
+    Ok((state, differing, first, Some(l)))
+}
+
+/// `live resource-check`: the resources in the game's memory against the
+/// streams of a folder (what `apply` writes).
+pub fn resource_check(
+    link: &LinkArgs,
+    expected: &std::path::Path,
+    streams: &[String],
+    original: Option<&std::path::Path>,
+    sample: u32,
+) -> Result<()> {
+    use doctor_toolkit::game::GameInstance;
+    use doctor_toolkit::workspace::ResourceKey;
+    use std::collections::BTreeMap;
+    let mut c = link.connect()?;
+    if !c.has_resources() {
+        bail!(
+            "the module speaks protocol {}: it does not read the table of resources (protocol 9)",
+            c.version()
+        );
+    }
+    let want = GameInstance::open(expected)?;
+    let base = original.map(GameInstance::open).transpose()?;
+    let mut report = Vec::new();
+    let mut total: BTreeMap<InMemory, usize> = BTreeMap::new();
+    for name in streams {
+        let index = want
+            .find_stream(name)
+            .with_context(|| format!("no stream {name} in {}", expected.display()))?;
+        let file = want.open_stream(index)?;
+        // The resources of the unchanged game by key: type and ids.
+        let before = match &base {
+            None => None,
+            Some(game) => Some(match game.find_stream(name) {
+                None => BTreeMap::new(),
+                Some(i) => {
+                    let f = game.open_stream(i)?;
+                    let mut map = BTreeMap::new();
+                    for (n, r) in f.layout().resources.iter().enumerate() {
+                        map.insert((r.header.type_id, r.header.ids), f.resource_data(n)?);
+                    }
+                    map
+                }
+            }),
+        };
+        // By type: resources that are the same, differ (or cannot be
+        // read), are released, are absent.
+        let mut by_type: BTreeMap<String, [usize; 4]> = BTreeMap::new();
+        let mut changed = Vec::new();
+        for (n, r) in file.layout().resources.iter().enumerate() {
+            let data = file.resource_data(n)?;
+            let key = ResourceKey::new(name, &r.header);
+            let state_before = before
+                .as_ref()
+                .map(|m| m.get(&(r.header.type_id, r.header.ids)));
+            let is_changed = match state_before {
+                None => true,
+                Some(None) => true,
+                Some(Some(old)) => *old != data,
+            };
+            // A resource without ids (a SimGroup) is not in the table.
+            if r.header.ids == [0; 4] {
+                if is_changed && before.is_some() {
+                    changed.push(json!({
+                        "key": key.to_string(), "size": data.len(),
+                        "added": matches!(state_before, Some(None)),
+                        "state": "no ids: not in the table of resources",
+                    }));
+                }
+                continue;
+            }
+            let full = is_changed && before.is_some();
+            let limit = if full || before.is_none() && sample == 0 {
+                usize::MAX
+            } else {
+                sample as usize
+            };
+            let (state, differing, first, loaded) =
+                compare_loaded(&mut c, r.header.ids, &data, limit)?;
+            *total.entry(state).or_default() += 1;
+            let slot = match state {
+                InMemory::Same => 0,
+                InMemory::Differs | InMemory::OtherSize | InMemory::Unreadable => 1,
+                InMemory::Released => 2,
+                InMemory::NotLoaded => 3,
+            };
+            by_type.entry(key.type_name()).or_default()[slot] += 1;
+            if full {
+                changed.push(json!({
+                    "key": key.to_string(),
+                    "size": data.len(),
+                    "added": matches!(state_before, Some(None)),
+                    "old_size": state_before.flatten().map(Vec::len),
+                    "state": match state {
+                        InMemory::Same => "same",
+                        InMemory::Differs => "differs",
+                        InMemory::OtherSize => "other size",
+                        InMemory::NotLoaded => "not loaded",
+                        InMemory::Released => "in the table with this size; its data went to the loader of its type (null pointer)",
+                        InMemory::Unreadable => "unreadable",
+                    },
+                    "differing_bytes": differing,
+                    "first_difference": first,
+                    "size_in_memory": loaded.map(|l| l.size),
+                    "data": loaded.map(|l| format!("{:#010x}", l.data)),
+                    "refs": loaded.map(|l| l.refs),
+                }));
+            }
+        }
+        report.push(json!({
+            "stream": name,
+            "resources": file.layout().resources.len(),
+            "changed": changed,
+            "by_type": by_type.iter().map(|(t, n)| json!({
+                "type": t, "same": n[0], "differs": n[1], "released": n[2],
+                "not_loaded": n[3],
+            })).collect::<Vec<_>>(),
+        }));
+    }
+    if link.json {
+        out!("{}", serde_json::to_string_pretty(&report)?);
+        return Ok(());
+    }
+    for s in &report {
+        out!(
+            "{}: {} resource(s)",
+            s["stream"].as_str().unwrap_or(""),
+            s["resources"]
+        );
+        for r in s["changed"].as_array().into_iter().flatten() {
+            out!(
+                "  {} {} ({} bytes{}): {}{}",
+                if r["added"] == true {
+                    "added"
+                } else {
+                    "changed"
+                },
+                r["key"].as_str().unwrap_or(""),
+                r["size"],
+                match r["old_size"].as_u64() {
+                    Some(old) if Some(old) != r["size"].as_u64() => format!(", was {old}"),
+                    _ => String::new(),
+                },
+                r["state"].as_str().unwrap_or(""),
+                match r["differing_bytes"].as_u64() {
+                    Some(n) if n > 0 => format!(
+                        ", {n} differing byte(s), the first at {:#x}",
+                        r["first_difference"].as_u64().unwrap_or(0)
+                    ),
+                    _ => String::new(),
+                }
+            );
+        }
+        for t in s["by_type"].as_array().into_iter().flatten() {
+            out!(
+                "  type {}: {} same, {} differ, {} handed over, {} not loaded",
+                t["type"].as_str().unwrap_or(""),
+                t["same"],
+                t["differs"],
+                t["released"],
+                t["not_loaded"]
+            );
+        }
+    }
+    out!(
+        "in all: {} same, {} differ, {} of another size, {} with a null data pointer, {} not loaded, {} unreadable",
+        total.get(&InMemory::Same).copied().unwrap_or(0),
+        total.get(&InMemory::Differs).copied().unwrap_or(0),
+        total.get(&InMemory::OtherSize).copied().unwrap_or(0),
+        total.get(&InMemory::Released).copied().unwrap_or(0),
+        total.get(&InMemory::NotLoaded).copied().unwrap_or(0),
+        total.get(&InMemory::Unreadable).copied().unwrap_or(0)
+    );
+    Ok(())
+}
+
 /// `live stream …`
 #[derive(Subcommand)]
 pub enum StreamCommand {

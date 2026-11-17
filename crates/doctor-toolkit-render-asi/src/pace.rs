@@ -103,6 +103,7 @@ extern "C" fn present() {
             }
         }
         PRESENTS.fetch_add(1, Ordering::Relaxed);
+        crate::draws::frame();
         let force = FORCE_WAIT.load(Ordering::Relaxed);
         if force != 0 {
             // SAFETY: the u32 read at 0x0060D8DA (checked).
@@ -160,7 +161,7 @@ pub fn install(config: &RenderConfig, done: &mut Vec<String>) {
             FORCE_WAIT.store(if config.vsync_one { 1 } else { 2 }, Ordering::Relaxed);
             done.push("test: the limiter waits as with vsync on (0x00F15A48)".into());
         }
-        if (config.fps > 0 || config.memory_interval() > 0 || config.force_vsync)
+        if (config.fps > 0 || config.memory_interval() > 0 || config.force_vsync || config.draws())
             && win::redirect_call(addr::PRESENT_CALL, present as extern "C" fn() as usize)
             && config.fps > 0
         {

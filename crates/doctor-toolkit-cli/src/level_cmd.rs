@@ -168,7 +168,7 @@ pub fn run(command: LevelCommand) -> Result<()> {
             mode,
         } => {
             let offset = offset.as_deref().map(parse_floats).transpose()?;
-            let (game, index, group) = open_group(&object)?;
+            let (game, index, group) = open_group(&object, &mode)?;
             let mut ws = workspace_cmd::open_for_edit(&game, &mode)?;
             let taken = all_guids(&game, &index);
             let (copy, guid) = edit::duplicate(
@@ -183,7 +183,7 @@ pub fn run(command: LevelCommand) -> Result<()> {
             workspace_cmd::finish_edit(&game, &mut ws, &mode, vec![object.stream.clone()])
         }
         LevelCommand::Remove { object, mode } => {
-            let (game, _, group) = open_group(&object)?;
+            let (game, _, group) = open_group(&object, &mode)?;
             let mut ws = workspace_cmd::open_for_edit(&game, &mode)?;
             let dangling = edit::remove(&game, &mut ws, group, object.object)?;
             out!("object {} removed", object.object);
@@ -204,7 +204,7 @@ pub fn run(command: LevelCommand) -> Result<()> {
             force,
             mode,
         } => {
-            let (game, index, group) = open_group(&object)?;
+            let (game, index, group) = open_group(&object, &mode)?;
             let template_group = match (template_stream, template_resource) {
                 (Some(s), Some(r)) => Location {
                     stream: find_stream(&game, &s)?,
@@ -279,7 +279,7 @@ pub fn run(command: LevelCommand) -> Result<()> {
     }
 }
 
-fn find_stream(game: &GameInstance, name: &str) -> Result<usize> {
+pub(crate) fn find_stream(game: &GameInstance, name: &str) -> Result<usize> {
     game.find_stream(name)
         .with_context(|| format!("stream `{name}` not found"))
 }
@@ -298,8 +298,17 @@ fn parse_floats(text: &str) -> Result<[f32; 3]> {
     Ok(out)
 }
 
-fn open_index(game_dir: &std::path::Path) -> Result<(GameInstance, ResourceIndex)> {
-    let game = GameInstance::open(game_dir)?;
+pub(crate) fn open_index(game_dir: &std::path::Path) -> Result<(GameInstance, ResourceIndex)> {
+    open_index_with(game_dir, None)
+}
+
+/// The game with the new streams of the workspace in `workspace_dir` (the
+/// default one for `None`) staged, and its index.
+pub(crate) fn open_index_with(
+    game_dir: &std::path::Path,
+    workspace_dir: Option<&std::path::Path>,
+) -> Result<(GameInstance, ResourceIndex)> {
+    let game = workspace_cmd::staged(GameInstance::open(game_dir)?, workspace_dir);
     let (index, errors) = game.build_index(|_| {});
     if let Some((stream, error)) = errors.first() {
         eprintln!(
@@ -311,8 +320,11 @@ fn open_index(game_dir: &std::path::Path) -> Result<(GameInstance, ResourceIndex
     Ok((game, index))
 }
 
-fn open_group(args: &ObjectArgs) -> Result<(GameInstance, ResourceIndex, Location)> {
-    let (game, index) = open_index(&args.game_dir)?;
+fn open_group(
+    args: &ObjectArgs,
+    mode: &EditMode,
+) -> Result<(GameInstance, ResourceIndex, Location)> {
+    let (game, index) = open_index_with(&args.game_dir, mode.workspace_dir.as_deref())?;
     let group = Location {
         stream: find_stream(&game, &args.stream)?,
         resource: args.resource,
@@ -321,7 +333,10 @@ fn open_group(args: &ObjectArgs) -> Result<(GameInstance, ResourceIndex, Locatio
 }
 
 /// GUIDs of every SimGroup object of the game, so that new GUIDs are unique.
-fn all_guids(game: &GameInstance, index: &ResourceIndex) -> std::collections::HashSet<Guid> {
+pub(crate) fn all_guids(
+    game: &GameInstance,
+    index: &ResourceIndex,
+) -> std::collections::HashSet<Guid> {
     use rayon::prelude::*;
     let simgroup = doctor_toolkit::level::TYPE_SIMGROUP;
     let mut by_stream: std::collections::HashMap<usize, Vec<usize>> = Default::default();

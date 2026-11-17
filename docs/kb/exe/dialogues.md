@@ -3,8 +3,8 @@ type: exe
 status: partial
 confidence: exe
 editions: ["1.0.789.0"]
-stages: [72]
-sources: ["docs/formats/dialogues.md §2", "docs/formats/dialogues.md §2.1", "docs/formats/dialogues.md §3", "docs/formats/dialogues.md §8"]
+stages: [72, 75]
+sources: ["docs/formats/dialogues.md §2", "docs/formats/dialogues.md §2.1", "docs/formats/dialogues.md §3", "docs/formats/dialogues.md §8", "docs/analysis/handing-out.md §7", "research/dialogue_exe.py"]
 tags: [exe, dialogues, speech]
 updated: 2026-11-16
 ---
@@ -24,14 +24,25 @@ updated: 2026-11-16
 | `0x006EFE00` | узел 0x24 — присваивание | dialogues.md §2.1 |
 | `0x00898480` | узел 0x20: ставит флаг x−0x13 разговорного NPC | dialogues.md §2.1 |
 | `0x008982E0` | узел 0x21: ставит флаг x−0x1A | dialogues.md §2.1 |
-| `0x006EBFF0` | запрос движка по номеру «переменной» условия | dialogues.md §2.1; dialogues.md §8 |
+| `0x006EBFF0` | запрос движка по номеру «переменной» условия (чтение логического значения; 92 случая, таблицы `0x006EC6DC`, `0x006EC648`) | dialogues.md §2.1; handing-out.md §7.2 |
+| `0x006EB980` | запись логической «переменной» (индекс — номер минус 3; таблицы `0x006EBD70`, `0x006EBD34`) | handing-out.md §7.2 |
+| `0x006EBDD0` | запись целой «переменной»: ничего не делает | handing-out.md §7.2 |
+| `0x006F89C0` | событие разговора `{номер, игрок, собеседник}` → менеджер `*0x01129994` | handing-out.md §7.2 |
+| `0x006F89E0` | разбор события разговора по номеру «переменной» (таблицы `0x006F8CC8`, `0x006F8CA4`) | handing-out.md §7.2 |
+| `0x006F8A32` | «переменная» `0x23`: собеседник шлёт сообщение `+0x1FC0` (успех разговора) | handing-out.md §7.3 |
+| `0x006F8AED` | «переменная» `0x27`: собеседник шлёт сообщение `+0x1FC8` | handing-out.md §7.3 |
+| `0x006F8A9E` | «переменная» `0x24`: собеседник шлёт сообщение `+0x1FD0` | handing-out.md §7.3 |
+| `0x0070FBD0` | читатель атрибутов `ChangeNPCSettings` (таблица переходов `0x00710070`) | handing-out.md §7.3 |
+| `0x00710348` | `ChangeNPCSettings`: имена сообщений 3, 4, 5, 7, 6 → переменные персонажа `+0x1FC0`…`+0x1FE0` | handing-out.md §7.3 |
+| `0x006EB140` | читатель атрибутов `ChangeDialog` (таблица переходов `0x006EB2E8`) | handing-out.md §7.3 |
 | `0x00898330` | чтение флагов 0..6 NPC (номера запросов `0x0C`..`0x12`) | dialogues.md §2.1 |
 | `0x006F4840` | загрузчик `chv` (версия 3) | dialogues.md §3 |
 
 ## Что неизвестно
 
-Названий у номеров запросов `0x006EBFF0` нет; то, что номера `0x0C`..`0x12` — флаги NPC, источник помечает гипотезой.
+Названы «переменные», которые встречаются в файлах игры и понятны по коду (`0x0C`…`0x12`, `0x23`, `0x24`, `0x27`, `0x5D`); остальные номера — [вопрос](../questions/dialogue-condition-variables.md).
 
 ## Подробнее
 
 - [Диалоги](../../formats/dialogues.md) §2, §2.1, §3, §8
+- [Выдача из логики: диалог как меню](../../analysis/handing-out.md) §7

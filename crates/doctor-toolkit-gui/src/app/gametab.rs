@@ -12,7 +12,7 @@ use std::sync::mpsc::{Receiver, channel};
 
 use egui::RichText;
 
-use doctor_toolkit::level::{Location, edit};
+use doctor_toolkit::level::Location;
 use doctor_toolkit::play::start::{self, SpawnPoint, StartOptions};
 use doctor_toolkit_mods::i18n::{tr, trf};
 
@@ -216,6 +216,10 @@ impl BrowserApp {
                     .show(ui, |ui| self.live_panel(ui));
             });
         let info = self.game_tab_info();
+        // The last crash of the game and its report (stage 99).
+        if let Some(watch) = &mut self.play.crash {
+            watch.ui(ui);
+        }
         let action = self.play.game_view.ui(ui, &info);
         match action {
             Some(Action::Play) => self.pending.push(super::Command::Play),
@@ -402,10 +406,7 @@ impl BrowserApp {
                         }
                     }
                     ui.add_space(6.0);
-                    let template = points
-                        .iter()
-                        .find(|p| p.kind == Some(2) && p.message.is_none())
-                        .or_else(|| points.iter().find(|p| p.message.is_none()));
+                    let template = start::spawn_template(points);
                     ui.label(RichText::new(tr("play.here_create_text")).weak());
                     if ui
                         .add_enabled(
@@ -463,18 +464,15 @@ impl BrowserApp {
         let index = game
             .find_stream(stream)
             .ok_or_else(|| format!("no stream {stream}"))?;
-        let at = template.position.unwrap_or(eye);
-        let offset = [eye[0] - at[0], eye[1] - at[1], eye[2] - at[2]];
         let location = Location {
             stream: index,
             resource: template.resource,
         };
         let taken = self.levels.get(&tab).map(|l| l.guids()).unwrap_or_default();
         let ws = self.workspace_mut()?;
-        let (copy, guid) = edit::duplicate(&game, ws, location, template.object, offset, &|g| {
-            taken.contains(g)
-        })
-        .map_err(|e| e.to_string())?;
+        // The same operation `play` of the MCP server records for `position`.
+        let (copy, guid) = start::copy_spawn(&game, ws, template, eye, &|g| taken.contains(g))
+            .map_err(|e| e.to_string())?;
         // The point exists once the workspace is in the game: apply first.
         let play = &mut self.settings.game_mut(game.root()).play;
         play.apply_before = true;

@@ -58,6 +58,13 @@ original files are never lost.
   time of day, unlocks the game's 30 fps vsync, limits frames without a busy
   core, widens the field of view, adds FXAA and sharpening, and "Play" can
   start the game Large Address Aware — all without writing into the game.
+- **Native mods:** the platform module `doctor_platform.asi` lets a mod's
+  DLL add new classes of level objects, new Lua functions, listeners and
+  hooks, with an SDK for Rust and C and an example
+  (`examples/native-class`, `docs/analysis/asi-platform.md`). Such a mod
+  travels as one mod file; the mod manager installs its code only after
+  the player has seen the files and their hashes and agreed, only into the
+  edition 1.0.789.0, and takes it away with the mod (`docs/mods.md` §1.6).
 - **AI assistants:** `doctor-toolkit mcp` lets Claude Code, Claude Desktop or
   any MCP client search the game, read resources as JSON and follow the
   logic of missions; with flags it also edits through the workspace (each
@@ -87,7 +94,7 @@ documentation of this tool only.
 2. Unpack it and start the editor with the folder of your game:
 
    ```sh
-   tar xzf doctor_toolkit-0.0.7-linux-x86_64.tar.gz && cd doctor_toolkit-0.0.7-linux-x86_64
+   tar xzf doctor_toolkit-0.0.8-linux-x86_64.tar.gz && cd doctor_toolkit-0.0.8-linux-x86_64
    ./doctor-toolkit-gui "/path/to/The Godfather II"
    ```
 
@@ -291,7 +298,7 @@ Download `doctor_toolkit-<version>-linux-x86_64.tar.gz` from the releases,
 unpack it anywhere and run the programs from that folder:
 
 ```sh
-tar xzf doctor_toolkit-0.0.7-linux-x86_64.tar.gz && cd doctor_toolkit-0.0.7-linux-x86_64
+tar xzf doctor_toolkit-0.0.8-linux-x86_64.tar.gz && cd doctor_toolkit-0.0.8-linux-x86_64
 ./doctor-toolkit-gui "/path/to/The Godfather II"     # the editor
 ./open-mod-manager "/path/to/The Godfather II"       # Open Mod Manager, for players
 ./doctor-toolkit --help                              # the command line
@@ -429,6 +436,8 @@ $T logic-export "$GAME" -o logic --type simgroup --stream mp_mall   # level obje
 $T logic-import "$GAME" logic/gf2/frontend/00046_simgroup_00000000.json   # edited JSON back
 $T save GF2-EN-autosave --chunk variables --game "$GAME"   # look into a save file (read only)
 $T simgroup-set "$GAME" gf2/frontend 46 12 --set RenderingParams.1=0.5 --position 1,2,3
+$T simgroup-add "$GAME" gf2/cuba/local 714 TriggerAuto   # a new object of a class, empty attributes
+$T class-schema examples/native-class/classes.toml   # classes of a native mod (DOCTOR_TOOLKIT_CLASSES)
 $T logic-graph "$GAME" mission:killingcastro      # nodes, wires, dangling messages
 $T logic-graph "$GAME" checkpoint:737 --dot | dot -Tsvg > cp737.svg
 $T messages "$GAME" cp_737_loaded                # who sends and who hears it

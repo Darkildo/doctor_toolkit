@@ -14,7 +14,7 @@ use egui::RichText;
 
 use doctor_toolkit::game::GameInstance;
 use doctor_toolkit::live;
-use doctor_toolkit::play::overlay::{self, Overlay, Source};
+use doctor_toolkit::play::overlay::{self, Overlay, Source, Streams};
 use doctor_toolkit::play::{self, Session, SessionState};
 
 use crate::i18n::{tr, trf};
@@ -74,6 +74,9 @@ pub struct Player {
     obstacle: Option<String>,
     /// The last word about the game: started, exited, failed.
     message: Option<(String, bool)>,
+    /// Whether the resources of the mods are put into the game's streams
+    /// in memory (stage 100) instead of rebuilding the streams.
+    pub in_memory: bool,
 }
 
 impl Player {
@@ -117,8 +120,9 @@ impl Player {
     fn spawn(&mut self, game: Arc<GameInstance>, staged: bool, ctx: &egui::Context) {
         let (tx, rx) = channel();
         let ctx = ctx.clone();
+        let streams = Streams::in_memory(self.in_memory);
         std::thread::spawn(move || {
-            let _ = tx.send(launch(&game, staged).map_err(|e| e.to_string()));
+            let _ = tx.send(launch(&game, staged, streams).map_err(|e| e.to_string()));
             ctx.request_repaint();
         });
         self.starting = Some(rx);
@@ -212,13 +216,19 @@ impl Drop for Player {
 }
 
 /// Stages the mods (when `staged`), installs the module and starts the game.
-fn launch(game: &GameInstance, staged: bool) -> doctor_toolkit::Result<Launched> {
+fn launch(game: &GameInstance, staged: bool, streams: Streams) -> doctor_toolkit::Result<Launched> {
     let root = game.root();
     let running = play::game_processes();
     if !running.is_empty() {
         return Err(doctor_toolkit::Error::InvalidArgument(
             tr("play_mods.already_running").to_owned(),
         ));
+    }
+    // The code of the mods the player agreed to (stage 81): staged data
+    // still needs its code in the game folder. Before the plan of the
+    // launch: a loader installed now changes it (the DLL override of Wine).
+    for note in doctor_toolkit::mods::native::prepare(game) {
+        doctor_toolkit::report::log(&note);
     }
     let installs = doctor_toolkit::install::detect(&crate::games::search_roots());
     let method = play::auto_method(root, &installs);
@@ -230,7 +240,7 @@ fn launch(game: &GameInstance, staged: bool) -> doctor_toolkit::Result<Launched>
         let dir = overlay::default_dir(root).ok_or_else(|| {
             doctor_toolkit::Error::InvalidArgument("no folder for the staged files".into())
         })?;
-        let built = Overlay::build(game, Some(&Source::Mods), None, &dir)?;
+        let built = Overlay::build_with(game, Some(&Source::Mods), None, &dir, streams)?;
         let path = live::module_binary().ok_or_else(|| {
             doctor_toolkit::Error::InvalidArgument("the live module is not found".into())
         })?;
@@ -243,17 +253,36 @@ fn launch(game: &GameInstance, staged: bool) -> doctor_toolkit::Result<Launched>
             journal: false,
             files_log: false,
             redirects: built.redirects().to_vec(),
+            resources: built.resources().to_vec(),
+            resources_dump: false,
         };
         let module = live::ModuleInstall::write(root, &bytes, &config)?;
         (Some(built), Some(module))
     } else {
         (None, None)
     };
+    // The crash module and the list of mods for its reports (stage 99).
+    for note in doctor_toolkit::crash::prepare(
+        game,
+        "doctor-toolkit-mods",
+        if staged {
+            "mods staged outside the game"
+        } else {
+            "written into the game"
+        },
+        true,
+    ) {
+        doctor_toolkit::report::log(&note);
+    }
     let session = Session::start(&plan)?;
     doctor_toolkit::report::log(&format!(
         "play with mods: {} ({})",
         method.describe(),
-        if staged { "staged" } else { "written" }
+        match (staged, streams) {
+            (false, _) => "written",
+            (true, Streams::Rebuilt) => "staged, streams rebuilt",
+            (true, Streams::Patched) => "staged, resources in memory",
+        }
     ));
     Ok(Launched {
         session,

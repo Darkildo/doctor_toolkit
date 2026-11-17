@@ -1,0 +1,16 @@
+[package]
+name = "doctor-toolkit-sdk"
+description = "SDK of native mods of The Godfather II (PC 1.0.789.0): the ABI of the platform module doctor_platform.asi — new SimGroup classes, Lua functions, messages and hooks — for Rust, with the same ABI as the C header include/doctor_sdk.h"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+name = "doctor_sdk"
+path = "src/lib.rs"
+
+# No dependencies: native mods and the platform module build this crate for
+# i686-pc-windows-gnu, the workspace for the host (the tests of the ABI).
+[dependencies]

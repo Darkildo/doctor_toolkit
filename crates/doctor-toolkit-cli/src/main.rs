@@ -1,7 +1,9 @@
 //! Command line interface of doctor_toolkit.
 
 mod anim_cmd;
+mod class_cmd;
 mod collision_cmd;
+mod crash_cmd;
 mod create_cmd;
 mod cutscene_cmd;
 mod dialogue_cmd;
@@ -16,6 +18,7 @@ mod logic_cmd;
 mod logic_graph_cmd;
 mod logic_run_cmd;
 mod lua_cmd;
+mod material_cmd;
 mod mcp_cmd;
 mod model_cmd;
 mod mods_cmd;
@@ -29,6 +32,7 @@ mod sbk_cmd;
 mod script_cmd;
 mod sound_cmd;
 mod text_cmd;
+mod tunables_cmd;
 mod types_cmd;
 mod video_cmd;
 mod voice_cmd;
@@ -87,6 +91,13 @@ enum Command {
     /// Create a new stream with entries in the tables of contents (recorded in the workspace)
     AddStream(create_cmd::AddStream),
 
+    /// Add a new SimGroup to a stream: empty, or with copies of the objects
+    /// of another (recorded in the workspace)
+    ///
+    /// The stream is one of the game or one made with `add-stream`; `level
+    /// add` then places objects in it by its stream and resource index.
+    AddSimgroup(create_cmd::AddSimGroup),
+
     /// Import a glTF model over a model of the game or as a new model set
     /// (recorded in the workspace)
     ///
@@ -121,6 +132,14 @@ enum Command {
     /// A reference resolves when the stream itself or a stream loaded before
     /// it (table-of-contents prerequisites) holds the target.
     CheckRefs(create_cmd::CheckRefs),
+
+    /// Check the workspace's edits before they are written into the game
+    ///
+    /// Every changed resource is read by its parser, objects can show their
+    /// models, references an edit adds resolve, conflicts with the game
+    /// files, messages of changed SimGroups, the project. Fails when there
+    /// are errors (warnings do not count).
+    CheckEdits(create_cmd::CheckEdits),
 
     /// List the resources of a stream
     List {
@@ -266,6 +285,10 @@ enum Command {
         texture: String,
         /// The new image (.dds or .png)
         file: PathBuf,
+        /// Replace every copy of the texture: the one with the same name
+        /// hash in every stream of the game (as the Retexture wizard does)
+        #[arg(long)]
+        all_copies: bool,
         #[command(flatten)]
         mode: EditMode,
     },
@@ -308,6 +331,12 @@ enum Command {
 
     /// List the `$name` text references of an interface movie (apx), or point one at another string
     ApxTextRefs(text_cmd::ApxTextRefs),
+
+    /// Show the parameters of a material, or set them: tint colours and other numbers, textures (recorded in the workspace)
+    ///
+    /// A material is shared by every model that names it. Without `--set`
+    /// the parameters are listed as `--set` takes them.
+    Material(material_cmd::MaterialArgs),
 
     /// Export game-logic resources (simgroup, metamodel, variabledictionary, partsdb, graph) as JSON
     ///
@@ -357,6 +386,16 @@ enum Command {
     ///
     /// The change is recorded in the workspace; `--direct` also writes it into the game.
     SimgroupSet(logic_cmd::SimGroupSet),
+
+    /// Add an object of a class with empty attributes to a SimGroup
+    ///
+    /// The object gets the packets the schema lists for the class and a new
+    /// GUID; set its attributes with `simgroup-set`. Classes of native mods
+    /// are known when DOCTOR_TOOLKIT_CLASSES names their class files.
+    SimgroupAdd(class_cmd::SimGroupAdd),
+
+    /// Check the class files of native mods and print their classes
+    ClassSchema(class_cmd::ClassSchema),
 
     /// Replace an embedded texture, the `.apt` movie or the `.const` table of an apx file
     ///
@@ -505,6 +544,18 @@ enum Command {
     #[command(subcommand)]
     Render(render_cmd::RenderCommand),
 
+    /// Crash reports of the game (stage 99): show and list them, the crash
+    /// module, a crash on purpose
+    ///
+    /// `doctor_crash.asi` (loaded by the ASI loader, PC 1.0.789.0 only)
+    /// writes a minidump and a text report into `_doctor_toolkit/crashes/`
+    /// of the game folder when the game crashes: the place by module and
+    /// by the names of the knowledge base, the stack, the last messages of
+    /// the bus and errors of Lua, the streams, the enabled mods. It needs
+    /// no live module. See docs/analysis/crash-reports.md.
+    #[command(subcommand)]
+    CrashReport(crash_cmd::CrashCommand),
+
     /// Live link with the running game: player, camera, objects, teleport,
     /// messages, Lua (stage 34)
     ///
@@ -579,6 +630,12 @@ enum Command {
     /// low-pass frequency and times of a category in it (recorded in the
     /// workspace)
     Mix(voice_cmd::MixArgs),
+
+    /// Game parameters of the curated list (damage, health, prices, ...):
+    /// list them with their values, show one, or change it in every object
+    /// that has it with `--set ID=VALUE` or `--multiply ID=FACTOR`
+    /// (recorded in the workspace)
+    Tunables(tunables_cmd::TunablesArgs),
 
     /// Show a navigation graph (`graph`): type, nodes, links, neighbouring
     /// graphs, properties, R-tree and precomputed paths
@@ -703,6 +760,12 @@ enum Command {
     /// `--check` writes nothing and fails when a file is out of date.
     TypesGen(types_cmd::TypesGen),
 
+    /// Write docs/parity.md from data/toolkit/capabilities.toml: what the
+    /// toolkit can do and where (MCP, editor, command line, Python)
+    ///
+    /// `--check` writes nothing and fails when the document is out of date.
+    ParityGen(kb_cmd::ParityGen),
+
     /// Check the messages of the SimGroups the workspace changes
     ///
     /// An error for a new message name whose hash is the hash of a message
@@ -755,10 +818,12 @@ impl Command {
             Self::Rewrite { .. } | Self::Restore { .. } => true,
             Self::Play(args) => args.writes(),
             Self::Render(command) => command.may_write_game(),
+            Self::CrashReport(command) => command.may_write_game(),
             Self::Live(command) => command.may_write_game(),
             Self::Workspace(command) => matches!(command, W::Apply { .. } | W::Revert { .. }),
             Self::Mods(command) => matches!(command, M::Apply { .. } | M::Unapply { .. }),
             Self::Partsdb(command) => command.may_write_game(),
+            Self::Tunables(args) => args.may_write_game(),
             Self::Project(command) => command.may_write_game(),
             Self::Mcp(args) => args.allow_game,
             _ => false,
@@ -869,8 +934,9 @@ fn run(command: Command) -> Result<()> {
             stream,
             texture,
             file,
+            all_copies,
             mode,
-        } => texture_import(&game_dir, &stream, &texture, &file, &mode),
+        } => texture_import(&game_dir, &stream, &texture, &file, all_copies, &mode),
         Command::ApxExport {
             game_dir,
             output,
@@ -904,22 +970,27 @@ fn run(command: Command) -> Result<()> {
             mode,
         } => logic_cmd::logic_import(&game_dir, &files, &mode),
         Command::SimgroupSet(args) => logic_cmd::simgroup_set(&args),
+        Command::SimgroupAdd(args) => class_cmd::simgroup_add(&args),
+        Command::ClassSchema(args) => class_cmd::class_schema(&args),
         Command::ApxImport(args) => logic_cmd::apx_import(&args),
         Command::Restore { game_dir } => restore(&game_dir),
         Command::Workspace(command) => workspace_cmd::run(command),
         Command::AddResource(args) => create_cmd::add_resource(args),
         Command::CloneResource(args) => create_cmd::clone_resource(args),
         Command::AddStream(args) => create_cmd::add_stream(args),
+        Command::AddSimgroup(args) => create_cmd::add_simgroup(args),
         Command::ModelImport(args) => model_cmd::model_import(args),
         Command::Edit(args) => edit_cmd::edit(args),
         Command::ModelInfo(args) => model_cmd::model_info(args),
         Command::CollisionBuild(args) => collision_cmd::collision_build(args),
         Command::TextAdd(args) => text_cmd::text_add(args),
         Command::ApxTextRefs(args) => text_cmd::apx_text_refs(args),
+        Command::Material(args) => material_cmd::material(args),
         Command::CollisionExport(args) => collision_cmd::collision_export(args),
         Command::RemoveStream(args) => create_cmd::remove_stream(args),
         Command::WorldGrid(command) => create_cmd::world_grid(command),
         Command::CheckRefs(args) => create_cmd::check_refs(args),
+        Command::CheckEdits(args) => create_cmd::check_edits(args),
         Command::Skeletons { game_dir, output } => formats::skeletons(&game_dir, &output),
         Command::Audio {
             game_dir,
@@ -944,6 +1015,7 @@ fn run(command: Command) -> Result<()> {
         Command::Detect(args) => play_cmd::detect(&args),
         Command::Play(args) => play_cmd::play(&args),
         Command::Render(command) => render_cmd::run(&command),
+        Command::CrashReport(command) => crash_cmd::run(&command),
         Command::Live(command) => live_cmd::run(command),
         Command::Integrity(args) => mods_cmd::run_integrity(args),
         Command::VideoInfo(args) => video_cmd::info(&args),
@@ -960,6 +1032,7 @@ fn run(command: Command) -> Result<()> {
         Command::SpeechEvents(args) => voice_cmd::events(&args),
         Command::AudioConfig(args) => voice_cmd::config(&args),
         Command::Mix(args) => voice_cmd::mix(&args),
+        Command::Tunables(args) => tunables_cmd::run(&args),
         Command::GraphInfo(args) => graph_cmd::info(&args),
         Command::GraphExport(args) => graph_cmd::export(&args),
         Command::GraphImport(args) => graph_cmd::import(&args),
@@ -987,6 +1060,7 @@ fn run(command: Command) -> Result<()> {
         Command::Save(args) => save_cmd::run(args),
         Command::GameTypes(command) => types_cmd::run(command),
         Command::TypesGen(args) => types_cmd::generate(args),
+        Command::ParityGen(args) => kb_cmd::parity(args),
         Command::LogicCheck(args) => types_cmd::logic_check(&args),
     }
 }
@@ -1194,6 +1268,9 @@ fn validate(game_dir: &Path, decompress: bool, roundtrip: bool) -> Result<()> {
             "skipped {}: named like a game file but not one (no magic)",
             file.rel_path
         );
+    }
+    if let Some(warning) = doctor_toolkit::path_limit::warning(&game) {
+        eprintln!("WARN {warning}");
     }
 
     let failures = AtomicUsize::new(0);
@@ -1756,6 +1833,7 @@ fn texture_import(
     stream_name: &str,
     name: &str,
     file: &Path,
+    all_copies: bool,
     mode: &EditMode,
 ) -> Result<()> {
     use doctor_toolkit::resource::texture::{self, Texture};
@@ -1785,6 +1863,23 @@ fn texture_import(
         .extension()
         .is_some_and(|e| e.eq_ignore_ascii_case("png"));
     let mut ws = workspace_cmd::open_for_edit(&game, mode)?;
+    if all_copies {
+        let (index, _) = game.build_index(|_| {});
+        let done = doctor_toolkit::retexture::replace_all_copies(
+            &game,
+            &mut ws,
+            &index,
+            before.name_hash,
+            &input,
+            is_png,
+        )?;
+        out!("{}: {} -> {}", done.name, done.before, done.after);
+        for stream in &done.streams {
+            out!("  {stream}");
+        }
+        out!("{} cop(ies) replaced", done.streams.len());
+        return workspace_cmd::finish_edit(&game, &mut ws, mode, done.streams);
+    }
     let after = ws.import_texture(&game, stream_index, pair, &input, is_png)?;
     let h = &after.header;
     out!(
@@ -2083,6 +2178,52 @@ fn restore(game_dir: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::texture_name_matches;
+
+    /// Every command path of `command`, depth first: `level`, `level add`.
+    /// Returns the paths with whether each is a group (has subcommands).
+    fn command_paths(command: &clap::Command, prefix: &str, out: &mut Vec<(String, bool)>) {
+        for sub in command.get_subcommands() {
+            if sub.get_name() == "help" {
+                continue;
+            }
+            let path = if prefix.is_empty() {
+                sub.get_name().to_owned()
+            } else {
+                format!("{prefix} {}", sub.get_name())
+            };
+            out.push((path.clone(), sub.has_subcommands()));
+            command_paths(sub, &path, out);
+        }
+    }
+
+    /// The table of capabilities (`data/toolkit/capabilities.toml`, see
+    /// `docs/parity.md`) has every command and subcommand, and names none
+    /// the command line does not have.
+    #[test]
+    fn every_command_is_in_the_table_of_capabilities() {
+        use clap::CommandFactory as _;
+        use doctor_toolkit::parity::{self, Kind};
+
+        let mut paths = Vec::new();
+        command_paths(&super::Cli::command(), "", &mut paths);
+        assert!(paths.len() > 200, "{}", paths.len());
+        assert!(paths.iter().any(|(p, group)| p == "live object" && *group));
+        assert!(
+            paths
+                .iter()
+                .any(|(p, group)| p == "live object move" && !*group)
+        );
+        // A group is there for its subcommands: those are what a row names.
+        let problems = parity::table().check_names(
+            Kind::Cli,
+            paths.iter().map(|(p, _)| p.as_str()),
+            paths
+                .iter()
+                .filter(|(_, group)| !group)
+                .map(|(p, _)| p.as_str()),
+        );
+        assert!(problems.is_empty(), "{}", problems.join("\n"));
+    }
 
     #[test]
     fn a_clone_of_a_texture_is_named_with_its_hash() {

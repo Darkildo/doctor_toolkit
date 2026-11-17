@@ -20,6 +20,8 @@ pub const APX: u32 = sdbm(b"apx");
 pub enum ApxAction {
     /// Record new data for the resource.
     Save { data: Vec<u8>, label: String },
+    /// Point the `$old` text references at `$new` (stage 103).
+    Retarget { old: String, new: String },
 }
 
 pub struct ApxView {
@@ -29,6 +31,10 @@ pub struct ApxView {
     original: Option<Vec<Texture>>,
     selected: usize,
     preview: Option<TexturePreview>,
+    /// The `$name` text references: (name, how many, the new name typed).
+    refs: Vec<(String, usize, String)>,
+    /// Stream and resource of the movie in the game.
+    at: Option<(usize, usize)>,
 }
 
 impl ApxView {
@@ -54,15 +60,90 @@ impl ApxView {
         let original = original
             .and_then(|d| AptFile::parse(&d).ok())
             .and_then(|f| f.textures().ok());
+        let mut refs: Vec<(String, usize, String)> = Vec::new();
+        if let Ok(file) = &file {
+            for (_, _, name) in file.text_references() {
+                match refs.iter_mut().find(|r| r.0 == name) {
+                    Some(r) => r.1 += 1,
+                    None => refs.push((name, 1, String::new())),
+                }
+            }
+        }
         let mut view = Self {
             file,
             textures,
             original,
             selected: 0,
             preview: None,
+            refs,
+            at: None,
         };
         view.select(0);
         view
+    }
+
+    /// The `$name` text references of the movie: (name, how many).
+    #[cfg(test)]
+    pub fn text_refs(&self) -> Vec<(&str, usize)> {
+        self.refs.iter().map(|r| (r.0.as_str(), r.1)).collect()
+    }
+
+    /// The list of `$name` references, each with a field for another
+    /// string and its button.
+    fn refs_ui(&mut self, ui: &mut egui::Ui) -> Option<ApxAction> {
+        if self.refs.is_empty() {
+            return None;
+        }
+        let mut action = None;
+        egui::CollapsingHeader::new(trf("apx.text_refs", &[("count", &self.refs.len())]))
+            .id_salt("apx-text-refs")
+            .default_open(true)
+            .show(ui, |ui| {
+                ui.label(RichText::new(tr("apx.text_refs_hint")).weak().small());
+                egui::ScrollArea::vertical()
+                    .id_salt("apx-text-refs-list")
+                    .max_height(220.0)
+                    .show(ui, |ui| {
+                        egui::Grid::new("apx-text-refs-grid")
+                            .num_columns(4)
+                            .striped(true)
+                            .show(ui, |ui| {
+                                for (name, count, new) in &mut self.refs {
+                                    ui.monospace(format!("${name}"));
+                                    ui.label(
+                                        RichText::new(format!(
+                                            "{:08x} ×{count}",
+                                            doctor_toolkit::hash::string_id(name)
+                                        ))
+                                        .weak()
+                                        .monospace(),
+                                    );
+                                    ui.add_sized(
+                                        [200.0, ui.spacing().interact_size.y],
+                                        egui::TextEdit::singleline(new)
+                                            .hint_text(tr("apx.new_name"))
+                                            .char_limit(name.len()),
+                                    );
+                                    let typed = new.trim().trim_start_matches('$');
+                                    let ok = doctor_toolkit::text::valid_name(typed)
+                                        && typed.len() <= name.len()
+                                        && !typed.eq_ignore_ascii_case(name);
+                                    if ui
+                                        .add_enabled(ok, egui::Button::new(tr("apx.retarget")))
+                                        .on_hover_text(tr("apx.retarget_hint"))
+                                        .clicked()
+                                    {
+                                        action = Some(ApxAction::Retarget {
+                                            old: name.clone(),
+                                            new: typed.to_owned(),
+                                        });
+                                    }
+                                    ui.end_row();
+                                }
+                            });
+                    });
+            });
+        action
     }
 
     pub fn selected(&self) -> usize {
@@ -86,7 +167,8 @@ impl ApxView {
             }
         };
         let title = file.title().unwrap_or_default();
-        let mut action = None;
+        let mut action = self.refs_ui(ui);
+        let file = self.file.as_ref().ok()?;
         ui.horizontal_wrapped(|ui| {
             ui.strong(&title);
             let blocks: Vec<String> = file
@@ -263,10 +345,11 @@ fn load_view(
     if source.type_id != APX {
         return None;
     }
-    let view = match source.edited(source.index) {
+    let mut view = match source.edited(source.index) {
         Some(data) => ApxView::from_data(data, source.original(source.index)),
         None => ApxView::load(source.stream, source.index)?,
     };
+    view.at = Some((source.stream_index, source.index));
     Some(Box::new(view))
 }
 
@@ -279,6 +362,23 @@ impl crate::views::ResourceViewer for ApxView {
         match ApxView::show(self, ui, cx.status)? {
             ApxAction::Save { data, label } => {
                 Some(crate::views::ViewAction::SaveData { data, label })
+            }
+            ApxAction::Retarget { old, new } => {
+                let (stream, resource) = self.at?;
+                Some(crate::views::ViewAction::Apply {
+                    label: trf("apx.retarget_label", &[("old", &old), ("new", &new)]),
+                    run: Box::new(move |game, ws| {
+                        let changed = doctor_toolkit::text::retarget_apx(
+                            game, ws, stream, resource, &old, &new,
+                        )?;
+                        if changed == 0 {
+                            return Err(doctor_toolkit::Error::InvalidArgument(format!(
+                                "the movie has no reference ${old}"
+                            )));
+                        }
+                        Ok(())
+                    }),
+                })
             }
         }
     }

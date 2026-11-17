@@ -7,7 +7,7 @@
 use std::collections::HashMap;
 
 use doctor_toolkit::resource::simgroup::{SimGroup, Value};
-use doctor_toolkit::tunables::{self, CATEGORIES, Change, Found, Reading, Tunable, ValueKind};
+use doctor_toolkit::tunables::{self, CATEGORIES, Change, Found, NewValues, Reading, Tunable};
 use doctor_toolkit::workspace::ResourceKey;
 use doctor_toolkit_mods::i18n::{tr, trf, trn};
 use egui::{Color32, RichText};
@@ -117,7 +117,7 @@ impl Entry {
         match self.mode {
             Mode::All => {
                 let v = t.parse_value(&self.value)?;
-                Ok(objects.iter().map(|o| (o.object, v)).collect())
+                self.reading.new_values(t, &NewValues::All(v))
             }
             Mode::Multiply => {
                 let factor: f64 = self
@@ -125,18 +125,7 @@ impl Entry {
                     .trim()
                     .parse()
                     .map_err(|_| trf("wizard.params.bad_factor", &[("text", &self.factor)]))?;
-                objects
-                    .iter()
-                    .map(|o| {
-                        let mut v = o.value * factor;
-                        if t.kind != ValueKind::Float {
-                            v = v.round();
-                        }
-                        t.check(v)
-                            .map(|()| (o.object, v))
-                            .map_err(|e| format!("{}: {} ({e})", o.label, t.format(v)))
-                    })
-                    .collect()
+                self.reading.new_values(t, &NewValues::Multiply(factor))
             }
             Mode::Each => objects
                 .iter()

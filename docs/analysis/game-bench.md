@@ -35,6 +35,12 @@
 - хэши sha256 оригиналов всех `.toc` и перечисленных файлов пишутся в
   `ТЕНЬ/.game-bench/originals.sha256`.
 
+**Путь тени — не длиннее 110 символов** (этап 77): игра собирает путь к
+потоку в буфере 256 байт, и из глубокой папки потоки с длинными именами
+(задания Миссий 3, 5, 10, 11) роняют её при загрузке — это выглядит как
+падение игры или мода (`story.md` §9). Стенд пишет предупреждение в
+`timeline.txt`.
+
 Повторный вызов пересоздаёт тень с нуля; каталог без метки
 `.game-bench/shadow` удалять скрипт отказывается. Создание занимает 5 с.
 
@@ -2095,3 +2101,1374 @@ doctor-toolkit workspace apply ТЕНЬ      # потоки и накладно�
 Не проверено: реплика с говорящим (атрибут 9 — звук в мире, губы), реплика
 узла диалога `dlg` с новым событием, новая строка в существующем событии,
 вторая озвучка (`es`), новая категория `auc`, правка `mix`.
+
+## 35. Этап 74: Lua-API движка (2026-11-16)
+
+Стенд: `SERVER=xvfb DXVK=1 AUDIO_CAPTURE=1`, 1024×768, свой префикс
+(`wine-gf2-bench-s74`), тень в рабочей папке этапа со своей копией
+`gf2/cuba/local.str`, модуль связи (`live install ТЕНЬ --writes
+--cmd-txt="-stream gf2 cuba" --port 47874`, `WINEDLLOVERRIDES=dinput8=n,b`).
+Из тени убраны `d3d9.dll`, `scripts/doctor_live.*`, `scripts/GF2ASI.asi`.
+Уровень загружен через 8–12 с после старта (`GetPlayerPosition(0)` не `nil`).
+Проверки — код Lua в состоянии игры: `doctor-toolkit live lua '<код>' --yes`,
+вывод скриптов — `live log`. Каждый сеанс — под общей блокировкой стенда.
+Устройство функций и адреса — `docs/analysis/lua-api.md`.
+
+Скрипты в уровне (`script-deploy ТЕНЬ gf2/cuba/local граф.json --direct`):
+`doctor_s74` (старт по `doctor_s74_go`, стоп по `doctor_s74_stop`, таймер раз
+в секунду, `print` в трёх событиях) и `doctor_s74n` (новые и исправленные
+узлы, по `print` на шаг).
+
+| Прогон | Что делали | Результат |
+|---|---|---|
+| r1 (80 с) | время и целые | `GetSimTime()` — userdata, `tostring` 9616; `GetSimTime()/1000` — userdata 9; `"x" .. GetSimTime()` — ошибка «attempt to concatenate a userdata value»; `Int32ToNumber(GetSimTime())` — 9649 |
+| r1 | сопрограммы | `coroutine.wrap` с `yield`: 2, затем 20; `GetPlatform()` — `windows` |
+| r1 | полиция, транспорт пешком | `GetFootPoliceIntensity()`, `GetCarPoliceIntensity()` — `nil`; `GetVehicleType()` 0; `GetVehicleSpeed()` — `0, false`; `…SpeedDelta`, `…Acceleration`, `…SkidEnergy`, `…Health`, `…RainVelocity` — 0; `GetChaseVehicleStats(0)` — `false, userdata, 0, 0, 0, 10000000` |
+| r1 | `Base`: аргументы | `Base(5)`, `Base("zzz")`, GUID из 32 цифр подряд — ошибка «ToBasePtr: Could not turn '…' into a GUID.»; `Base("{00000000-0000-0000-0000-000000000001}")` — userdata, `tostring` → `nil` |
+| r1 | глобальные имена | функции `Base`, `DeleteBase`, `EclipseLog`, `debug_print`; таблицы `GroupManager`, `gFunctionRegistry`, `MessageReceiverRegistry`, `tolua`; `nil` — `SetWatchValue`, `io`, `os`, `debug`, `loadlib`; `gGUID` — userdata |
+| r1 | получатель и данные | `NewMessageReceiver(fn)`, `AddMessage("a", "MyType")`, `AddMessage("b")`: `SendMessage("a")` → `fn(self, "a", "MyType", nil)`; `SendMessage("a", "t", 5)` → данные userdata, `GetPositionValues(data)` начинается с 5; `SendMessage("a", "t", "text")` → userdata; `SendMessage("b", "t", CreatePosition(1, 2, 3))` → тип `nil`, `GetPositionValues(data)` = 1, 2, 3; `SendMessage("b", nil, 7)` → данные `nil`. `SendMessage` вернул свой последний аргумент. `live send doctor_s74_a` снаружи — получатель вызван, данные `nil` |
+| r1 | снятие подписки | `receiver:RemoveMessage("a")` — ошибка «[string "tolua: embedded Lua code"]:15: attempt to call method `RemoveMessage' (a string value)»; `receiver.m_pReceiver:Remove("a")` — `a` больше не приходит, `b` приходит |
+| r1 | `SendMessageEx` | `SendMessageEx("iMsgLuaGetPlayerVenue")` — строка `"4"`; свой получатель на `SendMessageEx("doctor_s74_ex", 1.5, "two", true)`: данные — указатель, второй `float` 1,5, третье слово 2; результатов 0 |
+| r1 | таймеры | `CreateTimer` — 30, 31, 32; `StartTimer(h, 500)` — 500; одноразовый (`true`) сработал один раз через 516 мс; периодический (`false`, 700 мс) — 8 раз за 5,6 с; обработчик получил номер числом; таймер с несуществующей функцией ничего не сломал; `QueryTimer` — −16 и 276 |
+| r1 | `shutdown` | `live send doctor_s74_go` → `print doctor_s74.lua:98: s74:start`, 5 тиков за 5 с; `live send doctor_s74_stop` → `s74:stop`, тиков нет 4 с; снова `go` → `s74:start` и тики; снова `stop` → `s74:stop` |
+| r1 | поток EARS | неизвестное имя и имя без `.stx` — `userdata: 00000000`; `PlayEarsAudioStream("accomplishment_01.stx", 1)` — `userdata: 00000004`; `SetEarsAudioStreamStopMessage` + `StopEarsAudioStream` → сообщение пришло получателю; второй запуск (`00000005`) за 25 с сам не кончился |
+| r2 | группа с `Base` игрока | игра упала на первом вызове `AddMember`: «Unhandled page fault on read access to 00000000 at address 00469F85» |
+| r3 (168 с) | какие объекты находит `Base` | по три объекта каждого из 91 класса (230 штук, `live objects --all`): `tostring(Base(guid))` — `nil` у всех |
+| r3 | позиции | `GetPlayerPosition(0)` → 283,897; −0,0001; 371,797; `GetPlayerPosition()` и `(1)` — `nil`; `TEMP_POS` — userdata; `CreatePosition(4, 5, 6)` + `SetPositionValues(c, 7, 8, 9)` → 7, 8, 9 |
+| r3 | звук и мелочи | `PlayEmx("doctor_nope.emx")` — `userdata: 00000000`; `PlayEmx("radio_power_switch_01.emx")` — `userdata: AD660024`; `GetStreamStatus(0)` — 3; `GetDuckCategoryName(0)` — пустая строка; `EclipseLog("x")` — `x` |
+| r3 | края таймеров | `CreateTimer("x")` и `CreateTimer("", true)` — −1; с третьим аргументом — 30; `StartTimer(999, 5)` и `QueryTimer(999)` — 0 |
+| r3 | поток по шагам, запись звука | см. таблицу ниже |
+| r4 (14 с) | флаг объектов | `live objects --all --json`: флаг `0x8000000` в `+0x14` у 8 620 объектов из 8 667; `Base` для трёх из них (в обоих регистрах) — пустая ссылка |
+| r4 | пустая группа | `RegisterGroup` — userdata; `GetMemberCount()` — userdata `0`; `ForEachMember` — 0 вызовов, вернул функцию; `FindGroup` — userdata, для неизвестного имени `nil`; `Clear()` — userdata; `Int32ToNumber(count)` — 0 |
+| r4 | переменная | `FindVariable` — userdata, `tostring` `7` после `Set(7)`; `Get()` — userdata `7`; `VariableGet(v) + 1` — `8`; `Int32ToNumber(x) + 0.5` — 7,5; `Set` вернул 7; `x == Int32(7)` и `x < Int32(8)` — `true`; `x == 7` — `false`; `x < 8` (r3) — ошибка «attempt to compare userdata with number» |
+| r4 | сопрограммы: сверка с ВМ тулкита | ошибка в сопрограмме — `false`, статус `dead`; `pcall(coroutine.yield, 1)` внутри и вне сопрограммы и `yield` из `__index` — «attempt to yield across metamethod/C-call boundary»; возобновление самой себя — «cannot resume non-suspended coroutine»; обмен значениями `3`, `20`, `7, end`; мёртвая — «cannot resume dead coroutine». В ВМ тулкита те же результаты; отличие — имя функции в «bad argument #1 to `?' (Lua function expected)» |
+| r5 (24 с) | узлы Blueprints, граф `doctor_s74n` | `s74n:time:number:true:var:number:true:x:true:car:false:plat:windows` (время и переменная — числа, позиция игрока есть, пешком); `s74n:group:0:false:false` (`group.add` с ненайденным объектом игру не уронил, `group.count` 0, `group.contains` и `object.valid` — `false`); `s74n:num:42` (`message.data_number`); `s74n:stream:true` и `s74n:nope:false` (`audio.handle_valid`; имя потока без `.stx`); через 3 с после `audio.stop_stream` — `s74n:done` (`audio.stream_stop_message`) |
+
+Поток в r3 по записи звука (`AUDIO_CAPTURE=1`; запись растянута в 3,5 раза и
+начинается на ~3,5 с позже старта игры; среднеквадратичный уровень по
+секундам сеанса, ×10⁴; фон у ворот аэропорта — 3 500–3 580):
+
+| Шаг | Вызов | Уровень |
+|---|---|---|
+| A | `PlayEarsAudioStream("doctor_nope.stx")` | 3 517–3 583, один отсчёт 3 795 |
+| B | `PlayEarsAudioStream("accomplishment_01")` | 3 503–3 557 |
+| C | `PlayEarsAudioStream("accomplishment_01.stx", 1)`, через 8 с `Stop` | 4 335–4 766 семь секунд, затем 3 940 и 3 764; через 2 с — 4 505, 4 562 (две секунды), потом фон |
+| D | `PrimeEarsAudioStream(…, 1)`, через 6 с `PlayEarsAudioStream(handle)`, через 6 с `Stop` | после `Prime` 3 501–3 546; после `Play` 4 373–4 777; после `Stop` 3 504–3 566 до шага E |
+| E | громкость 0,2, через 6 с `Stop` | 4 420–4 563; после `Stop` фон без подъёмов |
+| F | громкость 1, без `Stop`, 70 с | 4 470–4 880 до конца сеанса; стоповое сообщение не пришло |
+
+Найдено:
+
+- `Base` от строки не находит объекты игры: разбор GUID в exe сломан
+  (`lua-api.md` §3); вызов методов группы с пустой ссылкой роняет игру.
+- `GetPlayerPosition` без номера игрока всегда `nil` — узел «Player position»
+  до этого этапа звал её так.
+- Время, значения переменных и число членов группы — не числа Lua, а объекты
+  `UInt32`/`Int32`; сравнение их с числом ложно или даёт ошибку.
+- В r1 сразу после двух вызовов с неизвестным именем уровень звука поднялся
+  на 3 с (3 900–4 480); в r3 те же вызовы по отдельности уровень не
+  изменили. Подъём на 2 с через 2 с после `Stop` на шаге C тоже без
+  объяснения: звуки аэропорта или хвост потока.
+
+Не проверено: группа с настоящим объектом (взять объект неоткуда), полиция
+при погоне, транспорт за рулём, естественный конец потока и стоповое
+сообщение при нём, как аргумент громкости переводится в громкость,
+`SetTimeOfDay` и `UIFanfare` в кадре, `ApplyMix`/`RemoveMix`.
+
+## 36. Этап 78: шина сообщений (2026-11-16)
+
+Стенд, как в §33–§34: `SERVER=xvfb DXVK=1`, 1024×768,
+`WINEDLLOVERRIDES=dinput8=n,b`, свой префикс `wine-gf2-bench-s78`, своя тень
+(в ней убраны скопированные из папки игры `d3d9.dll`, `scripts/doctor_live.*`
+и `GF2ASI.asi`), модуль связи на порту 47878, старт в Гаване подменой
+`cmd.txt` (`live install ТЕНЬ --writes --port 47878 "--cmd-txt=-stream gf2
+cuba"`). Каждый сеанс — под общей блокировкой стенда (`flock`). Модуль —
+протокол 8: перехват шины `0x00408A00` и три места вызова обработчиков
+(`0x00408A8B`, `0x00408C31`, `0x00440819`). Устройство —
+`docs/analysis/message-bus.md` §3, §4.3, §8; `live-link.md` §11.3.
+
+Два сеанса: 7 минут (кадры до ~10 200, время игры 258 с) и 4 минуты (кадры
+до ~9 000). Журнал читался командой
+`doctor-toolkit live log -f --messages --json --names --game ТЕНЬ`.
+
+| Проверка | Как | Результат |
+|---|---|---|
+| Игра с тремя новыми перехватами | оба сеанса целиком | игра идёт, отвечает на запросы до конца; в `wine.log` исключений нет; `verify` — оригиналы не менялись (30 файлов) |
+| Место вызова | 25 с журнала во втором сеансе: 650 сообщений | место известно у всех 650, и каждое есть в `data/gf2/bus_sites.tsv` (после разворачивания обёртки `0x0045C400`; в первом сеансе без него вызовы через обёртку показывали `0x0045C423`) |
+| Отправитель и причина | те же 650 | 338 посланы из обработчика другого сообщения; у 102 отправитель — объект SimGroup; у 15 в данных указатель на объект |
+| Доставка одному слушателю | те же 650 | 248 доставок мимо `0x00408A00`: `0x00482A86` (сущность — своим компонентам: `footstep`, `audio: play`, `enable PA`, `rws: send message`), `iMsgPostSpawnInitialize` (`0x00482B7F`, `0x004464A5`), `iMsgManagedEntityCreated`, `iMsgTickLinked`… |
+| Синхронность и порядок | `aud_test_tod` — его шлёт Lua (`0x004C830A`) из обработчика `iMsgRunningTick`; слушателей 5, из них 4 объекта потока `gf2\globals_global.str` | сразу за ним, до следующего сообщения кадра, идут `aud_not_night`, `aud_not_dusk`, `aud_day`, `aud_not_dawn` из `0x0082632E` (`TestTimeOfDay`), отправитель каждого — свой объект, причина — `aud_test_tod`; порядок ответов равен порядку получателей в событии (обход таблицы) и возрастанию номеров объектов в списке модуля (5386, 5387, 5388, 5389). Повторялось в каждом цикле скрипта |
+| Повторный вход | журнал | `iMsgTickUnLinked` доставлен сущности (`0x008F67EA`), и из его обработчика она доставляет его же компонентам (`0x00482A86`, причина — `iMsgTickUnLinked`); то же с `iMsgTickLinked`, `iMsgEntityDensitySpawned`, `iMsgManagedEntityCreated` |
+| Объект в данных | сообщение `…_dj_kill_disable_target_hud_indicator` из `0x00479F06` (`OrEventGate`) | объект в данных — тот же объект, что отправитель: шлюз кладёт указатель на себя |
+| `ExecuteVFX`: `hide`, `show` | `live send hide --yes`, `live send show --yes` | оба раза «39 listener(s)»: имена общей шины, их получают все подписанные объекты загруженных потоков |
+| Lua: данные | `live lua 'SendMessage("s78_number", "x", 5) SendMessage("s78_string", "x", "abc")'` | слово данных `0x0031F14C` (адрес в стеке: указатель на `f32`) и `0x190F50B8` (куча: копия строки); с двумя аргументами (`SendMessage("s78_number", 5)`) слово данных 0 — данные берутся из третьего аргумента |
+
+Найдено по дороге:
+
+- `live log -f` без `--after` сначала отдаёт всё кольцо; за короткий прогон
+  новые события можно не дождаться — задавать `--after` последним номером;
+- в папке игры снова лежали `d3d9.dll`, `scripts/doctor_live.*` и
+  `GF2ASI.asi`; тень их скопировала, из тени они убраны.
+
+Не проверено: вход игрока в объём (`iMsgTrigger` с указателем на вошедшего)
+и пересылка данных через `MultiManager` на живом примере — по коду; что видно
+на экране после `hide`; работа клиента протокола 7 с новым модулем (покрыто
+тестами кольца и кодека, не игрой); подписка и отписка во время рассылки.
+
+## 37. Этап 99: перехват падений (2026-11-16)
+
+Стенд, как в §33: `SERVER=xvfb DXVK=1`, 1024×768,
+`WINEDLLOVERRIDES=dinput8=n,b`, свой префикс
+`BENCH_PREFIX=…/wine-gf2-bench-s99` (копия базового), своя тень (из неё
+убраны скопированные из папки игры `d3d9.dll`, модуль связи и GF2ASI), без
+основного дисплея, каждый сеанс под блокировкой (`flock`). В тени — модуль
+`doctor_crash.asi`, поставленный `crash-report install ТЕНЬ` (с ним
+`_doctor_toolkit/crashes/context.txt`); в прогонах 3–5 ещё модуль связи
+(`live install ТЕНЬ --writes --port 47899`) и мод `s99-crash-test` 0.9.1 в
+менеджере тени (`mods install-workspace`). Устройство модуля и отчёта —
+`crash-reports.md`.
+
+| № | Прогон | Что вышло |
+|---|---|---|
+| 1 | `GAME_OPTIONS="-stream gf2 cuba miami"`, `run`, без модуля связи (дважды) | **настоящее падение игры** `0x0042138B` через 1–3 с после загрузки модуля. Отчёт (168 строк) и минидамп 1 138 944 байта (`file`: «Mini DuMP crash report, 8 streams»). Адрес узнан по базе знаний (`known: [known-crashes] …`), функция `0x004212B0 +0xDB`, стек с именами до `WinMain`, 7 сообщений шины, в очереди менеджера пять потоков. В `wine.log` по-прежнему `Unhandled page fault … at address 0042138B … starting debugger`: стенд видит падение как раньше |
+| 2 | `-stream gf2 cuba`, на 75-й секунде `crash-report test ТЕНЬ --kind jump` | падение через секунду: модуль вызвал `0x6E756F7B` из своего перехвата шины. Адрес оказался в отображённой памяти вне модулей — выполнилось 5 байт, падение на `0x6E756F80` (`in no module`). В отчёте: `cmd.txt: -stream gf2 cuba`, `main loop: level`, `game time: 72.371 s`, `player: 283.90 -0.00 371.80` (точка появления, §33); 54 520 сообщений шины — 13 сообщений кадра по 4 003–4 083 раза и редкие с отправителями; 61 загруженный поток (как в `live-link.md` §1), незагруженных 0 |
+| 3 | `-stream gf2 queens`, **вместе с модулем связи**; две ошибки Lua через `live lua`; `live send cp_325_start_now`; в конце `crash-report test --kind read` | модуль падений загрузился раньше модуля связи, проверка издания обоих прошла, запросы связи работали 190 с. Отчёт: чтение `0x14` в `doctor_crash.asi+0x6372`, под ним в стеке отправка шины из начала кадра; `[lua errors]` — три ошибки (две по заказу и `ToBasePtr: Could not turn … into a GUID`); `[mods]` — `mod: s99-crash-test | 0.9.1 | S99 crash test`; в `[modules]` оба модуля; игровое время 106 с при 192 с работы — игра стояла на экране древа семьи |
+| 4 | то же и вход в триггер Миссии 3: после `cp_325_start_now` клавиша Enter (закрыть подсказку), Exit (выйти из «Взгляда дона»), `live teleport 232,14,-345` | **известное падение воспроизведено**, примерно через 2 с после телепорта (игрок в (232; 14; −345)). Адрес на этот раз `0xFFFFFFFF`, поток `0x114` — не главный. См. ниже |
+| 5 | снимки окон под Xvfb (1600×1000): Open Mod Manager (`DOCTOR_TOOLKIT_MODS_SHOT`) и редактор (`DOCTOR_TOOLKIT_GUI_SHOT`, `DOCTOR_TOOLKIT_GUI_SHELL=game`) на тени с отчётами | в обоих строка «Последнее падение: время — адрес, модуль» с кнопками «Открыть отчёт» и «Папка»: у менеджера под строкой состояния модов, у редактора вверху вкладки «Игра». Нажатия кнопок не проверялись |
+
+После прогонов `verify`: оригиналы не менялись (30 файлов).
+
+Пример настоящего отчёта (прогон 1, сокращён; как написал модуль):
+
+```text
+doctor_crash 0.0.6 on PC 1.0.789.0 (build of 2009-10-05)
+time: 2026-11-16 13:41:38 UTC (2026-11-16 16:41:38 local)
+
+[exception]
+code: 0xC0000005 ACCESS_VIOLATION (read of 0x0000000c)
+address: 0x0042138b godfather2.exe+0x0002138b
+known: [known-crashes] падение при `-stream` с двумя и более потоками: регистрация ресурса без описания типа, чтение `[x+0x18]+0xC` при `x+0x18 = 0`
+function: 0x004212b0 +0xdb; the knowledge base names 0x004212b0 in it: [resource-loader] привязка ресурса к текущему потоку для выгрузки
+thread: 0x24
+flags: 0x0
+
+[registers]
+eax=00000000 ebx=00000000 ecx=00000000 edx=19710bd0 esi=19472430 edi=193c13b0
+eip=0042138b esp=0031f97c ebp=19084844 eflags=00010202
+cs=0023 ss=002b ds=002b es=002b fs=006b gs=0063
+code at eip: 8A 48 0C BA 01 00 00 00 D3 E2 5F 09 56 0C 5E 5B
+
+[stack]
+# Words of the stack that are return addresses (they follow a call instruction), from the top.
+esp+0x000c 0x004215d7 godfather2.exe+0x000215d7 in [resource-loader] регистрация ресурса под его GUID (виртуальный метод) (0x00421550 +0x87); after call 0x004212b0 = [resource-loader] привязка ресурса к текущему потоку для выгрузки
+esp+0x0018 0x004d0ecb godfather2.exe+0x000d0ecb in [resource-loader] разбор блока `SHDR`; держит флаг пропуска блоков (0x004d0db0 +0x11b)
+esp+0x002c 0x004d1111 godfather2.exe+0x000d1111 in 0x004d10e0 +0x31; after call 0x004d0db0 = [resource-loader] разбор блока `SHDR`; держит флаг пропуска блоков
+…
+esp+0x0270 0x0068bbcc godfather2.exe+0x0028bbcc in [render-thread] начало кадра на главном потоке: счётчик кадров += 1, взять свободный буф… (0x0068baf0 +0xdc); after call 0x00485280 = [render-thread] отложенные вызовы потока рендера (после буфера кадра)
+esp+0x028c 0x0068349e godfather2.exe+0x0028349e in [main-loop] кадр текущего состояния: метод `+0xC` состояния; 2 — сменить состояние (0x00683450 +0x4e)
+esp+0x050c 0x0069daca godfather2.exe+0x0029daca in [main-loop] `WinMain`: зовёт главный цикл; `lpCmdLine` не используется (0x0069d9d0 +0xfa); after call 0x0068aeb0 = [main-loop] главный цикл: на каждом проходе `0x00439FA0()`, затем кадр текущего сост…
+…
+
+[game]
+arguments: 
+cmd.txt: -stream gf2 cuba miami
+running for: 1.077 s
+main loop: level (GameMainLoop)
+game time: 0.000 s
+player: none
+
+[lua errors]
+# 0 error(s) of Lua since the game started (those a script caught itself too); the last 8, newest first.
+
+[messages]
+# 7 message(s) sent through the bus since the game started. Time before the crash, number, hash and name (engine messages), data, thread, sender (where Send returns to).
+# The last 48 in order, newest first:
+-0.000 s  #7  0xc2010fb7 iMsgStreamBeginLoad  data 0x0389a848  thread 0x24  from 0x00402f78 godfather2.exe+0x00002f78 in 0x00402f40 +0x38
+-0.000 s  #6  0x371329cd iMsgStreamManagerUnloadComplete  data 0x00000000  thread 0x24  from 0x00405561 godfather2.exe+0x00005561 in 0x004053f0 +0x171
+-0.000 s  #5  0xc4229253 iMsgStreamManagerBeginUnload  data 0x00000000  thread 0x24  from 0x0040546a godfather2.exe+0x0000546a in 0x004053f0 +0x7a
+-0.001 s  #4  0x1e177ed7 iMsgGameDatabaseLoading  data 0x00000000  thread 0x24  from 0x00411c94 godfather2.exe+0x00011c94 in [main-loop] на каждое слово списка: сообщение `0x01206A28` и запрос потока `0x00403A… (0x00411c70 +0x24)
+-0.003 s  #3  0x1e177ed7 iMsgGameDatabaseLoading  data 0x00000000  thread 0x24  from 0x00411c94 godfather2.exe+0x00011c94 in [main-loop] на каждое слово списка: сообщение `0x01206A28` и запрос потока `0x00403A… (0x00411c70 +0x24)
+-0.040 s  #2  0x00000000  data 0x00000005  thread 0x24  from 0x0040f5ba godfather2.exe+0x0000f5ba in 0x0040f300 +0x2ba
+…
+
+[streams]
+making objects of: gf2\globals_global.str
+# Asked for and not loaded yet (state of the record: 3 would be loaded):
+waiting: state 1  id 0x00000001  gf2\globals_global.str
+waiting: state 0  id 0x00000002  gf2\cuba_global.str
+waiting: state 0  id 0x00000003  gf2\cuba.str
+waiting: state 0  id 0x00000004  gf2\miami_global.str
+waiting: state 0  id 0x00000005  gf2\miami.str
+records: 5, not loaded: 5
+# Loaded, in the manager's order (the zones of the world are streams too):
+loaded streams: 0
+
+[mods]
+# As the toolkit wrote before the launch (mod: id, version, name; in load order).
+writer: doctor-toolkit 0.0.6 (linux x86_64)
+written: 2026-11-16 13:33:05
+source: written
+mod: s99-crash-test | 0.9.1 | S99 crash test
+
+[modules]
+0x00400000-0x01232000 godfather2.exe
+0x7bd10000-0x7bfee000 ntdll.dll
+…
+0x78a70000-0x78cca000 dbghelp.dll
+0x74fe0000-0x75067000 doctor_crash.asi
+…
+
+[minidump]
+file: crash-20261116-134138.dmp
+size: 1138944
+```
+
+**Падение у старта Миссии 3 (прогон 4).** Из отчёта (с именами сообщений
+игры от `crash-report show`):
+
+```text
+[exception]
+code: 0xC0000005 ACCESS_VIOLATION (read of 0xffffffff)
+address: 0xffffffff (in no module)
+memory: the system knows nothing about this address
+function: none — the address lies in no module
+thread: 0x114
+flags: 0x0
+
+[registers]
+eax=ffffffff ebx=00000000 ecx=19450101 edx=1945069c esi=fff4c934 edi=fff45608
+eip=ffffffff esp=1ba6fe90 ebp=19450688 eflags=00010206
+
+[stack]
+esp+0x0010 0x00ac333a godfather2.exe+0x006c333a in 0x00ac3290 +0xaa
+esp+0x003c 0x00ab739b godfather2.exe+0x006b739b in 0x00ab72c0 +0xdb
+esp+0x005c 0x7b6c8bab kernelbase.dll+0x00078bab
+esp+0x0084 0x00b9eda1 godfather2.exe+0x0079eda1 in 0x00b9e250 +0xb51
+esp+0x00bc 0x00b9ee46 godfather2.exe+0x0079ee46 in 0x00b9e250 +0xbf6; after call 0x00b9ed86 in 0x00b9e250 +0xb36
+
+[messages]
+-0.004 s  #88897  0x634ec26a m3_check_bomb_door_to_open  data 0x0031fa98  thread 0x24  from 0x0045c428 godfather2.exe+0x0005c428 in 0x0045c400 +0x28
+-0.004 s  #88896  0x3f2092a2 cp_326_fire_objective_text  data 0x0031fa98  thread 0x24  from 0x0045c428 godfather2.exe+0x0005c428 in 0x0045c400 +0x28
+-0.004 s  #88895  0x18a5a3a6 cp_326_loaded_ag  data 0x0031fa98  thread 0x24  from 0x00479c0d godfather2.exe+0x00079c0d in [logic-class-handlers] обработчик `AndEventGate` (0x00479b60 +0xad)
+-0.004 s  #88894  0xc8c2e591 cp_326_was_started  data 0x0031fae0  thread 0x24  from 0x008fc119 godfather2.exe+0x004fc119 in 0x008fc090 +0x89
+-0.004 s  #88893  0xf74ff4bf cp_326_loaded  data 0x0031fae0  thread 0x24  from 0x008fc0e7 godfather2.exe+0x004fc0e7 in 0x008fc090 +0x57
+-0.004 s  #88892  0x68a9a5d1 iMsgNewCheckpointStarted  data 0x00000000  thread 0x24  from 0x008fc798 godfather2.exe+0x004fc798 in [missions-variables] загрузка `Checkpoint` (0x008fc6f0 +0xa8)
+-0.004 s  #88876  0xce2cced5 iMsgNewCheckpointLoaded  data 0x00000000  thread 0x24  from 0x008fc751 godfather2.exe+0x004fc751 in [missions-variables] загрузка `Checkpoint` (0x008fc6f0 +0x61)
+
+[streams]
+making objects of: (nothing)
+waiting: state 1  id 0x00000079  gf2\globalfolder\vehicles\assembly\vehicle_shared\police_queens.str
+waiting: state 0  id 0x0000007a  gf2\globalfolder\vehicles\assembly\vehicle_shared\thug60.str
+waiting: state 0  id 0x0000007b  gf2\queens\global\checkpoints\c26-m03-mission03-carminescompound\cp_326\cp_326_data\cp_326_folderstream\m03_carmine_compound_exp.str
+records: 66, not loaded: 3
+```
+
+Падает рабочий поток: `0x00AB72C0` (вход потока) → цикл заданий
+`0x00AC3290`; адрес возврата `0x00AC333A` стоит сразу за вызовом указателя
+`+0x44` запроса, взятого из очереди, — указатель оказался `0xFFFFFFFF`
+(`EAX`). В прогоне этапа 63 (§30) на этом месте было `0x6E756F7B` — байты
+текста `{oun`: запрос к моменту исполнения затёрт. За 4 мс до падения
+чекпоинт сменился на `cp_326`, запрошены три потока. Кто портит запрос, не
+выяснено (`docs/kb/questions/crash-6e756f7b.md`).
+
+Найдено по ходу:
+
+- после `cp_325_start_now` игра стоит на экранах подсказок: щелчки по
+  «Continue» не действуют, Enter закрывает подсказку, щелчок по «Exit»
+  выходит; до этого `live teleport` отвечает успехом, но игрок не
+  двигается;
+- `Base('<32 цифры>')` с GUID несуществующего объекта даёт ошибку Lua
+  `ToBasePtr: Could not turn … into a GUID`, а не падение.
+
+## 38. Этап 101: вызовы отрисовки кадра (2026-11-16)
+
+Стенд, как в §27–§29: `SERVER=xvfb`, `WINEDLLOVERRIDES=dinput8=n,b`, свой
+префикс `BENCH_PREFIX=…/wine-gf2-bench-s101` (копия базового), своя тень
+(в ней убраны скопированные из папки игры `d3d9.dll`, модуль связи и
+GF2ASI), модуль связи на порту 47901, старт подменой `cmd.txt`
+(`-windowed -resolution W H -stream gf2 cuba|queens|miami`), графический
+модуль и `doctor_render.cfg` кладутся в `scripts/` тени перед сеансом и
+убираются после. Стенд общий, каждый сеанс — под блокировкой (`flock`).
+После каждого сеанса `verify`: оригиналы не менялись (30 файлов).
+Результаты — `renderer.md` §11, `performance.md` §11.
+
+**Две конфигурации.** До 16:53 — `DXVK=1` (DXVK 2.6.2, NVIDIA RTX 4070,
+1280×720). В 16:53:41 драйвер видеокарты стенда упал (`dmesg`: `NVRM:
+kgspHealthCheck_TU102: GSP-CrashCat Report`, дальше `nvidia-smi` — `ERR!`,
+Vulkan перестал видеть NVIDIA), и до перезагрузки машины DXVK на ней
+недоступен; на встроенной AMD (RADV) игра под DXVK выходит на 6–14-й
+секунде во время компиляции шейдеров (и без модулей этапа: больше десяти запусков).
+Остальные сеансы — `DXVK=0`: wined3d Wine поверх llvmpipe, 640×480,
+3,6–6,7 с на кадр после прогрева. Связи отказа видеокарты с модулем не
+видно: игра в это время шла без падений, стенд делили ещё три этапа.
+
+**Как снимается кадр.** `draw_trace=1`; файл `scripts/doctor_render_trace.go`
+→ `doctor_render_trace_<имя>.bin`; `python3 research/d3d9_frame_trace.py
+ЗАПИСЬ --exe godfather2.exe`.
+
+**Как сравнивается картинка.** Время суток стоит (`live time 12:00 --rate
+0`), игра остановлена (`live pause`) и шагает по три кадра (`live continue
+--step`); объединение выключается и включается файлом
+`scripts/doctor_render_draws.off`; ряд из 12 снимков: выкл, выкл, вкл, вкл,
+… Два вида: камера игрока и свободная камера в 25 м над ним (`live
+freecam X,Y+25,Z --pitch -20`). Игра и на шагах двигает людей, деревья и
+тени, поэтому `python3 research/frame_diff.py --states СНИМКИ` строит маску
+«движется само» по парам снимков одного состояния (с запасом 6 пикселей) и
+считает, сколько отличающихся пикселей остаётся вне маски: у пар одного
+состояния (маска — по остальным парам; это шум метода) и у пар разных
+состояний. Под llvmpipe — `--settled --over 8`: берётся второй снимок
+каждой пары (первый при 4–7 с на кадр может ещё показывать прежнее
+состояние), а разница до 8 единиц канала не считается (программный
+рендер меняет младшие биты большинства пикселей от кадра к кадру).
+
+| Сеанс | Конфигурация | Что | Результат |
+|---|---|---|---|
+| `t1`, `t1-queens`, `t1-miami` | DXVK, 1280×720 | запись кадра без объединения в трёх городах | таблицы `renderer.md` §11.1–§11.4 |
+| `m1`, `m3` | DXVK, Гавана | первый вариант: динамический буфер индексов создаётся при первой серии | **падение** в DXVK в первом кадре потока рендера: отказ выделения 2 МБ (`renderer.md` §11.5) |
+| `m2` | DXVK, Гавана | `draw_merge=64` (переходники и придерживание работают, серий такой длины нет) | 50 с без падений |
+| `m4` | DXVK, Гавана | тот же буфер, созданный при установке перехватов | работает: 6 581 вызов игры → 4 921 до устройства |
+| `c1`, `c3` | DXVK, Гавана | буфер `MANAGED` с кэшем серий; сравнение снимков | **дальние здания пропадают** при включении: пары разных состояний — 161–179 тыс. отличающихся пикселей, из них 74–108 тыс. сильнее 8 единиц, против 105–123 тыс. и 18–54 тыс. у пар одного состояния. `draw_debug=3` (серии собираются заново, копии буферов сверяются) — то же, расхождений копий 0: дело не в индексах |
+| `c2` | DXVK, Гавана | только фильтр лишних состояний | здания на месте |
+| `c4` | DXVK, Гавана | придержанное уходит перед `Issue` запросов видимости | здания на месте |
+| `c5` | DXVK, Гавана | сравнение, два вида, 12 снимков на вид | вне маски (18,6 % и 11,2 % кадра): пары одного состояния — медиана 161 (33…292) и 178 (47…407) пикселей, пары разных — 156 (46…530) и 48 (17…95): **разницы от объединения нет** |
+| `cmp-cuba` (первый прогон) | DXVK, Гавана | то же ещё раз | 648 (229…715) и 154 (52…352) против 91 (64…248) и 68 (16…169) |
+| `sw-cmp-queens` | wined3d, Нью-Йорк, 640×480 | объединение на другом D3D9; запись кадра; сравнение, два вида | 7 312 вызовов → 5 902 до устройства; вне маски (18,4 % и 23,5 %): пары одного состояния 426 (4…977) и 930 (21…1 619), пары разных — 2 (0…973) и 12 (3…1 604); 13 мин без падений |
+| `sw-cmp-miami` | wined3d, Майами, 640×480 | то же | 4 745 → 3 943; вне маски (31,3 % и 36,3 %): 72 (10…80) и 392 (175…812) против 33 (24…61) и 0 (0…390); 13 мин без падений |
+| `sw-cmp-cuba` | wined3d, Гавана, 640×480 | то же | 4 510 → 3 332; вне маски (19,7 % и 12,3 %): 230 (3…491) и 48 (29…82) против 12 (8…245) и 25 (16…94); 13 мин без падений |
+| `sw-stress-cuba` | wined3d, Гавана, 640×480, `fxaa=1` | объединение вместе с постэффектами (блок состояний каждый кадр); четыре телепорта на 150–300 м по кругу с ожиданием 75 с (загружено потоков 48 → 41 → 50 → 62: буферы индексов зон пишутся заново, копии и серии сбрасываются) | 9,5 мин, 407 кадров, без падений и исключений; в конце 5 156 вызовов → 3 778 до устройства (−26,7 %) |
+
+Найдено:
+
+- **Запросы видимости обрамляют вызовы отрисовки** (`c1`): придержанный
+  вызов, ушедший после конца запроса, убирал из кадра дальние здания.
+  Без сравнения снимков это прошло бы незамеченным: падений нет, ближний
+  план цел.
+- **DXVK падает, а не возвращает ошибку**, когда не может выделить память
+  под буфер (`m1`, `m3`); создание того же буфера на экране загрузки
+  проходит.
+- **Главный поток рисует экраны загрузки сам**, тем же устройством: модуль
+  отдаёт своё состояние только потоку рендера (первому потоку, кроме
+  главного, который показал кадр) и не передаёт его дальше.
+- Стенд без видеокарты: wined3d с llvmpipe даёт 4–7 с на кадр в уровне при
+  640×480 (первые кадры — до 100 с: компиляция шейдеров); сценарии с
+  шагами и снимками на нём идут, замеры времени — нет.
+- `research/draw_ab.py` и ключ `draw_ab` готовы, но серия замеров не снята
+  (`performance.md` §11.3).
+
+Снимки, записи кадров и журналы — в рабочей папке проверки этапа
+(`out/<сеанс>/`: `trace_*.bin`, `a00_off.png`…, `render.log`).
+
+## 39. Этап 75: выдача из логики и диалог как меню (2026-11-16)
+
+Вопросы: чем объект SimGroup или скрипт Lua даёт игроку оружие, патроны,
+деньги, предмет и улучшение, как списать деньги и годится ли выбор в
+разговоре (F2F) как меню. Устройство и адреса — `docs/analysis/handing-out.md`.
+
+Стенд: `SERVER=xvfb DXVK=1`, 1024×768, `WINEDLLOVERRIDES=dinput8=n,b`, свой
+префикс `wine-gf2-bench-s75`, своя тень (убраны скопированные из папки игры
+`d3d9.dll`, `scripts/doctor_live.*`, `GF2ASI.asi`; модуль падений — в тени),
+модуль связи на порту 47875, старт в Гаване подменой `cmd.txt`
+(`live install ТЕНЬ --writes --port 47875 "--cmd-txt=-stream gf2 cuba"`).
+В сеансах 1–3 рабочее пространство отдавалось игре подменами (`--apply
+--workspace-dir`), в сеансах 4–5 мод ставился менеджером модов (`mods
+install`, `mods apply` в тень). Каждый сеанс — под общей блокировкой стенда.
+Ghidra в первой половине этапа была закрыта: код читался
+`research/exe_dis.py`.
+
+Объекты опытов — копии объектов игры (`level add --template-stream`) в
+SimGroup 714 потока `gf2/cuba/local`: `GiveItemRelay` — объект 16
+`cp_739_zonestream`, `MoneyAdaptor` — объект 23 SimGroup 442 `mp_bonnie`,
+предмет «Cash» — объект 2 SimGroup 2955 `gf2/globals_global`, объём —
+`TriggerBox` 245 SimGroup 298 `yuri/high/venue_139`. Деньги читались
+командой `live money` (она показывает книги по категориям), оружие — по
+счётчику на экране.
+
+### 39.1 Выдача (сеансы 1 и 2)
+
+| Проверка | Как | Результат |
+|---|---|---|
+| Деньги предметом | `GiveItemRelay` (цель — GUID игрока) с `Item` «Cash» (`Item.4` = 100); `live send` | книга 4: +100 |
+| `MoneyAdaptor` без данных | сумма −300; `live send` (у сообщения нет объекта в данных) | деньги не изменились — как в коде (`0x008A6EE0` выходит при пустом указателе) |
+| `MoneyAdaptor` от объёма | `TriggerBox` (`on_enter`) → `MoneyAdaptor` −250, категория 3; игрок телепортирован в объём | книга 3: −1100 при 1100 на счету (объём с `TriggerBase.6` = −1 срабатывает раз за разом, сумма ограничена остатком), на экране `$0` |
+| Цель из данных | там же `GiveItemRelay` с `AttributeRelay.0` = 8 и без GUID | «Tommy Gun (lvl. 1)» 40-60 в руке |
+| Оружие | пистолет ур. 1, флаги 1 | «Pistol (lvl. 1)» 8-8 |
+| Патроны | тот же пистолет, флаги 5, одна штука; затем флаги 4, три штуки | 8-16; затем 8-24 — предел `Gun.8` = 32 |
+| Оружие уровнем выше, флаги 1 | пистолет ур. 2 при пистолете ур. 1 в руке | ничего: реле находит оружие того же вида и не выдаёт |
+| Оружие уровнем выше, флаги 5 | то же | «Silenced Pistol (lvl. 2)» 7-28 — заменило уровень 1 |
+| «Счёт» | `GiveItemRelay` (GUID игрока, флаги 4) с копией «Cash»: `Item.4` = 0, `Item.14` = сообщение; на нём `MoneyAdaptor` −300 (категория 5) и `GiveItemRelay` с флагом 8 (пистолет) | `live send`: 5000 → 4700, пистолет 8-8; ещё раз: 4400, 8-16 |
+| То же из Lua | `live lua 'SendMessage("s75_buy_c") return 1'` (счёт на 200) | 4400 → 4200 |
+| Новый поток диалога | `add-stream gf2/globalfolder/dlg/doctor_trader`, путь в `ChangeNPCSettings.27` кассира | поток в списке `live streams` |
+
+### 39.2 Свой торговец, своё оружие, объём (сеанс 3)
+
+| Проверка | Как | Результат |
+|---|---|---|
+| Свой персонаж | копии `SpawnPoint` (объект 9) и `SpecificNpcRequester` (объект 10) SimGroup 66 `yuri/high/venue_059_was_filler_64`; `SpecificNpcRequester.1` — `SimNpc` кассира Майами `8b9ac8365465ee0a…`; место (290; 0; 378) | `CommonNPC 8b9ac836cfeef70a…` стоит в (290; 378), на экране «Dolores Rush»; кассир Гаваны на месте |
+| Своё оружие | копия автомата ур. 1 (объект 104 глобалов) с `Gun.7` = 13, `Gun.8` = 91; флаги 5 | «13-78 Tommy Gun (lvl. 1)»: действуют параметры копии |
+| Оружие с новым именем | копия пистолета с `Item.0` = `doctor_pistol`, `Gun.7` = 5 | «5-11», но без значка и без названия: их игра ищет по имени |
+| Объём, выключенный с начала | `TriggerBase.8` = 0; игрок внутри; затем сообщения включения и выключения | выключен — тишина; включён — срабатывает каждые ~0,2 с (14 раз за 3 с); выключен — перестал; включён снова — снова срабатывает |
+| Разговор без «переменных» `0x49`, `0x30` | дерево «реплика → выбор» | подсказка «E Talk», по E — камера разговора, меню не появилось |
+| Аптечка | объём-«боль» (копия границы карты, `TriggerHurt.1` = 11) | экран погас (это граница карты, а не урон); здоровье не проверено |
+
+### 39.3 Мод «торговец» через менеджер модов (сеансы 4 и 5)
+
+Мод собран примером (`examples/trader/build.sh ТЕНЬ РАБОЧАЯ_ПАПКА
+trader.zip`: 11 ресурсов, 5 новых, 1 новый поток), поставлен `mods install`
+и `mods apply` в тень. Подмены рабочего пространства при этом недоступны
+(`live install --apply` отказывает, пока у менеджера есть моды).
+
+| Проверка | Результат |
+|---|---|
+| Торговец на месте | «Dolores Rush» в (290; 378) |
+| Подойти и заговорить | камера на неё и шаг к ней (`hold w 0.25`) — подсказка «E Talk»; E — полосы сверху и снизу и меню: слева «Pistol and bullets ($300)», справа «Tommy gun ($1,500)», снизу «First aid ($200)», сверху «Nothing today» |
+| Покупки сообщениями мода | `live send doctor_trader_buy_a`, `…_c`, `…_b`: 5000 → 4700 → 4500 → 3000; «Tommy Gun (lvl. 1)» 40-60 в руке |
+| Выбор в меню | **не получилось**: стрелки, W/A/S/D (нажатия 0,15–3 с), цифры, цифровая клавиатура, Enter, пробел, Tab, Shift, Ctrl, Alt, буквы, движение мыши, кнопки и колесо, сочетания с E — деньги не менялись, меню оставалось. По коду выбор читают действия `F2FDecisionUp/Down/Left/Right` (`handing-out.md` §7.4) |
+| Устройства ввода (сеанс 5) | `live peek`: `*0x012233B4` = `0x02C32688`; `+0x53D` = `0x0F`, `+0x564` = 4 (клавиатура), `+0x565` = 5 (мышь); таблица раскладок `0x01129BD0` заполнена, пара «Face 2 Face Dialog» — `0x01129C30` |
+| Аптечка | вторая попытка: объём-«боль» из Миссии 6 (`TriggerHurt.0` = 40) отдельным модом — полоска здоровья не изменилась; не проверено |
+
+Найдено:
+
+- **Сообщение подбора несёт получателя** — на этом держится «счёт» и вся
+  цепочка покупки без объёма.
+- **`live send` и Lua не могут быть началом цепочки с `MoneyAdaptor`** или
+  с реле «тому, кто в данных»: у их сообщений данных нет.
+- **Разговор начинается, только когда игрок без оружия в руках**, стоит к
+  собеседнику лицом и камера смотрит на него: с пистолетом собеседница
+  поднимает руки, подсказки «E Talk» нет. Безоружный игрок за камерой не
+  поворачивается — нужен шаг вперёд (`hold w 0.25`).
+- **Меню не появляется без «переменных» `0x49` и `0x30`** в начале дерева.
+- **Пауза**: щелчки мыши пункты не выбирают; `Down` с удержанием 0,7 с;
+  выделенный пункт — цвета (122, 68, 14). Дойти до «Save» сценарием не
+  успели (проверка цвета была настроена неверно) — сохранение не снято.
+- **Подмены рабочего пространства и менеджер модов вместе не работают**:
+  `live install --apply` отказывает, пока у менеджера есть моды; проверочные
+  объекты пришлось ставить вторым модом.
+- Поворот камеры шагом `look`: 0,0443° на пиксель.
+- Тень в длинной папке (136 символов) работала: потоки примера короткие.
+  Сеанс 5 шёл из короткой папки (`/tmp/claude-1000/s75/sh`) — по находке
+  этапа 77 о пределе 255 символов.
+
+Не проверено: выбор варианта в меню; лечение аптечкой; метательное оружие в
+инвентаре; сохранение с купленным оружием; `DonControlGadget` в одиночной
+игре; догадка о GUID для `Base` в Lua. После сеансов `verify` тени —
+оригиналы не менялись; игра не оставлена запущенной.
+
+## 40. Этап 77: сюжет и миссии (2026-11-16)
+
+Стенд, как в §37: `SERVER=xvfb DXVK=1`, 1024×768,
+`WINEDLLOVERRIDES=dinput8=n,b`, свой префикс
+`BENCH_PREFIX=…/wine-gf2-bench-s77` (копия базового), `GAME_OPTIONS="-stream
+gf2 queens"`, каждый сеанс под блокировкой (`flock`). В тенях — модуль
+`doctor_crash.asi`; модуль связи — на порту 47877. Разбор — `story.md`.
+
+**Две тени.** «Длинная» — в рабочей папке этапа, как у прошлых этапов:
+`Z:\tmp\claude-1000\…\scratchpad\s77\shadow`, 136 символов для игры.
+«Короткая» — `/tmp/claude-1000/s77/sh`, 25 символов. Разница между ними и
+есть причина «известного падения у старта Миссии 3» (`story.md` §9): игра
+собирает путь к потоку в 256 байтах стека.
+
+| № | Тень | Что сделано | Что вышло |
+|---|---|---|---|
+| 1 | длинная, с модулем связи | на 75-й секунде `live send cp_325_start_now`; Enter дважды (подсказки), щелчок «Exit» («Взгляд дона»); `live teleport 232,14,-345` | текущий чекпоинт 325; через несколько секунд после телепорта **падение**: рабочий поток, `eip = 0xFFFFFFFF`, адрес возврата `0x00AC333A`. В минидампе на стеке потока — путь `Z:\tmp\…\shadow/gf2\queens\…\m03_carmine_compound_exp.str` с `0x1AE9FD84`, в ячейке `0x1AE9FE84` (адрес возврата `0x00AC37C0`) — `poun` |
+| 2 | длинная, **без модуля связи** | в `gf2/globals_global` тени размещён скрипт (`script-deploy --direct`): через 60 с после загрузки шлёт `cp_326_start_now`; ввода нет | **падение** на 60,133 с игры: `ILLEGAL_INSTRUCTION` по адресу `0x6E756F77`, игрок в точке появления; в очереди менеджера ждёт `…\cp_326_folderstream\m03_carmine_compound_exp.str` |
+| 3 | короткая, без модуля связи | тот же скрипт | падения нет (155 с), исключений в `wine.log` нет |
+| 4 | короткая, с модулем связи; рабочее пространство примера `examples/quests/new-quest.sh` отдано игре подменой (`live install --apply --workspace-dir`) | задание примера, затем шаги прогона 1 | см. ниже; Миссия 3: текущий чекпоинт 326, загружены `cp_326_folderstream.str`, `m03_carmine_compound_exp.str`, `m3_common_*`, падения нет |
+| 5 | короткая, то же рабочее пространство; без ввода, снимки с 33-й по 46-ю секунду | на 38-й секунде от запуска на экране «New Objective: Go to the marked place» и крестик метки на мини-карте: задание стартует само |
+
+**Задание примера (прогон 4).** `live mission` до старта: «78
+checkpoint(s)» без мода (прогон 1) и 79 с ним.
+
+| Шаг | Наблюдение |
+|---|---|
+| ~30 с игры (`TriggerAuto`) | `current checkpoint: cp_105 (chapter 4)`; на мини-карте крестик метки рядом с игроком (в 14 м) |
+| `live send dq_ready` | «New Objective: Go to the marked place» (3 слушателя: цель, метка, коробка). Автоматический показ в этом прогоне на снимки не попал (первый снимок сделан позже) — он снят прогоном 5 |
+| Escape | меню паузы: цели в нём нет; «History Log» пуст |
+| Tab | «Взгляд дона»: вверху «! Go to the marked place»; у стрелки игрока — столб света метки |
+| `live teleport --yes -- -500,6.6,-248` | `live var get dq_done`: 0 → 1; на снимке через 3 с — начало надписи фанфары («Do»); крестик метки пропал |
+| через 3 с | в папке документов префикса появился `GF2-EN-autosave` |
+| меню паузы → Save → «New Saved Game» | второй файл; `doctor-toolkit save ФАЙЛ --all` для обоих: `checkpoint 105`, `77d00001 = 1` |
+
+Найдено по ходу:
+
+- во «Взгляд дона» ведёт клавиша Tab; первый щелчок по «Exit» может
+  выбрать объект карты под курсором по пути — нужен второй;
+- в меню паузы удержание стрелки 0,7 с сдвигает выбор на 1–2 пункта,
+  0,2 с — ровно на один; наведение мыши пункт не выбирает;
+- `live teleport` с отрицательной первой координатой: `live teleport --yes
+  --game ТЕНЬ -- -500,6.6,-248`;
+- `cp_do_autosave_now` пишет автосохранение и при старте `-stream` без
+  профиля.
+
+Не проверено: загрузка сохранения с модом (возврат на чекпоинт 105),
+задание, встроенное после настоящего чекпоинта игры, провал задания.
+После прогонов `verify` обеих теней: оригиналы не менялись.
+
+## 41. Этап 79: состояние объектов логических классов (2026-11-16)
+
+Стенд, как в §36: `SERVER=xvfb DXVK=1`, `WINEDLLOVERRIDES=dinput8=n,b`, свой
+префикс `wine-gf2-bench-s79` (копия базового), модуль связи на порту 47879,
+старт в Гаване подменой `cmd.txt` (`live install ТЕНЬ --writes --port 47879
+"--cmd-txt=-stream gf2 cuba"`), сеанс под общей блокировкой (`flock`). Тень —
+в короткой папке (`/tmp/claude-1000/s79/sh`): при длинном пути тени игра
+падает на открытии потоков (путь «папка + поток» собирается в буфере 256
+байт, находка этапа 77). Один сеанс, 117 с; исключений в `wine.log` нет,
+`verify` — оригиналы не менялись (30 файлов). Что проверялось и чем —
+`research/bench_class_state.py`; что говорит код —
+`docs/analysis/class-behavior.md`.
+
+| Проверка | Как | Результат |
+|---|---|---|
+| Таблицы методов в памяти игры | `live peek` шести таблиц | слот 1 таблицы слушателя `EnterExitTrigger` `0x00D817D8` — `0x00900E20`; `MultiManager`: `0x00E3306C` — `0x0047A1C0`, читатель в `0x00E33050` — `0x0047A320`; `TriggerBox` `0x00D81DA0` — `0x004C1260`; `TriggerAuto`: `0x00E32F88` — `0x00477EF0`, читатель в `0x00E32F6C` — `0x00478040`; слот 2 у всех — `0x00461F30`. Совпадает с образом Ghidra |
+| `TriggerAuto` после срабатывания | `live objects --all --json` на 77-й секунде игры и `live streams`; сравнение с SimGroup загруженных потоков (61 поток) | в файлах загруженных потоков 55 объектов `TriggerAuto`, в игре — **ни одного**: отработавший объект не просто выключает слушатель, он удалён из списка объектов |
+| Остальные классы | то же | `MultiManager` со счётчиком −1: 358 в файлах, 357 в игре, все слушают; со счётчиком больше 0: 70 и 68; `VariableSwitch` 36 и 35; `EnterExitTrigger` 8 и 8; `VariableWatcher` 1 и 1; `TriggerBox` 17 и 9 (почему нет восьми, не выяснялось). У всех оставшихся слушатель включён |
+| `MultiManager` со счётчиком 1 | объект `{8740c935-3f4f-e283-4252-494e4b455232}` (атрибут 0 `dj_bomb_accepted_cuba_POI`, атрибут 1 = 1, флаги 0): `live send dj_bomb_accepted_cuba_POI --to GUID --yes` дважды с паузой 6 с, между ними и после — `live objects --all` | первая отправка — «delivered (1)»; через 6 с объекта в списке нет (8 665 → 8 664 объекта); вторая — «the object does not listen to this message (0)». Счётчик 1 — одно срабатывание, после него объект удалён |
+
+Не проверено: что `MultiManager` при этом послал своё сообщение
+(`thebooks_reveal_stingalmeida_reward_now` в журнале `live log --messages`
+не появилось: у сообщения нет слушателей в загруженных потоках, а без
+слушателей рассылка в журнал не попадает — это объяснение не проверялось);
+флаги `MultiManager` и `TriggerAuto`, которые пишут состояние в сохранение;
+касания и начальное состояние `TriggerBase` / `EnterExitTrigger` (нужен мод с
+изменёнными атрибутами и игрок в объёме); режимы `MessageRelay`;
+`TriggerRandom` с пустой тройкой. Всё это — по коду.
+
+## 42. Этап 100: подмена ресурсов в памяти (2026-11-16)
+
+Стенд, как в §33 и §37: `SERVER=xvfb DXVK=1`, 1024×768,
+`WINEDLLOVERRIDES=dinput8=n,b`, свой префикс
+`BENCH_PREFIX=…/wine-gf2-bench-s100`, свои тени (без `d3d9.dll`, модуля
+связи и GF2ASI из папки игры, с модулем падений `crash-report install`),
+модуль связи на порту 47900, каждый сеанс под блокировкой (`flock`), серия
+замеров — в одном сеансе блокировки. Первые три сеанса шли из тени в
+рабочей папке этапа (путь 135 символов), остальные — из
+`/tmp/claude-1000/s100/shadow` (после находки этапа 77 о буфере пути в 256
+байт). Устройство — `resources-in-memory.md`; скрипты — `research/stage100/`
+(`mkshadow.sh`, `mkws.py`, `mkws_zones.py`, `session.sh`, `correct.sh`,
+`check.body.sh`, `compare_streams.sh`, `timing.sh`, `timing.body.sh`,
+`timing_summary.py`, `staging.sh`, `mods_archive.sh`). Все числа времени и
+памяти — Wine + DXVK под Xvfb.
+
+**Тестовое рабочее пространство** (`mkws.py`; в папку игры и тени не
+пишется, игре отдаётся `live install ТЕНЬ --apply --workspace-dir W
+--resources-in-memory --resources-dump`):
+
+| Поток | Что изменено |
+|---|---|
+| `gf2/<город>/local` (9–10 МБ, загружен всегда), три города | три текстуры перекрашены (замена того же размера), одна вдвое меньше и одна вдвое больше по стороне (`tg4h` и `tg4d` другого размера), клон текстуры под новыми id (два добавленных ресурса) |
+| `gf2/<город>_global` | одна текстура перекрашена, одна клонирована |
+| `gf2/globals_global` (42 МБ, корень всех уровней) | текстура перекрашена, текстура вдвое меньше, клон текстуры; скрипты `lua`: в одном изменена буква имени исходника (тот же размер), к другому дописано 37 байт (173 вместо 136), третий клонирован в поток |
+| `gf2/cuba/local/yuri/high/terrain3` (зона мировой сетки у точки появления) | 12 текстур перекрашены |
+| новые потоки `gf2/doctor/s100<город>` (родитель `gf2/<город>/local`) | клон текстуры и клон скрипта `lua` |
+
+**Эталон** — отдельная тень, в которую то же рабочее пространство записано
+`workspace apply` (а для модов — `mods apply`): «результат `apply`».
+
+**Что проверялось в каждом сеансе** (`check.body.sh`):
+
+1. `live resources`: какие потоки модуль собрал, сколько байт игра
+   прочитала из каждого, отказы;
+2. `live stream load gf2/doctor/s100<город> --wait` — новый поток по
+   запросу;
+3. `live resource-check ЭТАЛОН ПОТОКИ --original ИГРА`: каждый ресурс
+   потоков эталона ищется в таблице загруженных ресурсов игры
+   (`*0x012053AC`) по своим id; изменённые и добавленные сверяются с
+   данными эталона целиком, остальные — по первым 4 КБ;
+4. после остановки игры — потоки, которые модуль собрал внутри игры и
+   выгрузил рядом с заплатками (`resources_dump=1`), против потоков эталона
+   (`compare_streams.sh`: побайтно, иначе — заголовки ресурсов по порядку и
+   распакованные данные); TOC и новые потоки подготовленной копии — против
+   эталона побайтно; `verify` тени; исключения в `wine.log`; отчёты модуля
+   падений.
+
+| Сеанс | Собрано в игре | В памяти (все ресурсы потоков) | Собранные потоки против `apply` | Игра |
+|---|---|---|---|---|
+| Гавана, заплатки (первая версия рабочего пространства, без `lua`) | `globals_global` 42 205 184 → 42 729 472 байт за 7,7 мс, `cuba_global` за 2,7 мс, `cuba/local` 9 043 968 → 9 568 256 за 5,2 мс; прочитано ровно столько | все найдены с ожидаемым размером | `cuba_global` — тот же файл; два других — те же ресурсы; TOC и новый поток — те же файлы | 204 с, исключений нет |
+| Гавана, заплатки | те же и `terrain3` (1 441 792 → 1 703 936 за 0,7 мс); раскладка 3,6 / 0,5 / 1,3 мс | 3 840: 47 совпали (`lua` 32, `tob` 14, `grt` 1), 534 отличаются, 3 259 с нулевым указателем данных, «не загружен» и «другого размера» — 0 | 4 потока — те же ресурсы (один — тот же файл), 10 файлов — те же | 42 с, исключений нет |
+| Гавана, **пересборка** (этап 46, для сравнения) | — | **тот же вывод сверки строка в строку** | — | 43 с |
+| Гавана, заплатки, короткая тень | как выше | как выше | как выше | 39 с |
+| Майами, заплатки | `globals_global`, `miami_global` (262 144 → 393 216), `miami/local` (9 699 328 → 10 485 760) | 3 551: 47 / 472 / 3 032, 0 / 0 | 3 потока — те же ресурсы, 10 файлов — те же | 36 с |
+| Нью-Йорк, заплатки | `globals_global`, `queens_global`, `queens/local` (9 961 472 → 10 485 760) | 3 581: 47 / 453 / 3 081, 0 / 0 | `queens_global` — тот же файл, 2 потока — те же ресурсы, 10 файлов — те же | 39 с |
+
+Скрипты `lua` — единственные изменённые ресурсы, данные которых игра
+держит в памяти как есть, — во всех трёх городах совпали **побайтно**:
+заменённый того же размера (130 байт), заменённый большего размера (173
+вместо 136), добавленный клон в `globals_global` (136) и добавленный клон
+в новом потоке (2 398). Заменённые и добавленные текстуры найдены в
+таблице с размером эталона (в том числе 174 776 вместо 43 704 и 21 872
+вместо 87 408); их данные игра после загрузки не держит (указатель в
+записи — ноль). В кадре у ворот — пурпурные цветы агавы из `terrain3`
+(как в §24).
+
+**Моды из менеджера** (`--mods --resources-in-memory`; тень с тремя
+тестовыми модами, поставленными `mods install`: «Новый двор в Гаване» —
+новый поток-зона `gf2/testmods/havana_yard` с 70 ресурсами и ячейка
+мировой сетки в `gf2/cuba`; «Переодевание и перекраска» — 157 ресурсов,
+7 добавленных, файлы архива `.viv` (формат 4); «Новый ракурс ролика»):
+90 потоков с заплатками, из них при входе в Гавану игра открыла 13 — все
+собраны (`gf2/globalfolder/characters/allcharacters`, 42 МБ и 6 978
+ресурсов, — за 6,7 мс; зоны — за 0,7–0,9 мс), отказов нет; 13 собранных
+потоков — те же ресурсы, что в эталоне `mods apply` (один — тот же файл);
+`cuba.toc`, `cuba_global.toc`, `globals_global.toc` и поток новой зоны —
+те же файлы; накладной архив `GODFATH0.viv` подготовленной копии — тот же
+файл, что пишет `mods apply` (`mods_archive.sh`, без игры), архивы игры
+сдвинуты подменой файлов. Новая зона загружена у точки появления, её
+ресурсы — в таблице; изменённая сетка `wgi` (41 248 байт вместо 41 120) —
+в таблице с новым размером. 44 с, исключений нет.
+
+**Серия замеров** (`timing.sh`, рабочее пространство `mkws_zones.py`: в
+каждой из 172 зон высокой детализации Гаваны с текстурами данные одной
+текстуры заменены данными того же размера и одна текстура клонирована;
+171,6 МБ файлов потоков). Три повтора по три сеанса: без изменений,
+пересборка (этап 46), заплатки (этап 100). В сеансе — загрузка уровня и
+шесть переносов игрока: (−512; 14; 145), (−72,5; 12; 86,1), точка
+появления, и ещё раз по кругу; после каждого — ожидание, пока список
+потоков зон не перестанет меняться (опрос раз в секунду), и
+`live profile --memory --reset`.
+
+| | Без изменений | Пересборка | Заплатки |
+|---|---|---|---|
+| подготовка запуска (`staging.sh`, три повтора) | — | 4,36–4,39 с; 367,9 МБ в 349 файлах | 2,27–2,28 с; 13,6 МБ в 175 файлах |
+| потоки уровня загружены через (шаг 1 с) | 10 / 5 / 6 с | 8 / 7 / 7 с | 10 / 7 / 7 с |
+| загрузка уровня: чтений, МБ | 1 242–1 247; 161,5 | 1 253–1 260; 163,0–163,2 | 1 256–1 261; 163,3–163,4 |
+| загрузка уровня: время в `ReadFile` | 49,9 / 49,2 / 47,3 мс | 33,9 / 30,0 / 31,4 мс | 32,3 / 32,4 / 31,9 мс |
+| перенос на запад: в `ReadFile` | 17,8 / 5,2 / 6,5 мс | 3,5 / 6,1 / 3,3 мс | 4,9 / 9,8 / 4,0 мс |
+| перенос в центр | 23,3 / 10,0 / 7,8 мс | 4,9 / 6,3 / 8,9 мс | 4,8 / 6,9 / 4,6 мс |
+| перенос к точке появления | 11,1 / 4,2 / 4,6 мс | 4,5 / 12,0 / 3,2 мс | 5,0 / 4,4 / 4,6 мс |
+| второй круг (три переноса) | 3,9–15,8 мс | 2,9–15,5 мс | 4,1–11,9 мс |
+| чтение за перенос | 179–236 чтений, 23,5–30,4 МБ | 192–240, 25,1–30,9 МБ | 195–238, 25,6–30,7 МБ |
+| зоны догружены через (шаг 1 с) | 2–4 с | 1–5 с | 1–3 с |
+| зон загружено: появление / запад / центр | 46 / 45 / 42 | 46 / 45 / 41 | 46 / 45 / 41 |
+| занято адресного пространства | 710–730 МБ | 707–731 МБ | 707–731 МБ |
+| текстуры | 141–144 МБ | 141–145 МБ | 141–145 МБ |
+
+За три сеанса с заплатками модуль разложил 108 потоков: 0,33 мс минимум,
+0,47 мс медиана, 0,83 мс у 95 %, 18,4 мс максимум; отказов нет. Девять
+сеансов по 50–63 с, исключений нет, отчётов модуля падений нет, после
+каждого `verify`: оригиналы не менялись (30 файлов).
+
+Что из этого следует:
+
+1. **Игра читает собранный поток как обычный файл**: каждый — целиком,
+   байт в байт по длине раскладки; ресурсы — те же, что пишет `apply`.
+2. **Время загрузки и память от пути не зависят** в пределах разброса:
+   разница между пересборкой и заплатками меньше разницы между повторами.
+   Различается только подготовка: вдвое быстрее и в 27 раз меньше на
+   диске (на тестовом пространстве — в 43 раза).
+3. **Вес зон работает одинаково на обоих путях**: с изменениями в центре
+   города загружена 41 зона вместо 42 — зоны стали тяжелее на клон
+   текстуры, и TOC обоих путей записал это одинаково.
+4. **Образ ресурса в памяти** после загрузки остаётся прежним только у
+   `lua`, `tob` и `grt` (`resources-in-memory.md` §8.1).
+
+Найдено по ходу:
+
+- Список потоков в центре города не «успокаивается»: потоки анимаций
+  прохожих (`gf2\globalfolder\interestingobjectanimations\ambient_*`)
+  приходят и уходят. Ожидание в скриптах смотрит только на потоки зон.
+- Первая серия замеров была прервана из-за этого ожидания; в ней один
+  сеанс с заплатками дал 422,9 мс в `ReadFile` за загрузку уровня при
+  обычных 32 мс — стенд в это время был занят соседней работой; в
+  повторной серии такого не было.
+- Первый запуск игры на свежем префиксе грузил уровень 16 с, следующие —
+  5–10 с (кэш файлов и шейдеров).
+
+Не проверено: Windows; заплатка к резервной копии потока, уже записанного
+в игру (`resources-in-memory.md` §3.4 — только тест); GF2ASI и папка
+`update` загрузчика вместе с заплатками; долгая игра (самый длинный сеанс —
+204 с); вытеснение зон при большом росте веса; ресурсы, изменённые в
+потоках заданий и роликов (в сеансах они не открывались: «Новый ракурс
+ролика» не проигрывался).
+
+Снимки, журналы модуля и выводы сверок — в рабочей папке этапа
+(`out/<сеанс>/`: `resources.txt`, `check.txt`, `composed.txt`,
+`timing.txt`, `doctor_live.log`).
+
+## 43. Этап 80: платформа нативных модов (2026-11-16)
+
+Стенд, как в §41: `SERVER=xvfb DXVK=1`, 1024×768,
+`WINEDLLOVERRIDES=dinput8=n,b`, свой префикс `wine-gf2-bench-s80` (копия
+базового), тень в короткой папке (`/tmp/claude-1000/s80/sh`; `gf2/cuba/local.str`
+и зона `gf2/cuba/local/yuri/high/filler_056_01.str` — настоящие копии), из
+тени убраны скопированные из папки игры `d3d9.dll`, модуль связи и GF2ASI.
+Каждый сеанс — под общей блокировкой стенда (`flock`). В `scripts` тени пять
+модулей: `doctor_crash.asi` (`crash-report install`), `doctor_live.asi` (порт
+47880, записи разрешены, в прогонах 1–3 — `cmd.txt` «`-stream gf2 cuba`»
+подменой), `doctor_platform.asi` и два мода примера — `doctor_example.asi`
+(Rust) и `doctor_example_c.asi` (C). Данные мода (`examples/native-class/build.sh`,
+затем `workspace apply` в тень): в SimGroup `gf2/cuba/local` объект
+`DoctorCounter` (считает `doctor_example_count`, каждый второй раз шлёт
+`doctor_example_fired`, сбрасывается по `doctor_example_blocked`), объект
+`DoctorCEcho` (на `doctor_example_fired` шлёт `doctor_example_ping`) и скрипт
+`doctor_example`; в SimGroup зоны — ещё один `DoctorCounter` (каждый раз шлёт
+`doctor_example_zone`). Подготовка тени и сценарий сеанса —
+`research/bench_platform.sh` (`setup`, `session`, `resume`); устройство
+платформы — `asi-platform.md`.
+
+Числа ниже — шесть значений `DoctorCounterInfo()` мода: объектов
+`DoctorCounter` живо, сообщений посчитано, сообщений послано, пингов услышал
+слушатель мода, сообщений проглотил фильтр, вызовов перехваченной
+`0x0043E5C0`.
+
+| № | Прогон | Что вышло |
+|---|---|---|
+| 1 | Гавана, 150 с, только запуск (сценарий не узнал уровень по ответу `live status` — ошибка сценария) | игра работала 150 с со всеми пятью модулями, исключений в `wine.log` нет. Журнал платформы: издание узнано, перехваты `0x0068AB55` и `0x00681860`; **LuaManager создаётся раньше регистрации классов** — связка добавлена на 0,997 с, `doctor_mod_init` модов вызваны на 1,173 с (таблица сообщений и LuaManager уже есть); оба мода вернули 0: классы `DoctorCounter` (объект 0x80 байт) и `DoctorCEcho` (0x70), четыре функции Lua, фильтр по адресу `0x00408A1A`, прыжок с `0x0043E5C0`; проверка перехвата входа шины `0x00408A00` — отказ (−3, место модуля связи). На 1,894 с игра создала `DoctorCounter` из SimGroup уровня, читатель получил атрибуты: «counts 1c7d8d9a, sends cf969559 every 2 time(s)» |
+| 2 | Гавана, 31 с, проверки без зоны | всё, что в прогоне 3, кроме списка объектов: `live objects --all` объектов классов мода **не показал** (8 584 объекта без них) — модуль связи узнавал объект по таблице методов внутри образа игры, а таблицы объектов мода лежат в `doctor_platform.asi`. Исправлено: модуль связи узнаёт такой объект по метке платформы после `Base` |
+| 3 | Гавана, 95 с, полный сценарий | см. ниже; исключений нет, отчётов о падении нет |
+| 4 | обычный старт без `cmd.txt`, 352 с | в префиксе не было профиля — игра стояла на «Select Profile» (40 нажатий Return ничего не выбрали); все пять модулей 352 с в меню, исключений нет. Уровень не загружался |
+| 5 | загрузка сохранения: в префикс положен профиль (`profiles.dat` и папка профиля из префикса другого этапа) с автосохранением прогона 3 в его папке; обычный старт, Return через меню до «Resume Game» | на 61-й секунде уровень загружен из сохранения — игрок у ворот аэропорта Гаваны (снимок), объектов 8 772; игра заново создала `DoctorCounter` и `DoctorCEcho` из SimGroup (строка читателя в журнале платформы на 61,3 с), скрипт уровня напечатал `doctor_example:start:5:NATIVE`; те же проверки, что в прогоне 3 до зоны, дали те же числа: `1 0 0 0 0 30` → `1 2 1 1 0 30` → `1 4 2 2 1 30` → `1 4 2 2 1 32`, строка запроса `doctor_example:query:true:1:5:2:2:1:32`. Сеанс 83 с, исключений нет |
+| 6 | Гавана, 100 с, тень собрана заново (`setup`), окончательный код примера | всё, что в прогоне 3, с теми же числами, и остальные функции платформы — `DoctorSelfTest()` мода: доставка одному объекту (`send_to`) — посчитал 1; при выключенном слушателе (`object_enable(0)`) — 0; после `object_unlisten` рассылка до объекта не дошла, `object_listen` вернул подписку; чужой указатель вместо объекта — отказ (−2); `unsubscribe` — пинг не услышан, новая подписка работает. `DoctorGuid(DoctorObject())` — `453a4658e07a2a94444f43544f52544b` (GUID счётчика; light userdata туда и обратно), `DoctorGuid(1)` — `nil`. `DoctorSend("doctor_example_count", 2, true)` (отправка с задержкой 2 с и объектом в данных) — `true`; сразу `1 5 2 2 1 32`, через 4 с `1 6 3 3 1 32`: сообщение пришло из очереди. Слушатель пинга по слову данных назвал отправителя: «doctor_example_ping heard (1) about fa391658…» — GUID объекта `DoctorCEcho`. Исключений нет |
+| 7 | Гавана, 45 с (`run`, `GAME_OPTIONS="-stream gf2 cuba"`), в `scripts` только платформа и два мода — без модуля связи и модуля падений | журнал платформы тот же: оба мода вернули 0 (у мода на Rust теперь пять функций Lua), на 3,3 с игра создала `DoctorCounter` и читатель получил атрибуты; исключений в `wine.log` нет. Платформе другие модули тулкита не нужны |
+
+Прогон 3 по шагам (`live` — команды `doctor-toolkit live … --game ТЕНЬ`):
+
+| Шаг | Результат |
+|---|---|
+| объекты (`live objects --all --json`, сверка по GUID из SimGroup тени) | 8 587 объектов; `DoctorCounter` и `DoctorCEcho` уровня — в игре, слушатель включён; класс модулю связи не известен (у объекта `Base::As`), имя класса клиент берёт из SimGroup; `DoctorCounter` зоны — нет (зона у точки появления не загружена) |
+| `live lua 'return DoctorCAdd(40, 2), DoctorCUpper("mod"), DoctorCounterInfo()'` | `42`, `MOD`, `1 0 0 0 0 30` — функции мода на C и мода на Rust отвечают; 30 — столько раз игра сама прошла через `0x0043E5C0` к девятой секунде |
+| `live send doctor_example_count` дважды | оба раза «1 listener(s)»; после первого `1 1 0 0 0 30`, после второго `1 2 1 1 0 30`: счётчик послал `doctor_example_fired`, объект класса из мода на C ответил `doctor_example_ping`, слушатель-функция мода его услышал (строка «doctor_example_ping heard (1)» в журнале платформы) |
+| `count`, `live send doctor_example_blocked`, `count` | на `blocked` — «nobody listens to this message», хотя объект на него подписан: фильтр проглотил; затем `1 4 2 2 1 30` — счётчик не сброшен (иначе второе срабатывание не случилось бы) |
+| `live lua 'EclipseLog("a") EclipseLog("b") return DoctorCounterInfo()'` | `1 4 2 2 1 32` — перехват видит оба вызова, `EclipseLog` работает как раньше |
+| скрипт уровня `doctor_example` (журнал `live log`) | при загрузке уровня: `print doctor_example.lua:154: doctor_example:start:5:NATIVE` (кадр 72) — скрипт из данных мода вызвал `DoctorCAdd(2, 3)` и `DoctorCUpper("native")`; по `live send doctor_example_query`: `doctor_example:query:true:1:5:2:2:1:32` — `DoctorSend` послал сообщение (счётчик посчитал пятое), `DoctorCounterInfo` вернул шесть чисел; ошибок Lua в журнале нет |
+| `live stream load` зоны (24 кадра) | `2 5 2 2 1 32`, объектов 8 589, `DoctorCounter` зоны в игре; `count` — «2 listener(s)», `2 7 4 3 1 32` (оба счётчика посчитали, оба послали) |
+| `live stream unload` зоны (1 кадр) | `1 7 4 3 1 32` — деструктор объекта вызван, объектов 8 586, `DoctorCounter` зоны в списке нет; `count` — «1 listener(s)» |
+| снова `load` и `unload` | то же: `2 8 4 3 1 32` → после `count` `2 10 6 4 1 32` → после выгрузки `1 10 6 4 1 32`, `count` — «1 listener(s)», `1 11 6 4 1 32` |
+| `live send cp_do_autosave_now` | «2 listener(s)»; в папке документов префикса записан `GF2-EN-autosave` (272 740 байт; `doctor-toolkit save`: «Auto:Profile 0 - Cuba - 0:00:22», суммы сходятся, 25 блоков) |
+| минута игры после этого | игровое время 89,9 с, числа мода те же, исключений нет |
+
+Найдено:
+
+- LuaManager и таблица сообщений к моменту регистрации классов уже
+  существуют; связка платформы добавляется раньше, чем вызываются моды, и
+  функции Lua, зарегистрированные модами после этого, попадают в уже
+  созданные состояния напрямую.
+- Объект класса мода создаётся игрой и при быстром старте (`-stream`), и
+  при загрузке сохранения, и при загрузке потока по запросу; при выгрузке
+  потока вызывается его деструктор. Состояние объекта (счётчик) в
+  сохранение не попадает: после загрузки объект начинает с нуля — так и
+  задумано в версии 1 (`asi-platform.md` §9).
+- Модуль связи не видел объекты с таблицей методов вне образа игры
+  (прогон 2); после правки `object_guid` они есть в списке всех объектов и
+  среди получателей сообщений.
+- Через `0x0043E5C0` (тело `EclipseLog`: `mov eax, 1; ret`) игра сама
+  проходит 30 раз за первые секунды — у функции есть другие вызывающие.
+
+Не проверено: неупакованные записи объектов (в файлах игры их нет);
+`hook_call` и отправка с `force` — только по коду; сохранение через меню
+паузы (проверено автосохранение по сообщению); загрузка сохранения шла с
+примером до добавления `DoctorSelfTest` (прогон 5; платформа та же);
+`live send --to` объекту мода (модуль связи требует обработчик слушателя в
+коде игры); Windows. После прогонов `verify`: оригиналы не менялись (32
+файла); префикс и тень удалены.
+
+
+## 44. Этап 82: команда и новый человек чести (2026-11-16)
+
+Стенд, как в §41: `SERVER=xvfb DXVK=1`, 1024×768,
+`WINEDLLOVERRIDES=dinput8=n,b`, свой префикс `wine-gf2-bench-s82` (копия
+базового), модуль связи на порту 47882, `doctor_crash.asi`, старт в
+Нью-Йорке подменой `cmd.txt` (`-stream gf2 queens`), тень в короткой папке
+(`/tmp/claude-1000/s82/sh`), каждый сеанс под общей блокировкой. Сеансы
+ведёт `research/bench_crew.sh ТЕНЬ ВЫВОД ШАГИ.sh`. Мод — рабочее
+пространство примера `examples/crew/new-crew-member.sh`, отданное игре
+подменой (`live install --apply --workspace-dir`). Разбор — `crew.md`.
+Сохранения читались командой `doctor-toolkit save ФАЙЛ --chunk
+player-family --chunk families`. Шесть сеансов (46 с — 15 мин), исключений
+в `wine.log` нет.
+
+**Игра без мода (прогоны 1 и 2).**
+
+| Шаг | Наблюдение |
+|---|---|
+| `live family` после старта | все семь мест закрыты |
+| `live send add_demo_family` | «6 listener(s)»; места 1–4 — солдаты, 5 и 6 — капо со специальностями из атрибута 3 объектов `AddPlayerFamilyMember` (`demolition, arsonist` = 12; `engineer, medic` = 96); младший босс закрыт |
+| «Взгляд дона» (Tab) → «More Don's View» → Family Tree → «Your Family» | древо с портретами; у человека: имя («Henry Strazzi»), ранг, состояние «Ready», «Weapon License: Basic», специальность; кнопки «Upgrade», «Add to crew» |
+| Enter на человеке | экран улучшений: вкладки Upgrades, Weapons, Weapon License, Mark for Death, Apparel; строка «Weapon License: Basic / Advanced / Expert / Master» |
+| «Add to crew» → «Yes» | состояние «Crew»; после выхода из меню слева вверху портрет со значком специальности, персонаж (шаблон `NPC_CRW_0005`) в 2,9 м от игрока |
+| игрок идёт 5 с | человек идёт следом: 2,7 м от игрока в новом месте |
+| `live send cp_do_autosave_now`, чтение файла | шесть записей заслуг: лицензии 1, 2, 2, 2, 2, 2 — как дают флаги `SimNpc.0` этих людей (3 и 11); в блоке семей у `corleone` шесть членов с местами 1–6, рангами и специальностями древа |
+
+**Новый человек (прогоны 3–6).** «Sal Dottore»: копия `NPC_CRW_0006`,
+специальности «поджигатель + медик», лицензия Advanced, своя одежда.
+
+| Шаг | Наблюдение |
+|---|---|
+| 10 с после загрузки города | в 5 м от точки старта стоит персонаж с GUID нового шаблона; над ним щит рекрута со значками огня и аптечки |
+| подойти, `E` | диалог найма: «What's your background?», «What's your specialty?», «I'm done»; в кадре он в своей одежде (свитер из материалов двух городов), лицо набора `corleonerecruit_0003_v1` |
+| «What's your specialty?» | экран сведений: «Sal Dottore», текст биографии примера, «Weapon License: Advanced», Arsonist и Medic с описаниями |
+| места закрыты | пункта найма в диалоге нет |
+| `live send iMsgTreeType1S` | место 1 открыто (`live family`: «free»); в диалоге появился пункт «I think you're in…» → «You're in, welcome!» |
+| выбрать его | «Sal Dottore has joined your family! Press Tab for more info.»; `live family`: место 1 — его `SimNpc`, «soldier, arsonist, medic»; он сразу в команде (панель слева вверху) |
+| телепорт игрока на 21 м | через 9 с он в 3 м от игрока |
+| Family Tree | «Sal Dottore, Soldier, Crew, Weapon License: Advanced, Arsonist, Medic» |
+| другой сеанс: `live send dcrew_join` при закрытых местах | место 1 открылось и занято им, хотя в мире он не появлялся (прогон 4) или стоит рекрутом (прогон 6) |
+| `live send iMsgTreeType1C3S`, кнопка «Promote» | «Sal Dottore promoted to Capo. Pick a new specialty: Demolitions / Safecracker / Engineer / Bruiser»; после выбора — «Capo», три специальности, `live family`: место 5 — он, места 1–3 свободны |
+| вкладка «Mark for Death» | текст: приговорённый уязвим для своих и не выздоравливает; кнопка «Mark for death» (не нажималась) |
+| вкладка «Apparel» | он в полный рост в своей одежде |
+| автосохранение, чтение файла | запись заслуг с его GUID и лицензией 2; в блоке семей: уровень древа 4, «rank 4, place 5, specialties demolition+arsonist+medic» |
+
+**Портрет.** В древе, на экране сведений, в уведомлении о найме и на экране
+улучшений у нового человека — голова по умолчанию (лысая, в чёрной
+футболке), а на панели команды — силуэт; у людей набора `add_demo_family`
+в том же сеансе портреты верные (прогон 5). От элемента внешности это не
+зависит: прогон 5 — с элементом игры `queens`, прогоны 3, 4, 6 — с новым.
+После повышения на портрете появились очки. Причина не найдена.
+
+Найдено по ходу:
+
+- кнопка меню срабатывает, только если курсор подвигался над ней: шаг
+  `look DX,DY` доводит курсор, второй `look` на пару точек «будит» кнопку,
+  новый шаг стенда `press` нажимает на месте (шаг `click` ведёт курсор
+  через угол экрана и в этих меню промахивается);
+- в древе и в диалоге работают стрелки и Enter;
+- персонаж после разговора уходит с точки появления (в примере у него нет
+  `InterestingObject` с позой); подсказка «E Talk» появляется, когда он
+  в прицеле;
+- `live family --names` печатает GUID объекта `SimNpc`; имени человека
+  (текста `NPC.18` его шаблона) в выводе нет.
+
+Не проверено: специальность в деле (объекты `CSACrewComponent`), ранение,
+приговор и гибель, больше одного человека в команде, загрузка сохранения с
+новым человеком с модом и без него, рекруты дополнений (`UnlockCheck`,
+патч `dlc_pack.vpat`), найм в другом городе, вариант примера
+`CREW_AUTO_JOIN` (сообщение шлёт `TriggerAuto`). После прогонов `verify` тени:
+оригиналы не менялись.
+
+## 45. Этап 81: нативный мод, поставленный менеджером модов (2026-11-16)
+
+Стенд, как в §43: `SERVER=xvfb DXVK=1`, 1024×768,
+`WINEDLLOVERRIDES=dinput8=n,b`, свой префикс `wine-gf2-bench-s81` (копия
+базового), тень в короткой папке (`/tmp/claude-1000/s81/sh`,
+`gf2/cuba/local.str` — настоящая копия). Из тени убраны скопированные из
+папки игры `d3d9.dll`, модуль связи и GF2ASI, а в прогонах 1 и 3 — и
+загрузчик игрока `dinput8.dll` (Ultimate ASI Loader): загрузчик должен
+поставить менеджер. Пример `examples/native-class/build.sh` собирает один
+файл мода `mod.zip` формата 5: данные (объекты `DoctorCounter` и
+`DoctorCEcho` и скрипт в SimGroup `gf2/cuba/local`) и два модуля —
+`doctor_example.asi` (Rust, 284 160 байт) и `doctor_example_c.asi` (C,
+85 932 байта), признак `required`. Рядом собран `soft.zip` — тот же мод без
+этого признака. Все шаги — командами менеджера (`doctor-toolkit mods …`),
+сценарий — `research/bench_native_mod.sh` (`setup`, `install`, `session`,
+`remove`); сеансы игры — под общей блокировкой стенда. Правила установки
+кода — `docs/mods.md` §1.6.
+
+**Установка (без игры).** После каждого шага — список `scripts/`, наличие
+`dinput8.dll` и файл `_doctor_toolkit/mods/native.json` тени.
+
+| Шаг | Что вышло |
+|---|---|
+| `mods info mod.zip` | «format 5», «EXECUTABLE CODE for the edition 1.0.789.0 of the game, platform ABI 1, required…», два модуля с размерами и SHA-256; все данные проверены |
+| программа прежней версии (`doctor-toolkit` 0.0.4 из основной сборки) читает и ставит `mod.zip` | оба раза отказ: «the mod uses format version 5; this program reads up to 2. Update doctor_toolkit», код возврата 1; папка модов тени не создана |
+| `mods install soft.zip` (код не обязателен) | мод установлен; напечатаны предупреждение о коде, вопрос (два файла мода и два файла тулкита — `scripts/doctor_platform.asi` и `dinput8.dll` — с размерами и SHA-256) и команды ответа; `mods check`: «its executable code waits for your consent… only its data is written» |
+| `mods apply` без ответа | поток `gf2/cuba/local` и два TOC записаны; предупреждение «native code of mod … is not installed»; в `scripts/` ничего не появилось, `dinput8.dll` нет, `native.json` нет |
+| `mods native … --data-only`, `mods apply` | ответ записан (`"data"` на каждый хэш); `scripts/` без изменений; `mods native`: «not installed: you chose to install it without its executable code» |
+| `mods unapply`, `mods uninstall` | поток возвращён, `native.json` удалён вместе с ответом |
+| `mods install mod.zip` (код обязателен) | «does not fit: … the mod does not work without its code, so it is not written at all» |
+| `mods apply` без ответа | **отказ**, ничего не записано (ни потока, ни файлов кода) |
+| `mods native … --data-only` | отказ: «does not work without its code: agree with --allow, or disable or uninstall the mod» |
+| `mods native … --allow` | «agreed: …» по четырём файлам с SHA-256; в `native.json` — `"code"` на оба хэша модулей; в игре по-прежнему ничего |
+| `mods apply` | записаны поток, TOC и `dinput8.dll` (283 648 байт — `doctor_loader.dll` тулкита), `scripts/doctor_example.asi`, `scripts/doctor_example_c.asi`, `scripts/doctor_platform.asi`; в `native.json` раздел `written` — четыре файла с хэшами и владельцами (`loader`, id мода, `platform`); `mods native`: «installed» |
+
+**Игра.** После установки в тень положены модуль связи (порт 47881, записи
+разрешены, `cmd.txt` «`-stream gf2 cuba`» подменой) и модуль падений —
+чтобы заглянуть в игру.
+
+| № | Прогон | Что вышло |
+|---|---|---|
+| 1 | тень без загрузчика игрока; загрузчик, платформа и моды поставлены менеджером; Гавана, 14 с | **загрузчик тулкита загрузил все пять модулей** (платформа, два мода, модуль связи, модуль падений — их журналы написаны с первой миллисекунды). Журнал платформы: издание узнано, оба мода вернули 0 (классы `DoctorCounter` и `DoctorCEcho`, семь функций Lua, фильтр, перехват), на 1,5 с игра создала `DoctorCounter` из SimGroup мода. `live objects --all`: 8 586 объектов, оба объекта мода в игре, слушают. `live lua 'return DoctorCAdd(40, 2), DoctorCUpper("mod"), DoctorCounterInfo()'` — `42`, `MOD`, `1 0 0 0 0 30`. Два `live send doctor_example_count` — «1 listener(s)», после второго `1 2 1 1 0 30`: счётчик послал сообщение, объект класса из мода на C ответил, слушатель услышал. Скрипт уровня: `doctor_example:start:5:NATIVE` при загрузке, `doctor_example:query:true:1:3:1:1:0:30` по сообщению. `DoctorSelfTest()` — все проверки, как в §43. Ошибок Lua, исключений в `wine.log` и отчётов о падении нет |
+| 2 | тень **с загрузчиком игрока** (Ultimate ASI Loader, SHA-256 `5e23085f…`), 14 с | менеджер записал только три файла в `scripts/` (`mods apply`: `dinput8.dll` среди записанных нет, в `native.json` его нет); в игре то же, что в прогоне 1 (8 587 объектов, те же числа и строки скрипта). После снятия `dinput8.dll` тени — тот же `5e23085f…` |
+| 3 | как прогон 1, тень собрана заново, 17 с; добавлена проверка ввода | то же, что в прогоне 1; **ввод через загрузчик тулкита работает**: `live player` до и после трёх секунд зажатой W — `283.897 0 371.797` → `267.434 0 365.196` (игрок прошёл 17,7 м). Снимок в конце — игрок у ворот аэропорта Гаваны |
+
+**Снятие (без игры), прогон 1 и 3.**
+
+| Шаг | Что вышло |
+|---|---|
+| `mods disable` | модули мода и платформа убраны **сразу**, без `apply`; `dinput8.dll` тулкита остался — в `scripts/` ещё лежат модуль связи и модуль падений |
+| `mods enable`, `mods apply` | три файла кода записаны снова (поток не менялся) |
+| убраны модуль связи и модуль падений (`live uninstall`, `crash-report uninstall`) | в `scripts/` — два модуля мода и платформа |
+| `mods unapply` | поток и TOC возвращены; «removed» — оба модуля, платформа и `dinput8.dll`; `dinput8.dll` в папке игры нет; в `scripts/` остались только файлы игрока (`discord_game_sdk.dll`, таблица Cheat Engine) |
+| `mods uninstall --all` | `native.json` удалён |
+| `game-bench.sh verify` | «originals unchanged: 31 files» |
+
+После снятия в `_doctor_toolkit` тени остаются резервные копии, `mods/applied.json`,
+`mods/registry.json` и файлы модулей связи и падений — как и до этапа;
+файлов кода и записей о нём менеджер не оставляет.
+
+**Окно Open Mod Manager** (свой Xvfb 1600×1000, окно 1100×780,
+`research/native_mod_shots.sh`, вторая тень без загрузчика; на снимках,
+кроме `-ru`, английский интерфейс):
+
+| Снимок | Что на нём |
+|---|---|
+| `1-question` (`docs/images/mod-manager-native-question.png`) | мод установлен, ответа нет: поверх списка сам открылся вопрос «“Doctor native class” contains executable code» — текст о том, что это программа, а не только данные; «Files of the mod that go into the game folder» — `scripts/doctor_example.asi` (284160 bytes) и `scripts/doctor_example_c.asi` (85932 bytes) с полными SHA-256; «Files of Open Mod Manager that come with them» — `scripts/doctor_platform.asi` и `dinput8.dll` с SHA-256; «This mod does not work without its code…»; кнопки «Decide later», «Switch the mod off», «Allow the code». На карточке за вопросом — состояние «Waiting for your consent» |
+| `1-question-ru` | тот же вопрос по-русски: «В моде «Doctor native class» есть исполняемый код», кнопки «Решу позже», «Выключить мод», «Разрешить код» |
+| `2-waiting` | вопрос закрыт («Decide later»): на карточке метка «Executable code» и жёлтое состояние «Waiting for your consent» со значком; в разделе мода — объяснение, что до ответа мод не записывается, блок «Executable code» с двумя файлами и хэшами и кнопка «Answer about the code…» |
+| `3-agreed` | код разрешён, в игру не записан: состояние «Not written to the game yet», в блоке кода — «You allowed its code; Write to game installs it», кнопка «Ask me again»; «Write to game» активна |
+| `6-no-loader` | то же, но рядом с программой нет `doctor_loader.dll` (`DOCTOR_LOADER_MODULE` на несуществующий файл): красное «Its code cannot be installed», причина — «The game folder has no ASI loader (dinput8.dll), and the loader of Open Mod Manager (doctor_loader.dll) is not next to the program. Put an ASI loader into the game folder» |
+| `4-installed` (`docs/images/mod-manager-native-installed.png`) | после записи: зелёное «Ready», в блоке кода — «Its code is installed in the game folder», «Restore originals» активна |
+| `5-other-edition` | в копии `godfather2.exe` тени изменён один байт времени сборки в заголовке PE: в шапке «unknown build 1.0.789.0 of 2009-10-05», состояние «Its code cannot be installed», причина — «Its code is only for the edition 1.0.789.0 of the game; this game is another one (not PC 1.0.789.0 …: link time 0x4ac976e4)» |
+
+Найдено:
+
+- Загрузчику под именем `dinput8.dll` достаточно передать системной DLL
+  одну функцию `DirectInput8Create` — другого игра из `DINPUT8.dll` не
+  берёт (`research/exe_imports.py`); модули тулкита, загруженные из
+  `DllMain` загрузчика до точки входа игры, ставят свои перехваты так же,
+  как под Ultimate ASI Loader.
+- Программа, собранная до версии формата 5, мод с кодом не открывает; мод
+  без кода она по-прежнему читает (версия формата у него прежняя).
+
+Не проверено: Windows; «Играть с модами» (данные вне папки игры) с кодом
+мода — только по коду (`mods::native::prepare`); нажатия кнопок вопроса
+мышью (ответы проверены тестом панели
+`a_mod_with_code_asks_before_anything_executable` и командами); программа
+версий 0.0.5–0.0.7 как отдельная сборка (её ответ — тот же код разбора,
+тест с пределом версии 4). После прогонов: `verify` чист, префикс и тени
+удалены.
+
+## 46. Этап 101: замер объединения вызовов отрисовки под DXVK (2026-11-16…17)
+
+Вторая часть этапа 101 (§38): после перезагрузки видеокарта стенда работает
+(`nvidia-smi` в порядке, Vulkan видит RTX 4070), и то, что в §38 не снялось
+или снялось только под программным рендером, снято под DXVK. Выводы —
+`performance.md` §11.
+
+Стенд: `SERVER=xvfb DXVK=1` (DXVK 2.6.2, NVIDIA RTX 4070 Laptop, драйвер
+595.99.02), окно 1280×720, `WINEDLLOVERRIDES=dinput8=n,b`, свой префикс
+`wine-gf2-bench-s101`, тень в короткой папке (`/tmp/claude-1000/s101/sh`,
+25 символов; из неё убраны скопированные из папки игры `d3d9.dll`, модуль
+связи и GF2ASI), в тени — модуль связи (порт 47901, запись разрешена) и
+`doctor_crash.asi`. Игра стартует сразу в городе
+(`GAME_OPTIONS="-windowed -resolution 1280 720 -stream gf2 cuba|queens|miami"`),
+игрок стоит в точке появления. Графический модуль — сборка из дерева этапа
+(`tools/build-render-module.sh`), он и `doctor_render.cfg` кладутся в
+`scripts/` тени на сеанс и убираются после. Каждый сеанс — под общей
+блокировкой стенда; стендом в это время пользовался ещё один этап.
+
+Сеанс ведёт `research/bench_draws.sh ТЕНЬ ВЫВОД ГОРОД "СТРОКИ CFG" ШАГИ.sh`
+(несколько подряд — `research/bench_draws_batch.sh`, он останавливается при
+первой новой строке журнала ядра о видеокарте). Помощник пишет нагрузку
+машины раз в 5 с (`load.txt`: средняя нагрузка, занятые ядра всего, из них
+игра с Xvfb и `wineserver`, остальное, загрузка видеокарты), журнал модуля,
+отчёты о падениях и новые строки журнала ядра о видеокарте. Шаги:
+
+| Шаги | `doctor_render.cfg` | Что делает |
+|---|---|---|
+| `research/bench_draws_ab.sh` | `draw_merge=1`, `draw_ab=8` | 280 с стоя; модуль каждые 8 с выключает и включает объединение и пишет строку на половину; `research/draw_threads.py follow` на каждой строке читает из `/proc` тики ЦП потоков игры по именам (`dxvk-cs`, `dxvk-submit`, `Presentation` — поток рендера, `godfather2.exe` — главный) |
+| `research/bench_draws_cmp.sh` | `draw_merge=1`, `draw_trace=1` | сравнение кадра методом §38: время суток стоит, игра остановлена, перед каждым снимком 4 шага по кадру (в §38 — 3), 12 снимков на вид (выкл, выкл, вкл, вкл, …), виды — камера игрока и свободная камера в 25 м над ним; в конце запись кадра с объединением |
+| `research/bench_draws_stress.sh` | `draw_merge=1`, `draw_log=10` | семь переносов игрока (`live teleport`) от точки появления: +200 м по X; +200 по X и Z; +250 по Z; назад; −150 по X; +150 по X и −150 по Z; назад — с ожиданием 55 с после каждого |
+| `research/bench_draws_sample.sh` | `draw_merge=1`, `draw_trace=1` либо `draw_merge=0` | окна по 30 с: показы и ЦП потока рендера по `live profile` до и после; с объединением состояния чередуются файлом `doctor_render_draws.off`, с `draw_merge=0` перехватов устройства нет вовсе |
+
+Сводка половин: `python3 research/draw_ab.py --skip 4 ВЫВОД/ab-ГОРОД-*/render.log`
+и `python3 research/draw_threads.py ВЫВОД/ab-ГОРОД-*/threads.tsv` — медиана
+и границы по половинам каждого состояния и изменение «включено к
+выключено»: каждая половина сравнивается со средним двух соседних половин
+другого состояния (так уходит медленный дрейф сцены и машины), по этим
+сравнениям — медиана и квартили. Первые четыре половины (32 с: уровень ещё
+грузится) отброшены.
+
+### 46.1 Время кадра и ЦП: включено против выключено
+
+По три сеанса на город (`ab-cuba-1…3`, `ab-queens-1…3`, `ab-miami-1…3`), в
+каждом 31 половина по 8 с после отброшенных, всего 87 сравнений на город.
+В ячейках — медиана (квартили) по половинам; изменение — медиана
+(квартили) по сравнениям, в скобках после него — медианы трёх сеансов.
+
+| | Гавана | Нью-Йорк | Майами |
+|---|---|---|---|
+| вызовов игры за кадр | 6 238 / 6 120 | 9 404 / 9 289 | 6 469 / 6 422 |
+| до Direct3D, выкл → вкл | 6 238 → 4 552 | 9 404 → 7 530 | 6 469 → 5 432 |
+| — изменение | **−25,5 %** (−26,4…−24,6) | **−19,0 %** (−19,7…−18,4) | **−15,3 %** (−15,9…−14,8) |
+| кадр, мс, выкл | 27,17 (26,84…29,03) | 27,12 (26,52…27,80) | 27,26 (26,92…31,38) |
+| кадр, мс, вкл | 27,28 (26,88…28,22) | 27,24 (26,55…27,98) | 27,14 (26,82…33,95) |
+| — изменение | −0,0 % (−1,4…+0,8); −0,3, 0,0, +0,1 | +0,1 % (−0,5…+0,9); +0,2, −0,5, +0,2 | +0,1 % (−2,4…+1,4); −0,2, +1,8, 0,0 |
+| ЦП потока рендера, мс на кадр, выкл | 4,98 (3,82…5,53) | 4,88 (4,07…5,29) | 5,21 (4,53…6,08) |
+| ЦП потока рендера, мс на кадр, вкл | 5,17 (4,03…5,52) | 5,31 (4,54…5,53) | 5,49 (4,79…6,89) |
+| — изменение | **+5,2 %** (+2,0…+8,3); +4,9, +6,8, +5,2 | **+7,9 %** (+4,8…+10,4); +9,1, +7,7, +7,5 | **+6,5 %** (+2,4…+9,1); +5,4, +9,1, +6,1 |
+| — в скольких сравнениях «включено» дороже | 69 из 87 | 77 из 87 | 74 из 87 |
+| ЦП `dxvk-cs`, мс на кадр, выкл → вкл | 3,39 → 3,37 | 4,40 → 4,43 | 3,61 → 3,62 |
+| — изменение | −1,3 % (−3,8…+0,5); −1,2, −0,9, −1,4 | −0,5 % (−2,8…+1,2); 0,0, −1,3, −0,2 | −0,0 % (−2,6…+3,0); −0,8, +1,2, 0,0 |
+| ЦП `dxvk-submit`, мс на кадр | 27,15 → 27,20 (−0,2 %) | 26,97 → 27,11 (+0,1 %) | 27,24 → 27,08 (+0,1 %) |
+| ЦП главного потока, мс на кадр | 1,39 → 1,36 (−0,4 %) | 1,48 → 1,46 (−2,8 %) | 1,82 → 1,80 (−0,6 %) |
+| ЦП всего процесса, мс на кадр | 37,93 → 37,80 (+0,5 %) | 38,59 → 39,00 (+0,7 %) | 39,07 → 38,87 (+0,9 %) |
+| нагрузка машины: средняя нагрузка | 3,2 (0,9…13,7) | 3,1 (1,4…9,4) | 2,8 (1,5…33,3) |
+| — чужих занятых ядер из 32 | 0,15 (0,03…17,1) | 0,11 (0,03…16,3) | 0,13 (0,02…31,1) |
+| — загрузка видеокарты, % | 38 (9…45) | 35 (12…48) | 34 (8…45) |
+
+Что видно:
+
+- **Время кадра не меняется** (0,0 ± 1 %): кадр на стенде — это поток
+  `dxvk-submit`, который 27 мс из 27 занят показом (копия кадра 1280×720 в
+  Xvfb); `live profile`: `Present` с ограничителем — 21–24 мс из 26–28.
+  Число вызовов отрисовки на длину кадра здесь не влияет.
+- **Поток рендера с объединением тратит больше ЦП, а не меньше**: +5…+8 %
+  (+0,2…+0,4 мс на кадр), знак один во всех девяти сеансах и в 79–89 %
+  сравнений. Собственная работа модуля (сравнение каждого вызова состояния
+  с копией, придерживание и поиск серии — 24–43 тыс. перехваченных вызовов
+  за кадр) стоит потоку больше, чем экономят 1 000–1 900 непереданных
+  вызовов отрисовки (**догадка** о причине: вызов D3D9 в DXVK на этом
+  потоке — запись команды в очередь, он дёшев).
+- **Поток `dxvk-cs`**, который исполняет команды, выигрывает 0…1,3 % —
+  меньше квартилей разброса; в Гаване знак один в трёх сеансах, в
+  Нью-Йорке и Майами эффекта не видно.
+- Нагрузка машины: фон 0,1–0,15 ядра из 32, с выбросами до 17–31 ядра
+  (сборки соседнего этапа); на выбросах кадр растягивался до 37–69 мс
+  (`ab-miami-2`), попарное сравнение соседних половин их переносит —
+  медианы сеансов сходятся.
+
+«Выключено» в этих сериях — объединение и фильтр выключены, но перехваты
+vtable устройства стоят (вызов проходит через переходник модуля).
+
+### 46.2 Прочие замеры времени
+
+| Сеансы | Что | Результат |
+|---|---|---|
+| `ab640-cuba`, `ab640-queens` (640×480, по 200 с, 19 сравнений) | то же чередование в маленьком окне: показ дешевле (кадр 12–14 мс, `dxvk-submit` 11–12,5 мс) | Гавана: кадр −0,3 % (−2,9…+1,5), ЦП потока рендера **+8,0 %** (+5,2…+9,9), `dxvk-cs` 0,0 % (−3,5…+1,9). Нью-Йорк: кадр +11,4 % (−10,0…+20,8), поток рендера +19,9 % (+2,7…+32,7), `dxvk-cs` +15,0 % (−8,9…+28,2) — **шум больше эффекта**: чужая нагрузка в обоих сеансах — 16 ядер по медиане (средняя нагрузка 13 и 24). Майами в этом окне не снят (§46.5) |
+| `sample-cuba`, `sample-queens`, `sample-miami` (окна по 30 с, состояния чередует файл; чужая нагрузка 0,06–0,08 ядра) | ЦП потока рендера на кадр по `live profile`, порядок окон: вкл, выкл, вкл, выкл | Гавана 4,03 / 3,93 / 4,42 / 5,00; Нью-Йорк 4,22 / 4,04 / 4,58 / 5,07; Майами 4,26 / 4,28 / 4,75 / 5,48 мс — за две минуты сцена дорожает на 25–28 % сама (время суток идёт), четырёх окон для сравнения состояний мало; первая пара окон — +2,4 %, +4,5 %, −0,4 % |
+| `base-cuba`, `base-queens`, `base-miami` (`draw_merge=0`: перехватов устройства нет; те же окна) | цена самих перехватов | 6,21 / 4,12 / 5,15 / 5,35; 5,25 / 6,30 / 4,28 / 6,19; 6,82 / 4,54 / 4,80 / 5,25 мс — **несравнимо**: чужая нагрузка 0,5–4,4 ядра по медиане (до 22), средняя нагрузка 6,6–10 против 1,6 в сеансах `sample-*`; показов за окно 805–1 211 против 1 108–1 143 |
+| выборка потока рендера (`live profile --sample 8000` в каждом окне) | где стоит поток | Гавана, первое окно: 82 % выборок — одно место ожидания вне игры (поток ждёт в `Present`), в коде игры 7 %; адреса вне игры выборка по модулям не раскладывает, долю модуля по ней не получить |
+
+### 46.3 Картинка под DXVK
+
+Метод §38 (`research/frame_diff.py --states`), 1280×720, пикселей вне маски
+«движется само»: медиана (границы) по парам.
+
+| Сеанс | Вид | Маска, % кадра | Пары одного состояния | Пары «выключено — включено» |
+|---|---|---|---|---|
+| `cmp-queens` | камера игрока, две серии подряд | 27,6 / 31,7 | 276 (143…7 135) / 526 (118…3 481) | 132 (11…463) / 223 (115…1 683) |
+| `cmp-queens-2` | игрок / сверху | 25,2 / 17,3 | 370 (236…605) / 607 (110…953) | 188 (23…488) / 237 (132…1 013) |
+| `cmp-miami` | камера игрока, две серии подряд | 36,6 / 36,0 | 95 (39…422) / 137 (71…453) | 111 (43…162) / 109 (12…278) |
+| `cmp-miami-2` | игрок / сверху | 38,1 / 41,0 | 229 (117…1 016) / 660 (470…1 734) | 413 (271…18 735) / 1 063 (486…4 850) |
+| `cmp-cuba` | игрок / сверху | 19,2 / 10,0 | 59 (14…714) / 64 (19…350) | 23 (9…162) / 42 (12…126) |
+
+В `cmp-queens` и `cmp-miami` вторая серия должна была идти со свободной
+камеры, но команда `freecam` не выполнилась (шаги печатали координаты с
+десятичной запятой; исправлено — `LC_NUMERIC=C` в шагах), и получилась
+вторая серия с камеры игрока.
+
+`cmp-miami-2` — единственный сеанс, где пары разных состояний отличаются
+больше пар одного. Разбор по разностным картинкам:
+
+- камера игрока, пара `p05_off : p06_on` — 18 735 пикселей, разница не
+  больше 26 единиц, почти вся — на земле. Это граница во времени, а не
+  между состояниями: шесть первых снимков и шесть последних — две группы.
+  Снимки одного состояния из разных групп отличаются так же (`p04_off :
+  p08_off` — 18 861, `p03_on : p06_on` — 18 846 вне той же маски), снимки
+  разных состояний из одной группы — на 177–302 (`p06_on : p08_off`,
+  `p03_on : p04_off`, `p01_off : p04_off`);
+- вид сверху, пара `t03_on : t04_off` — 4 850 пикселей: на разностной
+  картинке машины на дороге, пальмы, фонтан, вода и появившаяся подпись
+  прохожего; зданий, дорог, эстакады на ней нет.
+
+Запись кадра с объединением в конце каждого сеанса (`research/d3d9_frame_trace.py`):
+Нью-Йорк — 8 458 вызовов игры → 6 883 до устройства (1 957 в 382
+объединённых, −18,6 %), Майами — 5 765 → 4 846 (1 192 в 273, −15,9 %),
+Гавана — 5 275 → 3 953 (1 638 в 316, −25,1 %).
+
+### 46.4 Устойчивость итоговой сборки
+
+| Сеанс | Что | Результат |
+|---|---|---|
+| `stress-cuba` | `draw_merge=1`; семь переносов от (283,9; 0; 371,8), загружено потоков 61 → 43 → 39 → … → 61 → 66 → 51 → 65 | 6,9 мин, 14 891 кадр; падений, исключений и строк `err:` в `wine.log` нет, отчётов `doctor_crash.asi` нет, в журнале модуля ни одного отказа; в последние 10 с 5 714 вызовов → 4 321 до устройства |
+| `stress-queens` | то же от (−514,5; 6,6; −248,0), потоков 68 → 61 → 57 → 56 → 70 → 67 → 65 → 69 | 6,9 мин, 14 396 кадров; так же; 8 837 → 7 180 |
+| `stress-miami` | то же от (454,1; −23,1; 682,0), потоков 67 → 60 → 58 → 64 → 72 → 72 → 65 → 70 | 6,9 мин, 14 756 кадров; так же; 5 780 → 4 982 |
+| `ab-*` (10 сеансов 1280×720, 2 сеанса 640×480), `cmp-*` (5), `sample-*` (3) | объединение включено всё время или чередуется | 20 сеансов по 1,4–4,8 мин без падений и исключений |
+
+Оговорки: `live teleport` ставит игрока в точку на 3 м выше исходной
+высоты, и он остаётся стоять там, где оказался, — часть точек вне улиц (над
+водой); зоны при этом грузятся и выгружаются (число потоков меняется), но
+это не езда и не бой. `verify` тени после сеансов: оригиналы не менялись.
+
+### 46.5 Видеокарта
+
+Отказ драйвера первого дня (§38) не повторился: 26 сеансов с графическим
+модулем за 1 ч 40 мин, `nvidia-smi` после каждого в порядке, Vulkan видит
+RTX 4070. Но в журнале ядра появились новые строки драйвера — первая в 00:47:01,
+на девятой секунде сеанса `ab640-queens` (640×480, уровень ещё грузится),
+когда соседний этап занимал по медиане 16 ядер из 32 (до 32; средняя
+нагрузка 16–36, 4,6 ГБ в подкачке):
+
+```
+NVRM: nvCheckOkFailedNoLog: Check failed: Out of memory [NV_ERR_NO_MEMORY] (0x00000051) returned from _memdescAllocInternal(pMemDesc) @ mem_desc.c:1336
+nvidia 0000:01:00.0: Using 47-bit DMA addresses
+```
+
+Сеанс после неё прошёл как обычно (200 с, без падений и исключений, 6 224
+вызова до устройства из 7 723), `nvidia-smi` и `vulkaninfo` после — в
+порядке. По условию этапа на этом сеансы остановлены: `ab640-miami` и
+серии с одним фильтром (`draw_filter=1`) не сняты.
+
+Та же строка `NV_ERR_NO_MEMORY` появилась ещё дважды уже после остановки —
+в 00:51:26 и 00:57:53, когда игра этого этапа не шла (тень и префикс к
+00:57 удалены). Значит, от графического модуля она не зависит. В это время
+у машины 0,3 ГБ свободной памяти из 31 (остальное — кэш файлов и сборки
+соседнего этапа) и в зоне `Normal` нет ни одного свободного блока от 1 МБ
+(`/proc/buddyinfo`: порядки 8–10 пусты); **догадка**: драйвер просит
+непрерывный кусок памяти ядра, не получает и обходится меньшими. Отказа
+видеокарты, как в первый день (`GSP-CrashCat`, `nvidia-smi` — `ERR!`), нет.
+
+Найдено по ходу:
+
+- `draw_ab` и `research/draw_ab.py` работают как задумано; половины по 8 с
+  при 37 к/с — 280–300 кадров, первые 32 с уровня надо отбрасывать (в них
+  4 600 вызовов за кадр против 5 700–6 200 после загрузки);
+- ЦП потока рендера в журнале модуля и тики потока `Presentation` из
+  `/proc` совпадают (4,98 и 4,98; 4,88 и 4,88; 5,21 и 5,22 мс) — поток
+  рендера игры в Linux называется `Presentation`;
+- сцена в точке появления за 280 с меняется сама (время суток идёт 60 с/с,
+  вызовов за кадр 5 660–6 400 в Гаване), поэтому состояния сравниваются
+  только соседними половинами;
+- помощники стенда должны выставлять `LC_NUMERIC=C`: с русской локалью
+  `awk` печатает десятичную запятую.
+
+Журналы, снимки и записи кадров — в рабочей папке проверки этапа
+(`out/<сеанс>/`: `render.log`, `threads.tsv`, `load.txt`, `p00_off.png`…,
+`doctor_render_trace_on.bin`, `kernel.txt`).
+
+## 47. Этап 103: зона, собранная целиком в окне редактора (2026-11-17)
+
+Проверка пакетов 103-zone-fix, 103-clone-fix и 103-A этапа 103
+(`docs/levels.md` §12): новая зона делается в окне редактора без MCP и без
+записи в игру, из неё собирается мод, менеджер модов ставит его на чистую
+тень, и по зоне ходят в игре. Стенд, как в §45: `SERVER=xvfb DXVK=1`,
+1280×720, `WINEDLLOVERRIDES=dinput8=n,b`, свой префикс
+`wine-gf2-bench-p103a` (копия базового), тени в короткой папке
+(`/tmp/claude-1000/p103a/sh` — авторская, `…/ts` — чистая для проверки), из
+теней убраны скопированные из папки игры `d3d9.dll`, модуль связи и GF2ASI.
+Сценарий — `research/bench_editor_zone.sh` (`build`, `check`); сеанс игры —
+под общей блокировкой стенда.
+
+То же место и та же геометрия, что у двора, собранного раньше через MCP:
+перрон аэродрома Гаваны, центр (282; 0; 400), 24 × 18 м, в 28 м от точки,
+куда игрока ставит `-stream gf2 cuba`. Четыре процедурные модели (плита
+0,10 м, стена 2,6 м с воротами, склад, киоск) с пятью текстурами лежат
+файлами GLB рядом; реквизит — ящик, урна и секция забора из зон
+`gf2/cuba/local/yuri/high/terrain1`, `2` и `7`.
+
+**Сборка в редакторе.** Каждый шаг — запуск `doctor-toolkit-gui` на
+авторской тени под своим Xvfb с предустановкой; всё пишется только в
+рабочее пространство тени.
+
+| Шаг | Действие окна (предустановка) | Что вышло |
+|---|---|---|
+| 1 | мастер New zone (`WIZARD=zone,name=gf2/testmods/editor_yard,parent=gf2/cuba/local,level=gf2/cuba,min=270/0/391,max=294/6/409,step=3`) | одна операция «New zone»: новый поток (родитель `gf2/cuba/local`, записи в `gf2/cuba.toc` и `gf2/cuba_global.toc`), пустая SimGroup, ячейка в сетке высокой детализации Гаваны |
+| 2 | окно Import model: New model set, Into stream — новая зона, Collision — mesh (`ZONE=import:file=…,template=gf2/cuba/local#676,name=ed_yard_…,stream=…,collision=mesh`), четыре раза | по операции на модель: 10, 10, 13 и 13 ресурсов в новом потоке (metamodel, меши, `hkx`, материалы, текстуры) |
+| 3 | форма Clone resources (`ZONE=clone:stream=gf2/cuba/local/yuri/high/terrain1,index=…,to=…`): модель реквизита со всем, что она использует в своём потоке, три раза | 10 + 7 + 6 ресурсов в новом потоке |
+| 4 | вид уровня: загружены `gf2/cuba/local/yuri/medium/zone4` и новая зона, выбран объект-образец `Destructible` соседней зоны (`select=0:4`); Details → Add object с «Add to» — первый объект в SimGroup новой зоны (`act=add:<id>:into=…:at=x/y/z`), остальные — от предыдущего; место и поворот полями Details (`act=place:x,y,z,поворот`) | 12 объектов: плита, стены, два склада (второй повёрнут на 90°), киоск, три ящика, две урны, две секции забора; 17 операций (12 «Add object», 5 «Move object») |
+| 5 | та же зона одна (`LEVEL=gf2/testmods/editor_yard`) | вид уровня рисует двор с текстурами: стены с воротами, плита, склады, киоск, ящики |
+| 6 | мастер Package a mod (`WIZARD=package,name=Editor yard,…,out=…,step=4`) | `editor-yard.zip`, 236 КБ: формат 3, 71 ресурс (70 новых в новом потоке и правка `wgi` мировой сетки), один новый поток |
+
+До шага 6 (и после него) в авторской тени **нет** файла
+`gf2/testmods/editor_yard.str`; `game-bench.sh verify` — «originals
+unchanged: 30 files». Команды CLI на той же тени до записи: `level list
+gf2/testmods` — одна зона (8 мешей, 7 моделей), `level objects` — 12
+объектов на заданных местах, `world-grid info gf2/cuba --cells` — ячейка
+зоны. В рабочем пространстве 25 операций, каждая отменяется. Клон реквизита
+в новую зону (шаг 3) и объект в новой зоне (шаг 4) до этапа 103 в редакторе
+были невозможны: «no zone at …» и «… is new: its resources are written in
+the order they were added».
+
+**Проверка в игре.** Чистая тень; `mods install editor-yard.zip` («71
+resource(s), 70 added, 1 new stream(s)»), `mods check` («every enabled mod
+fits the game»), `mods apply`; модуль связи (порт 47931, записи разрешены,
+`-stream gf2 cuba` подменой `cmd.txt`). Один сеанс, 141 с игрового времени,
+4 908 кадров.
+
+| Что проверялось | Итог |
+|---|---|
+| зона загружена у точки появления (28 м от центра ячейки) | да: `live streams` — `gf2\testmods\editor_yard.str`, `live objects --all --stream editor_yard` — 12 объектов `Destructible` |
+| геометрия и текстуры в кадре | да: кирпичная стена с воротами, плита, склады, ящики (снимки `01_gate_from_outside` … `04_right`) |
+| игрок стоит на плите | да: Y = 0,100 после пробежек на север и восток и после входа пешком через ворота (из точки перед воротами, Y 0,000 → 0,100, порог 0,1 м); снаружи Y = 0,000 |
+| игрок упирается в стены | да: бег 6 с из центра останавливается на z = 408,21 (север), x = 293,21 (восток), x = 270,79 (запад) — внутренние грани стен 408,6 / 293,6 / 270,4 минус радиус капсулы 0,39; на юг игрок выбегает через ворота (z = 369,8); контрольный бег снаружи — 20 м без препятствий |
+| уход: зона выгружается | да: у дворца (660 м) потока в `live streams` нет, объектов 0 |
+| возврат: зона грузится снова | да: через 20 с после возврата поток и 12 объектов на месте |
+| падения | нет: в `wine.log` ни одной строки исключения |
+| снятие мода | `mods unapply` + `mods uninstall --all`: содержимое всех файлов тени совпало с состоянием до мода; `verify` — оригиналы не менялись (30 файлов) |
+
+Числа совпали с двором, собранным через MCP (тот же упор в стены, та же
+высота плиты, то же число ресурсов мода — 71).
+
+Замечено:
+
+- при пробежке на запад игрок остановился у стены (x = 270,79) на высоте
+  Y = 0,000, а не 0,100: телепорт на 0,5 м над плитой иногда оставляет его
+  под её верхом, на перроне — то же наблюдалось у двора, собранного через
+  MCP; стены его всё равно останавливают, пешком с плиты игрок не
+  проваливался;
+- `check-refs` новой зоны на авторской тени называет 15 ссылок материалов
+  на текстуры, которых нет в потоке и его предках, — это материалы
+  клонированного реквизита, у оригиналов в зонах игры те же ссылки
+  неразрешимы (текстуры-заглушки).
+
+**Не проверено:** NPC и машины у двора (навигационный граф не правился),
+стрельба и взрывы у объектов, сохранение и загрузка с двором, средняя и
+низкая детализация (ячейка только в сетке высокой), клон реквизита кнопкой
+«Clone it» с «Own collision» из **другой** зоны на настоящей игре (на стенде
+реквизит клонирован формой со всем, что он использует; путь «Clone it» в
+новую зону проверен тестами на миниатюрной игре — он оставляет материалы и
+текстуры общими с зоной-источником, и вдали от неё они не загружены).
+
+## 48. Этап 103, пакет D: профиль игры и логика объекта из окна редактора (2026-11-17)
+
+Стенд, как в §36: `SERVER=xvfb DXVK=1`, 1024×768,
+`WINEDLLOVERRIDES=dinput8=n,b`, свой префикс `wine-gf2-bench-s103d`, тень в
+короткой папке (`/tmp/claude-1000/p103d/sh`, без скопированных из папки
+игры `d3d9.dll`, `scripts/doctor_live.*`, `GF2ASI.asi`), модуль связи этой
+ветки (протокол 9) на порту 47913, старт в Гаване подменой `cmd.txt`
+(`live install ТЕНЬ --writes --port 47913 "--cmd-txt=-stream gf2 cuba"`).
+Каждый сеанс — под общей блокировкой стенда (`flock`). Четыре сеанса по
+18–29 с игры (первый — без объекта: сценарий искал в выводе `live object
+get` не ту строку; второй и третий — пересъёмка снимков окна; числа
+ниже — из четвёртого); уровень идёт через 6–9 с после старта. Исключений в
+`wine.log` нет; `verify` — оригиналы не менялись (30 файлов).
+
+Редактор запускался во время сеанса под своим Xvfb без рук:
+`DOCTOR_TOOLKIT_GUI_LIVE=47913:ТОКЕН`, `DOCTOR_TOOLKIT_GUI_SHELL=game` и
+новая предустановка `DOCTOR_TOOLKIT_GUI_LIVE_DO` (`docs/shell.md` §8); между
+запусками редактора состояние объекта читала командная строка.
+
+| Проверка | Как | Результат |
+|---|---|---|
+| Раздел Profile панели Link | `LIVE_DO=profile=memory`, снимок окна | связь установлена (`doctor_live 0.0.7 · PC 1.0.789.0`), в разделе — замер текстом: 724 прохода главного цикла, 52,6 прохода/с, проход в среднем 19,0 мс (p95 27,8, p99 50,0, max 212,6), показ кадров 53,3/с, ЦП главного потока 2,2 с и потока отрисовки 2,0 с, чтения по потокам (1 255 чтений, 154,5 МБ из `0x00ABEC29`), медленные чтения. Те же величины того же сеанса дала `live profile --memory` (621 проход, 52,8/с, средний проход 18,95 мс — замер на несколько секунд раньше) |
+| «Измерить и сбросить», выборка | `LIVE_DO=…,profile=reset+sample:300` | команда выполнена, код выхода 0 |
+| Остановить логику объекта | объект `Destructible` `ff32c9362ecd3b0547524148414d3034` в 9 м от игрока (до правки `live object get`: `logic takes messages`); `LIVE_DO=get=GUID,logic=GUID:off` | после редактора `live object get` — `logic off`; в `live object edits` — `#1 …: logic off: its listener takes no messages`; на снимке в панели Link «Edits of the world (1)» |
+| Отказ игры виден без рук | второй запуск редактора: `LIVE_DO=logic=GUID:off,profile` | игра отвечает «its logic is already off»; редактор печатает `error: DOCTOR_TOOLKIT_GUI_LIVE_DO: its logic is already off`, следующий пункт (`profile`) не посылает, код выхода 2 |
+| Запустить логику снова | `LIVE_DO=logic=GUID:on,…` | `live object get` — `logic takes messages`; в правках связи вторая запись `logic on` |
+
+Не проверено в игре: сам флажок **Logic** в свойствах объекта вкладки
+уровня (он шлёт ту же команду `ObjectEnable` с признаком логики, что и
+предустановка; его поведение держит тест на макете игры
+`the_logic_of_an_object_and_the_profile_of_the_fake_game`) — для снимка
+нужна загруженная во вкладке зона с тем же объектом; что остановленный
+объект действительно перестаёт реагировать на сообщение (это свойство
+команды связи, проверенное в §41, а не окна). После прогонов тень и
+префикс удалены, модуль из тени снят (`live uninstall`).
+## 49. Этап 104: ролик, изменённый только инструментами MCP (2026-11-17)
+
+Стенд, как в §25 и §45: `SERVER=xvfb`, `DXVK=1`, 1280×720,
+`WINEDLLOVERRIDES=dinput8=n,b`, свой префикс (копия базового; в его
+`settings.txt` включено `Audio.Subtitles = true` — в свежем префиксе
+субтитры выключены), новая тень в короткой папке, из тени убраны
+`d3d9.dll`, `scripts/doctor_live.*`, `GF2ASI.asi`; модуль связи на своём
+порту. Каждый сеанс — под общей блокировкой стенда. Клиент — JSON-RPC по
+stdio (`doctor-toolkit mcp ТЕНЬ --workspace W --allow-edits --allow-game`).
+
+Ролик — `igc16` (Гавана, приём у дворца; папочный поток
+`gf2/cuba/global/objectives/chapter60-mission08-killingcastro/cp_734/_734_igc_content`,
+17 кадров, 91,8 с). **Все правки, сборка, установка и запись мода — вызовы
+инструментов**, ни одной команды CLI и ни одного действия в окне:
+
+| Шаг | Вызов | Результат |
+|---|---|---|
+| обзор | `cutscenes` с `stream`; с `shot` и `time: 0.5` для `igc16_s01`–`s03` | 17 кадров, звук `audiostreams\igc16_th\aud_igc16_thekeytocastro.exa.snu`, строка 0 — 5,064 с на 3,328 с; камера `s01` (−262,402; 9,090; −3,497), 70 мм; `s02` (−268,936; 6,668; 5,807), наклон −0,79°, 50 мм; `s03` (−266,683; 6,692; 3,536), 70 мм |
+| камера `s01` | `cutscene_camera` `offset: [0, 1.5, 0]`, `focal_length: 35` | «moved 3 key value(s) of the camera path», «lens 35.0 mm on 2 key(s)» |
+| камера `s02` | `cutscene_camera` `offset: [0, 0.8, 1.5]`, `turn: [-8, 0, 0]`, `focal_length: 28` | 6 значений ключей, объектив на 2 ключах; `cutscenes` после: (−268,936; 7,468; 7,307), наклон −8,79°, 28 мм |
+| актёр | `cutscene_actor` `actor: igc16_player_herc`, `offset: [-1.2, 0, 0]` в `s02` | место создания и ключ: (−268,533; 5,125; 3,121) → (−269,733; 5,125; 3,121) |
+| субтитр | `edit_subtitle` `entry` (звук ролика), `line: 0`, `start_ms: 1500`, `duration_ms: 6000` | строка 0 — 1,5 с на 6 с; в ответе `file_bytes: 10 517 264` и пояснение, что изменением стал весь звуковой файл |
+| проверка | `validate` | `ok` |
+| мод | `mod_build` (`editions: ["1.0.789.0"]`) | формат 4, 2 ресурса и 1 файл архива, 7 492 250 байт; в `notes` — что звук (10,5 МБ) лежит в моде целиком и почему |
+| файл | `mods` `action: info` | манифест, содержимое проверено по хэшам |
+| менеджер | `mods_manage` `install`, `mods` `check`, `mods_manage` `apply` | мод установлен и записан: поток кадров и накладной архив `GODFATH0.viv` |
+
+Кадр `s03` и остальные 14 не трогались (`cutscenes` после правок — те же
+значения).
+
+**В игре.** Два сеанса одним сценарием: с модом и контрольный (после
+`mods_manage unapply`). Старт `-stream gf2 cuba`; дальше — инструменты MCP
+по живой связи: `stream_load` папочного потока, `send_message
+start_igc_16` (2 слушателя), затем 60 раз `player` (камера игры: место,
+направление, поле зрения) и снимок экрана стенда; ролик идёт в реальном
+времени (30–33 кадра в секунду, проба раз в 1,25 с).
+
+| | Контроль | С модом |
+|---|---|---|
+| `s01`: поле зрения | 20,6° | 39,9° |
+| `s01`: высота камеры по пробам | 8,87; 7,92; 7,16; 6,94; 7,01 м | 10,06; 9,24; 8,57; 8,45; 8,52 м (выше на 1,5 м с поправкой на момент пробы) |
+| `s02`: камера | (−268,936; 6,668; 5,807), вниз −0,0137, 28,5° | (−268,936; 7,468; 7,307), вниз −0,1527, 48,8° |
+| `s02`: актёр | игрок жмёт руку чиновнику, крупный план | камера выше и дальше, игрок сдвинут на 1,2 м (стоит в чиновнике) |
+| `s03` | (−266,683; 6,692; 3,536), 20,6° | то же |
+| остальные кадры (50 проб позже 10,5 с) | — | 30 проб — то же место и объектив, что у пробы контроля; 20 — движущаяся камера в пределах 2,5 м от пробы контроля с тем же объективом; других нет; объективы поздних кадров в обоих прогонах 14,5°, 20,6°, 28,5°, 39,9° |
+| субтитр 0 («Senor Dominic mucho gusto. Bienvenedo.») | на пробах 6–8: конец `s01` и `s02` | на пробах 3–7: с начала `s01`, в `s02` уже нет (пробы 8–9) |
+| субтитры 1 и 2 | пробы 10 и 12–14 | пробы 10 и 11–14: не изменились |
+
+Субтитр считался по снимкам: число белых точек в полосе строки (≈ 1 200
+у строки 0, 735 у строки 1, ≈ 1 790 у строки 2, 0 без субтитра). В
+`wine.log` исключений нет ни в одном сеансе.
+
+После `mods_manage unapply` и `uninstall`: поток кадров тени побайтно
+равен оригиналу (SHA-256), `GODFATH0..2.viv` — снова ссылки на архивы
+игры, `game-bench.sh verify` — оригиналы не менялись (30 файлов).
+
+Найдено и исправлено по ходу:
+
+- **Время субтитра и размер мода.** Правка одного времени субтитра кладёт
+  в рабочее пространство и в мод весь звуковой файл ролика (10,5 МБ). Это
+  следует из устройства данных, а не из ошибки: таблица `TOB1` лежит в
+  заголовке потокового звука, а файл архива `.viv` заменяется целиком
+  (мод несёт файл, менеджер кладёт его в накладной архив). Частичной
+  замены файла в формате мода нет; она потребовала бы новой версии
+  формата и поддержки в менеджере. Сделано: `edit_subtitle` и `cutscene
+  subtitle` говорят размер и причину, `mod_build` и `mods build`
+  перечисляют такие файлы в заметках сборки (`BuildReport::notes`),
+  описано в `docs/mcp.md` §3.2 и `docs/mods.md`.
+- Мод из одних файлов архива (только время субтитра, без ресурсов)
+  не собирался: «the mod replaces no resources». Проверка манифеста теперь
+  считает и файлы.
+- `cutscene show --shot` печатал весь ролик; теперь — один кадр (с
+  временами ключей камеры, а с `--time` — где камера и актёры).
+
+Не проверено: ролик внутри своей миссии (запускался сообщением); другие
+языки; ключ камеры в отдельный момент (`time`) и правка команды
+(`cutscene_command`) в игре — только тестами; замена клипа актёра в игре.
+
+## 50. Этап 104: отладка и живая связь через MCP (2026-11-17)
+
+Тот же стенд и та же тень, что в §49. Два вида сеансов: игра запущена
+стендом (`game-bench.sh start`, модуль связи с записью) и все действия —
+инструменты MCP по живой связи; и запуск самим сервером (`play`: свой
+Xvfb, префикс стенда из `settings.toml` в `DOCTOR_TOOLKIT_CONFIG_DIR`,
+DXVK), где проверены `screenshot` и `stop`.
+
+| Инструмент | Что сделано | Итог в игре |
+|---|---|---|
+| `detect_games` | без параметров | копия игры из Lutris (путь, чем найдена, способы запуска), издание тени — PC 1.0.789.0 |
+| `game_log` | `lua` с `print('doctor 104 says hello')`, затем `game_log` с `after` и `filter` | событие `output` (`print`, скрипт `doctor_live`, строка 1) и запись модуля о запросе; `errors: true` после `error(...)` — `lua_error` со стеком; `messages: true` — счётчики сообщений шины (`iMsgSystemTick` и другие, 104 за 3 с) |
+| `pause` | во время игры | «STOPPED in the frame», кадр 280 через 1 и 3 с — тот же; `teleport` во время паузы в кадре принят |
+| `resume` `step` | один шаг | кадр 281, снова стоит |
+| `resume` | продолжить | через 2 с кадр 374, не стоит |
+| `breakpoints` `prints` | правило на `doctor-bp-104`, затем `lua` с этим текстом | остановка: «print doctor_live:1: doctor-bp-104 reached», место — кадр (точка сработала в запросе самого модуля); правило `once` снято |
+| `breakpoints` `lua_error` | `lua` с `error('doctor 104 error')` | остановка «Lua error: doctor_live:1: doctor 104 error» |
+| `breakpoints` `messages` | правило на `iMsgSystemTick`, `wait_s: 30` | «STOPPED in the message bus», кадр 498 дважды с паузой 2 с; `player` отвечает; `teleport`, `lua`, `send_message` отказывают: «the game stands at a breakpoint in the message bus and takes writes only when it stands in a frame: `resume` first (it goes on by itself in 43 s)»; после `resume` запись снова принята |
+| `camera` | `position` в 12 м сбоку и 9 м выше игрока, `look_at` на игрока; затем `yaw_degrees`/`pitch_degrees`; `release` | `player` читает камеру в заданной точке, игрок на месте; на снимке — самолёт, игрок и стюардесса сверху; после `release` камера игры прежняя (288,196; 1,746; 372,961) |
+| `push_textures` | 12 текстур потока `gf2/cuba/local/yuri/high/terrain3`: `export` в PNG, заливка пурпурным, `import_texture`, затем `push_textures` | 12 ответов «on screen in the next frame» (256×256 — 43 704 байта, 128×128 — 10 936, 256×128 — 21 864, 64×128 — 10 960 …); на снимке провода у ворот аэропорта пурпурные |
+| `play` с `position` | `stream: gf2/cuba`, `position: [296, 0, 366]` (13 м от точки появления), `size: [1024, 576]`, `fov: 80` | в рабочем пространстве — операция «Duplicate object 1 (PlayerSpawn) in gf2/cuba as 164», игра получила его через модуль связи (5 подменённых файлов, папка игры не пишется); `player` — (296,0; 0,0; 366,0); экран 1024×576; вертикальное поле зрения камеры 50,5° вместо 36,0° (80° по горизонтали при 16:9) |
+| `screenshot` | после старта, со свободной камерой, на паузе | три кадра 1024×576 с X-сервера `play` |
+| `stop` на паузе | `pause`, затем `stop` | «the game stood at a pause or a breakpoint: let go before the end»; процессов игры не осталось, модули и `d3d9.dll` убраны |
+| `crash_reports` | `crash-report install` и `crash-report test --kind read` (CLI: намеренное падение), затем `crash_reports` и `report: "1"` | список из одного отчёта: `0xC0000005 ACCESS_VIOLATION (read of 0x00000014)`, `doctor_crash.asi+0x000064bb`, минидамп; текст отчёта страницей |
+
+Найдено и исправлено по ходу:
+
+- **`stop` не завершал игру, стоящую на паузе.** Wine запускает игру в
+  своей сессии процессов, сигналы группе до неё не доходят; она уходит,
+  когда пропадает её X-сервер, а удерживаемый главный поток этого не
+  замечает. Процесс `godfather2.exe` оставался до конца срока остановки
+  (120 с; замерено: пауза в 01:41:46, процесс ушёл в 01:43:46). Теперь
+  `stop` (и завершение сеанса при уходе клиента) сначала снимает точки
+  останова, свободную камеру и паузу, потом завершает игру; повторный
+  прогон — процессов не осталось.
+- Ответ `resume` и `pause` читал состояние раньше, чем игра успевала
+  продолжить или остановиться (модуль отвечает сразу, главный поток
+  следует в следующем кадре), и показывал прежнее. Инструменты ждут
+  смены состояния до 2 с.
+- Свободная камера модуля ставит только матрицу вида: поле зрения остаётся
+  игровым. Параметр поля зрения из `camera` убран.
+
+Замечено, не исправлялось (не из этих пакетов): поле `after` в ответе
+`teleport` читается раньше, чем игра применила перенос, и показывает
+старое место (через 1,5 с `player` даёт новое); после `teleport` на 550 м
+(от аэропорта к дворцу) игрок через 10 кадров был ещё на прежнем месте —
+дальше не проверялось.
+
+Не проверено: точка останова на сообщении с `to` (получатель) и на узле
+визуального скрипта; `push_textures` для текстуры другого размера (отказ
+модуля — только по тесту с поддельным модулем); `game_log` при потере
+событий; Windows. После прогонов: `verify` чист, префикс и тень удалены.

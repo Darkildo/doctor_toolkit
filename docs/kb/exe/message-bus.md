@@ -3,42 +3,59 @@ type: exe
 status: known
 confidence: exe
 editions: ["1.0.789.0"]
-stages: [72, 34, 49, 16]
-sources: ["docs/analysis/live-link.md §5", "docs/analysis/live-link.md §11.3", "docs/logic-graph.md §1", "docs/logic-graph.md §9", "docs/formats/mission-logic.md §2.1", "research/ghidra/README.md", "crates/doctor-toolkit-live/src/addr.rs", "crates/doctor-toolkit-live/src/edition.rs"]
+stages: [72, 34, 49, 16, 99, 78, 80]
+sources: ["docs/analysis/live-link.md §5", "docs/analysis/live-link.md §11.3", "docs/logic-graph.md §1", "docs/logic-graph.md §9", "docs/formats/mission-logic.md §2.1", "research/ghidra/README.md", "crates/doctor-toolkit-live/src/addr.rs", "crates/doctor-toolkit-live/src/edition.rs", "docs/analysis/crash-reports.md §4", "crates/doctor-toolkit-live/src/crash.rs", "docs/analysis/message-bus.md §2", "docs/analysis/live-link.md §11.7", "research/bus_sites.py", "data/gf2/bus_sites.tsv", "docs/analysis/asi-platform.md §4"]
 tags: [exe, messages, bus]
 updated: 2026-11-16
 ---
 # Шина сообщений: имена, подписка, отправка
 
-Адреса — виртуальные, издание PC 1.0.789.0. Сообщения движка — хэши `sdbm(lower(имя))` в глобальной таблице на 4096 корзин. «Ручка» сообщения создаётся из строки, подписка идёт через ту же таблицу, отправка синхронная.
+Адреса — виртуальные, издание PC 1.0.789.0. Сообщения движка — хэши `sdbm(lower(имя))` в глобальной таблице на 4096 корзин. Все места вызова этих функций — `data/gf2/bus_sites.tsv`.
 
 | Адрес | Что это | Источник |
 |---|---|---|
-| `0x004DAFD0` | хэш движка `sdbm(lower(имя))`: `h = h*65599 + tolower(c)` | logic-graph.md §1; mission-logic.md §2.1 |
-| `0x01162380` | данные: таблица сообщений (указатель на 4096 корзин по `хэш & 0xFFF`); запись: `[0]` следующая, `[1]` блоки слушателей, `[4]` хэш | live-link.md §5; crates/doctor-toolkit-live/src/addr.rs |
-| `0x00408260` | ищет хэш в таблице сообщений, создаёт запись, кладёт хэш в «ручку» объекта и увеличивает счётчики | logic-graph.md §1 |
-| `0x00408240` | ручка из строки-литерала в коде движка (`iMsgChaseStarted`, …) | logic-graph.md §1 |
-| `0x00408980` | ручка из строки: хэш + запись в таблицу, без подписки | logic-graph.md §1 |
-| `0x004089B0` | то же и подписка объекта-получателя (`0x00407E60` → `0x004084D0`) | logic-graph.md §1 |
-| `0x00407E60`, `0x004084D0` | подписка получателя на сообщение | logic-graph.md §1 |
-| `0x00473EC0` | ручка и подписка с типом данных сообщения (`"BasePtrMsgData*"`) | logic-graph.md §1 |
-| `0x00408A00` | отправка `bool Send(Message*, bool force)`, `cdecl`: обход подписчиков записи и вызов их обработчика (vtable `+4`); сообщение `{u32 хэш, u32 данные, u8 отправлено}`; 688 мест вызова (в базе Ghidra — 675 ссылок из 482 функций) | live-link.md §5; live-link.md §11.3; logic-graph.md §1; crates/doctor-toolkit-live/src/addr.rs |
-| `0x00408A05` | продолжение `0x00408A00` после пяти байт, занятых переходом модуля | live-link.md §11.3; crates/doctor-toolkit-live/src/addr.rs |
-| `0x00408A70` | обход слушателей шиной: флаги узла `+0x14`, слушатель `+0xC`, включён — бит 0 в `+4` | live-link.md §6; crates/doctor-toolkit-live/src/edition.rs |
-| `0x00408A7B` | место, где шина проверяет бит «слушатель включён» | crates/doctor-toolkit-live/src/addr.rs |
-| `0x00408B70` | адресная отправка сообщения (из `0x004404F0`) | logic-graph.md §9 |
-| `0x004404F0` | отправка с задержкой: задержка ≤ 0 — сразу, иначе в очередь на «сейчас + задержка × 1000 мс» игрового времени | logic-graph.md §9 |
-| `0x00408840` | отписка слушателя (реагирует и отписывается) | logic-graph.md §9 |
-| `0x00408900` | подписка точки появления на сообщение появления игрока | launch-flags.md §3.2 |
-| `0x004C82C0` | Lua `SendMessage`: строит сообщение `{хэш, данные, флаг}` и зовёт `0x00408A00` | live-link.md §5; crates/doctor-toolkit-live/src/edition.rs |
-| `0x0110064C` | данные: сообщение `iMsgPostSpawnInitialize`, которое движок шлёт объектам загруженной SimGroup | logic-graph.md §9 |
-| `0x00445530` | задаёт имя сообщения `0x0110064C` | logic-graph.md §9 |
+| `0x004DAFD0` | хэш движка `sdbm(lower(имя))`: `h = h*65599 + tolower(c)` | logic-graph.md §1 |
+| `0x01162380` | данные: таблица сообщений (указатель на 4096 корзин по `хэш & 0xFFF`); запись: `[0]` следующая, `[1]` первый блок слушателей, `[2]` последний, `[3]` отложенные правки, `[4]` хэш, `+0x16` бит 0 — идёт рассылка | message-bus.md §2; crates/doctor-toolkit-live/src/addr.rs |
+| `0x00408260` | `(переменная, хэш)`: найти или создать запись, положить хэш в переменную | message-bus.md §2 |
+| `0x00408240` | `(переменная, "имя")`: так код движка называет свои сообщения | message-bus.md §2 |
+| `0x00408980` | `(переменная, "имя")`: назвать заново, без подписки | logic-graph.md §1 |
+| `0x004089B0` | `thiscall` слушатель`(переменная, "имя")`: назвать и подписать | logic-graph.md §1 |
+| `0x00473EC0` | то же с третьим аргументом — именем типа данных (`"BasePtrMsgData*"`); аргумент не читается | message-bus.md §2 |
+| `0x00408900` | `(слушатель, переменная, приоритет)`: подписка на готовую переменную; приоритет почти всегда `0x8000` | message-bus.md §2 |
+| `0x00408680`, `0x00407E60` | подписка на готовую переменную (`thiscall` и `cdecl`) | message-bus.md §2 |
+| `0x004084D0`, `0x00409090` | общий хвост подписки: создать узел; поставить его в блок своего приоритета (в голову) | message-bus.md §3 |
+| `0x004086D0` | `thiscall` слушатель`(переменная)`: отписка | message-bus.md §2 |
+| `0x00408A00` | рассылка `bool Send(Message*, bool force)`, `cdecl`; сообщение `{u32 хэш, u32 данные, u8 доставляется}`; 688 мест вызова | live-link.md §5; message-bus.md §2 |
+| `0x00408A05` | продолжение `0x00408A00` после пяти байт, занятых переходом модуля | live-link.md §11.3 |
+| `0x00408A11` | `and esi, 0xFFF` после чтения хэша (`ECX`) и таблицы (`EDI`); перехват модуля падений: запись «сообщение, адрес возврата отправки» ([подробнее](crash-handler.md)) | crash-reports.md §4; crates/doctor-toolkit-live/src/crash.rs |
+| `0x00408A70` | обход слушателей: флаги узла `+0x14`, слушатель `+0xC`, включён — бит 0 в `+4` | live-link.md §6 |
+| `0x00408A8B` | рассылка зовёт обработчик слушателя (`mov edx,[eax+4]; call edx`); возврат `0x00408A90` | message-bus.md §8 |
+| `0x00408AF0` | применить отложенные подписки и отписки записи после рассылки | message-bus.md §3 |
+| `0x0045C400` | обёртка `Send(переменная, данные, force)`; 25 мест | message-bus.md §2 |
+| `0x00408BF0` | доставка одному слушателю `(сообщение, слушатель, force)`; 93 места и переход | message-bus.md §3.1 |
+| `0x00408B80`, `0x00408BB0` | обёртки `0x00408BF0`: без данных (11 мест) и с данными (23) | message-bus.md §3.1 |
+| `0x00408C31` | доставка одному зовёт обработчик (`and bl,1; call edx`); возврат `0x00408C36` | message-bus.md §8 |
+| `0x00440590` | очередь задержки `thiscall(переменная, слушатель или 0, f32 секунды, данные, флаги)`; очередь — `*0x01223420`; 62 места | message-bus.md §3.2 |
+| `0x004760D0` | обёртка очереди для всех слушателей; 3 места | message-bus.md §3.2 |
+| `0x00440760` | обработчик очереди по `iMsgRunningTick`; `0x00440819` — вызов обработчика адресата | message-bus.md §3.2 |
+| `0x00440B80` | сброс очереди задержки | message-bus.md §3.2 |
+| `0x0045CA00`, `0x0045CAC0`, `0x00476C80` | указатель на объект как данные сообщения (`0x00E31E2C`): конструктор, деструктор, копия в куче | message-bus.md §4.1 |
+| `0x007FFF40` | `(объект, переменная)`: послать сообщение с указателем на себя | message-bus.md §4.1 |
+| `0x00482A50` | доставить сообщение каждому компоненту сущности (`0x00408BF0` в цикле) | message-bus.md §3.1 |
+| `0x00408900` | та же подписка: точка появления на сообщение появления игрока | launch-flags.md §3.2 |
+| `0x004C8510`, `0x004C82C0` | Lua `SendMessage`: разбор аргументов и сборка сообщения | message-bus.md §4.3 |
+| `0x004C86D0` | Lua `SendMessageEx` | message-bus.md §7.2 |
+| `0x0120E93C` | данные: переменная сообщения `iMsgPostSpawnInitialize`; движок доставляет его объектам загруженной SimGroup по одному (`0x00446470`, `0x00855D40`) | message-bus.md §3.1; data/gf2/bus_sites.tsv |
+| `0x004455D0` | называет сообщения SimManager, среди них `0x0120E93C` (вызов `0x00445885`) | data/gf2/bus_sites.tsv |
 | `0x0040D640` | регистрация хэшей сообщений кадра (`iMsgBeforeRender`, `iMsgPreRender`, `iMsgDoRender`, …) | renderer.md §3 |
-| `0x01206960` | данные: переменная с хэшем `iMsgBeforeRender` | live-link.md §12.2; crates/doctor-toolkit-live/src/addr.rs |
+| `0x01206960` | данные: переменная с хэшем `iMsgBeforeRender` | live-link.md §12.2 |
+
+Адреса `0x00408B70` («адресная отправка») и `0x004404F0` («отправка с задержкой») из прежних версий этой заметки — не начала функций; верные — `0x00408BF0` и `0x00440590`.
 
 ## Подробнее
 
+- [ASI-платформа](../../analysis/asi-platform.md) §4, §5 — фильтр рассылки `0x00408A1A` и реестр мест, занятых перехватами модулей; адреса: [платформа нативных модов](native-mods.md)
+- [Разбор шины сообщений](../../analysis/message-bus.md)
 - [Граф логики](../../logic-graph.md) таблица функций в начале, §9
-- [Живая связь](../../analysis/live-link.md) §5, §11.3
-- [Логика миссий](../../formats/mission-logic.md) §1
+- [Живая связь](../../analysis/live-link.md) §5, §11.3, §11.7
 - [Заметки Ghidra](../../../research/ghidra/README.md) таблица функций

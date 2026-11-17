@@ -70,30 +70,7 @@ pub fn game_types(_kit: &Toolkit, p: GameTypesParams) -> ToolResult<Output> {
             Ok(h) if class.len() == 8 => h,
             _ => string_id(class),
         };
-        let mut indexes: Vec<u16> = schema.packet(hash).iter().map(|a| a.index).collect();
-        indexes.extend(
-            game_types::attr_types()
-                .iter()
-                .filter(|r| r.0 == hash)
-                .map(|r| r.1),
-        );
-        indexes.sort_unstable();
-        indexes.dedup();
-        let attrs: Vec<Value> = indexes
-            .into_iter()
-            .filter_map(|i| {
-                let (ty, conf) = schema.semantic(hash, i)?;
-                let extra = game_types::attr_type(hash, i);
-                Some(json!({
-                    "index": i,
-                    "name": schema.attr(hash, i).and_then(|a| a.name.clone()),
-                    "type": ty,
-                    "conf": conf,
-                    "seen": extra.map(|e| e.seen),
-                    "source": extra.map(|e| e.source).filter(|s| !s.is_empty()),
-                }))
-            })
-            .collect();
+        let attrs = schema.typed_attrs(hash);
         out.insert(
             "class".into(),
             json!({

@@ -332,6 +332,7 @@ fn methods_are_stored_as_tables() {
         live: Default::default(),
         dxvk: false,
         overlay: Default::default(),
+        streams: Default::default(),
         graphics: Default::default(),
     };
     let json = serde_json::to_string(&config).unwrap();
@@ -349,6 +350,16 @@ fn methods_are_stored_as_tables() {
     let json = serde_json::to_string(&off).unwrap();
     assert!(json.ends_with(r#""overlay":"off"}"#), "{json}");
     assert_eq!(serde_json::from_str::<PlayConfig>(&json).unwrap(), off);
+    // Streams are rebuilt whole unless the resources in memory are switched
+    // on (stage 100); only then it is stored.
+    assert_eq!(config.streams, overlay::Streams::Rebuilt);
+    let patched = PlayConfig {
+        streams: overlay::Streams::Patched,
+        ..config.clone()
+    };
+    let json = serde_json::to_string(&patched).unwrap();
+    assert!(json.ends_with(r#""streams":"patched"}"#), "{json}");
+    assert_eq!(serde_json::from_str::<PlayConfig>(&json).unwrap(), patched);
     // Starting in a level is kept with the rest (and is absent when unused).
     let level = PlayConfig {
         start: start::StartOptions {

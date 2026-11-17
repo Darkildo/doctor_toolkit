@@ -225,18 +225,49 @@ pub struct ImportArgs {
     /// `data` part is written back
     #[arg(required = true)]
     files: Vec<PathBuf>,
+    /// Write the `dlg` resource of the one file given here instead of
+    /// recording it: the data of a new dialogue, to be put into a stream of
+    /// its own with `add-stream` and `add-resource --type dlg`. The `stream`
+    /// of the JSON is not looked at
+    #[arg(long, value_name = "FILE")]
+    raw: Option<PathBuf>,
     #[command(flatten)]
     mode: EditMode,
 }
 
+/// The tree of a JSON file written by `dialogue --json`.
+fn tree_of(path: &std::path::Path) -> Result<(serde_json::Value, Dialogue)> {
+    let text = std::fs::read_to_string(path).with_context(|| path.display().to_string())?;
+    let json: serde_json::Value = serde_json::from_str(&text)?;
+    let data: Dialogue = serde_json::from_value(json["data"].clone())
+        .with_context(|| format!("{}: `data`", path.display()))?;
+    Ok((json, data))
+}
+
 pub fn import(args: ImportArgs) -> Result<()> {
+    if let Some(out) = &args.raw {
+        let [file] = args.files.as_slice() else {
+            bail!("--raw takes one JSON file");
+        };
+        let (_, data) = tree_of(file)?;
+        let bytes = data.to_bytes()?;
+        // What the game will read: the tree must parse back as written.
+        Dialogue::parse(&bytes).with_context(|| format!("{}: the tree", file.display()))?;
+        std::fs::write(out, &bytes).with_context(|| out.display().to_string())?;
+        out!(
+            "{}: {} node(s), {} byte(s)",
+            out.display(),
+            data.nodes.len(),
+            bytes.len()
+        );
+        return Ok(());
+    }
     let game = GameInstance::open(&args.game_dir)?;
     let mut ws = workspace_cmd::open_for_edit(&game, &args.mode)?;
     let catalog = catalog(&game)?;
     let mut streams = Vec::new();
     for path in &args.files {
-        let text = std::fs::read_to_string(path).with_context(|| path.display().to_string())?;
-        let json: serde_json::Value = serde_json::from_str(&text)?;
+        let (json, data) = tree_of(path)?;
         let stream = json["stream"]
             .as_str()
             .with_context(|| format!("{}: no `stream`", path.display()))?;
@@ -244,8 +275,6 @@ pub fn import(args: ImportArgs) -> Result<()> {
             .find(stream)
             .with_context(|| format!("{}: no dialogue {stream}", path.display()))?
             .clone();
-        let data: Dialogue = serde_json::from_value(json["data"].clone())
-            .with_context(|| format!("{}: `data`", path.display()))?;
         let label = format!("Import dialogue {}", d.name);
         if dialogue::save(&game, &mut ws, &d, &data, &label)? {
             out!("{}: recorded", d.name);

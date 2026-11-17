@@ -282,6 +282,33 @@ values = [
   { name = "bruiser", value = 128 },
 ]
 
+[crew_rank]
+title = "Ranks of made men"
+ru = "Ранги людей чести"
+kind = "int"
+source = "rank a place of the family tree of the player asks for (0x0090B0A0); AddPlayerFamilyMember 2 (the reader 0x0090A1D0 keeps 3..5), Sentient 1 of a character template"
+source_ru = "ранг, которого просит место древа семьи игрока (0x0090B0A0); AddPlayerFamilyMember 2 (читатель 0x0090A1D0 оставляет 3…5), Sentient 1 шаблона персонажа"
+conf = "exe"
+values = [
+  { name = "soldier", value = 3 },
+  { name = "capo", value = 4 },
+  { name = "underboss", value = 5 },
+]
+
+[weapon_licence]
+title = "Weapon licences"
+ru = "Оружейные лицензии"
+kind = "int"
+source = "level of a made man in the record of his honours (0x008BCF90, byte +0x28): it starts from the flags of his SimNpc (0x00790150: bit 3 gives 2, bit 4 gives 3) and rises with honours (0x008BCE30: 10, 25, 70)"
+source_ru = "уровень человека чести в записи его заслуг (0x008BCF90, байт +0x28): начальный — по флагам его SimNpc (0x00790150: бит 3 — 2, бит 4 — 3), растёт с заслугами (0x008BCE30: 10, 25, 70)"
+conf = "exe"
+values = [
+  { name = "basic", value = 1 },
+  { name = "advanced", value = 2 },
+  { name = "expert", value = 3 },
+  { name = "master", value = 4 },
+]
+
 [sound_category]
 title = "Sound categories"
 ru = "Категории звука"

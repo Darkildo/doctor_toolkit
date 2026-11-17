@@ -93,6 +93,12 @@ pub struct PlayArgs {
     /// Wait for the game to exit
     #[arg(long)]
     wait: bool,
+    /// Put the crash module (doctor_crash.asi) into scripts/ of the game
+    /// and leave it there: a crash then leaves a report in
+    /// _doctor_toolkit/crashes (`crash-report`). A module installed
+    /// earlier is kept up to date without this flag
+    #[arg(long)]
+    crash_reports: bool,
     /// Print how the game would be started and do nothing
     #[arg(long)]
     dry_run: bool,
@@ -152,6 +158,11 @@ pub struct PlayArgs {
     /// when the live module cannot give the game those files
     #[arg(long)]
     no_game_writes: bool,
+    /// Through the live module: put the changed resources into the game's
+    /// streams in memory when the game loads them (resource patches, stage
+    /// 100) instead of rebuilding every changed stream on disk
+    #[arg(long, conflicts_with = "write_game")]
+    resources_in_memory: bool,
     #[command(flatten)]
     graphics: GraphicsArgs,
 }
@@ -182,6 +193,13 @@ pub struct GraphicsArgs {
     /// Sharpening over the finished frame, 0–100
     #[arg(long, value_name = "PERCENT", help_heading = "Graphics")]
     sharpen: Option<u32>,
+    /// Fewer draw calls: draws that follow each other with nothing changed
+    /// between them (strips of one mesh of the world under one material)
+    /// go to Direct3D as one, 15–26 % fewer draws a frame. Measured under
+    /// DXVK it gains no time (docs/analysis/performance.md §11); off unless
+    /// asked for
+    #[arg(long, help_heading = "Graphics")]
+    draw_merge: bool,
     /// Keep the game's own pacing: no time-of-day fix, vsync at 30, the
     /// limiter spinning (with --render, to compare)
     #[arg(long, help_heading = "Graphics")]
@@ -212,12 +230,14 @@ impl GraphicsArgs {
                 || self.fov.is_some()
                 || self.fxaa
                 || self.sharpen.is_some()
+                || self.draw_merge
                 || self.low_memory.is_some()
                 || self.no_render_fixes,
             fps: self.fps.unwrap_or(0),
             fov: self.fov.unwrap_or(0),
             fxaa: self.fxaa,
             sharpen: self.sharpen.unwrap_or(0),
+            draw_merge: self.draw_merge,
             laa: self.laa,
             low_memory: self.low_memory.unwrap_or(0),
             vulkan_driver: self.vulkan_driver.clone().unwrap_or_default(),
@@ -247,6 +267,7 @@ impl PlayArgs {
             || self.live
             || self.dxvk
             || self.mods
+            || self.crash_reports
             || self.graphics.options().module
             || !self.start_options().is_empty())
             && !self.dry_run
@@ -417,6 +438,14 @@ pub fn play(args: &PlayArgs) -> Result<()> {
         let installs = install::detect(&SearchRoots::from_env());
         method = play::auto_method(game.root(), &installs);
     }
+    // The code of the mods the player agreed to (stage 81), before the plan
+    // of the launch: a loader installed now changes it (the DLL override of
+    // Wine).
+    if args.mods {
+        for note in doctor_toolkit::mods::native::prepare(&game) {
+            out!("{note}");
+        }
+    }
     let mut plan = play::plan(&method, game.root())?;
     let graphics = args.graphics.options();
     let dxvk = if args.dxvk {
@@ -430,6 +459,9 @@ pub fn play(args: &PlayArgs) -> Result<()> {
     };
     out!("method: {}", method.describe());
     out!("command: {}", plan.command_line());
+    if let Some(warning) = doctor_toolkit::path_limit::warning(&game) {
+        out!("warning: {warning}");
+    }
     if let Some(text) = &cmd_txt {
         out!("{}: {}", start::CMD_FILE, text.trim_end());
     }
@@ -518,14 +550,24 @@ pub fn play(args: &PlayArgs) -> Result<()> {
         };
         let dir = overlay::default_dir(game.root())
             .context("no folder for the staged files (no HOME or LOCALAPPDATA)")?;
-        let built = Overlay::build(&game, source.as_ref(), cmd_txt.as_deref(), &dir)
+        let streams = overlay::Streams::in_memory(args.resources_in_memory);
+        let built = Overlay::build_with(&game, source.as_ref(), cmd_txt.as_deref(), &dir, streams)
             .context("cannot stage the changes; the game was not started")?;
-        out!(
-            "staged: {} file(s) the game opens from {} instead of its folder ({} stream(s) rebuilt)",
-            built.redirects().len(),
-            dir.display(),
-            built.report().streams.len()
-        );
+        if built.resources().is_empty() {
+            out!(
+                "staged: {} file(s) the game opens from {} instead of its folder ({} stream(s) rebuilt)",
+                built.redirects().len(),
+                dir.display(),
+                built.report().streams.len()
+            );
+        } else {
+            out!(
+                "staged: {} file(s) the game opens from {} instead of its folder, {} stream(s) composed in memory from resource patches",
+                built.redirects().len(),
+                dir.display(),
+                built.resources().len()
+            );
+        }
         for warning in &built.report().warnings {
             out!("warning: {warning}");
         }
@@ -562,7 +604,7 @@ pub fn play(args: &PlayArgs) -> Result<()> {
     };
     let redirects = staged_overlay
         .as_ref()
-        .map(|o| o.redirects().to_vec())
+        .map(|o| (o.redirects().to_vec(), o.resources().to_vec()))
         .unwrap_or_default();
     let live_module = if args.live || staged {
         Some(install_live(args, game.root(), redirects)?)
@@ -575,6 +617,24 @@ pub fn play(args: &PlayArgs) -> Result<()> {
         Some(found) => Some(dxvk::DxvkInstall::write(game.root(), found)?),
         None => None,
     };
+    // The crash module and the list of mods for its reports (stage 99).
+    let source = if args.mods {
+        "mods staged outside the game"
+    } else if staged {
+        "workspace staged outside the game"
+    } else {
+        "written into the game"
+    };
+    // The flag is the person's agreement to keep the module in the game.
+    if args.crash_reports
+        && let Err(e) = doctor_toolkit::crash::set_disabled(game.root(), false)
+    {
+        out!("crash reports: {e}");
+    }
+    for note in doctor_toolkit::crash::prepare(&game, "doctor-toolkit", source, args.crash_reports)
+    {
+        out!("{note}");
+    }
     // Graphics last: with LAA the mirror links everything put into the
     // game folder above.
     let vulkan = dxvk.as_ref().map(|_| dxvk::vulkan32());
@@ -646,6 +706,7 @@ pub fn play(args: &PlayArgs) -> Result<()> {
     }
     if let Some(o) = staged_overlay {
         let total = o.redirects().len();
+        let patched = o.resources().len();
         o.remove()?;
         let log = std::fs::read_to_string(game.root().join(doctor_toolkit::live::LAST_LOG))
             .unwrap_or_default();
@@ -653,6 +714,17 @@ pub fn play(args: &PlayArgs) -> Result<()> {
             "removed the staged files; the game opened {} of the {total} redirected file(s), its folder was not written",
             doctor_toolkit::live::redirected_in_log(&log)
         );
+        if patched > 0 {
+            let (composed, failed) = doctor_toolkit::live::composed_in_log(&log);
+            out!(
+                "resources in memory: the module composed {composed} of the {patched} stream(s) with a resource patch"
+            );
+            if failed > 0 {
+                out!(
+                    "warning: {failed} stream(s) could not be composed — the game read its own file there, without the changes (see the log of the module)"
+                );
+            }
+        }
     }
     if args.revert_after
         && let Some(ws) = &mut workspace
@@ -740,7 +812,10 @@ fn input_fix(root: &std::path::Path) -> Result<Option<doctor_toolkit::live::Modu
 fn install_live(
     args: &PlayArgs,
     root: &std::path::Path,
-    redirects: Vec<doctor_toolkit::live::proto::files::Redirect>,
+    (redirects, resources): (
+        Vec<doctor_toolkit::live::proto::files::Redirect>,
+        Vec<doctor_toolkit::live::proto::resources::PatchLine>,
+    ),
 ) -> Result<doctor_toolkit::live::ModuleInstall> {
     use doctor_toolkit::live;
     let path = live::module_binary()
@@ -769,6 +844,8 @@ fn install_live(
         journal: args.live,
         files_log: false,
         redirects,
+        resources,
+        resources_dump: false,
     };
     let install = live::ModuleInstall::write(root, &bytes, &config)?;
     out!(
@@ -778,7 +855,11 @@ fn install_live(
         if config.redirects.is_empty() {
             String::new()
         } else {
-            format!(", {} file(s) redirected", config.redirects.len())
+            format!(
+                ", {} file(s) redirected, {} stream(s) composed in memory",
+                config.redirects.len(),
+                config.resources.len()
+            )
         }
     );
     Ok(install)

@@ -125,6 +125,17 @@ unsafe fn utf16(text: *const u16) -> Option<String> {
     }))
 }
 
+/// The key of a stream of the game folder that has a resource patch
+/// (stage 100), when the game opens it for reading.
+fn patched(path: &str, reading: bool) -> Option<String> {
+    let table = TABLE.get()?;
+    if !reading {
+        return None;
+    }
+    let key = key_in(path, &current_dir(), &table.game_dir)?;
+    crate::resources::patched(&key).then_some(key)
+}
+
 /// The redirect of a path the game names, if any; counts the open. An
 /// open that may write (`!reading`) is never redirected. `site` is the
 /// patched instruction the game called from (for the log).
@@ -229,12 +240,17 @@ extern "system" fn create_file_a<const SITE: u32>(
     .ok()
     .flatten();
     if let Some(e) = entry {
-        return open(e, access, share, security, disposition, flags, template);
+        let h = open(e, access, share, security, disposition, flags, template);
+        crate::resources::forget(h);
+        return h;
     }
     // SAFETY: what the import slot held: CreateFileA (or another mod's
     // hook with the same arguments).
     let f: CreateFileA = unsafe { std::mem::transmute(slot(IAT_CREATE_FILE_A)) };
-    f(name, access, share, security, disposition, flags, template)
+    let h = f(name, access, share, security, disposition, flags, template);
+    // A handle number the system gives again is no composed stream.
+    crate::resources::forget(h);
+    h
 }
 
 extern "system" fn create_file_w<const SITE: u32>(
@@ -254,11 +270,30 @@ extern "system" fn create_file_w<const SITE: u32>(
     .ok()
     .flatten();
     if let Some(e) = entry {
-        return open(e, access, share, security, disposition, flags, template);
+        let h = open(e, access, share, security, disposition, flags, template);
+        crate::resources::forget(h);
+        return h;
     }
     // SAFETY: as in `create_file_a`.
     let f: CreateFileW = unsafe { std::mem::transmute(slot(IAT_CREATE_FILE_W)) };
-    f(name, access, share, security, disposition, flags, template)
+    let h = f(name, access, share, security, disposition, flags, template);
+    let _ = std::panic::catch_unwind(|| {
+        crate::resources::forget(h);
+        if h as usize == win::INVALID || h.is_null() {
+            return;
+        }
+        // A stream with a resource patch (stage 100): the game holds its
+        // own file, the module answers its reads from the composed stream.
+        // SAFETY: the game's wide C string, as above.
+        let key = unsafe { utf16(name) }.and_then(|p| patched(&p, reads_only(access, disposition)));
+        if let Some(key) = key {
+            // SAFETY: plain Win32 calls; the game reads the error of the open.
+            let code = unsafe { win::GetLastError() };
+            crate::resources::opened(&key, h);
+            unsafe { win::SetLastError(code) };
+        }
+    });
+    h
 }
 
 extern "system" fn get_file_attributes_a<const SITE: u32>(name: *const u8) -> u32 {
@@ -360,12 +395,12 @@ pub fn install(config: &Config) -> Vec<u32> {
             },
         );
     }
+    let mut failed = crate::resources::install(config, &game_dir);
     let _ = TABLE.set(Table {
         game_dir,
         map,
         log_all: config.files_log,
     });
-    let mut failed = Vec::new();
     let calls = CREATE_FILE_A_CALLS
         .iter()
         .map(|&at| (at, hook_a(at)))

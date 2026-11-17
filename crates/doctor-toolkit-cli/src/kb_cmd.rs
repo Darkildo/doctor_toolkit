@@ -1,6 +1,6 @@
 //! `kb-gen` and `kb-lint`: the knowledge base `docs/kb/` (see
-//! `docs/kb/README.md`). Both work on a checkout of the repository, not on
-//! a game.
+//! `docs/kb/README.md`); `parity-gen`: the document of what the toolkit can
+//! do and where. All work on a checkout of the repository, not on a game.
 
 use std::path::{Path, PathBuf};
 
@@ -8,6 +8,7 @@ use anyhow::{Result, anyhow, bail};
 use clap::Args;
 
 use doctor_toolkit::kb::{self, generate, lint};
+use doctor_toolkit::parity;
 
 #[derive(Args)]
 pub struct KbGen {
@@ -26,6 +27,17 @@ pub struct KbLint {
     /// one that has docs/kb]
     #[arg(long, value_name = "DIR")]
     pub root: Option<PathBuf>,
+}
+
+#[derive(Args)]
+pub struct ParityGen {
+    /// The repository root [default: the nearest folder above the current
+    /// one that has docs/kb]
+    #[arg(long, value_name = "DIR")]
+    pub root: Option<PathBuf>,
+    /// Write nothing: fail when a run would change the document
+    #[arg(long)]
+    pub check: bool,
 }
 
 /// Path of the knowledge base from the repository root.
@@ -51,7 +63,7 @@ fn root(given: Option<PathBuf>) -> Result<PathBuf> {
 }
 
 /// Writes the generated notes: classes, resource types, messages and the
-/// lists of the folders.
+/// lists of the folders; and the table of named addresses of the executable.
 pub fn generate(args: KbGen) -> Result<()> {
     let root = root(args.root)?;
     let out = generate::run(
@@ -75,7 +87,16 @@ pub fn generate(args: KbGen) -> Result<()> {
         out.changed.len(),
         out.removed.len()
     );
-    if args.check && !out.is_clean() {
+    // The table of named addresses the crash reports use (stage 99).
+    let symbols = kb::symbols::run(&root, &root.join(KB), args.check)?;
+    if symbols {
+        println!(
+            "{} {}",
+            if args.check { "stale" } else { "wrote" },
+            kb::symbols::SYMBOLS_FILE
+        );
+    }
+    if args.check && (!out.is_clean() || symbols) {
         bail!("the generated notes are out of date; run `doctor-toolkit kb-gen`");
     }
     Ok(())
@@ -103,5 +124,33 @@ pub fn check(args: KbLint) -> Result<()> {
         );
     }
     println!("{} note(s) of {KB}: no problems", base.notes.len());
+    Ok(())
+}
+
+/// Writes `docs/parity.md` from the table of capabilities.
+pub fn parity(args: ParityGen) -> Result<()> {
+    let root = root(args.root)?;
+    let table = parity::table();
+    let problems = table.problems();
+    for problem in &problems {
+        println!("{}: {problem}", parity::TABLE_FILE);
+    }
+    if !problems.is_empty() {
+        bail!("{} problem(s) in {}", problems.len(), parity::TABLE_FILE);
+    }
+    let changed = parity::document::write(&root, args.check)?.is_some();
+    let counts = parity::document::counts(table);
+    println!(
+        "{} capabilities: {}",
+        counts.capabilities,
+        match (changed, args.check) {
+            (false, _) => format!("{} is up to date", parity::document::DOCUMENT),
+            (true, false) => format!("wrote {}", parity::document::DOCUMENT),
+            (true, true) => format!("stale {}", parity::document::DOCUMENT),
+        }
+    );
+    if args.check && changed {
+        bail!("the document is out of date; run `doctor-toolkit parity-gen`");
+    }
     Ok(())
 }

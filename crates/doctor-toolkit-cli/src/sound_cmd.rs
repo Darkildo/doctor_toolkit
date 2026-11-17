@@ -175,17 +175,14 @@ pub fn import(args: &ImportArgs) -> Result<()> {
         workspace_cmd::finish_edit(&game, &mut ws, &args.mode, vec![key.stream.clone()])
     } else {
         let key = FileKey::archive_entry(&args.target);
-        let original = ws.current_file(&game, &key)?;
-        let data = doctor_toolkit::resource::audio_encode::encode_snu_like(&pcm, &original)?;
-        let header = Sample::parse_snu(&data)?.header;
-        let label = format!("Import sound {}", key.name());
-        ws.set_file(&game, &key, data, &label)?;
+        let info =
+            doctor_toolkit::sound::replace_archive_sound(&game, &mut ws, &args.target, &pcm)?;
         out!(
             "{}: {} Hz, {} channel(s), {:.2} s",
             key.name(),
-            header.sample_rate,
-            header.channels,
-            header.sample_count as f64 / header.sample_rate as f64
+            info.sample_rate,
+            info.channels,
+            info.seconds
         );
         workspace_cmd::finish_edit(
             &game,

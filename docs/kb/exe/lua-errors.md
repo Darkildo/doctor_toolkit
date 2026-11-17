@@ -3,8 +3,8 @@ type: exe
 status: known
 confidence: exe
 editions: ["1.0.789.0"]
-stages: [72, 49]
-sources: ["docs/analysis/live-link.md §11.2", "crates/doctor-toolkit-live/src/addr.rs", "crates/doctor-toolkit-live/src/edition.rs"]
+stages: [72, 49, 99]
+sources: ["docs/analysis/live-link.md §11.2", "crates/doctor-toolkit-live/src/addr.rs", "crates/doctor-toolkit-live/src/edition.rs", "docs/analysis/crash-reports.md §4", "crates/doctor-toolkit-live/src/crash.rs"]
 tags: [exe, lua, errors, journal]
 updated: 2026-11-16
 ---
@@ -26,7 +26,7 @@ updated: 2026-11-16
 | `0x006338A0` | `luaG_errormsg` (`L` в `ESI`): через неё идут все ошибки выполнения; журнал переходит с её первых пяти байт | live-link.md §11.2; crates/doctor-toolkit-live/src/addr.rs |
 | `0x006338A5` | продолжение `luaG_errormsg` после перехваченных пяти байт | live-link.md §11.2; crates/doctor-toolkit-live/src/addr.rs |
 | `0x00627BD0` | `luaL_error` (зовёт `lua_error`) | live-link.md §11.2; crates/doctor-toolkit-live/src/addr.rs |
-| `0x00635A80` | `luaD_throw` | live-link.md §11.2 |
+| `0x00635A80` | `luaD_throw`: `L` в `ECX`, код ошибки в `EDX`, текст — на вершине стека Lua; с первых пяти байт (`mov eax,[ecx+0x50]; test eax,eax`) переходит модуль падений и запоминает последние ошибки ([подробнее](crash-handler.md)) | live-link.md §11.2; crash-reports.md §4; crates/doctor-toolkit-live/src/crash.rs |
 | `0x00632AA0` | `currentline`: по ней выведены поля `CallInfo` и `Proto` | live-link.md §11.2; crates/doctor-toolkit-live/src/edition.rs |
 | `0x00632D40` | `funcinfo`: по ней выведены поля замыкания и `Proto` | live-link.md §11.2; crates/doctor-toolkit-live/src/edition.rs |
 | `0x00632FB0` | `lua_getinfo` (`"Sl"` в `print` игры) | live-link.md §11.1 |

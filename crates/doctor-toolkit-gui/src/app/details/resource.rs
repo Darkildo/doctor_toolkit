@@ -14,6 +14,19 @@ impl BrowserApp {
             ui.label(RichText::new(tr("details.select")).weak());
             return;
         };
+        // The note of the resource type in the knowledge base (stage 103).
+        if let Some(rel) = super::super::knowledge::resource_note(doc.type_id) {
+            super::super::knowledge::note_link(ui, &rel);
+        }
+        // The commands of the asset, as on the bar of its tab (stage 103).
+        let mut cmds = Vec::new();
+        ui.menu_button(tr("doc.asset"), |ui| {
+            super::super::asset_tab::asset_menu(ui, false, doc.type_id, &mut cmds);
+        })
+        .response
+        .on_hover_text(tr("doc.asset_hint"));
+        self.asset_cmds
+            .extend(cmds.into_iter().map(|c| (doc.loc, c)));
         let action = self.doc_ui(ui, &mut doc, false);
         // An action may load the doc again: put it back first.
         if self.details.is_none() {

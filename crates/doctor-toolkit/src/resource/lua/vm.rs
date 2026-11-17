@@ -34,6 +34,8 @@ pub enum Value {
     Str(Rc<[u8]>),
     Table(TableRef),
     Function(Function),
+    /// A coroutine (`coroutine.create`).
+    Thread(ThreadRef),
 }
 
 impl Value {
@@ -59,6 +61,7 @@ impl Value {
             Value::Str(_) => "string",
             Value::Table(_) => "table",
             Value::Function(_) => "function",
+            Value::Thread(_) => "thread",
         }
     }
 
@@ -92,6 +95,7 @@ impl Value {
             (Value::Str(a), Value::Str(b)) => a == b,
             (Value::Table(a), Value::Table(b)) => Rc::ptr_eq(&a.0, &b.0),
             (Value::Function(a), Value::Function(b)) => a.ptr() == b.ptr(),
+            (Value::Thread(a), Value::Thread(b)) => Rc::ptr_eq(&a.0, &b.0),
             _ => false,
         }
     }
@@ -112,6 +116,7 @@ impl fmt::Debug for Value {
             Value::Str(s) => write!(f, "{:?}", String::from_utf8_lossy(s)),
             Value::Table(t) => write!(f, "table: {:p}", Rc::as_ptr(&t.0)),
             Value::Function(func) => write!(f, "function: {:#x}", func.ptr()),
+            Value::Thread(t) => write!(f, "thread: {:p}", Rc::as_ptr(&t.0)),
         }
     }
 }
@@ -162,9 +167,68 @@ pub struct Closure {
 
 type UpvalRef = Rc<RefCell<Upval>>;
 
+/// A coroutine: its own value stack and, while it is suspended, the Lua
+/// frames that wait for `coroutine.yield` to return.
+///
+/// As in Lua 5.0, a coroutine can yield only through Lua frames: a yield
+/// inside a function called by `pcall`, a metamethod or a library callback
+/// fails with "attempt to yield across metamethod/C-call boundary".
+#[derive(Clone)]
+pub struct ThreadRef(Rc<RefCell<Coroutine>>);
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CoStatus {
+    Suspended,
+    Running,
+    /// It resumed another coroutine and waits for it.
+    Normal,
+    Dead,
+}
+
+struct Coroutine {
+    /// Number of the thread: the key of its stack in `Vm::parked` while it
+    /// does not run.
+    id: usize,
+    status: CoStatus,
+    /// The body, until the first resume.
+    body: Option<Value>,
+    /// Suspended frames, outermost first; each stands at its call instruction.
+    frames: Vec<Frame>,
+    /// Where a dropped coroutine leaves its number, for the VM to free its stack.
+    dropped: Rc<RefCell<Vec<usize>>>,
+}
+
+impl Drop for Coroutine {
+    fn drop(&mut self) {
+        self.dropped.borrow_mut().push(self.id);
+    }
+}
+
+/// The value stack of a thread and its open upvalues.
+type ThreadStack = (Vec<Value>, Vec<UpvalRef>);
+
+#[derive(Clone)]
+struct Frame {
+    closure: Rc<Closure>,
+    base: usize,
+    /// Index of the `CALL` or `TAILCALL` that did not return yet.
+    pc: usize,
+    top: usize,
+}
+
+/// What a resumed frame does first: finish its pending call with the results
+/// of the frames above it (or, for the innermost, with the values passed to
+/// `coroutine.resume`: they are what `coroutine.yield` returns).
+struct Pending {
+    frames: Rc<Vec<Frame>>,
+    next: usize,
+    args: Vec<Value>,
+}
+
 enum Upval {
-    /// Still a register: absolute stack index.
-    Open(usize),
+    /// Still a register: the thread (0 — the main one) and the absolute
+    /// index in its stack.
+    Open(usize, usize),
     Closed(Value),
 }
 
@@ -215,6 +279,10 @@ impl TableRef {
     pub fn metatable(&self) -> Option<TableRef> {
         self.0.borrow().meta.clone()
     }
+
+    pub fn set_metatable(&self, meta: Option<TableRef>) {
+        self.0.borrow_mut().meta = meta;
+    }
 }
 
 #[derive(Clone, PartialEq, Eq, Hash)]
@@ -247,6 +315,7 @@ impl Table {
             Value::Str(s) => Key::Str(s.clone()),
             Value::Table(t) => Key::Ptr(Rc::as_ptr(&t.0) as *const u8 as usize),
             Value::Function(f) => Key::Ptr(f.ptr()),
+            Value::Thread(t) => Key::Ptr(Rc::as_ptr(&t.0) as *const u8 as usize),
         })
     }
 
@@ -343,6 +412,23 @@ pub struct Vm {
     globals: TableRef,
     open: Vec<UpvalRef>,
     depth: usize,
+    /// The coroutine that runs now; none — the main thread.
+    current: Option<ThreadRef>,
+    /// Number of the running thread (0 — the main one) and the stacks of the
+    /// threads that do not run: those that wait for a coroutine they resumed
+    /// and the suspended ones.
+    thread: usize,
+    parked: HashMap<usize, ThreadStack>,
+    threads: usize,
+    dropped: Rc<RefCell<Vec<usize>>>,
+    /// Values of a `coroutine.yield` on their way to `resume`: the error that
+    /// carries them unwinds the Lua frames, and each saves itself in `yielded`.
+    yielding: Option<Vec<Value>>,
+    yielded: Vec<Frame>,
+    /// Native functions on the Rust stack, and how many there were when the
+    /// running coroutine was resumed (a yield may cross none of them).
+    natives: usize,
+    resume_natives: usize,
     /// Round numbers to `f32` (the game's `lua_Number`).
     pub float: bool,
     /// Instructions executed so far.
@@ -371,6 +457,15 @@ impl Vm {
             globals: TableRef::new(),
             open: Vec::new(),
             depth: 0,
+            current: None,
+            thread: 0,
+            parked: HashMap::new(),
+            threads: 0,
+            dropped: Rc::default(),
+            yielding: None,
+            yielded: Vec::new(),
+            natives: 0,
+            resume_natives: 0,
             float: true,
             steps: 0,
             step_limit: 10_000_000,
@@ -430,7 +525,10 @@ impl Vm {
         let r = match func {
             Function::Native(n) => {
                 let n = n.clone();
-                n(self, args)
+                self.natives += 1;
+                let r = n(self, args);
+                self.natives -= 1;
+                r
             }
             Function::Lua(c) => {
                 let c = c.clone();
@@ -460,6 +558,7 @@ impl Vm {
             Value::Str(s) => String::from_utf8_lossy(s).into_owned(),
             Value::Table(t) => format!("table: {:p}", Rc::as_ptr(&t.0)),
             Value::Function(f) => format!("function: {:#010x}", f.ptr() & 0xFFFF_FFFF),
+            Value::Thread(t) => format!("thread: {:p}", Rc::as_ptr(&t.0)),
         }
     }
 
@@ -495,10 +594,128 @@ impl Vm {
         if self.stack.len() < size {
             self.stack.resize(size, Value::Nil);
         }
-        let r = self.execute(c, base);
-        self.close_upvalues(base);
-        self.stack.truncate(base);
+        let r = self.execute(c, base, 0, base, None);
+        // A frame that yields keeps its registers: `resume` continues it.
+        if self.yielding.is_none() {
+            self.close_upvalues(base);
+            self.stack.truncate(base);
+        }
         r
+    }
+
+    /// Continues the suspended frame `next` of a coroutine (and, through its
+    /// pending call, the frames above it).
+    fn resume_frame(
+        &mut self,
+        frames: &Rc<Vec<Frame>>,
+        next: usize,
+        args: Vec<Value>,
+    ) -> Result<Vec<Value>, LuaError> {
+        let f = frames[next].clone();
+        let pending = Pending {
+            frames: frames.clone(),
+            next: next + 1,
+            args,
+        };
+        self.depth += 1;
+        let r = self.execute(&f.closure, f.base, f.pc, f.top, Some(pending));
+        self.depth -= 1;
+        if self.yielding.is_none() {
+            self.close_upvalues(f.base);
+            self.stack.truncate(f.base);
+        }
+        r
+    }
+
+    /// `coroutine.resume`: runs the coroutine until it yields, returns or
+    /// fails. `Ok` — the values it yielded or returned.
+    fn resume(&mut self, co: &ThreadRef, args: Vec<Value>) -> Result<Vec<Value>, LuaError> {
+        let (id, body, frames) = {
+            let mut c = co.0.borrow_mut();
+            match c.status {
+                CoStatus::Suspended => {}
+                CoStatus::Dead => return Err(LuaError::msg("cannot resume dead coroutine")),
+                _ => return Err(LuaError::msg("cannot resume non-suspended coroutine")),
+            }
+            c.status = CoStatus::Running;
+            (c.id, c.body.take(), Rc::new(std::mem::take(&mut c.frames)))
+        };
+        self.free_dropped_threads();
+        let (stack, open) = self.parked.remove(&id).unwrap_or_default();
+        let waiting = (
+            std::mem::replace(&mut self.stack, stack),
+            std::mem::replace(&mut self.open, open),
+        );
+        self.parked.insert(self.thread, waiting);
+        let caller_thread = std::mem::replace(&mut self.thread, id);
+        let caller = self.current.replace(co.clone());
+        if let Some(caller) = &caller {
+            caller.0.borrow_mut().status = CoStatus::Normal;
+        }
+        let saved = (self.resume_natives, std::mem::take(&mut self.yielded));
+        self.resume_natives = self.natives;
+        let r = match body {
+            Some(f) => self.call(&f, args),
+            None => self.resume_frame(&frames, 0, args),
+        };
+        let yielded = self.yielding.take();
+        let mut frames = std::mem::replace(&mut self.yielded, saved.1);
+        self.resume_natives = saved.0;
+        self.current = caller;
+        if let Some(caller) = &self.current {
+            caller.0.borrow_mut().status = CoStatus::Running;
+        }
+        if yielded.is_none() {
+            // Dead: closures made in it keep the values of its registers.
+            self.close_upvalues(0);
+        }
+        let (stack, open) = self.parked.remove(&caller_thread).unwrap_or_default();
+        let mine = (
+            std::mem::replace(&mut self.stack, stack),
+            std::mem::replace(&mut self.open, open),
+        );
+        self.thread = caller_thread;
+        let mut c = co.0.borrow_mut();
+        match (yielded, r) {
+            (Some(values), _) => {
+                self.parked.insert(id, mine);
+                // Saved innermost first.
+                frames.reverse();
+                c.frames = frames;
+                c.status = CoStatus::Suspended;
+                Ok(values)
+            }
+            (None, r) => {
+                c.status = CoStatus::Dead;
+                r
+            }
+        }
+    }
+
+    /// Frees the stacks of suspended coroutines nothing refers to any more.
+    fn free_dropped_threads(&mut self) {
+        let dropped = std::mem::take(&mut *self.dropped.borrow_mut());
+        for id in dropped {
+            if let Some((stack, open)) = self.parked.remove(&id) {
+                for u in open {
+                    let mut uv = u.borrow_mut();
+                    if let Upval::Open(_, i) = *uv {
+                        *uv = Upval::Closed(stack.get(i).cloned().unwrap_or_default());
+                    }
+                }
+            }
+        }
+    }
+
+    fn new_thread(&mut self, body: Value) -> ThreadRef {
+        self.threads += 1;
+        ThreadRef(Rc::new(RefCell::new(Coroutine {
+            id: self.threads,
+            status: CoStatus::Suspended,
+            body: Some(body),
+            frames: Vec::new(),
+            dropped: self.dropped.clone(),
+        })))
     }
 
     fn close_upvalues(&mut self, level: usize) {
@@ -506,7 +723,7 @@ impl Vm {
         self.open.retain(|u| {
             let mut uv = u.borrow_mut();
             match *uv {
-                Upval::Open(i) if i >= level => {
+                Upval::Open(_, i) if i >= level => {
                     *uv = Upval::Closed(stack.get(i).cloned().unwrap_or_default());
                     false
                 }
@@ -517,18 +734,25 @@ impl Vm {
 
     fn find_upvalue(&mut self, index: usize) -> UpvalRef {
         for u in &self.open {
-            if matches!(*u.borrow(), Upval::Open(i) if i == index) {
+            if matches!(*u.borrow(), Upval::Open(_, i) if i == index) {
                 return u.clone();
             }
         }
-        let u = Rc::new(RefCell::new(Upval::Open(index)));
+        let u = Rc::new(RefCell::new(Upval::Open(self.thread, index)));
         self.open.push(u.clone());
         u
     }
 
     fn upvalue(&self, u: &UpvalRef) -> Value {
         match &*u.borrow() {
-            Upval::Open(i) => self.stack[*i].clone(),
+            Upval::Open(t, i) if *t == self.thread => self.stack[*i].clone(),
+            // A register of a thread that does not run now.
+            Upval::Open(t, i) => self
+                .parked
+                .get(t)
+                .and_then(|(stack, _)| stack.get(*i))
+                .cloned()
+                .unwrap_or_default(),
             Upval::Closed(v) => v.clone(),
         }
     }
@@ -536,7 +760,16 @@ impl Vm {
     fn set_upvalue(&mut self, u: &UpvalRef, v: Value) {
         let mut uv = u.borrow_mut();
         match &mut *uv {
-            Upval::Open(i) => self.stack[*i] = v,
+            Upval::Open(t, i) if *t == self.thread => self.stack[*i] = v,
+            Upval::Open(t, i) => {
+                if let Some(slot) = self
+                    .parked
+                    .get_mut(t)
+                    .and_then(|(stack, _)| stack.get_mut(*i))
+                {
+                    *slot = v;
+                }
+            }
             Upval::Closed(c) => *c = v,
         }
     }
@@ -621,10 +854,33 @@ impl Vm {
         }
     }
 
-    fn execute(&mut self, c: &Rc<Closure>, base: usize) -> Result<Vec<Value>, LuaError> {
+    fn execute(
+        &mut self,
+        c: &Rc<Closure>,
+        base: usize,
+        mut pc: usize,
+        mut top: usize,
+        pending: Option<Pending>,
+    ) -> Result<Vec<Value>, LuaError> {
         let p = c.proto.clone();
-        let mut pc = 0usize;
-        let mut top = base;
+        if let Some(pending) = pending {
+            // A resumed frame: its call returns now.
+            let i = p.code[pc];
+            let results = if pending.next < pending.frames.len() {
+                self.resume_frame(&pending.frames, pending.next, pending.args)
+            } else {
+                Ok(pending.args)
+            };
+            let results = match results {
+                Ok(r) => r,
+                Err(e) => return Err(self.unwind(c, base, pc, top, i, e)),
+            };
+            pc += 1;
+            if ins::op(i) == Some(Op::TailCall) {
+                return Ok(results);
+            }
+            self.store_results(base + ins::a(i) as usize, ins::c(i), results, &mut top);
+        }
         loop {
             let Some(&i) = p.code.get(pc) else {
                 return Ok(Vec::new());
@@ -638,6 +894,9 @@ impl Vm {
             match self.step(c, &p, base, i, &mut pc, &mut top) {
                 Ok(Some(ret)) => return Ok(ret),
                 Ok(None) => {}
+                Err(e) if self.yielding.is_some() => {
+                    return Err(self.unwind(c, base, pc - 1, top, i, e));
+                }
                 Err(mut e) => {
                     if e.line.is_none() {
                         e.line = line;
@@ -654,6 +913,53 @@ impl Vm {
                     }
                     return Err(e);
                 }
+            }
+        }
+    }
+
+    /// A yield passes through this frame: the frame saves itself when it stands
+    /// at a call (the only place Lua 5.0 can continue from).
+    fn unwind(
+        &mut self,
+        c: &Rc<Closure>,
+        base: usize,
+        pc: usize,
+        top: usize,
+        i: u32,
+        e: LuaError,
+    ) -> LuaError {
+        if self.yielding.is_none() {
+            return e;
+        }
+        if matches!(ins::op(i), Some(Op::Call | Op::TailCall)) {
+            self.yielded.push(Frame {
+                closure: c.clone(),
+                base,
+                pc,
+                top,
+            });
+            return e;
+        }
+        self.yielding = None;
+        self.yielded.clear();
+        LuaError::msg("attempt to yield across metamethod/C-call boundary")
+    }
+
+    /// Puts the results of a call into the registers from `ra`: `cc - 1` of
+    /// them, or all with `cc == 0` (then `top` follows).
+    fn store_results(&mut self, ra: usize, cc: u32, results: Vec<Value>, top: &mut usize) {
+        if cc == 0 {
+            let n = results.len();
+            self.ensure(ra + n + 1);
+            for (k, v) in results.into_iter().enumerate() {
+                self.stack[ra + k] = v;
+            }
+            *top = ra + n;
+        } else {
+            let want = cc as usize - 1;
+            let mut it = results.into_iter();
+            for k in 0..want {
+                self.stack[ra + k] = it.next().unwrap_or_default();
             }
         }
     }
@@ -784,20 +1090,7 @@ impl Vm {
                 if op == Op::TailCall {
                     return Ok(Some(results));
                 }
-                if cc == 0 {
-                    let n = results.len();
-                    self.ensure(ra + n + 1);
-                    for (k, v) in results.into_iter().enumerate() {
-                        self.stack[ra + k] = v;
-                    }
-                    *top = ra + n;
-                } else {
-                    let want = cc as usize - 1;
-                    let mut it = results.into_iter();
-                    for k in 0..want {
-                        self.stack[ra + k] = it.next().unwrap_or_default();
-                    }
-                }
+                self.store_results(ra, cc, results, top);
             }
             Op::Return => {
                 let end = if b == 0 { *top } else { ra + b as usize - 1 };
@@ -997,7 +1290,17 @@ mod stdlib {
             one(Value::str(arg(&args, 0).type_name()))
         });
         vm.register("tostring", |vm, args| {
-            one(Value::str(&vm.tostring(&arg(&args, 0))))
+            let v = arg(&args, 0);
+            // `__tostring` of the metatable, as luaL_callmeta: its first
+            // result (nil when it returns nothing).
+            let meta = v.as_table().and_then(TableRef::metatable);
+            if let Some(f) = meta.map(|m| m.get_str("__tostring"))
+                && !f.is_nil()
+            {
+                let r = vm.call(&f, vec![v])?;
+                return one(r.into_iter().next().unwrap_or_default());
+            }
+            one(Value::str(&vm.tostring(&v)))
         });
         vm.register("tonumber", |_, args| {
             let v = arg(&args, 0);
@@ -1296,6 +1599,84 @@ mod stdlib {
             }),
         );
         vm.set_global("math", Value::Table(math));
+        open_coroutine(vm);
+    }
+
+    fn thread_arg(args: &[Value], f: &str) -> Result<ThreadRef, LuaError> {
+        match arg(args, 0) {
+            Value::Thread(t) => Ok(t),
+            _ => Err(LuaError::msg(format!(
+                "bad argument #1 to `{f}' (coroutine expected)"
+            ))),
+        }
+    }
+
+    fn create(vm: &mut Vm, args: &[Value], f: &str) -> Result<ThreadRef, LuaError> {
+        let body = arg(args, 0);
+        if !matches!(body, Value::Function(Function::Lua(_))) {
+            return Err(LuaError::msg(format!(
+                "bad argument #1 to `{f}' (Lua function expected)"
+            )));
+        }
+        Ok(vm.new_thread(body))
+    }
+
+    /// The `coroutine` library of Lua 5.0: create, wrap, resume, yield, status.
+    fn open_coroutine(vm: &mut Vm) {
+        let co = TableRef::new();
+        co.set_str(
+            "create",
+            native(|vm, a| one(Value::Thread(create(vm, &a, "create")?))),
+        );
+        co.set_str(
+            "resume",
+            native(|vm, mut a| {
+                let t = thread_arg(&a, "resume")?;
+                a.remove(0);
+                match vm.resume(&t, a) {
+                    Ok(mut r) => {
+                        r.insert(0, Value::Bool(true));
+                        Ok(r)
+                    }
+                    Err(e) if e.fatal => Err(e),
+                    Err(e) => Ok(vec![Value::Bool(false), e.value]),
+                }
+            }),
+        );
+        co.set_str(
+            "wrap",
+            native(|vm, a| {
+                let t = create(vm, &a, "wrap")?;
+                Ok(vec![native(move |vm, a| vm.resume(&t, a))])
+            }),
+        );
+        co.set_str(
+            "yield",
+            native(|vm, a| {
+                if vm.current.is_none() || vm.natives != vm.resume_natives + 1 {
+                    return Err(LuaError::msg(
+                        "attempt to yield across metamethod/C-call boundary",
+                    ));
+                }
+                vm.yielding = Some(a);
+                // Not an error of the script: `pcall` must let it through.
+                Err(LuaError::fatal("coroutine.yield"))
+            }),
+        );
+        co.set_str(
+            "status",
+            native(|_, a| {
+                let t = thread_arg(&a, "status")?;
+                let status = t.0.borrow().status;
+                one(Value::str(match status {
+                    CoStatus::Suspended => "suspended",
+                    CoStatus::Running => "running",
+                    CoStatus::Normal => "normal",
+                    CoStatus::Dead => "dead",
+                }))
+            }),
+        );
+        vm.set_global("coroutine", Value::Table(co));
     }
 
     /// `string.format` with `%d %i %u %c %x %X %o %e %E %f %g %G %q %s %%`.
@@ -1617,6 +1998,131 @@ mod tests {
         let p = printed(src);
         assert_eq!(p[0], "5\thi!\t3| 1.00|s|ff|a  |007");
         assert_eq!(p[1], "ell\t3\tX\t1\ta_b-c\t1");
+    }
+
+    #[test]
+    fn coroutines_yield_and_resume() {
+        let out = printed(
+            r#"
+            local co = coroutine.create(function(a, b)
+                print("start", a, b)
+                local c = coroutine.yield(a + b)
+                print("got", c)
+                local d, e = coroutine.yield(c * 2)
+                return d + e, "end"
+            end)
+            print(coroutine.status(co))
+            print(coroutine.resume(co, 1, 2))
+            print(coroutine.status(co))
+            print(coroutine.resume(co, 10))
+            print(coroutine.resume(co, 3, 4))
+            print(coroutine.status(co))
+            print(coroutine.resume(co))
+            "#,
+        );
+        assert_eq!(
+            out,
+            [
+                "suspended",
+                "start\t1\t2",
+                "true\t3",
+                "suspended",
+                "got\t10",
+                "true\t20",
+                "true\t7\tend",
+                "dead",
+                "false\tcannot resume dead coroutine",
+            ]
+        );
+    }
+
+    #[test]
+    fn coroutines_yield_through_nested_lua_calls_loops_and_upvalues() {
+        let out = printed(
+            r#"
+            local function gen(n)
+                return coroutine.wrap(function()
+                    local function emit(x) return coroutine.yield(x) end
+                    for i = 1, n do
+                        local t = { emit(i), emit(i * 10) }
+                        emit(table.getn(t))
+                    end
+                end)
+            end
+            local s = ""
+            for v in gen(2) do s = s .. v .. "," end
+            print(s)
+            -- a producer and a consumer that resume each other
+            local total = 0
+            local consumer = coroutine.create(function(v)
+                while v do total = total + v; v = coroutine.yield() end
+            end)
+            local producer = coroutine.wrap(function()
+                for i = 1, 4 do
+                    print(coroutine.status(consumer))
+                    coroutine.resume(consumer, i)
+                    coroutine.yield(total)
+                end
+                return "done"
+            end)
+            print(producer(), producer(), producer(), producer(), producer())
+            "#,
+        );
+        assert_eq!(
+            out,
+            [
+                "1,10,0,2,20,0,",
+                "suspended",
+                "suspended",
+                "suspended",
+                "suspended",
+                "1\t3\t6\t10\tdone"
+            ]
+        );
+    }
+
+    #[test]
+    fn coroutine_errors_and_boundaries() {
+        let out = printed(
+            r#"
+            local co = coroutine.create(function() error("boom") end)
+            local ok, err = coroutine.resume(co)
+            print(ok, string.find(err, "boom") ~= nil, coroutine.status(co))
+            -- as in Lua 5.0: no yield across pcall or a metamethod
+            co = coroutine.create(function() return pcall(coroutine.yield, 1) end)
+            print(coroutine.resume(co))
+            local t = setmetatable({}, { __index = function() return coroutine.yield(1) end })
+            co = coroutine.create(function() return t.x end)
+            ok, err = coroutine.resume(co)
+            print(ok, string.find(err, "attempt to yield across", 1, true) ~= nil)
+            print(pcall(coroutine.yield, 1))
+            print(pcall(coroutine.wrap(function() error("inside") end)))
+            local running
+            co = coroutine.create(function() running = coroutine.status(co); return coroutine.resume(co) end)
+            print(coroutine.resume(co))
+            print(running, type(co), pcall(coroutine.create, print))
+            "#,
+        );
+        assert_eq!(out[0], "false\ttrue\tdead");
+        assert_eq!(
+            out[1],
+            "true\tfalse\tattempt to yield across metamethod/C-call boundary"
+        );
+        assert_eq!(out[2], "false\ttrue");
+        assert_eq!(
+            out[3],
+            "false\tattempt to yield across metamethod/C-call boundary"
+        );
+        assert!(
+            out[4].starts_with("false\t") && out[4].ends_with("inside"),
+            "{}",
+            out[4]
+        );
+        assert_eq!(out[5], "true\tfalse\tcannot resume non-suspended coroutine");
+        assert_eq!(
+            out[6],
+            "running\tthread\tfalse\tbad argument #1 to `create' (Lua function expected)"
+        );
     }
 
     #[test]

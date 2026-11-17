@@ -84,6 +84,7 @@ impl TraceEvent {
                 listeners,
                 receivers,
                 origin,
+                from,
                 ..
             } => vec![Self {
                 seq: e.seq,
@@ -91,7 +92,10 @@ impl TraceEvent {
                 frame: Some(e.frame),
                 hash: *hash,
                 name: None,
-                sender: None,
+                // Protocol 8: the object whose handler sent it.
+                sender: from
+                    .and_then(|f| f.sender)
+                    .map(|g| crate::live::proto::guid_hex(&g)),
                 receivers: receivers.iter().map(crate::live::proto::guid_hex).collect(),
                 listeners: *listeners,
                 count: 1,
@@ -233,7 +237,10 @@ impl TraceMap {
         let senders: Option<HashSet<NodeId>> = e
             .sender
             .as_ref()
-            .map(|g| self.nodes_of(g).iter().copied().collect());
+            .map(|g| self.nodes_of(g).iter().copied().collect())
+            // A sender that is not on this graph (an object of another
+            // stream) says nothing about its wires.
+            .filter(|s: &HashSet<NodeId>| !s.is_empty());
         let hub = self.hubs.get(&e.hash).copied();
         // Listeners beyond the objects listed: the engine, or objects past
         // the eight the game lists.
@@ -626,6 +633,7 @@ mod tests {
                 listeners: 3,
                 receivers: vec![[0xbb; 16]],
                 origin: MessageOrigin::Link,
+                from: None,
             },
         };
         let t = TraceEvent::from_live(&e);

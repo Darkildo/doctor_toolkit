@@ -26,7 +26,7 @@ updated: 2026-11-16
 | 0 | string | параметр | `title` | — | роль: exe, имя: data | 166 |
 | 1 | int | параметр | `number` | — | роль: exe, имя: data | 166 |
 | 2 | string | параметр | `chapter` | — | роль: exe, имя: data | 76 |
-| 3 | int | — | — | — | — | 166 |
+| 3 | int | параметр | `chapter_number` | — | роль: exe, имя: data | 166 |
 | 5 | guid | ссылка на объект (GUID) | — | [`Ref<StreamSet>`](StreamSet.md) | роль: data, смысл: data | 165 |
 | 6 | int | — | — | — | — | 1 |
 | 7 | string | вход (сообщение, которое объект слушает) | `load` | `MsgIn` | роль: exe, имя: data | 165 |
@@ -36,7 +36,7 @@ updated: 2026-11-16
 | 11 | guid | ссылка на объект (GUID) | — | [`Ref<PlayerTeleportRelay>`](PlayerTeleportRelay.md) | роль: data, смысл: data | 20 |
 | 12 | guid | ссылка на объект (GUID) | — | [`Ref<PlayerTeleportRelay>`](PlayerTeleportRelay.md) | роль: data, смысл: data | 46 |
 | 13 | guid | ссылка на объект (GUID) | — | [`Ref<PlayerTeleportRelay>`](PlayerTeleportRelay.md) | роль: data, смысл: data | 135 |
-| 14 | int | — | — | — | — | 8 |
+| 14 | int | параметр | `save_as_number` | — | роль: exe, имя: exe | 8 |
 
 ## Подробнее
 
@@ -47,5 +47,6 @@ updated: 2026-11-16
 <!-- kb:manual:begin -->
 ## Заметки
 
-_Пока пусто._
+Единица сюжета: 166 объектов в 69 главах, все в корневых потоках городов. По сообщению `load` (7) становится текущим чекпоинтом менеджера `*0x011299C4` и запрашивает набор потоков атрибута 5 (пустой — сразу «загружено»); по `iMsgStreamSetLoadComplete` шлёт `on_loaded` (8) и `on_started` (9) либо, при перезапуске, `on_restarted` (10). Номер (1) пишется в сохранение (или номер из атрибута 14); глава — атрибут 3, её название — атрибут 2 первого чекпоинта главы. Читатель `0x008FBA00`, обработчик `0x008FC1A0` (`exe`); порядок сообщений и текущий чекпоинт проверены на стенде.
+Источник: docs/analysis/story.md §3, §5; docs/analysis/game-bench.md §40.
 <!-- kb:manual:end -->

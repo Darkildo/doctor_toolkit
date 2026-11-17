@@ -299,7 +299,15 @@ unsafe fn draw() -> bool {
     // SAFETY: the game's device on its render thread, objects made on it;
     // every reference taken here is released before returning.
     unsafe {
-        if r.state.is_null() && d3d::create_state_block(device, d3d::D3DSBT_ALL, &mut r.state) < 0 {
+        if r.state.is_null() {
+            crate::draws::OWN_STATE_BLOCK.store(true, Ordering::Relaxed);
+            let made = d3d::create_state_block(device, d3d::D3DSBT_ALL, &mut r.state);
+            crate::draws::OWN_STATE_BLOCK.store(false, Ordering::Relaxed);
+            if made < 0 {
+                r.state = std::ptr::null_mut();
+            }
+        }
+        if r.state.is_null() {
             r.state = std::ptr::null_mut();
             DISABLED.store(true, Ordering::Relaxed);
             crate::log("post: CreateStateBlock(D3DSBT_ALL) failed (a pure device?); off");
@@ -375,6 +383,8 @@ unsafe fn draw() -> bool {
         }
         d3d::set_depth_stencil(device, old_depth);
         d3d::apply(r.state);
+        // The block set the state behind the hooks of the draw calls.
+        crate::draws::forget();
         d3d::clear(&mut old_target);
         d3d::clear(&mut old_depth);
         d3d::release(back);
@@ -419,6 +429,7 @@ extern "C" fn release(arg: u32) {
             // SAFETY: objects made on the game's device.
             unsafe { r.release_default() };
         }
+        crate::draws::forget();
     });
     // SAFETY: the game's release, cdecl, one argument (checked).
     let original: extern "C" fn(u32) = unsafe { std::mem::transmute(addr::RELEASE as usize) };

@@ -1,0 +1,32 @@
+[package]
+name = "doctor-toolkit-platform-asi"
+description = "Platform module of The Godfather II (PC 1.0.789.0): a DLL for the ASI loader that gives native mods new SimGroup classes, Lua functions, messages and hooks"
+version = "0.0.8"
+edition = "2024"
+license = "GPL-3.0-only"
+publish = false
+
+# A Windows DLL for 32-bit x86, outside the workspace (the workspace builds
+# for the host). Build: tools/build-platform-module.sh, or
+#   cargo build --release --target i686-pc-windows-gnu \
+#       --manifest-path crates/doctor-toolkit-platform-asi/Cargo.toml
+[workspace]
+
+[lib]
+name = "doctor_platform"
+crate-type = ["cdylib"]
+path = "src/lib.rs"
+
+[dependencies]
+doctor-toolkit-live = { path = "../doctor-toolkit-live" }
+doctor-toolkit-sdk = { path = "../doctor-toolkit-sdk" }
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+# Unwinding stays on: every entry from the game and from a mod catches
+# panics, none crosses into the game's code.
+panic = "unwind"
+strip = true
+debug = false

@@ -3,8 +3,8 @@ type: system
 status: partial
 confidence: exe
 editions: ["1.0.789.0"]
-stages: [72, 30, 45, 83]
-sources: ["docs/formats/dialogues.md §1–§6, §8", "docs/formats/mission-logic.md §5.2", "docs/formats/audio.md §4, §9, §15", "docs/analysis/game-bench.md §20.2", "docs/analysis/game-bench.md §34", "docs/analysis/queens.md §4"]
+stages: [72, 30, 45, 83, 75]
+sources: ["docs/formats/dialogues.md §1–§6, §8", "docs/formats/mission-logic.md §5.2", "docs/formats/audio.md §4, §9, §15", "docs/analysis/game-bench.md §20.2", "docs/analysis/game-bench.md §34", "docs/analysis/queens.md §4", "docs/analysis/handing-out.md §7", "docs/analysis/game-bench.md §39"]
 tags: [dialogues, f2f, speech, dlg, chv, subtitles]
 updated: 2026-11-16
 ---
@@ -28,10 +28,12 @@ updated: 2026-11-16
 - `get` (один ресурс в `globals_global`, 1372 записи по 36 байт) — таблица событий речи по хэшу имени: пауза повтора, ранг, флаги с группами, приоритет. Событие без записи не говорится, а воспроизведение читает запись без проверки (`0x006F5530`).
 - Выход 3 `ChangeNPCSettings` — конец разговора лицом к лицу с этим NPC (`…_f2f_success`, `…_dialog_done`).
 - Проверено в игре: диалог с Майклом на террасе идёт с субтитрами, правка субтитра `subtitle … --set en=…` видна.
+- Выбор как меню (этап 75): «переменные» — номера запросов к игре; запись `0x23`, `0x27`, `0x24` заставляет собеседника послать сообщения атрибутов 3, 4, 5 его `ChangeNPCSettings` — три исхода разговора для логики уровня. Новый диалог — свой поток с деревом (`dialogue-import --raw`); перед выбором дерево пишет `0x49` и `0x30`. На стенде меню из четырёх своих подписей показано (вариант 0 слева, 1 справа, 2 снизу, 4 сверху) — пример `examples/trader`, [опыт](../experiments/trader-handing-out.md).
 
 ## Что неизвестно
 
-- Названия «переменных» условий (номера запросов `0x006EBFF0`) и слов 1–4 выбора.
+- [Названия остальных «переменных»](../questions/dialogue-condition-variables.md) и точный смысл слов 1–4 выбора.
+- [Чем на стенде выбрать вариант в меню](../questions/f2f-choice-input-on-bench.md): по коду — стрелки и цифровая клавиатура, на стенде не сработало.
 - Редактор диалогов не применяет правило слотов: [какой `chv` говорит реплику](../questions/dialogue-which-chv-speaks.md).
 - [Реплика персонажа в мире и реплика узла диалога с новым событием](../questions/voice-line-of-a-character.md) на стенде не проверены.
 - [Смысл части полей `smb` и `get`](../questions/speech-bank-and-event-fields.md).
@@ -40,6 +42,7 @@ updated: 2026-11-16
 ## Подробнее
 
 - [Диалоги F2F](../../formats/dialogues.md) §1–§8
+- [Выдача из логики: диалог как меню](../../analysis/handing-out.md) §7
 - [Логика миссий и Lua](../../formats/mission-logic.md) §5.2
 - [Звук](../../formats/audio.md) §4, §9
 - Связанные заметки: [ролики](cutscenes.md), [персонажи](characters.md), [звук движка](../engine/audio.md), [адреса речи](../exe/speech.md)

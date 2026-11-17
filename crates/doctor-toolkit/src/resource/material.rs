@@ -23,6 +23,9 @@ use crate::{Error, Result};
 
 const MAGIC: u32 = 0x0AA0_DEED;
 
+/// Type id of `material` resources.
+pub const TYPE_MATERIAL: u32 = crate::hash::sdbm(b"material");
+
 /// Value of a material parameter.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ParamValue {
@@ -41,6 +44,125 @@ pub struct Param {
     /// Source the value was authored from, e.g. a texture path.
     pub source: String,
     pub value: ParamValue,
+}
+
+/// A new value of a material parameter.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct ParamEdit {
+    /// Shader constant name, e.g. `g_TintColor0`.
+    pub name: String,
+    pub value: ParamEditValue,
+}
+
+/// See [`ParamEdit`].
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ParamEditValue {
+    /// As many numbers as the parameter holds (a colour has three or four).
+    Floats(Vec<f32>),
+    /// Name hash of a texture.
+    Texture(u32),
+}
+
+impl ParamEdit {
+    /// Reads `name=<number>,<number>…` (numbers also separated by `/` or
+    /// spaces) or `name=tex:<hex name hash of a texture>`.
+    pub fn parse(text: &str) -> Result<Self> {
+        let bad = || {
+            Error::InvalidArgument(format!(
+                "`{text}`: write <parameter>=<number>,<number>… or <parameter>=tex:<hex name hash of the texture>"
+            ))
+        };
+        let (name, value) = text.split_once('=').ok_or_else(bad)?;
+        let (name, value) = (name.trim(), value.trim());
+        if name.is_empty() || value.is_empty() {
+            return Err(bad());
+        }
+        let value = if let Some(texture) = value.strip_prefix("tex:") {
+            let texture = texture.trim();
+            let hex = texture.strip_prefix("0x").unwrap_or(texture);
+            ParamEditValue::Texture(u32::from_str_radix(hex, 16).map_err(|_| bad())?)
+        } else {
+            let numbers: Option<Vec<f32>> = value
+                .split([',', '/', ' '])
+                .filter(|v| !v.is_empty())
+                .map(|v| v.parse().ok())
+                .collect();
+            ParamEditValue::Floats(numbers.filter(|n| !n.is_empty()).ok_or_else(bad)?)
+        };
+        Ok(Self {
+            name: name.to_owned(),
+            value,
+        })
+    }
+}
+
+/// What [`set_params`] did.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct ParamsEdited {
+    /// The material resource (its workspace key).
+    pub resource: String,
+    pub material: String,
+    /// False when the material already had these values.
+    pub changed: bool,
+    pub label: String,
+}
+
+/// Gives the material `target` (a material of the game, or one the
+/// workspace added) the values of `edits` and records one undoable
+/// operation named `label`. Returns the name of the material and whether
+/// anything changed (nothing is recorded when not). The one place that
+/// writes material parameters: the editor, the `material` command and the
+/// MCP tool `set_material` ([`crate::retexture::set_material_params`]) go
+/// through it.
+pub fn apply_params(
+    game: &crate::game::GameInstance,
+    ws: &mut crate::workspace::Workspace,
+    target: &crate::import::file::FileTarget,
+    edits: &[ParamEdit],
+    label: impl FnOnce(&Material) -> String,
+) -> Result<(String, bool, String)> {
+    let key = target.key();
+    if key.type_id != TYPE_MATERIAL {
+        return Err(Error::InvalidArgument(format!("{key} is not a material")));
+    }
+    if edits.is_empty() {
+        return Err(Error::InvalidArgument(
+            "give at least one parameter with its values".into(),
+        ));
+    }
+    let data = target.current(game, ws)?;
+    let material = Material::parse(&data)?;
+    let new = Material::edit(&data, edits)?;
+    let label = label(&material);
+    let changed = new != data;
+    if changed {
+        target.record(game, ws, new, &label)?;
+    }
+    Ok((material.name, changed, label))
+}
+
+/// Sets parameters of the material resource `resource` of stream `stream`
+/// (as the workspace has it) and records one undoable operation. The
+/// material is shared by every model that names it.
+pub fn set_params(
+    game: &crate::game::GameInstance,
+    ws: &mut crate::workspace::Workspace,
+    stream: usize,
+    resource: usize,
+    edits: &[ParamEdit],
+) -> Result<ParamsEdited> {
+    let target = crate::import::file::FileTarget::game(game, stream, resource)?;
+    let names: Vec<&str> = edits.iter().map(|e| e.name.as_str()).collect();
+    let (material, changed, label) = apply_params(game, ws, &target, edits, |m| {
+        format!("Set {} of material {}", names.join(", "), m.name)
+    })?;
+    Ok(ParamsEdited {
+        resource: target.key().to_string(),
+        material,
+        changed,
+        label,
+    })
 }
 
 /// Role of a texture, derived from the sampler name.
@@ -170,44 +292,105 @@ impl Material {
         out
     }
 
-    /// Material data with the float parameter `name` set to `values` (as
-    /// many as the parameter holds: a tint colour `g_TintColor0` has four).
-    /// Every other byte is kept.
-    pub fn set_floats(data: &[u8], name: &str, values: &[f32]) -> Result<Vec<u8>> {
-        let material = Self::parse(data)?;
+    /// Offsets of the values of every parameter named `name` (a material
+    /// lists a parameter once per shader pass that takes it, each with its
+    /// own value): all of them must hold what `fits` accepts.
+    fn value_offsets(
+        &self,
+        data: &[u8],
+        name: &str,
+        fits: impl Fn(&ParamValue) -> std::result::Result<(), String>,
+    ) -> Result<Vec<usize>> {
         let le = Endian::Little;
-        let position = material
-            .params
-            .iter()
-            .position(|p| p.name == name)
-            .ok_or_else(|| {
-                Error::InvalidArgument(format!(
-                    "material {} has no parameter {name}",
-                    material.name
-                ))
-            })?;
-        let ParamValue::Floats(current) = &material.params[position].value else {
-            return Err(Error::InvalidArgument(format!(
-                "parameter {name} of material {} is not a number",
-                material.name
-            )));
-        };
-        if current.len() != values.len() {
-            return Err(Error::InvalidArgument(format!(
-                "parameter {name} holds {} value(s), not {}",
-                current.len(),
-                values.len()
-            )));
-        }
         let table_at = io::read_u16(data, 0x48, le)? as usize;
         let data_at = io::read_u16(data, 0x4C, le)? as usize;
-        let value_at = data_at + io::read_u16(data, table_at + 12 * position + 6, le)? as usize;
+        let mut out = Vec::new();
+        for (position, p) in self.params.iter().enumerate() {
+            if p.name != name {
+                continue;
+            }
+            fits(&p.value).map_err(|why| {
+                Error::InvalidArgument(format!("parameter {name} of material {} {why}", self.name))
+            })?;
+            let at = data_at + io::read_u16(data, table_at + 12 * position + 6, le)? as usize;
+            if !out.contains(&at) {
+                out.push(at);
+            }
+        }
+        if out.is_empty() {
+            return Err(Error::InvalidArgument(format!(
+                "material {} has no parameter {name}",
+                self.name
+            )));
+        }
+        Ok(out)
+    }
+
+    /// Material data with the float parameter `name` set to `values` (as
+    /// many as the parameter holds: a tint colour `g_TintColor0` has four),
+    /// in every shader pass that lists it. Every other byte is kept.
+    pub fn set_floats(data: &[u8], name: &str, values: &[f32]) -> Result<Vec<u8>> {
+        let material = Self::parse(data)?;
+        let offsets = material.value_offsets(data, name, |value| match value {
+            ParamValue::Floats(current) if current.len() == values.len() => Ok(()),
+            ParamValue::Floats(current) => Err(format!(
+                "holds {} value(s), not {}",
+                current.len(),
+                values.len()
+            )),
+            _ => Err("is not a number".to_owned()),
+        })?;
         let mut out = data.to_vec();
-        for (k, v) in values.iter().enumerate() {
-            let at = value_at + 4 * k;
-            out.get_mut(at..at + 4)
+        for value_at in offsets {
+            for (k, v) in values.iter().enumerate() {
+                let at = value_at + 4 * k;
+                out.get_mut(at..at + 4)
+                    .ok_or_else(|| Error::InvalidArgument("parameter data out of range".into()))?
+                    .copy_from_slice(&v.to_le_bytes());
+            }
+        }
+        Ok(out)
+    }
+
+    /// Material data with the texture parameter `name` (a sampler such as
+    /// `g_BaseSampler`) naming the texture with name hash `texture`, in
+    /// every shader pass that lists it. Every other byte is kept.
+    pub fn set_texture(data: &[u8], name: &str, texture: u32) -> Result<Vec<u8>> {
+        let material = Self::parse(data)?;
+        let offsets = material.value_offsets(data, name, |value| match value {
+            ParamValue::Texture(_) => Ok(()),
+            _ => Err("is not a texture".to_owned()),
+        })?;
+        let mut out = data.to_vec();
+        for value_at in offsets {
+            out.get_mut(value_at..value_at + 4)
                 .ok_or_else(|| Error::InvalidArgument("parameter data out of range".into()))?
-                .copy_from_slice(&v.to_le_bytes());
+                .copy_from_slice(&texture.to_le_bytes());
+        }
+        Ok(out)
+    }
+
+    /// The parameters with each name once (the first of the passes that
+    /// list it) and how many passes list it.
+    pub fn unique_params(&self) -> Vec<(&Param, usize)> {
+        let mut out: Vec<(&Param, usize)> = Vec::new();
+        for p in &self.params {
+            match out.iter_mut().find(|(q, _)| q.name == p.name) {
+                Some((_, n)) => *n += 1,
+                None => out.push((p, 1)),
+            }
+        }
+        out
+    }
+
+    /// Material data with every one of `edits` made (see [`ParamEdit`]).
+    pub fn edit(data: &[u8], edits: &[ParamEdit]) -> Result<Vec<u8>> {
+        let mut out = data.to_vec();
+        for e in edits {
+            out = match &e.value {
+                ParamEditValue::Floats(values) => Self::set_floats(&out, &e.name, values)?,
+                ParamEditValue::Texture(hash) => Self::set_texture(&out, &e.name, *hash)?,
+            };
         }
         Ok(out)
     }
@@ -300,6 +483,31 @@ mod tests {
         let data = sample();
         for len in 0..data.len() {
             let _ = Material::parse(&data[..len]);
+        }
+    }
+}
+
+#[cfg(test)]
+mod edit_tests {
+    use super::*;
+
+    #[test]
+    fn parameter_edits_are_read_from_text() {
+        assert_eq!(
+            ParamEdit::parse("g_TintColor0 = 0.8, 0.6/0.3 1").unwrap(),
+            ParamEdit {
+                name: "g_TintColor0".into(),
+                value: ParamEditValue::Floats(vec![0.8, 0.6, 0.3, 1.0]),
+            }
+        );
+        assert_eq!(
+            ParamEdit::parse("g_BaseSampler=tex:0x00000055")
+                .unwrap()
+                .value,
+            ParamEditValue::Texture(0x55)
+        );
+        for bad in ["g_TintColor0", "=1", "a=", "a=x", "a=tex:wall"] {
+            assert!(ParamEdit::parse(bad).is_err(), "{bad}");
         }
     }
 }

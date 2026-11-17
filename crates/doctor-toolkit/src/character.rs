@@ -239,3 +239,127 @@ pub fn parse_selection(db: &PartsDb, set: usize, choices: &[String]) -> Result<S
     }
     Ok(selection)
 }
+
+/// Meshes, materials and textures a workspace adds (to streams of the game
+/// or to new ones) and that are not in the game files yet: what a character
+/// with a part made in the workspace is drawn with before `apply`
+/// ([`Character::load_with`] takes the meshes).
+#[derive(Debug, Clone, Default)]
+pub struct WorkspaceAssets {
+    /// Meshes by id.
+    pub meshes: HashMap<u32, Model>,
+    pub materials: Vec<crate::resource::material::Material>,
+    pub textures: Vec<crate::resource::texture::Texture>,
+}
+
+impl WorkspaceAssets {
+    /// Reads the resources `ws` adds; the ones that do not parse are left out.
+    pub fn of(ws: &crate::workspace::Workspace) -> Self {
+        use crate::resource::texture::{TYPE_TG4D, TYPE_TG4H, Texture};
+        use crate::resource::tg4::Tg4Header;
+        let mut out = Self::default();
+        let data = |stream: &str, type_id: u32, ids: [u32; 4]| {
+            let key = crate::workspace::ResourceKey {
+                stream: stream.to_owned(),
+                type_id,
+                ids,
+            };
+            ws.data(&key).ok().flatten()
+        };
+        for change in ws.changes().filter(|c| c.is_added()) {
+            let key = &change.key;
+            let Ok(Some(bytes)) = ws.data(key) else {
+                continue;
+            };
+            if key.type_id == TYPE_MESH {
+                let volatile = data(
+                    &key.stream,
+                    crate::resource::mesh::TYPE_MESH_VOLATILE,
+                    key.ids.map(|i| !i),
+                )
+                .unwrap_or_default();
+                if let Ok(model) = Model::parse(&bytes, &volatile) {
+                    out.meshes.insert(key.ids[3], model);
+                }
+            } else if key.type_id == crate::create::TYPE_MATERIAL {
+                if let Ok(material) = crate::resource::material::Material::parse(&bytes) {
+                    out.materials.push(material);
+                }
+            } else if key.type_id == TYPE_TG4H
+                && let Ok(header) = Tg4Header::parse(&bytes)
+            {
+                let mut ids = key.ids;
+                ids[1] = TYPE_TG4D;
+                if let Some(pixels) = data(&key.stream, TYPE_TG4D, ids)
+                    && pixels.len() == header.data_size as usize
+                {
+                    out.textures.push(Texture {
+                        header,
+                        data: pixels,
+                    });
+                }
+            }
+        }
+        out
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::container::ustream::ResourceHeader;
+    use crate::testing as mini;
+    use crate::workspace::{NewResourceEdit, StorageChoice, Workspace};
+
+    /// A mesh, a material and a texture added to a stream of the game are
+    /// read from the workspace before anything is written.
+    #[test]
+    fn workspace_assets_are_what_the_workspace_adds() {
+        let dir = tempfile::tempdir().unwrap();
+        mini::write_game(dir.path()).unwrap();
+        let game = GameInstance::open(dir.path()).unwrap();
+        let mut ws = Workspace::for_game(&game, Some(&dir.path().join("ws"))).unwrap();
+        assert!(WorkspaceAssets::of(&ws).meshes.is_empty());
+        let (mesh, volatile) = mini::quad_mesh("hat", mini::MATERIAL_NAME).unwrap();
+        let header = |tag: &[u8], ids: [u32; 4]| ResourceHeader {
+            mem_policy: sdbm(b"default"),
+            alignment: 0x10,
+            type_id: sdbm(tag),
+            ids,
+            data_size: 0,
+        };
+        let add = |header: ResourceHeader, data: Vec<u8>| NewResourceEdit {
+            stream: mini::LEVEL.into(),
+            header,
+            data,
+            storage: StorageChoice::Raw,
+            before: None,
+        };
+        let id = 0x4444;
+        let tex = 0x77;
+        let pixels = vec![0u8; mini::texture_header().data_size as usize];
+        let mut additions = vec![
+            add(header(b"mesh", [id; 4]), mesh),
+            add(
+                header(b"material", [0x5151; 4]),
+                mini::material("felt", tex),
+            ),
+            add(
+                header(b"tg4h", [0, sdbm(b"tg4h"), 7, tex]),
+                mini::texture_header().to_bytes().unwrap(),
+            ),
+            add(header(b"tg4d", [0, sdbm(b"tg4d"), 7, tex]), pixels),
+        ];
+        if !volatile.is_empty() {
+            additions.push(add(header(b"meshvolatile", [!id; 4]), volatile));
+        }
+        ws.add_resources(&game, "A hat", &additions).unwrap();
+        let added = WorkspaceAssets::of(&ws);
+        assert_eq!(added.meshes.keys().copied().collect::<Vec<_>>(), [id]);
+        assert_eq!(added.materials.len(), 1);
+        assert_eq!(added.textures.len(), 1);
+        // The index of the game does not have the mesh: the locator misses it.
+        let index = game.build_index(|_| {}).0;
+        assert_eq!(MeshLocator::new(&index).find(id, 0), None);
+    }
+}

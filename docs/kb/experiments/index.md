@@ -14,7 +14,7 @@ updated: 2026-11-16
 
 Опыты в запущенной игре на стенде: что проверяли и что получилось.
 
-Заметок: 56 (`known` — 38, `partial` — 18).
+Заметок: 67 (`known` — 47, `partial` — 20).
 
 | Заметка | Статус | Уверенность | Этапы |
 |---|---|---|---|
@@ -25,15 +25,18 @@ updated: 2026-11-16
 | [Устройство стенда проверки в игре](bench-setup.md) | known | bench | 72, 14, 15, 24, 32, 33 |
 | [Одежда и цвета персонажей: правки баз partsdb в игре](character-clothes-and-colours.md) | known | bench | 72, 17, 24, 45 |
 | [Дочерний поток не открывается вместе с родителем](child-stream-not-opened.md) | known | bench | 72, 5, 14, 24, 45, 84 |
+| [Опыт: состояние объектов логических классов в запущенной игре](class-state-in-game.md) | known | bench | 79 |
 | [Клоны, новая модель из glTF и поток через StreamSet видны в игре](clones-gltf-model-streamset.md) | known | bench | 72, 5, 10, 24 |
 | [Ящик-коллизия в точке появления останавливает вступительную сцену](collision-box-blocks-cutscene.md) | known | bench | 72, 18 |
+| [Отчёты о падениях: проверка на стенде](crash-reports-bench.md) | known | bench | 99 |
 | [Правленый ролик igc01 в игре](cutscene-igc01-edited.md) | partial | bench | 72, 24, 29 |
 | [Ролик igc16: субтитр, фокусное расстояние и угол обзора](cutscene-igc16-subtitle-fov.md) | known | bench | 72, 29, 45, 59 |
 | [Что на стенде отложено и не проверено](deferred-and-unverified.md) | partial | bench | 72, 24, 45, 58, 59, 60, 63 |
 | [Destructible с metamodel без состояний роняет игру](destructible-without-states-crash.md) | known | bench | 72, 14, 21 |
+| [Объединение вызовов отрисовки: опыт на стенде (этап 101)](draw-call-merging.md) | partial | bench | 101 |
 | [DXVK и 32-битный Vulkan: частота кадров на стенде](dxvk-frame-rate.md) | known | bench | 72, 33 |
 | [Профиль кадра: где игра тратит время (этап 58)](frame-profile.md) | known | bench | 72, 58 |
-| [Падения игры, найденные на стенде](game-crashes.md) | partial | bench | 72, 6, 14, 28, 32, 34, 49, 58, 59, 63 |
+| [Падения игры, найденные на стенде](game-crashes.md) | partial | bench | 72, 6, 14, 28, 32, 34, 49, 58, 59, 63, 99 |
 | [Журнал игры и все объекты (этап 49)](game-journal-and-all-objects.md) | known | bench | 72, 49 |
 | [Темп игры и частота кадров: замеры на стенде](game-pace-and-frame-rate.md) | partial | bench | 72, 58, 59 |
 | [Игра во вкладке редактора](game-tab-in-editor.md) | known | bench | 72, 33 |
@@ -43,14 +46,19 @@ updated: 2026-11-16
 | [Отладка вживую (этап 35)](live-debugging.md) | known | bench | 72, 35 |
 | [Живая связь: первый прогон модуля в игре](live-link-module-first-run.md) | known | bench | 72, 34 |
 | [Правка мира вживую: объект, коллизия, отмена (этап 47)](live-world-editing.md) | partial | bench | 72, 47 |
+| [Lua-API на стенде: что проверено](lua-api-on-bench.md) | known | bench | 74 |
 | [Изменённый скрипт Lua работает в уровне](lua-modified-script.md) | known | bench | 72, 16, 24 |
 | [Свои скрипты Lua: где они запускаются и что нужно для этого](lua-own-scripts.md) | known | bench | 72, 28 |
 | [Память и Large Address Aware: опыты на стенде](memory-and-laa.md) | partial | bench | 72, 58, 59 |
 | [Правленые строки и атласы шрифтов видны в меню](menu-strings-and-font-textures.md) | known | bench | 72 |
+| [Отправитель, порядок и данные сообщений на стенде (этап 78)](message-bus-senders.md) | known | bench | 78 |
 | [Моды без записи в игру: подмена файлов модулем (этап 46)](mods-without-writing.md) | known | bench | 72, 46 |
+| [Объекты классов из DLL и новые функции Lua в запущенной игре](native-class-on-bench.md) | known | bench | 80 |
+| [Нативный мод, поставленный менеджером модов](native-mod-in-manager.md) | known | bench | 81 |
 | [Навигационный граф: прохожие идут по сдвинутому узлу](navigation-graph-edit.md) | partial | bench | 72, 45 |
 | [Новая одежда со скиннингом: три исправления импорта](new-clothes-skinning.md) | known | bench | 72, 10, 17, 24 |
 | [Новая коллизия mesh, hull и box останавливает игрока](new-collision-stops-player.md) | known | bench | 72, 18, 24 |
+| [Опыт: новый человек чести одними данными](new-crew-member.md) | known | bench | 82 |
 | [Мод «Новый Нью-Йорк»: десять прогонов на стенде (этап 60)](new-new-york-mod.md) | partial | bench | 72, 60 |
 | [Мод «Новый Нью-Йорк» для игроков: менеджер модов, босс, машины (этап 63)](new-new-york-players.md) | partial | bench | 72, 63 |
 | [Новая строка находится игрой по имени из интерфейса](new-string-by-name.md) | known | bench | 72, 18 |
@@ -61,13 +69,16 @@ updated: 2026-11-16
 | [Координаты игрока: чтение памяти игры стендом](player-position-memory-read.md) | known | bench | 72, 24 |
 | [Быстрый вход без сохранения: -stream и -playerspawn](quick-entry-stream-flag.md) | known | bench | 72, 32 |
 | [Сравнение кадров игры и редактора по времени суток](renderer-frame-comparison.md) | partial | bench | 72, 66, 68, 69, 70 |
+| [Подмена ресурсов в памяти: проверка на стенде (этап 100)](resources-in-memory.md) | known | bench | 100 |
 | [Сохранение после пролога: быстрый вход и точное место игрока](save-after-prologue.md) | known | bench | 72, 24, 76 |
 | [Своя переменная мода в сохранении и загрузка без мода](save-mod-variable.md) | known | bench | 76 |
 | [Сохранения при старте -stream: место игрока и бит потока](saves-with-stream-start.md) | known | bench | 72, 63, 76 |
 | [Вторая волна проверок (этап 45): сводка](second-wave-checks.md) | partial | bench | 72, 45 |
 | [Правки SimGroup и metamodel видны в кадре](simgroup-edits-visible.md) | known | bench | 72, 6, 11, 24 |
 | [Параметры навыков: подписи проверены в меню игры](skill-parameters.md) | partial | bench | 72, 45 |
+| [Своё задание и падение длинного пути: проверка на стенде](story-bench.md) | known | bench | 77 |
 | [Растянутые треугольники у импортированной одежды](stretched-triangles.md) | partial | bench | 72, 10, 17, 24, 45 |
+| [Выдача из логики и торговец с меню на стенде (этап 75)](trader-handing-out.md) | partial | bench | 75 |
 | [Плотность машин и пешеходов: атрибуты TrafficManager не дали разницы](traffic-density-no-effect.md) | partial | bench | 72, 58, 59 |
 | [Оружие в руке: выдача, параметры Gun и новая модель](weapon-in-hand.md) | known | bench | 72, 10, 45, 63 |
 | [Мир и состояние игры вживую (этап 48)](world-and-game-state.md) | known | bench | 72, 48 |

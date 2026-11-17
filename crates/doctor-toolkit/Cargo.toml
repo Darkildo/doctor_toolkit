@@ -26,6 +26,8 @@ flate2 = "1"
 lz4_flex = { version = "0.14", default-features = false, features = ["std", "safe-encode", "safe-decode", "checked-decode"] }
 zip = { version = "9", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 notify = "8.2"
+schemars = { version = "1", optional = true }
+rapier3d = { version = "=0.36.1", optional = true }
 
 [build-dependencies]
 serde = { version = "1", features = ["derive"] }
@@ -35,8 +37,16 @@ flate2 = "1"
 [features]
 # A miniature game for the tests of the GUI and other crates (`testing`).
 testing = []
+# JSON Schema of the parameter structures of operations (the MCP server
+# builds its tool descriptions from it).
+schema = ["dep:schemars"]
+# The collision of a level as a physics world: rays onto the ground and the
+# walk of a player (`level::walk`), for the editor and the MCP server.
+walk = ["dep:rapier3d"]
 
 [dev-dependencies]
+# The ABI of native mods: a test compares it with the one the mod manager installs.
+doctor-toolkit-sdk = { path = "../doctor-toolkit-sdk" }
 proptest = "1"
 refpack = "5"
 tempfile = "3"

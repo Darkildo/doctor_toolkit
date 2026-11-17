@@ -14,23 +14,24 @@ updated: 2026-11-16
 
 Этапы исследования движка и игры: запланированные (`planned`) и выполненные.
 
-Заметок: 30 (`known` — 4, `partial` — 1, `planned` — 25).
+Заметок: 31 (`known` — 14, `partial` — 3, `planned` — 14).
 
 | Заметка | Статус | Уверенность | Этапы |
 |---|---|---|---|
-| [Этап 100: Подмена ресурсов в памяти](stage-100.md) | planned | guess | 100 |
-| [Этап 101: Меньше вызовов отрисовки](stage-101.md) | planned | guess | 101 |
+| [Этап 100: Подмена ресурсов в памяти](stage-100.md) | known | bench | 100 |
+| [Этап 101: Меньше вызовов отрисовки](stage-101.md) | partial | bench | 101 |
+| [Этап 102: Паритет поверхностей — инвентаризация](stage-102.md) | known | data | 102 |
 | [Этап 72: База знаний (Obsidian)](stage-72.md) | known | data | 72 |
 | [Этап 73: Типизация сообщений и атрибутов](stage-73.md) | known | data | 73 |
-| [Этап 74: Lua-API движка](stage-74.md) | planned | guess | 74 |
-| [Этап 75: Предметы, деньги, оружие из логики; выбор как меню](stage-75.md) | planned | guess | 75 |
+| [Этап 74: Lua-API движка](stage-74.md) | known | bench | 74 |
+| [Этап 75: Предметы, деньги, оружие из логики; выбор как меню](stage-75.md) | partial | bench | 75 |
 | [Этап 76: Сохранения](stage-76.md) | partial | exe | 76 |
-| [Этап 77: Сюжет и миссии](stage-77.md) | planned | guess | 77 |
-| [Этап 78: Шина сообщений](stage-78.md) | planned | guess | 78 |
-| [Этап 79: Поведение классов SimGroup, волна 1](stage-79.md) | planned | guess | 79 |
-| [Этап 80: ASI-платформа: новые классы и Lua-функции](stage-80.md) | planned | guess | 80 |
-| [Этап 81: Нативные моды в менеджере](stage-81.md) | planned | guess | 81 |
-| [Этап 82: Команда](stage-82.md) | planned | guess | 82 |
+| [Этап 77: Сюжет и миссии](stage-77.md) | known | bench | 77 |
+| [Этап 78: Шина сообщений](stage-78.md) | known | exe | 78 |
+| [Этап 79: Поведение классов SimGroup, волна 1](stage-79.md) | known | exe | 79 |
+| [Этап 80: ASI-платформа: новые классы и Lua-функции](stage-80.md) | known | bench | 80 |
+| [Этап 81: Нативные моды в менеджере](stage-81.md) | known | bench | 81 |
+| [Этап 82: Команда](stage-82.md) | known | bench | 82 |
 | [Этап 83: Озвучка](stage-83.md) | known | bench | 83 |
 | [Этап 84: Загрузка зон](stage-84.md) | known | bench | 84 |
 | [Этап 85: Экономика](stage-85.md) | planned | guess | 85 |
@@ -47,7 +48,7 @@ updated: 2026-11-16
 | [Этап 96: Персонажи, модели, физика](stage-96.md) | planned | guess | 96 |
 | [Этап 97: Ролики](stage-97.md) | planned | guess | 97 |
 | [Этап 98: Неопознанные типы ресурсов](stage-98.md) | planned | guess | 98 |
-| [Этап 99: Перехват падений](stage-99.md) | planned | guess | 99 |
+| [Этап 99: Перехват падений](stage-99.md) | known | bench | 99 |
 
 <!-- kb:manual:begin -->
 ## Заметки

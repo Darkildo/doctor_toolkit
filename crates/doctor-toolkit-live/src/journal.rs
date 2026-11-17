@@ -28,11 +28,21 @@ pub mod mask {
     pub const ALL: u8 = OUTPUT | LUA_ERROR | MESSAGE;
     /// The kinds of protocol 3.
     pub const ALL_V3: u8 = ALL | MESSAGE_COUNTS;
+    /// Protocol 8 (stage 78): message events say where the message comes
+    /// from ([`super::MessageFrom`]) and deliveries to one listener are
+    /// listed too. Not a kind of its own: it changes what a client that
+    /// asks for [`MESSAGE`] gets; without it the events have the form of
+    /// protocol 2.
+    pub const MESSAGE_SENDER: u8 = 16;
+    /// The kinds of protocol 8.
+    pub const ALL_V8: u8 = ALL_V3 | MESSAGE_SENDER;
 
     /// The kinds a client of protocol `version` may get: a module answers
     /// older clients without the newer kinds, which they cannot read.
     pub fn for_version(kinds: u8, version: u16) -> u8 {
-        if version >= 3 {
+        if version >= 8 {
+            kinds & ALL_V8
+        } else if version >= 3 {
             kinds & ALL_V3
         } else {
             kinds & ALL
@@ -78,6 +88,30 @@ pub enum MessageOrigin {
     Link = 1,
 }
 
+/// Where a message of the bus comes from (protocol 8, stage 78). The bus has
+/// no sender; the module reads it off the call: the place in the game's code
+/// that called the bus, and the listener whose handler was running then.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct MessageFrom {
+    /// Address of the call in `godfather2.exe` (a row of
+    /// `data/gf2/bus_sites.tsv`); 0 when it is not known (a delivery from
+    /// the delayed queue, the live link).
+    pub site: u32,
+    /// Hash of the message whose handler sent this one; 0 when no handler
+    /// of the bus was running (engine code outside a delivery).
+    pub cause: u32,
+    /// The SimGroup object whose handler sent it, when that listener is
+    /// one (engine systems and Lua receivers are not).
+    pub sender: Option<Guid>,
+    /// The object the data points to, when the data word is the game's
+    /// object pointer (method table `0x00E31E2C`): who started the chain,
+    /// who entered the trigger.
+    pub data_object: Option<Guid>,
+    /// Delivered to one listener (`0x00408BF0`, a target of the delayed
+    /// queue), past the broadcast `0x00408A00`.
+    pub direct: bool,
+}
+
 /// What happened.
 #[derive(Debug, Clone, PartialEq)]
 pub enum EventBody {
@@ -113,6 +147,9 @@ pub enum EventBody {
         /// [`MAX_RECEIVERS`]).
         receivers: Vec<Guid>,
         origin: MessageOrigin,
+        /// Protocol 8: where it comes from; `None` from older modules and
+        /// for clients that did not ask ([`mask::MESSAGE_SENDER`]).
+        from: Option<MessageFrom>,
     },
     /// Protocol 3: messages of these hashes that went through the bus in
     /// the last `window_ms` without an event of their own, and how many.
@@ -346,7 +383,19 @@ impl Ring {
                 break;
             }
             if e.body.mask() & kinds != 0 {
-                batch.events.push(e.clone());
+                let mut e = e.clone();
+                if kinds & mask::MESSAGE_SENDER == 0
+                    && let EventBody::Message { from, .. } = &mut e.body
+                {
+                    // The form of protocol 2: no origin, and no deliveries
+                    // to one listener (they did not go through the bus an
+                    // older client knows).
+                    if from.is_some_and(|f| f.direct) {
+                        continue;
+                    }
+                    *from = None;
+                }
+                batch.events.push(e);
             }
         }
         let upto = batch.next;
@@ -380,7 +429,53 @@ mod tests {
             listeners: 1,
             receivers: vec![[1; 16]],
             origin: MessageOrigin::Game,
+            from: None,
         }
+    }
+
+    #[test]
+    fn the_origin_of_a_message_is_for_those_who_ask() {
+        let from = MessageFrom {
+            site: 0x0047_7F61,
+            cause: 0xAB,
+            sender: Some([2; 16]),
+            data_object: None,
+            direct: false,
+        };
+        let with = |from: MessageFrom| EventBody::Message {
+            hash: 1,
+            data: 0,
+            forced: false,
+            listeners: 1,
+            receivers: Vec::new(),
+            origin: MessageOrigin::Game,
+            from: Some(from),
+        };
+        let mut r = Ring::new(16);
+        r.push(0, 0, 0, with(from));
+        r.push(
+            0,
+            0,
+            0,
+            with(MessageFrom {
+                direct: true,
+                ..from
+            }),
+        );
+        // Protocol 8 gets both, with the origin.
+        let new = r.after(0, mask::ALL_V8, 100);
+        assert_eq!(new.events.len(), 2);
+        assert_eq!(new.events[0].body, with(from));
+        // An older client gets the broadcast in the old form and is not
+        // told about the delivery to one listener; nothing counts as lost.
+        let old = r.after(0, mask::for_version(0xFF, 7), 100);
+        assert_eq!(old.events.len(), 1);
+        assert!(matches!(
+            old.events[0].body,
+            EventBody::Message { from: None, .. }
+        ));
+        assert_eq!(old.lost, 0);
+        assert_eq!(mask::for_version(0xFF, 8), mask::ALL_V8);
     }
 
     fn texts(b: &EventBatch) -> Vec<String> {

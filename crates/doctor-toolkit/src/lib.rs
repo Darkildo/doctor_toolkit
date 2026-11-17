@@ -12,11 +12,14 @@
 //!
 //! Every parser returns [`Error`] on malformed input and never panics.
 
+pub mod anim_edit;
+pub mod apx_edit;
 pub mod atomic;
 pub mod bridge;
 pub mod character;
 pub mod compress;
 pub mod container;
+pub mod crash;
 pub mod create;
 pub mod cutscene;
 pub mod dialogue;
@@ -36,6 +39,9 @@ pub mod live;
 pub mod logic_graph;
 pub mod mods;
 pub mod navigation;
+pub mod outfit;
+pub mod parity;
+pub mod path_limit;
 pub mod play;
 pub mod profile;
 pub mod project;
@@ -45,13 +51,17 @@ pub mod retexture;
 pub mod save;
 pub mod scene;
 pub mod script;
+pub mod sound;
+pub mod sound_edit;
 #[cfg(any(test, feature = "testing"))]
 pub mod testing;
 pub mod text;
 pub mod time_of_day;
 pub mod toc;
 pub mod tunables;
+pub mod validate;
 pub mod voice;
 pub mod workspace;
+pub mod zone_ops;
 
 pub use error::{Error, Result};

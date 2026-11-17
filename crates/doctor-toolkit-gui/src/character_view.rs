@@ -122,6 +122,8 @@ pub struct CharacterView {
     preview_open: bool,
     /// Meshes and materials not in the game files.
     extra: Extra,
+    /// What the workspace adds was read into `extra`.
+    workspace_read: bool,
 }
 
 impl CharacterView {
@@ -162,6 +164,7 @@ impl CharacterView {
             status: String::new(),
             preview_open: true,
             extra: Extra::default(),
+            workspace_read: false,
         };
         if let Ok(preset) = std::env::var("DOCTOR_TOOLKIT_GUI_CHARACTER") {
             view.apply_preset(&preset);
@@ -235,6 +238,7 @@ impl CharacterView {
         if self.meshes.is_none() {
             self.meshes = Some(MeshLocator::new(&index));
         }
+        self.read_workspace(&game);
         let character = Character::load_with(
             &game,
             self.meshes.as_ref().expect("built above"),
@@ -297,10 +301,34 @@ impl CharacterView {
         }));
     }
 
+    /// Once per view: the meshes, materials and textures the workspace adds
+    /// to streams of the game are drawn as if they were written (those of
+    /// new streams are in the staged game already). What a preview gave
+    /// stays in front.
+    fn read_workspace(&mut self, game: &GameInstance) {
+        if std::mem::replace(&mut self.workspace_read, true) {
+            return;
+        }
+        let dir = doctor_toolkit::workspace::Workspace::default_dir(game.root());
+        if !doctor_toolkit::workspace::Workspace::exists(&dir) {
+            return;
+        }
+        let Ok(ws) = doctor_toolkit::workspace::Workspace::open_read_only(&dir) else {
+            return;
+        };
+        let added = doctor_toolkit::character::WorkspaceAssets::of(&ws);
+        for (id, model) in added.meshes {
+            self.extra.meshes.entry(id).or_insert(model);
+        }
+        self.extra.materials.extend(added.materials);
+        self.extra.textures.extend(added.textures);
+    }
+
     /// Draws `extra` as part of the game (a preview of an import) and
     /// assembles set `set` with variant `variant` in slot `slot`.
     pub fn preview_with(&mut self, extra: Extra, set: usize, slot: usize, variant: usize) {
         self.extra = extra;
+        self.workspace_read = false;
         self.set = set.min(self.db.sets.len().saturating_sub(1));
         self.selection = Selection::default();
         self.selection.variants.insert(slot, variant);

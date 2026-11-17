@@ -60,6 +60,8 @@ pub struct PlayState {
     pub(super) live: super::live::LiveState,
     /// DXVK and 32-bit Vulkan of the computer, looked for once.
     dxvk_found: Option<(Option<play::dxvk::Dxvk>, play::dxvk::Vulkan32)>,
+    /// The crash reports of the open game (stage 99).
+    pub(super) crash: Option<doctor_toolkit_mods::crash::CrashWatch>,
 }
 
 /// [`play::dxvk::check`] for one launch method.
@@ -172,6 +174,7 @@ impl PlayState {
             after_exit: None,
             live: super::live::LiveState::default(),
             dxvk_found: None,
+            crash: None,
         }
     }
 
@@ -503,7 +506,8 @@ impl BrowserApp {
     /// Tools → Play: applies the workspace when asked, starts the game and
     /// follows it.
     pub(super) fn play(&mut self, ctx: &egui::Context) {
-        let Some(game) = self.game.clone() else {
+        // The game folder: Play applies the workspace and starts the game.
+        let Some(game) = self.disk_game() else {
             return;
         };
         if self.refuse_write() {
@@ -597,7 +601,13 @@ impl BrowserApp {
                 let cmd_txt = (!options.is_empty())
                     .then(|| options.cmd_txt())
                     .transpose()?;
-                play::overlay::Overlay::build(&game, source.as_ref(), cmd_txt.as_deref(), &dir)
+                play::overlay::Overlay::build_with(
+                    &game,
+                    source.as_ref(),
+                    cmd_txt.as_deref(),
+                    &dir,
+                    config.streams,
+                )
             });
             match built {
                 Ok(o) => {
@@ -641,7 +651,7 @@ impl BrowserApp {
         }
         let redirects = overlay
             .as_ref()
-            .map(|o| o.redirects().to_vec())
+            .map(|o| (o.redirects().to_vec(), o.resources().to_vec()))
             .unwrap_or_default();
         let mut live_module = if overlay.is_some() {
             // The module carries the staged files; with the live link off
@@ -686,6 +696,15 @@ impl BrowserApp {
                 None
             }
         };
+        // The crash module and the list of mods for its reports (stage 99).
+        let source = if overlay.is_some() {
+            "workspace staged outside the game"
+        } else {
+            "written into the game"
+        };
+        for note in doctor_toolkit::crash::prepare(&game, "doctor-toolkit-gui", source, true) {
+            self.notify(Level::Info, trf("graphics.note", &[("note", &note)]));
+        }
         // Graphics last (stage 59): with LAA the mirror links everything put
         // into the game folder above.
         let vulkan = dxvk.as_ref().map(|_| {
@@ -754,7 +773,36 @@ impl BrowserApp {
         }
     }
 
+    /// Looks for a new crash report of the open game and announces it
+    /// (`now`: without waiting for the next look).
+    pub(super) fn crash_poll(&mut self, now: bool) {
+        use doctor_toolkit_mods::crash::CrashWatch;
+        let Some(game) = self.game.clone() else {
+            self.play.crash = None;
+            return;
+        };
+        if self
+            .play
+            .crash
+            .as_ref()
+            .is_none_or(|w| w.root() != game.root())
+        {
+            self.play.crash = Some(CrashWatch::new(game.root()));
+        }
+        let news = self
+            .play
+            .crash
+            .as_mut()
+            .and_then(|w| w.poll(now))
+            .map(CrashWatch::announcement);
+        if let Some(text) = news {
+            self.play.last_exit = Some(text.clone());
+            self.notify(Level::Warning, text);
+        }
+    }
+
     fn poll_session(&mut self, ctx: &egui::Context) {
+        self.crash_poll(false);
         let running = self.play.running.clone();
         let PlayState {
             session, game_view, ..
@@ -814,6 +862,8 @@ impl BrowserApp {
                     Level::Info
                 };
                 self.notify(level, text);
+                // A crash left a report (the LAA mirror handed it back above).
+                self.crash_poll(true);
                 // The scan of the process list lags behind: look again now.
                 if launched.session.is_none() {
                     self.play.running = play::game_processes();
@@ -890,6 +940,9 @@ impl BrowserApp {
             .cloned()
             .and_then(|s| self.spawns(&s).cloned());
         let mut reload_points = false;
+        self.crash_poll(false);
+        let mut crash_note = None;
+        let mut crash_watch = self.play.crash.take();
         let installs = self.installs();
         let check = {
             let method = match &config.method {
@@ -944,6 +997,20 @@ impl BrowserApp {
                             }
                         });
                 });
+                {
+                    use play::overlay::{OverlayMode, Streams};
+                    let mut in_memory = config.streams == Streams::Patched;
+                    if ui
+                        .add_enabled(
+                            config.overlay != OverlayMode::Off,
+                            egui::Checkbox::new(&mut in_memory, tr("play.resources_in_memory")),
+                        )
+                        .on_hover_text(tr("play.resources_in_memory_hint"))
+                        .changed()
+                    {
+                        config.streams = Streams::in_memory(in_memory);
+                    }
+                }
                 ui.separator();
                 reload_points = super::gametab::start_editor(
                     ui,
@@ -968,6 +1035,15 @@ impl BrowserApp {
                 ui.label(RichText::new(tr("graphics.dxvk_note")).weak().small());
                 ui.separator();
                 graphics_ui(ui, &mut config.graphics, &method, game.root(), config.dxvk);
+                ui.separator();
+                // Crash reports (stage 99): one switch per game, shared
+                // with the mod manager.
+                if let Some(note) = doctor_toolkit_mods::crash::switch(ui, game.root()) {
+                    crash_note = Some(note);
+                }
+                if let Some(watch) = &mut crash_watch {
+                    watch.ui(ui);
+                }
                 ui.separator();
                 ui.label(tr("play.command"));
                 match play::plan(&method, game.root()) {
@@ -999,6 +1075,10 @@ impl BrowserApp {
                 }
                 ui.label(RichText::new(tr("play.safety")).weak().small());
             });
+        self.play.crash = crash_watch;
+        if let Some(note) = crash_note {
+            self.notify(Level::Info, note);
+        }
         if self.settings.game(game.root()).play != config {
             self.settings.game_mut(game.root()).play = config;
         }
@@ -1421,6 +1501,8 @@ fn graphics_ui(
                     .on_hover_text(tr("graphics.post_hint"));
                 ui.add(egui::Slider::new(&mut g.sharpen, 0..=100));
             });
+            ui.checkbox(&mut g.draw_merge, tr("graphics.draw_merge"))
+                .on_hover_text(tr("graphics.draw_merge_hint"));
         });
     }
     ui.checkbox(&mut g.laa, tr("graphics.laa"))

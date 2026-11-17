@@ -1,0 +1,26 @@
+[package]
+name = "doctor-example-class"
+description = "Example of a native mod of The Godfather II (PC 1.0.789.0): a new SimGroup class, Lua functions, a listener, a filter and a hook through doctor_platform.asi"
+version = "0.0.8"
+edition = "2024"
+license = "GPL-3.0-only"
+publish = false
+
+# A Windows DLL for 32-bit x86 with its own workspace: build.sh builds it
+# with `cargo build --release --target i686-pc-windows-gnu`.
+[workspace]
+
+[lib]
+name = "doctor_example"
+crate-type = ["cdylib"]
+path = "src/lib.rs"
+
+[dependencies]
+doctor-toolkit-sdk = { path = "../../crates/doctor-toolkit-sdk" }
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+strip = true
+debug = false

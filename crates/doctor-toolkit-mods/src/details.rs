@@ -22,6 +22,8 @@ enum Ask {
     Toggle(String, bool),
     Remove(String),
     EnableWith(String),
+    /// The answer about the executable code of the mod.
+    Code(String, crate::native::CodeAnswer),
 }
 
 /// A relation of a mod in words, with the colour of its state.
@@ -193,6 +195,11 @@ impl ModsPanel {
                         if dependencies(ui, manager, m, idle) {
                             ask = Some(Ask::EnableWith(id.clone()));
                         }
+                        if let Some(view) = self.overview.code.iter().find(|c| c.question.id == id)
+                            && let Some(answer) = crate::native::section_ui(ui, view, idle)
+                        {
+                            ask = Some(Ask::Code(id.clone(), answer));
+                        }
                         ui.add_space(6.0);
                         ui.horizontal(|ui| {
                             let label = if m.enabled {
@@ -222,6 +229,7 @@ impl ModsPanel {
             Some(Ask::Toggle(id, on)) => self.set_enabled(&ctx, &id, on),
             Some(Ask::Remove(id)) => self.ask_remove(&id),
             Some(Ask::EnableWith(id)) => self.enable_with_dependencies(&ctx, &id),
+            Some(Ask::Code(id, answer)) => self.code_answered(&ctx, &id, answer),
             None => {}
         }
     }

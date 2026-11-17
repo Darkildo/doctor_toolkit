@@ -573,3 +573,211 @@ fn cards_tell_what_a_mod_needs_and_the_order_keeps_it() {
     panel.select("patch");
     frame(&ctx, &mut panel, &[]);
 }
+
+/// The smallest file the mod manager takes for a 32-bit DLL.
+fn dll(tag: &str) -> Vec<u8> {
+    let mut data = vec![0u8; 0x100];
+    data[..2].copy_from_slice(b"MZ");
+    data[0x3C] = 0x40;
+    data[0x40..0x44].copy_from_slice(b"PE\0\0");
+    data[0x44..0x46].copy_from_slice(&0x014Cu16.to_le_bytes());
+    data[0x56..0x58].copy_from_slice(&0x2102u16.to_le_bytes());
+    data.extend_from_slice(tag.as_bytes());
+    data
+}
+
+/// A mod `id` that changes a mesh and carries the module `<id>.asi`.
+fn build_with_code(game: &GameInstance, out: &Path, id: &str, required: bool) -> PathBuf {
+    use doctor_toolkit::mods::{NativeBuild, Relations};
+    let mut ws = Workspace::create(out.join(format!("ws-{id}")), game).unwrap();
+    let edit = ResourceEdit {
+        index: MESH,
+        data: vec![0x5A; 300],
+        storage: StorageChoice::Keep,
+    };
+    ws.set_resources(game, "edit", game.find_stream(LEVEL).unwrap(), &[edit])
+        .unwrap();
+    let info = ModInfo {
+        id: id.to_owned(),
+        name: format!("Mod {id}"),
+        version: "1.0".into(),
+        author: "tester".into(),
+        description: "A mod with code.".into(),
+        url: None,
+        relations: Relations {
+            native: Some(NativeBuild {
+                modules: vec![(format!("{id}.asi"), dll(id))],
+                platform_abi: Some(doctor_toolkit::mods::native::PLATFORM_ABI),
+                required,
+            }),
+            ..Relations::none()
+        },
+    };
+    let path = out.join(format!("{id}.zip"));
+    build_from_workspace(&ws, &info, None, None, &path).unwrap();
+    path
+}
+
+#[test]
+fn a_mod_with_code_asks_before_anything_executable() {
+    use doctor_toolkit::mods::native::{Consent, NativeHost, NativeState};
+    let (dir, game) = game(false);
+    let root = dir.path();
+    let temp = tempfile::tempdir().unwrap();
+    let platform = temp.path().join("doctor_platform.asi");
+    let loader = temp.path().join("doctor_loader.dll");
+    std::fs::write(&platform, dll("platform")).unwrap();
+    std::fs::write(&loader, dll("loader")).unwrap();
+    let ctx = egui::Context::default();
+    let mut panel = panel(&game, &ctx);
+    panel.set_native_host(NativeHost {
+        edition: Ok(()),
+        loader: None,
+        platform_binary: Some(platform),
+        loader_binary: Some(loader),
+    });
+    let soft = build_with_code(&game, temp.path(), "soft", false);
+    panel.install_files(&ctx, vec![soft]);
+    panel.wait();
+
+    // The question opens by itself; the card waits, nothing is in the game.
+    assert!(matches!(panel.dialog, Some(dialogs::Dialog::Code(_))));
+    assert_eq!(
+        panel.state_of("soft"),
+        Some(ModState::CodeWaiting { required: false })
+    );
+    let view = panel.code_of("soft").unwrap().clone();
+    assert_eq!(view.consent, Consent::Unasked);
+    assert_eq!(view.question.modules[0].path, "scripts/soft.asi");
+    assert_eq!(
+        view.question
+            .toolkit
+            .iter()
+            .map(|f| f.path.as_str())
+            .collect::<Vec<_>>(),
+        ["scripts/doctor_platform.asi", "dinput8.dll"]
+    );
+    frame(&ctx, &mut panel, &[]);
+    // "Decide later" asks no more by itself; writing puts the data only.
+    panel.dialog = None;
+    panel.refresh(&ctx);
+    panel.wait();
+    assert!(panel.dialog.is_none(), "the question opens by itself once");
+    panel.apply(&ctx);
+    panel.wait();
+    panel.dialog = None;
+    assert!(!root.join("scripts").exists());
+    assert_eq!(
+        panel.state_of("soft"),
+        Some(ModState::CodeWaiting { required: false })
+    );
+
+    // "Data only": the mod is ready without its code.
+    panel.answer_code(&ctx, "soft", Some(false));
+    panel.wait();
+    assert_eq!(panel.state_of("soft"), Some(ModState::Ready));
+    assert!(!root.join("scripts").exists());
+
+    // "Allow": not in the game yet, then installed by writing.
+    panel.answer_code(&ctx, "soft", Some(true));
+    panel.wait();
+    assert_eq!(panel.state_of("soft"), Some(ModState::NotWritten));
+    assert!(!panel.up_to_date());
+    assert!(!root.join("scripts").exists());
+    panel.apply(&ctx);
+    panel.wait();
+    let Some(dialogs::Dialog::Report(report)) = panel.dialog.take() else {
+        panic!("writing ends with a result");
+    };
+    assert!(report.text.contains("scripts/soft.asi"), "{}", report.text);
+    assert_eq!(panel.state_of("soft"), Some(ModState::Ready));
+    assert_eq!(
+        panel.code_of("soft").unwrap().state,
+        Some(NativeState::Installed)
+    );
+    for file in [
+        "scripts/soft.asi",
+        "scripts/doctor_platform.asi",
+        "dinput8.dll",
+    ] {
+        assert!(root.join(file).is_file(), "{file}");
+    }
+    frame(&ctx, &mut panel, &[]);
+
+    // Switching the mod off takes the code away at once.
+    panel.switch(&ctx, "soft", false);
+    panel.wait();
+    assert!(!root.join("scripts").exists());
+    assert!(!root.join("dinput8.dll").exists());
+
+    // A mod that needs its code is not written before the answer.
+    let hard = build_with_code(&game, temp.path(), "hard", true);
+    panel.install_files(&ctx, vec![hard]);
+    panel.wait();
+    assert!(matches!(panel.dialog, Some(dialogs::Dialog::Code(_))));
+    frame(&ctx, &mut panel, &[]);
+    panel.dialog = None;
+    assert_eq!(
+        panel.state_of("hard"),
+        Some(ModState::CodeWaiting { required: true })
+    );
+    panel.apply(&ctx);
+    panel.wait();
+    let Some(dialogs::Dialog::Report(report)) = panel.dialog.take() else {
+        panic!("the refusal is told");
+    };
+    assert!(report.error, "{}", report.text);
+    assert!(!root.join("scripts").exists());
+}
+
+/// Stage 103: the question before installing tells what the file holds,
+/// and an installed mod is written back as a mod file.
+#[test]
+fn a_mod_file_is_described_before_installing_and_saved_as_a_file() {
+    let (_dir, game) = game(false);
+    let temp = tempfile::tempdir().unwrap();
+    let a = build(&game, temp.path(), "a", LEVEL, MESH, vec![1; 300]);
+    let info = doctor_toolkit::mods::file_info(&a).unwrap();
+    assert_eq!(info.id, "a");
+    assert_eq!(info.kind, doctor_toolkit::mods::FileKind::Mod);
+    assert_eq!((info.resources, info.added), (1, 0));
+    assert_eq!(info.streams, [LEVEL]);
+    assert!(info.verified && info.payload_bytes == 300, "{info:?}");
+    // A file that is not a mod is told about, and cannot be installed.
+    let junk = temp.path().join("junk.zip");
+    std::fs::write(&junk, "not a zip").unwrap();
+    assert!(doctor_toolkit::mods::file_info(&junk).is_err());
+    let ctx = egui::Context::default();
+    let mut panel = panel(&game, &ctx);
+    frame(&ctx, &mut panel, &[]);
+    panel.offer_install(vec![a.clone(), junk]);
+    let Some(dialogs::Dialog::Install(paths, infos)) = &panel.dialog else {
+        panic!("the question is asked");
+    };
+    assert_eq!(paths.len(), 2);
+    assert!(infos[0].as_ref().is_ok_and(|i| i.name == info.name));
+    assert!(infos[1].is_err());
+    frame(&ctx, &mut panel, &[]);
+    frame(&ctx, &mut panel, &[]);
+    // Installed, then saved as a file: the same mod.
+    panel.dialog = None;
+    panel.install_files(&ctx, vec![a]);
+    panel.wait();
+    frame(&ctx, &mut panel, &[]);
+    let out = temp.path().join("copy.zip");
+    panel.export_mod(&ctx, "a", out.clone());
+    panel.wait();
+    frame(&ctx, &mut panel, &[]);
+    let (message, error) = panel.message().unwrap();
+    assert!(!error && message.contains("copy.zip"), "{message}");
+    let copy = doctor_toolkit::mods::file_info(&out).unwrap();
+    assert_eq!((copy.id, copy.resources), (info.id, info.resources));
+    // A mod that is not installed: an error, nothing written.
+    let missing = temp.path().join("missing.zip");
+    panel.export_mod(&ctx, "nothing", missing.clone());
+    panel.wait();
+    frame(&ctx, &mut panel, &[]);
+    let (message, error) = panel.message().unwrap();
+    assert!(error, "{message}");
+    assert!(!missing.exists());
+}

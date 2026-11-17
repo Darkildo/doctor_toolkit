@@ -17,8 +17,16 @@ use doctor_toolkit::game::{GameInstance, StreamFile};
 use doctor_toolkit::resource::names::type_tags;
 use doctor_toolkit::toc::Toc;
 
+#[path = "corpus/crew.rs"]
+mod crew;
+#[path = "corpus/lua_api.rs"]
+mod lua_api;
 #[path = "corpus/project.rs"]
 mod project;
+#[path = "corpus/resources_in_memory.rs"]
+mod resources_in_memory;
+#[path = "corpus/story.rs"]
+mod story;
 #[path = "corpus/types.rs"]
 mod types;
 
@@ -7521,4 +7529,88 @@ fn every_city_keys_its_light_by_the_time_of_day() {
         "{:?}",
         noon.fog
     );
+}
+
+/// Stage 75 (docs/analysis/handing-out.md §7): how the dialogues of the game
+/// use choices and the three variables whose assignment makes the other
+/// actor send a message (0x23, 0x27, 0x24).
+#[test]
+fn dialogue_choices_and_result_variables() {
+    use doctor_toolkit::resource::dlg::{Dialogue, KIND_ASSIGN, KIND_CHOICE};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let choices = AtomicUsize::new(0);
+    let with_choice = AtomicUsize::new(0);
+    let with_prelude = AtomicUsize::new(0);
+    let sent = [0x23u32, 0x27, 0x24].map(|v| (v, AtomicUsize::new(0)));
+    let count = for_each_resource("dlg", |_, data| {
+        let d = Dialogue::parse(data).map_err(|e| e.to_string())?;
+        let mut has_choice = false;
+        let mut has_prelude = false;
+        for node in &d.nodes {
+            if node.kind == KIND_CHOICE {
+                has_choice = true;
+                choices.fetch_add(1, Ordering::Relaxed);
+                // Options 0, 1, 2, the time-out, option 4: never more.
+                if !matches!(node.children.len(), 2 | 4 | 5) {
+                    return Err(format!("a choice with {} branches", node.children.len()));
+                }
+            }
+            if node.kind == KIND_ASSIGN {
+                let variable = node.word(2).unwrap_or(u32::MAX);
+                has_prelude |= variable == 0x49;
+                for (v, n) in &sent {
+                    if variable == *v {
+                        if node.word(0) != Some(0) || node.word(3) != Some(1) {
+                            return Err(format!("variable {v:#x} is not set to true"));
+                        }
+                        n.fetch_add(1, Ordering::Relaxed);
+                    }
+                }
+            }
+        }
+        if has_choice {
+            with_choice.fetch_add(1, Ordering::Relaxed);
+            if has_prelude {
+                with_prelude.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+        Ok(())
+    });
+    if game_dir().is_some() {
+        assert_eq!(count, 143);
+        assert_eq!(choices.load(Ordering::Relaxed), 122);
+        assert_eq!(with_choice.load(Ordering::Relaxed), 45);
+        assert_eq!(with_prelude.load(Ordering::Relaxed), 41);
+        let sent: Vec<usize> = sent
+            .iter()
+            .map(|(_, n)| n.load(Ordering::Relaxed))
+            .collect();
+        assert_eq!(sent, [139, 6, 9]);
+    }
+}
+
+/// The game builds `<folder>/<stream>` in a 256-byte buffer (exe
+/// `0x00AC37C0`): the longest stream path of the game decides how long the
+/// path of the game folder may be (docs/analysis/story.md §9).
+#[test]
+fn the_longest_stream_path_is_142_characters() {
+    let Some(dir) = game_dir() else { return };
+    let game = GameInstance::open(&dir).unwrap();
+    let (stream, len) = doctor_toolkit::path_limit::longest_stream(&game).unwrap();
+    assert_eq!(
+        len,
+        doctor_toolkit::path_limit::LONGEST_GAME_STREAM,
+        "{stream}"
+    );
+    assert!(
+        stream.ends_with("m11_common_inc_restart_folderstream.str"),
+        "{stream}"
+    );
+    // The stream of checkpoint 326, whose path overflowed the buffer on the bench.
+    let cp_326 = game
+        .streams()
+        .iter()
+        .find(|f| f.rel_path.ends_with("m03_carmine_compound_exp.str"))
+        .unwrap();
+    assert_eq!(cp_326.rel_path.len(), 132);
 }

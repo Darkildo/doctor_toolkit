@@ -1534,67 +1534,72 @@ impl AnimGraph {
     }
 }
 
+/// A bank with two clips and an entry `idle`: sequence → random of two
+/// clip nodes.
+#[cfg(any(test, feature = "testing"))]
+pub(crate) fn sample_bank() -> BankImage {
+    use crate::resource::anim_image::ClipImage;
+    let clip = |hash| ClipImage {
+        record: ClipImage::new_record(hash, 3, 0x78E0_3D81, 0x8000_0004),
+        streams: vec![0x2C, 0x00, 0, 0, 0],
+        events: Vec::new(),
+    };
+    let mut bank = BankImage {
+        hash: 1,
+        skeleton: 0x50F9_2C54,
+        words: [0, 0, 0, 1],
+        node_count: 0,
+        entries: Vec::new(),
+        event_objects: Vec::new(),
+        graph: Block::default(),
+        clips: vec![clip(0x10), clip(0x20)],
+        tail: Block::default(),
+    };
+    let leaf = |c: u32, w: f32| GraphNode {
+        kind: NODE_CLIP,
+        number: 0,
+        params: Some(vec![0, 4f32.to_bits(), 2f32.to_bits()]),
+        extra: Some(vec![w.to_bits()]),
+        children: vec![],
+        clip: Some(c),
+    };
+    let mut g = AnimGraph {
+        entries: vec![GraphEntry {
+            name: "idle".into(),
+            root: 0,
+        }],
+        nodes: vec![
+            GraphNode {
+                kind: 2,
+                number: 0,
+                params: Some(vec![0, 0x1203_2045]),
+                extra: None,
+                children: vec![1],
+                clip: None,
+            },
+            GraphNode {
+                kind: 3,
+                number: 0,
+                params: Some(vec![0, 1, 20f32.to_bits()]),
+                extra: None,
+                children: vec![2, 3],
+                clip: None,
+            },
+            leaf(0, 1.0),
+            leaf(1, 2.0),
+        ],
+    };
+    assert_eq!(g.renumber(), 7);
+    g.store(&mut bank).unwrap();
+    bank
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::resource::anim_image::ClipImage;
 
-    /// A bank with two clips and an entry `idle`: sequence → random of two
-    /// clip nodes.
     fn bank() -> BankImage {
-        let clip = |hash| ClipImage {
-            record: ClipImage::new_record(hash, 3, 0x78E0_3D81, 0x8000_0004),
-            streams: vec![0x2C, 0x00, 0, 0, 0],
-            events: Vec::new(),
-        };
-        let mut bank = BankImage {
-            hash: 1,
-            skeleton: 0x50F9_2C54,
-            words: [0, 0, 0, 1],
-            node_count: 0,
-            entries: Vec::new(),
-            event_objects: Vec::new(),
-            graph: Block::default(),
-            clips: vec![clip(0x10), clip(0x20)],
-            tail: Block::default(),
-        };
-        let leaf = |c: u32, w: f32| GraphNode {
-            kind: NODE_CLIP,
-            number: 0,
-            params: Some(vec![0, 4f32.to_bits(), 2f32.to_bits()]),
-            extra: Some(vec![w.to_bits()]),
-            children: vec![],
-            clip: Some(c),
-        };
-        let mut g = AnimGraph {
-            entries: vec![GraphEntry {
-                name: "idle".into(),
-                root: 0,
-            }],
-            nodes: vec![
-                GraphNode {
-                    kind: 2,
-                    number: 0,
-                    params: Some(vec![0, 0x1203_2045]),
-                    extra: None,
-                    children: vec![1],
-                    clip: None,
-                },
-                GraphNode {
-                    kind: 3,
-                    number: 0,
-                    params: Some(vec![0, 1, 20f32.to_bits()]),
-                    extra: None,
-                    children: vec![2, 3],
-                    clip: None,
-                },
-                leaf(0, 1.0),
-                leaf(1, 2.0),
-            ],
-        };
-        assert_eq!(g.renumber(), 7);
-        g.store(&mut bank).unwrap();
-        bank
+        super::sample_bank()
     }
 
     #[test]

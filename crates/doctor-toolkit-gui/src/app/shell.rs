@@ -151,6 +151,12 @@ impl Notes {
         text.clone_into(&mut self.last_status);
     }
 
+    /// Whether `status` is a status text not recorded yet that reads as an
+    /// error.
+    pub fn is_new_error(&self, status: &str) -> bool {
+        status != self.last_status && Level::of(status) == Level::Error
+    }
+
     /// Records status texts set since the last frame.
     pub fn track(&mut self, status: &str, nav: Option<&str>) {
         if status != self.last_status {
@@ -235,6 +241,11 @@ pub fn apply_capture_preset(app: &mut BrowserApp) {
     let Ok(spec) = std::env::var("DOCTOR_TOOLKIT_GUI_SHELL") else {
         return;
     };
+    apply_shell_preset(app, &spec);
+}
+
+/// The items of a `DOCTOR_TOOLKIT_GUI_SHELL` preset (see [`apply_capture_preset`]).
+pub fn apply_shell_preset(app: &mut BrowserApp, spec: &str) {
     for item in spec.split(',').map(str::trim) {
         let (name, value) = item.split_once('=').unwrap_or((item, ""));
         match name {
@@ -248,6 +259,7 @@ pub fn apply_capture_preset(app: &mut BrowserApp) {
             "shortcuts" => app.windows.shortcuts = true,
             "welcome" => app.dock_ops.push(DockOp::ShowPanel(Pane::Welcome)),
             "play" => app.play.options_open = true,
+            "game" => app.dock_ops.push(DockOp::ShowPanel(Pane::Game)),
             "log" => app.dock_ops.push(DockOp::ShowPanel(Pane::Log)),
             "index" => app.dock_ops.push(DockOp::ShowPanel(Pane::Index)),
             "pin" => app.pin_on_capture = true,
@@ -286,13 +298,46 @@ pub fn apply_capture_preset(app: &mut BrowserApp) {
                 app.dock_ops
                     .push(DockOp::ShowPanel(Pane::ContentExtra { id }));
             }
+            // Stage 103: the checks and the reference panels. The checks
+            // wait for the game ([`BrowserApp::checks_preset`]).
+            "check" | "refs" | "hash" | "pull" | "crashes" => {
+                app.checks_preset.push((name.to_owned(), value.to_owned()));
+            }
+            "findings" => app.dock_ops.push(DockOp::ShowPanel(Pane::Findings)),
+            "zones" => app.dock_ops.push(DockOp::ShowPanel(Pane::Zones)),
+            "kb" => {
+                // A note (`kb=classes/Gun.md`) or words to search by.
+                if value.ends_with(".md") {
+                    app.open_note(value);
+                } else {
+                    app.knowledge.search(&value.replace('+', " "));
+                    app.open_knowledge();
+                }
+            }
+            "types" => {
+                // `types=<list>`, `types=message:<text>`, `types=class:<name>`.
+                let k = &mut app.knowledge;
+                k.section = super::knowledge::Section::Types;
+                match value.split_once(':') {
+                    Some(("message", text)) => k.message = text.to_owned(),
+                    Some(("class", name)) => k.class = name.to_owned(),
+                    _ if value.is_empty() => {}
+                    _ => match doctor_toolkit::game_types::enum_def(value) {
+                        Some(list) => k.list = Some(list.key),
+                        None => app.preset_failed(&format!(
+                            "DOCTOR_TOOLKIT_GUI_SHELL: types: no list `{value}`"
+                        )),
+                    },
+                }
+                app.open_knowledge();
+            }
             "notify" => {
                 app.notes
                     .push(Level::Warning, "Example warning: shown as a pop-up");
                 app.notes
                     .push(Level::Error, "Cannot write example: an error pop-up");
             }
-            _ => eprintln!("DOCTOR_TOOLKIT_GUI_SHELL: unknown item {name}"),
+            _ => app.preset_failed(&format!("DOCTOR_TOOLKIT_GUI_SHELL: unknown item {name}")),
         }
     }
 }
@@ -340,6 +385,45 @@ pub fn guide_path() -> Option<PathBuf> {
 pub const GUIDE_URL: &str = "https://github.com/Darkildo/doctor_toolkit/tree/main/docs/guide";
 
 impl BrowserApp {
+    /// The items `check`, `refs=<stream or folder>`, `hash=<text>` and
+    /// `pull` of `DOCTOR_TOOLKIT_GUI_SHELL`, once the game and its index
+    /// are there.
+    pub(super) fn checks_preset(&mut self) {
+        if self.checks_preset.is_empty()
+            || self.game.is_none()
+            || self.index.is_none()
+            || self.nav.busy()
+            || self.findings.busy()
+        {
+            return;
+        }
+        let (name, value) = self.checks_preset.remove(0);
+        match name.as_str() {
+            "check" => {
+                self.check_edits();
+            }
+            "refs" => {
+                self.check_refs_at(&value);
+            }
+            // The Project tab's Pull (`DOCTOR_TOOLKIT_GUI_PROJECT=<folder>`).
+            "pull" => {
+                self.project_pull();
+            }
+            // Tools → Crash reports, and a report (1 is the newest).
+            "crashes" => {
+                if value.is_empty() {
+                    self.open_crash_reports();
+                } else {
+                    self.show_crash_report(&value);
+                }
+            }
+            _ => {
+                self.look_up_hash(&value);
+                self.dock_ops.push(DockOp::ShowPanel(Pane::Hashes));
+            }
+        }
+    }
+
     pub(super) fn open_guide(&mut self) {
         let target = guide_path()
             .map(PathBuf::into_os_string)

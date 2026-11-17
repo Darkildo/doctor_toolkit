@@ -129,8 +129,10 @@ fn message_id(name: &str) -> doctor_toolkit::game_types::MessageId {
 /// the executable, `game` — used by the game files, `custom` — new,
 /// `unknown` — a hash without a name), `name`, `hash`, `usage`, `senders`
 /// and `listeners` (class, attribute index, number of objects over the whole
-/// game), `scope`, `streams`, `mentions`, `data` (`"unknown"` so far),
-/// `summary`, `sent_by`, `conf`, `source`, and `collides_with` — the game
+/// game), `scope`, `streams`, `mentions`, `data` (kinds of the data word joined
+/// with ` | `: `none`, `object`, `forward`, a structure of the engine; or
+/// `"unknown"`), `data_conf`, `data_source`, `summary`, `sent_by`,
+/// `engine_sites`, `engine_listens`, `conf`, `source`, and `collides_with` — the game
 /// message a new name shares its hash with (`None` when the hash is free).
 ///
 /// `name`: a message name, or a hash as `0x` and eight hexadecimal digits.

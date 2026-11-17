@@ -28,6 +28,8 @@ enum CardAction {
     Toggle(String, bool),
     Move(String, usize),
     Remove(String),
+    /// Write the mod as a mod file.
+    Export(String),
 }
 
 /// What a card shows.
@@ -40,6 +42,8 @@ struct Card {
     enabled: bool,
     damaged: bool,
     state: ModState,
+    /// The mod carries executable code: the state of the code in words.
+    code: Option<String>,
 }
 
 /// The key of the picture of mod `m` in the cache: an update of the mod
@@ -107,6 +111,11 @@ impl ModsPanel {
                 enabled: m.enabled,
                 damaged: m.problem.is_some(),
                 state: ModState::of(m, manager, &self.overview),
+                code: m.manifest.native.is_some().then(|| {
+                    self.code_of(&m.id)
+                        .map(|view| crate::native::state_words(view).0)
+                        .unwrap_or_default()
+                }),
             })
             .collect();
         let pictures: Vec<Option<egui::TextureHandle>> = manager
@@ -206,6 +215,8 @@ impl ModsPanel {
                             | ModState::Damaged(_)
                             | ModState::NeedsUpdate(_)
                             | ModState::NeedsMods(_)
+                            | ModState::CodeWaiting { .. }
+                            | ModState::CodeBlocked(_)
                             | ModState::WrongEdition { .. }
                             | ModState::Incompatible(_)
                     ) {
@@ -225,6 +236,11 @@ impl ModsPanel {
                                 egui::Label::new(RichText::new(&card.version).weak())
                                     .selectable(false),
                             );
+                            // The mod is a program, not only data.
+                            if let Some(code) = &card.code {
+                                widgets::chip(ui, tr("native.badge"), crate::WARN)
+                                    .on_hover_text(format!("{}\n{code}", tr("native.badge_hint")));
+                            }
                         });
                         if !card.author.is_empty() {
                             ui.add(
@@ -286,6 +302,14 @@ impl ModsPanel {
                         action = Some(CardAction::Toggle(card.id.clone(), !card.enabled));
                         ui.close();
                     }
+                    if ui
+                        .add_enabled(!card.damaged, egui::Button::new(tr("mods.export")))
+                        .on_hover_text(tr("mods.export_hint"))
+                        .clicked()
+                    {
+                        action = Some(CardAction::Export(card.id.clone()));
+                        ui.close();
+                    }
                     if ui.button(tr("mods.remove")).clicked() {
                         action = Some(CardAction::Remove(card.id.clone()));
                         ui.close();
@@ -329,6 +353,16 @@ impl ModsPanel {
                 self.move_mod(&ctx, &id, to);
             }
             Some(CardAction::Remove(id)) => self.ask_remove(&id),
+            Some(CardAction::Export(id)) => {
+                if let Some(out) = rfd::FileDialog::new()
+                    .set_title(tr("mods.export_title"))
+                    .set_file_name(format!("{id}.zip"))
+                    .add_filter(tr("mods.filter_mods"), &["zip"])
+                    .save_file()
+                {
+                    self.export_mod(&ctx, &id, out);
+                }
+            }
             None => {}
         }
     }

@@ -8,8 +8,8 @@ use clap::{Args, Subcommand};
 
 use doctor_toolkit::game::GameInstance;
 use doctor_toolkit::workspace::{
-    ApplyOptions, ApplyReport, ChangeState, FileKey, ResourceKey, SemanticDiff, StreamAction,
-    StreamState, Workspace, WorkspaceLock,
+    ApplyOptions, ApplyReport, ChangeState, SemanticDiff, StreamAction, StreamState, Workspace,
+    WorkspaceLock,
 };
 
 /// Writes a line to stdout and exits quietly when the pipe is closed.
@@ -156,34 +156,14 @@ pub fn run(command: WorkspaceCommand) -> Result<()> {
                 }
                 return Ok(());
             }
-            let file_keys: Vec<FileKey> = ws
-                .file_changes()
-                .map(|c| c.key.clone())
-                .filter(|k| {
-                    let text = k.to_string();
-                    keys.iter().any(|q| text == *q || text.contains(q.as_str()))
-                })
-                .collect();
-            let res_keys = if file_keys.is_empty() {
-                match_keys(&ws, &keys)?
-            } else {
-                match_keys(&ws, &keys).unwrap_or_default()
-            };
-            for key in &res_keys {
+            let done = ws.revert_matching(&keys)?;
+            for key in &done.resources {
                 out!("revert {key}");
             }
-            for key in &file_keys {
+            for key in &done.files {
                 out!("revert {key}");
             }
-            let label = format!("Revert {} change(s)", res_keys.len() + file_keys.len());
-            let mut any = false;
-            if !res_keys.is_empty() {
-                any |= ws.revert(&res_keys, &label)?;
-            }
-            if !file_keys.is_empty() {
-                any |= ws.revert_files(&file_keys, &label)?;
-            }
-            if !any {
+            if done.operation.is_none() {
                 out!("nothing to revert");
             }
             Ok(())
@@ -279,6 +259,26 @@ fn open(target: &Target) -> Result<(GameInstance, Workspace)> {
     }
     let ws = Workspace::open(&dir)?;
     Ok((game, ws))
+}
+
+/// `game` with the streams its workspace creates staged
+/// ([`Workspace::stage`]): commands that read a level or address a resource
+/// by stream and index see a new zone before `workspace apply`. The game as
+/// it is when there is no workspace; a warning when staging fails.
+pub fn staged(game: GameInstance, workspace_dir: Option<&Path>) -> GameInstance {
+    let dir = workspace_dir
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| Workspace::default_dir(game.root()));
+    if !Workspace::exists(&dir) {
+        return game;
+    }
+    match Workspace::open_read_only(&dir).and_then(|ws| ws.stage(&game)) {
+        Ok(staged) => staged,
+        Err(error) => {
+            eprintln!("warning: the new streams of the workspace are not shown: {error}");
+            game
+        }
+    }
 }
 
 /// Opens or creates the workspace for an editing command.
@@ -571,30 +571,6 @@ fn print_report(report: &ApplyReport) {
 }
 
 /// Resolves key arguments: an exact key, or text contained in keys of the workspace.
-fn match_keys(ws: &Workspace, args: &[String]) -> Result<Vec<ResourceKey>> {
-    let mut keys = Vec::new();
-    for arg in args {
-        if let Ok(key) = arg.parse::<ResourceKey>()
-            && ws.change(&key).is_some()
-        {
-            keys.push(key);
-            continue;
-        }
-        let found: Vec<_> = ws
-            .changes()
-            .filter(|c| c.key.to_string().contains(arg.as_str()))
-            .map(|c| c.key.clone())
-            .collect();
-        if found.is_empty() {
-            bail!("no change matches `{arg}`");
-        }
-        keys.extend(found);
-    }
-    keys.sort();
-    keys.dedup();
-    Ok(keys)
-}
-
 /// `YYYY-MM-DD HH:MM:SS` in UTC.
 fn format_time(secs: u64) -> String {
     let days = (secs / 86_400) as i64;

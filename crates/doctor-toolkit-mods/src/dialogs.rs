@@ -12,8 +12,9 @@ use crate::{BAD, GOOD, JobKind, ModsPanel, Report};
 
 /// A window of the panel.
 pub(crate) enum Dialog {
-    /// Install these files (opened from the system)?
-    Install(Vec<PathBuf>),
+    /// Install these files? With what each of them holds, read and checked
+    /// before the question (stage 103).
+    Install(Vec<PathBuf>, Vec<FileSummary>),
     /// Write the enabled mods into the game?
     Write,
     /// Put the originals back?
@@ -42,6 +43,86 @@ pub(crate) enum Dialog {
     DeleteSet(String),
     /// The result of writing, restoring or checking.
     Report(Report),
+    /// This mod carries executable code: may it be installed?
+    Code(Box<crate::native::CodeView>),
+}
+
+/// What a mod file holds, or why it cannot be read.
+pub(crate) type FileSummary = Result<doctor_toolkit::mods::FileInfo, String>;
+
+/// What a mod file holds, under its name in the question before installing.
+fn file_summary(ui: &mut egui::Ui, info: &FileSummary) {
+    let info = match info {
+        Ok(info) => info,
+        Err(error) => {
+            ui.colored_label(BAD, trf("mods.info_unreadable", &[("error", error)]));
+            return;
+        }
+    };
+    ui.indent(("mod-file-info", &info.name, &info.id), |ui| {
+        let mut title = format!("{} {}", info.name, info.version);
+        if !info.author.is_empty() {
+            title += &trf("mods.info_by", &[("author", &info.author)]);
+        }
+        ui.label(title);
+        if let Some(line) = info.description.lines().next() {
+            ui.add(egui::Label::new(RichText::new(line).weak()).wrap());
+        }
+        let mut contents = trf(
+            "mods.info_contents",
+            &[
+                (
+                    "resources",
+                    &trn("count.resources", info.resources as u64, &[]),
+                ),
+                ("added", &info.added),
+                (
+                    "streams",
+                    &trn("count.streams", info.streams.len() as u64, &[]),
+                ),
+                ("bytes", &trn("count.bytes", info.payload_bytes, &[])),
+            ],
+        );
+        if !info.new_streams.is_empty() {
+            contents += "; ";
+            contents += &trn("count.new_streams", info.new_streams.len() as u64, &[]);
+        }
+        ui.add(egui::Label::new(contents).wrap());
+        if !info.streams.is_empty() {
+            let mut names = info.streams.iter().take(6).cloned().collect::<Vec<_>>();
+            if info.streams.len() > names.len() {
+                names.push("…".to_owned());
+            }
+            ui.add(egui::Label::new(RichText::new(names.join(", ")).weak().small()).wrap());
+        }
+        if info.kind == doctor_toolkit::mods::FileKind::Vpat {
+            ui.label(RichText::new(tr("mods.info_vpat")).weak());
+        }
+        if !info.depends.is_empty() {
+            ui.label(trf(
+                "mods.info_depends",
+                &[("mods", &info.depends.join(", "))],
+            ));
+        }
+        if !info.incompatible.is_empty() {
+            ui.label(trf(
+                "mods.info_incompatible",
+                &[("mods", &info.incompatible.join(", "))],
+            ));
+        }
+        if let Some(code) = &info.code {
+            ui.colored_label(
+                crate::WARN,
+                trf("mods.info_code", &[("modules", &code.modules.join(", "))]),
+            );
+        }
+        for warning in &info.warnings {
+            ui.colored_label(crate::WARN, warning);
+        }
+        if info.verified {
+            ui.colored_label(GOOD, tr("mods.info_verified"));
+        }
+    });
 }
 
 /// What the buttons of a window asked for.
@@ -55,6 +136,8 @@ enum Answer {
     /// Switch a mod on (with what it needs when `true`) or off.
     Switch(String, bool),
     EnableWith(String),
+    /// The answer about the executable code of a mod.
+    Code(String, crate::native::CodeAnswer),
 }
 
 /// The heading and the text of a question.
@@ -92,7 +175,15 @@ impl ModsPanel {
         let response = crate::widgets::modal(ctx, "mods-dialog").show(ctx, |ui| {
             ui.set_width(440.0);
             match &mut dialog {
-                Dialog::Install(paths) => {
+                Dialog::Code(view) => {
+                    if let Some(pressed) = crate::native::question_ui(ui, view, busy) {
+                        if pressed != crate::native::CodeAnswer::Later {
+                            answer = Some(Answer::Code(view.question.id.clone(), pressed));
+                        }
+                        keep = false;
+                    }
+                }
+                Dialog::Install(paths, infos) => {
                     let names: Vec<String> = paths
                         .iter()
                         .map(|p| {
@@ -107,11 +198,19 @@ impl ModsPanel {
                         &trn("mods.ask_install_title", paths.len() as u64, &[]),
                         tr("mods.ask_install_text"),
                     );
-                    for name in &names {
-                        ui.label(RichText::new(format!("•  {name}")).strong());
-                    }
+                    let readable = infos.iter().any(Result::is_ok);
+                    egui::ScrollArea::vertical()
+                        .max_height(360.0)
+                        .show(ui, |ui| {
+                            for (i, name) in names.iter().enumerate() {
+                                ui.label(RichText::new(format!("•  {name}")).strong());
+                                if let Some(info) = infos.get(i) {
+                                    file_summary(ui, info);
+                                }
+                            }
+                        });
                     ui.add_space(10.0);
-                    let (yes, no) = buttons(ui, tr("mods.install_now"), !busy);
+                    let (yes, no) = buttons(ui, tr("mods.install_now"), !busy && readable);
                     if yes {
                         answer = Some(Answer::Install(paths.clone()));
                     }
@@ -285,6 +384,7 @@ impl ModsPanel {
             Some(Answer::DeleteSet(name)) => self.delete_set(ctx, &name),
             Some(Answer::Switch(id, on)) => self.switch(ctx, &id, on),
             Some(Answer::EnableWith(id)) => self.enable_with_dependencies(ctx, &id),
+            Some(Answer::Code(id, pressed)) => self.code_answered(ctx, &id, pressed),
             None => {}
         }
     }

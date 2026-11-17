@@ -58,6 +58,8 @@ pub const REGISTRY: &[ViewEntry] = &[
     crate::text_view::VIEW,
     crate::cutscene_view::VIEW,
     crate::dialogue_view::VIEW,
+    crate::sound_table_view::VIEW,
+    crate::material_view::VIEW,
 ];
 
 /// One registered view.
@@ -163,7 +165,12 @@ pub enum ViewAction {
         name: String,
         text: String,
         everywhere: bool,
+        /// Texts of single languages (code, text), with `everywhere`.
+        translations: Vec<(String, String)>,
     },
+    /// Give entries of the string tables new texts in every table and
+    /// language of the game that has them, as one operation (stage 103).
+    EditStrings(Vec<doctor_toolkit::text::StringEdit>),
     /// Import an image file over a texture of the stream.
     ImportTexture { pair: TexturePair, path: PathBuf },
     /// Open the shown SimGroup in the logic graph editor.
@@ -188,6 +195,12 @@ pub enum ViewAction {
     OpenInTab(Option<&'static str>),
     /// Open the cut-scene of the shown shot in the level view (stage 62).
     OpenInLevel,
+    /// Open a page of the Sound window (`banks`, `events`, `config`,
+    /// `mixes`), with this mix chosen (stage 103).
+    OpenSound {
+        page: &'static str,
+        mix: Option<String>,
+    },
 }
 
 /// An edit a view hands to the app, see [`ViewAction::Apply`].

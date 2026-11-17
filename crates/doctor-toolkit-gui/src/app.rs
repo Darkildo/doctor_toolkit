@@ -28,11 +28,15 @@ mod asset_tab;
 mod asset_tests;
 mod bridge;
 mod browse;
+mod checks;
+#[cfg(test)]
+mod checks_tests;
 #[cfg(test)]
 mod cine_tests;
 mod cinema;
 mod commands;
 mod content;
+mod crashes;
 mod details;
 pub mod dnd;
 mod dock;
@@ -42,11 +46,14 @@ mod edits;
 mod external;
 mod gametab;
 mod history;
+mod knowledge;
 mod layouts;
 mod level;
 mod live;
 mod live_debug;
 mod live_state;
+#[cfg(test)]
+mod resource_tests;
 #[cfg(test)]
 mod view_tests;
 pub use live::LiveMarks;
@@ -58,12 +65,16 @@ mod outliner;
 mod palette;
 mod play;
 mod project;
+mod resource_ops;
 mod save_view;
 mod scripts;
 mod shell;
+mod sound;
+mod staging;
 pub mod theme;
 mod toolbar;
 mod wizard;
+mod zone;
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -140,6 +151,10 @@ struct SelfTest {
 /// sets the number of frames before the screenshot (20).
 /// `DOCTOR_TOOLKIT_GUI_SHELL=<window>[,…]` opens shell windows first:
 /// `palette[=text]`, `prefs`, `about`, `shortcuts`, `welcome`, `log`, `menu`.
+/// Exit code of the screenshot mode when an action of a preset failed (the
+/// screenshot is still written: it shows the error).
+const PRESET_EXIT: i32 = 2;
+
 struct Capture {
     path: PathBuf,
     select: Option<usize>,
@@ -217,12 +232,31 @@ pub struct BrowserApp {
     levels: HashMap<u64, LevelView>,
     /// Logic graph tabs.
     logics: HashMap<u64, crate::logic_editor::LogicEditor>,
+    /// The Findings panel: what "Check edits" and "Check references" found.
+    findings: checks::Findings,
+    /// The Hashes panel.
+    hashes: checks::Hashes,
+    /// The Knowledge base tab.
+    knowledge: knowledge::Knowledge,
+    /// `DOCTOR_TOOLKIT_GUI_MODS=info=<file>|export=<id>:<file>`, not done yet.
+    mods_preset: Option<String>,
+    /// `DOCTOR_TOOLKIT_GUI_SHELL` items that wait for the game: `check`,
+    /// `refs=<path>`, `hash=<text>`.
+    checks_preset: Vec<(String, String)>,
     /// `DOCTOR_TOOLKIT_GUI_LEVEL` went to a level tab already.
     level_preset_used: bool,
+    /// `DOCTOR_TOOLKIT_GUI_RESOURCE` (stage 103).
+    resource_preset: resource_ops::ResourcePreset,
+    /// The first error of a run without input: the edits queued after it
+    /// are dropped and the screenshot mode exits with [`PRESET_EXIT`].
+    preset_error: Option<String>,
     /// Material and texture lookup across the game, built on first use.
     assets: Option<doctor_toolkit::game::GameAssets>,
     /// Edits kept on disk; opened with the game, created by the first edit.
     workspace: Option<Workspace>,
+    /// What the new streams of the workspace were staged from: `game` lists
+    /// them as streams of the game (stage 103).
+    staging: staging::Staging,
     /// The lock of the workspace while the editor has it open: the command
     /// line and the MCP server do not write it meanwhile.
     ws_lock: Option<doctor_toolkit::workspace::WorkspaceLock>,
@@ -238,11 +272,17 @@ pub struct BrowserApp {
     mods_open: bool,
     /// Tools → Save file: a save of the game, read only.
     save_view: save_view::SaveWindow,
+    /// Tools → Sound: archive sounds, speech tables, the mixer (stage 103).
+    sound: sound::SoundWindow,
+    /// Tools → Crash reports (stage 103).
+    crashes: crashes::CrashWindow,
     /// The Movies window (`movies/*.vp6`).
     movies: crate::video_view::MoviesWindow,
     /// The integrity check waits for the Mods window to read the mods.
     integrity_queued: bool,
     model_import: model_import::ModelImport,
+    /// Tools → New stream…, New SimGroup…, World grid cell… (stage 103).
+    zone: zone::ZoneForms,
     script_editor: crate::script_editor::ScriptEditor,
     /// Resources linked to working files of other programs.
     external: external::Links,
@@ -351,9 +391,19 @@ impl BrowserApp {
             focus_search: None,
             levels: HashMap::new(),
             logics: HashMap::new(),
+            findings: checks::Findings::default(),
+            hashes: checks::Hashes::default(),
+            knowledge: knowledge::Knowledge::default(),
+            mods_preset: std::env::var("DOCTOR_TOOLKIT_GUI_MODS")
+                .ok()
+                .filter(|v| v.contains('=')),
+            checks_preset: Vec::new(),
             level_preset_used: false,
+            preset_error: None,
+            resource_preset: Default::default(),
             assets: None,
             workspace: None,
+            staging: staging::Staging::default(),
             ws_lock: None,
             bridge: bridge::BridgeState::default(),
             ws_status: None,
@@ -362,9 +412,12 @@ impl BrowserApp {
             mods: doctor_toolkit_mods::ModsPanel::new(),
             mods_open: std::env::var_os("DOCTOR_TOOLKIT_GUI_MODS").is_some(),
             save_view: save_view::SaveWindow::from_env(),
+            sound: sound::SoundWindow::default(),
+            crashes: crashes::CrashWindow::default(),
             movies: crate::video_view::MoviesWindow::new(),
             integrity_queued: false,
             model_import: Default::default(),
+            zone: zone::ZoneForms::default(),
             script_editor: scripts::editor_from_env(),
             external: external::Links::new(ctx),
             index_type: None,
@@ -563,13 +616,24 @@ impl BrowserApp {
         )));
         let game = Arc::new(game);
         self.check_opened_game(game.clone());
-        self.nav.open_game(game.clone());
-        self.game = Some(game.clone());
+        self.game = Some(game);
+        self.index = Some(Arc::new(index));
         self.files.clear();
         self.external.clear();
-        self.open_workspace();
+        // The streams the workspace creates are staged before the views get
+        // the game: they see them as streams of it.
+        self.load_workspace();
+        // `DOCTOR_TOOLKIT_GUI_ZONE`: the zone made hands-free is there when
+        // the views get the game.
+        self.zone_preset();
+        self.stage_opened_game();
+        self.refresh_status();
+        let (Some(game), Some(index)) = (self.game.clone(), self.index.clone()) else {
+            return;
+        };
+        self.type_summary = index.type_summary();
+        self.nav.open_game(game.clone());
         self.assets = None;
-        let index = Arc::new(index);
         crate::cutscene_view::preview::share_game(game.clone(), index.clone());
         for level in self.levels.values_mut() {
             level.open_game(game.clone(), index.clone());
@@ -577,7 +641,6 @@ impl BrowserApp {
         for logic in self.logics.values_mut() {
             logic.open_game(game.clone(), index.clone());
         }
-        self.index = Some(index);
         self.details = None;
         self.docs.clear();
         // Tabs keep what they show and open it again in this game.
@@ -622,6 +685,11 @@ impl BrowserApp {
 
     /// Opens the stream and resource selected when the editor was closed.
     fn restore_last_selection(&mut self) {
+        // A level opened by a preset stays in front: a tab restored over
+        // it would keep the level from loading, and the run from ending.
+        if std::env::var_os("DOCTOR_TOOLKIT_GUI_LEVEL").is_some() {
+            return;
+        }
         let Some(game) = self.game.clone() else {
             return;
         };
@@ -650,9 +718,34 @@ impl BrowserApp {
     /// Records a message: the status bar shows it, the log panel keeps it,
     /// warnings and errors pop up and go to the log file.
     fn notify(&mut self, level: Level, text: String) {
+        if level == Level::Error {
+            self.preset_failed(&text);
+        }
         self.notes.push(level, &text);
         self.status = text.clone();
         self.notes.seen_status(&text);
+    }
+
+    /// An action failed: in a run without input (`DOCTOR_TOOLKIT_GUI_…`
+    /// presets) the first failure stops the chain — the edits queued after
+    /// it are not made, the error goes to standard error and the
+    /// screenshot mode exits with [`PRESET_EXIT`].
+    pub(crate) fn preset_failed(&mut self, text: &str) {
+        for level in self.levels.values_mut() {
+            level.drop_preset_actions();
+        }
+        if self.preset_error.is_none() {
+            if self.capture.is_some() {
+                eprintln!("error: {text}");
+            }
+            self.preset_error = Some(text.to_owned());
+        }
+    }
+
+    /// The first error of this run, if any (see [`Self::preset_failed`]).
+    #[cfg(test)]
+    pub(crate) fn preset_error(&self) -> Option<&str> {
+        self.preset_error.as_deref()
     }
 
     fn nav_action(&mut self, action: NavAction) {
@@ -714,8 +807,12 @@ impl BrowserApp {
             || self.levels.values().any(LevelView::busy)
             || crate::cutscene_view::busy()
             || self.play.busy()
+            || self.play.live.live_do_pending()
             || self.movies.busy()
             || self.content.previews.busy()
+            || self.findings.busy()
+            || !self.checks_preset.is_empty()
+            || self.mods_preset.is_some()
             || self.job.is_some()
     }
 
@@ -777,6 +874,7 @@ impl BrowserApp {
         }
         capture.requested = true;
         let path = capture.path.clone();
+        let failed = self.preset_error.is_some();
         // With DOCTOR_TOOLKIT_CONFIG_DIR the run leaves its settings and layout
         // behind, as a closed window does.
         self.save_settings();
@@ -788,6 +886,7 @@ impl BrowserApp {
                 .map_err(|e| e.to_string())
                 .and_then(|png| std::fs::write(&path, png).map_err(|e| e.to_string()))
             {
+                Ok(()) if failed => PRESET_EXIT,
                 Ok(()) => 0,
                 Err(error) => {
                     eprintln!("capture: {error}");
@@ -1011,6 +1110,11 @@ impl eframe::App for BrowserApp {
         self.poll_external(&ctx);
         self.poll_bridge(&ctx);
         self.wizard_preset();
+        self.resource_preset();
+        self.checks_preset();
+        self.poll_findings(ui.ctx());
+        self.poll_knowledge(ui.ctx());
+        self.poll_resource_requests(ui.ctx());
         for action in self.nav.poll() {
             self.nav_action(action);
         }
@@ -1065,6 +1169,8 @@ impl eframe::App for BrowserApp {
         self.play_frame(&ctx);
         self.show_mods(&ctx);
         self.show_save_view(&ctx);
+        self.show_sound_window(&ctx);
+        self.crash_window(&ctx);
         if let Some(game) = self.game.clone()
             && let Some(done) = self.movies.update(&ctx, game.root())
         {
@@ -1072,6 +1178,7 @@ impl eframe::App for BrowserApp {
             self.record_file(key, done.data, &done.label);
         }
         self.show_model_import(&ctx);
+        self.show_zone_forms(&ctx);
         self.show_windows(&ctx);
         self.layouts_window(&ctx);
         self.palette_ui(&ctx);
@@ -1080,6 +1187,11 @@ impl eframe::App for BrowserApp {
         }
         self.apply_dock_ops();
         self.content.previews.end_frame();
+        if self.capture.is_some() && self.notes.is_new_error(&self.status) {
+            // Errors set as plain status text count too.
+            let status = self.status.clone();
+            self.preset_failed(&status);
+        }
         self.notes.track(&self.status, self.nav.status.as_deref());
         self.notes.toasts(&ctx);
         self.track_settings(&ctx);

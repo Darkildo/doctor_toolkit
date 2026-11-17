@@ -41,6 +41,10 @@ pub struct ModelImport {
     /// set (repeatable; needs --new)
     #[arg(long = "retarget", value_name = "INDEX", requires = "new")]
     retarget: Vec<usize>,
+    /// With --new: put the new set into this stream (a stream of the game
+    /// or one made with `add-stream`) instead of the model's own
+    #[arg(long, value_name = "STREAM", requires = "new")]
+    to: Option<String>,
     /// Vertex format of every draw record (0–12) instead of the one the
     /// replaced model uses for the same kind of part
     #[arg(long)]
@@ -60,8 +64,10 @@ pub struct ModelImport {
 }
 
 pub fn model_import(args: ModelImport) -> Result<()> {
-    let game = Arc::new(GameInstance::open(&args.game_dir)?);
+    let game = GameInstance::open(&args.game_dir)?;
     let mut ws = workspace_cmd::open_for_edit(&game, &args.mode)?;
+    // The model or the target stream may be new in the workspace.
+    let game = Arc::new(ws.stage(&game)?);
     let stream = game
         .find_stream(&args.stream)
         .with_context(|| format!("stream `{}` not found", args.stream))?;
@@ -70,7 +76,7 @@ pub fn model_import(args: ModelImport) -> Result<()> {
         .with_context(|| format!("cannot read {}", args.file.display()))?;
     let (index, _) = game.build_index(|_| {});
     let mut assets = GameAssets::new(game.clone(), &index);
-    let plan = model::plan(
+    let mut plan = model::plan(
         &game,
         &ws,
         &index,
@@ -85,6 +91,10 @@ pub fn model_import(args: ModelImport) -> Result<()> {
             collision: args.collision,
         },
     )?;
+    if let Some(to) = &args.to {
+        let to = doctor_toolkit::zone_ops::any_stream(&game, &ws, to)?;
+        plan.put_into(&game, &ws, &to)?;
+    }
     let s = &plan.summary;
     if args.json {
         out!("{}", serde_json::to_string_pretty(s)?);
@@ -139,8 +149,11 @@ pub fn model_import(args: ModelImport) -> Result<()> {
         out!("nothing changed");
         return Ok(());
     }
-    let name = game.streams()[stream].stream_name();
-    workspace_cmd::finish_edit(&game, &mut ws, &args.mode, vec![name])
+    let mut streams = vec![game.streams()[stream].stream_name()];
+    if let Some(to) = &args.to {
+        streams.push(doctor_toolkit::workspace::key::normalize_stream(to));
+    }
+    workspace_cmd::finish_edit(&game, &mut ws, &args.mode, streams)
 }
 
 /// A resource index, or the mesh whose model name is `text`.

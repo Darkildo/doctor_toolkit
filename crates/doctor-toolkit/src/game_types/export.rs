@@ -334,6 +334,7 @@ pub fn files() -> Vec<(&'static str, String)> {
         (SCHEMA_PATH, json_schema_text()),
         (PYTHON_MODULE_PATH, python_module()),
         (PYTHON_STUB_PATH, python_stub()),
+        (super::lua_api::STUB_PATH, super::lua_api::stub()),
     ]
 }
 

@@ -160,6 +160,11 @@ pub struct PlayConfig {
     /// instead of being written ([`overlay`], stage 46).
     #[serde(skip_serializing_if = "overlay::OverlayMode::is_default")]
     pub overlay: overlay::OverlayMode,
+    /// How changed streams reach the game through the module: rebuilt
+    /// whole (stage 46, the default) or composed in memory from resource
+    /// patches (stage 100).
+    #[serde(skip_serializing_if = "overlay::Streams::is_default")]
+    pub streams: overlay::Streams,
     /// Graphics of the launch: the graphics module, Large Address Aware,
     /// the Vulkan driver ([`render`], stage 59).
     #[serde(skip_serializing_if = "render::GraphicsOptions::is_default")]

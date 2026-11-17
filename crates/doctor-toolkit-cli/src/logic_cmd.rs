@@ -8,9 +8,9 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, bail};
 use clap::Args;
 
+use doctor_toolkit::apx_edit::{self, ApxEdit};
 use doctor_toolkit::game::GameInstance;
 use doctor_toolkit::hash::sdbm;
-use doctor_toolkit::resource::apx::AptFile;
 use doctor_toolkit::resource::logic_import::{self, apply_json};
 use doctor_toolkit::resource::names::{sim_classes, type_tags};
 use doctor_toolkit::resource::simgroup::{Kind, SimGroup, Value};
@@ -27,7 +27,6 @@ macro_rules! out {
     };
 }
 
-const APX: u32 = sdbm(b"apx");
 const SIMGROUP: u32 = sdbm(b"simgroup");
 
 /// Finds a stream by name; returns its index.
@@ -219,8 +218,10 @@ pub fn simgroup_set(args: &SimGroupSet) -> Result<()> {
         let (class, attr) = target
             .split_once('.')
             .with_context(|| format!("`{target}`: CLASS.ATTR expected"))?;
-        let slot = object
-            .packets
+        // The packets of the object as they are now: setting an attribute
+        // of a packet shared with other objects gives the object its own.
+        let packets = group.objects[o].packets.clone();
+        let slot = packets
             .iter()
             .position(|&p| {
                 let packet = &group.packets[p];
@@ -230,7 +231,7 @@ pub fn simgroup_set(args: &SimGroupSet) -> Result<()> {
                     || parse_hex(class).is_ok_and(|h| h == packet.class.0)
             })
             .with_context(|| format!("object {o} has no packet of class `{class}`"))?;
-        let packet = &group.packets[object.packets[slot]];
+        let packet = &group.packets[packets[slot]];
         let class_hash = packet.class.0;
         let schema = doctor_toolkit::resource::simgroup::Schema::gf2();
         let index = match attr.parse::<u16>() {
@@ -360,76 +361,24 @@ pub fn apx_import(args: &ApxImport) -> Result<()> {
     let game = GameInstance::open(&args.game_dir)?;
     let stream = stream_index(&game, &args.stream)?;
     let mut ws = workspace_cmd::open_for_edit(&game, &args.mode)?;
-    let file = game.open_stream(stream)?;
-    let candidates: Vec<usize> = (0..file.layout().resources.len())
-        .filter(|&i| file.layout().resources[i].header.type_id == APX)
-        .collect();
-    drop(file);
-    let mut found = None;
-    for &index in &candidates {
-        let apx = AptFile::parse(&ws.current_data(&game, stream, index)?)?;
-        let title = apx.title().unwrap_or_default();
-        if title.eq_ignore_ascii_case(&args.apx) || args.apx.parse() == Ok(index) {
-            found = Some((index, apx));
-            break;
-        }
+    let (index, _) = apx_edit::find(&game, &ws, stream, &args.apx)?;
+    let done = apx_edit::edit(
+        &game,
+        &mut ws,
+        stream,
+        index,
+        &ApxEdit {
+            texture: args.texture.clone(),
+            image: args.image.clone(),
+            apt: args.apt.clone(),
+            constants: args.constants.clone(),
+            text_refs: Default::default(),
+        },
+    )?;
+    for change in &done.changes {
+        out!("{}: {change}", done.title);
     }
-    let (index, mut apx) =
-        found.with_context(|| format!("no apx file `{}` in {}", args.apx, args.stream))?;
-    let title = apx.title().unwrap_or_default();
-    if let (Some(name), Some(image)) = (&args.texture, &args.image) {
-        let textures = apx.textures()?;
-        let position = textures
-            .iter()
-            .position(|t| t.header.name.eq_ignore_ascii_case(name))
-            .or_else(|| name.parse().ok().filter(|&i: &usize| i < textures.len()))
-            .with_context(|| {
-                let names: Vec<&str> = textures.iter().map(|t| t.header.name.as_str()).collect();
-                format!(
-                    "{title} has no embedded texture `{name}`; it has: {}",
-                    names.join(", ")
-                )
-            })?;
-        let bytes = fs::read(image).with_context(|| format!("cannot read {}", image.display()))?;
-        let is_png = image
-            .extension()
-            .is_some_and(|e| e.eq_ignore_ascii_case("png"));
-        let before = &textures[position].header;
-        let after = apx.import_texture(position, &bytes, is_png)?;
-        let h = &after.header;
-        out!(
-            "{title}: texture {}: {}×{} {} -> {}×{} {}, {} mip level(s)",
-            h.name,
-            before.width,
-            before.height,
-            before.format().name(),
-            h.width,
-            h.height,
-            h.format().name(),
-            h.mip_count()
-        );
-    }
-    for (path, is_apt) in [(&args.apt, true), (&args.constants, false)] {
-        let Some(path) = path else { continue };
-        let bytes = fs::read(path).with_context(|| format!("cannot read {}", path.display()))?;
-        let len = bytes.len();
-        if is_apt {
-            apx.set_apt(bytes)?;
-        } else {
-            apx.set_constants(bytes)?;
-        }
-        out!(
-            "{title}: {} replaced with {} ({len} bytes)",
-            if is_apt {
-                "movie (apti)"
-            } else {
-                "constants (cons)"
-            },
-            path.display()
-        );
-    }
-    let label = format!("Import into {title} ({})", args.stream);
-    if !ws.set_resource(&game, stream, index, apx.to_bytes()?, &label)? {
+    if done.operation.is_none() {
         out!("no change: the workspace already has this data");
         return Ok(());
     }

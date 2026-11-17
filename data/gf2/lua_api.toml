@@ -1,0 +1,2306 @@
+# What godfather2.exe (PC 1.0.789.0) gives to Lua scripts: every function and
+# table it registers in the Lua state of the game. One source for the notes
+# of the knowledge base (`doctor-toolkit kb-gen`), the Lua stub
+# (`doctor-toolkit types-gen`), `game_types::lua_api` (build.rs) and the
+# checks of the mock API (script::sim).
+#
+# Addresses come from `research/lua_api.py scan` (and `check` compares this
+# file with the exe); signatures and descriptions are read from the code by
+# hand: docs/analysis/lua-api.md.
+#
+# [[group]]    — a subsystem: key, title (English, tools), ru (notes).
+# [[table]]    — a table or metatable: name, kind (`global` — a global table,
+#                `metatable` — methods of a userdata type, `library` — a
+#                standard Lua library, `lua` — made by Lua text embedded in
+#                the exe), ru.
+# [[function]] — name; owner (a [[table]]; none — a global function);
+#   kind     — c (a C function of the game), lib (a standard function of Lua
+#              5.0 or tolua: no signature here), lua (defined by Lua text
+#              embedded in the exe: `source` is the address of the text);
+#   register — where it is registered: the call of lua_pushstring, or the
+#              entry of a {name, function} array (twice: once per Lua state);
+#   impl     — the C function;
+#   args, returns — the Lua-side signature; `?` — may be left out;
+#              "(последний аргумент)" — the function returns 1 without pushing,
+#              so the script gets its own last argument back;
+#   ru       — what it does (Russian, for the notes);
+#   conf     — exe (read in the code), bench (also seen in the running game),
+#              guess;
+#   bench    — the section of docs/analysis/game-bench.md with the check.
+# [[missing]]  — names the game's scripts call that the exe does not define.
+
+[[group]]
+key = "emitters"
+title = "Sound emitters (.emx)"
+ru = "Эмиттеры звука (.emx)"
+
+[[group]]
+key = "music_streams"
+title = "Music streams"
+ru = "Потоки музыки"
+
+[[group]]
+key = "effects"
+title = "Sound effects"
+ru = "Эффекты звука"
+
+[[group]]
+key = "ears_streams"
+title = "EARS audio streams (.stx)"
+ru = "Потоки EARS (.stx)"
+
+[[group]]
+key = "mixer"
+title = "Mixer and envelopes"
+ru = "Микшер и огибающие"
+
+[[group]]
+key = "timers"
+title = "Timers and time"
+ru = "Таймеры и время"
+
+[[group]]
+key = "scripts"
+title = "Scripts and output"
+ru = "Скрипты и вывод"
+
+[[group]]
+key = "positions"
+title = "Positions and impacts"
+ru = "Позиции и удары"
+
+[[group]]
+key = "variables"
+title = "Engine variables"
+ru = "Переменные движка"
+
+[[group]]
+key = "integers"
+title = "32-bit integers"
+ru = "Целые 32 бита"
+
+[[group]]
+key = "objects"
+title = "Game objects (Base)"
+ru = "Объекты игры (Base)"
+
+[[group]]
+key = "groups"
+title = "Object groups"
+ru = "Группы объектов"
+
+[[group]]
+key = "messages"
+title = "Messages"
+ru = "Сообщения"
+
+[[group]]
+key = "police"
+title = "Police"
+ru = "Полиция"
+
+[[group]]
+key = "vehicles"
+title = "Vehicles"
+ru = "Транспорт"
+
+[[group]]
+key = "lua_base"
+title = "Lua 5.0: base library"
+ru = "Lua 5.0: базовая библиотека"
+
+[[group]]
+key = "lua_coroutine"
+title = "Lua 5.0: coroutine"
+ru = "Lua 5.0: coroutine"
+
+[[group]]
+key = "lua_table"
+title = "Lua 5.0: table"
+ru = "Lua 5.0: table"
+
+[[group]]
+key = "lua_string"
+title = "Lua 5.0: string"
+ru = "Lua 5.0: string"
+
+[[group]]
+key = "lua_math"
+title = "Lua 5.0: math"
+ru = "Lua 5.0: math"
+
+[[group]]
+key = "tolua"
+title = "tolua"
+ru = "tolua"
+
+[[table]]
+name = "_G"
+kind = "library"
+ru = "Глобальное окружение: базовая библиотека Lua 5.0 (массив 0xE2AA58, luaL_openlib 0x628260); `print` затем заменяется функцией игры."
+
+[[table]]
+name = "coroutine"
+kind = "library"
+ru = "Сопрограммы Lua 5.0 (массив 0xE2AB28)."
+
+[[table]]
+name = "table"
+kind = "library"
+ru = "Библиотека table Lua 5.0 (массив 0xE2AA10)."
+
+[[table]]
+name = "string"
+kind = "library"
+ru = "Библиотека string Lua 5.0 (массив 0xE2AB58)."
+
+[[table]]
+name = "math"
+kind = "library"
+ru = "Библиотека math Lua 5.0 (массив 0xE2A948)."
+
+[[table]]
+name = "tolua"
+kind = "library"
+ru = "Таблица tolua: type, takeownership, releaseownership, cast (регистрация 0x629F11)."
+
+[[table]]
+name = "GroupManager"
+kind = "global"
+ru = "Глобальная таблица менеджера групп (массив 0xE32148, регистрация 0x469C49); методы зовутся через двоеточие."
+
+[[table]]
+name = "Group"
+kind = "metatable"
+ru = "Группа объектов: userdata с номером одного из 64 слотов менеджера *0x1223414 (массив методов 0xE32180)."
+
+[[table]]
+name = "Variable"
+kind = "metatable"
+ru = "Переменная движка: userdata с индексом записи менеджера *0x1223428 (массив 0xE32340)."
+
+[[table]]
+name = "UInt32"
+kind = "metatable"
+ru = "Беззнаковое целое 32 бита: userdata 4 байта (массив 0xE32518). Число Lua здесь float, поэтому время и счётчики движок отдаёт так."
+
+[[table]]
+name = "Int32"
+kind = "metatable"
+ru = "Знаковое целое 32 бита: userdata 4 байта (массив 0xE325F8)."
+
+[[table]]
+name = "Base"
+kind = "metatable"
+ru = "Слабая ссылка на объект игры: userdata 8 байт (массив 0xE326DC)."
+
+[[table]]
+name = "MessageReceiver"
+kind = "metatable"
+ru = "Получатель сообщений шины: userdata с объектом движка (vtable 0xE36C60; массив методов 0xE36AB0)."
+
+[[table]]
+name = "gFunctionRegistry"
+kind = "lua"
+ru = "Таблица `имя скрипта → {имя функции → функция}`; её ведут RegisterFunction и CallLuaFunction (встроенный текст 0x0110A6F0)."
+
+[[table]]
+name = "MessageReceiverRegistry"
+kind = "lua"
+ru = "Таблица `номер → обёртка получателя`, поле n — последний номер (встроенный текст 0x011289F8)."
+
+[[table]]
+name = "MessageReceiverMeta"
+kind = "lua"
+ru = "Метатаблица обёрток NewMessageReceiver: AddMessage, RemoveMessage, RemoveAllMessages, Delete (встроенный текст 0x011289F8)."
+
+[[missing]]
+name = "SetWatchValue"
+ru = "Вызывается в aud_utils.lua; в exe такой функции нет — вызов даёт ошибку, которую глушит pcall."
+
+[[missing]]
+name = "ClearWatchValue"
+ru = "Вызывается в aud_utils.lua; в exe такой функции нет."
+
+[[function]]
+name = "PlayEmx"
+kind = "c"
+group = "emitters"
+register = ["0x00435BFE"]
+impl = "0x00436A90"
+args = "name: string|number, volume?: number, pitch?: number, flag?: boolean, position?: userdata|lightuserdata, param6?: number"
+returns = "handle: lightuserdata"
+ru = "0x436a90. Хэширует имя sdbm(lower) 0x4dafd0 и запускает эмиттер через 0x5e49d0(хэш, менеджер *0x12234BC, &params); params[+0]=int(param6), params[+0xC]=1 только если flag == true (boolean). Затем 0x5e67c0(handle, *0x110AC04), pitch через 0x5e6750, position (указатель на 3 float) через 0x5e6580, volume через 0x5e6700. Имя не строка/не найдено: без ошибки, возвращает lightuserdata(0) (в Lua это истина). Смысл flag и param6 в коде не раскрыт (guess: зацикливание/приоритет)."
+conf = "bench"
+bench = "§35"
+
+[[function]]
+name = "PlayEntityEmx"
+kind = "c"
+group = "emitters"
+register = ["0x00435C5E"]
+impl = "0x00436D20"
+args = "name: string|number, volume?: number, pitch?: number, flag?: boolean, entity: userdata|lightuserdata, param6?: number"
+returns = "handle: lightuserdata (или 0 результатов)"
+ru = "0x436d20. Вызывает entity->vtbl[+0xAC](name, &params) (эмиттер, привязанный к объекту); pitch умножается на entity->vtbl[+0x110](), зажатое в [0.3, 1.0]; затем 0x5e67c0, volume 0x5e6700. Если entity не userdata/lightuserdata: молча возвращает 0 результатов; если name не строка: lightuserdata(0). В скриптах игры не вызывается."
+conf = "exe"
+
+[[function]]
+name = "StopEmx"
+kind = "c"
+group = "emitters"
+register = ["0x00435CB1"]
+impl = "0x00437020"
+args = "handle: lightuserdata|userdata"
+returns = "-"
+ru = "0x437020. Индекс слота = младшие 16 бит handle (< 0x200), слот = *0x12234BC + 0x10 + i*0x30; если слот[+0x2C] == handle, вызывает 0x5e5e60(i, 0) (остановка с освобождением). Лишние аргументы игнорируются; неверный handle: молча."
+conf = "exe"
+
+[[function]]
+name = "SetEmxVolume"
+kind = "c"
+group = "emitters"
+register = ["0x00435D04"]
+impl = "0x004370A0"
+args = "handle: lightuserdata|userdata, volume: number"
+returns = "-"
+ru = "0x4370a0 -> 0x5e6700(handle, volume) -> 0x5e5fe0. Оба аргумента обязательны (число или числовая строка), иначе молча ничего."
+conf = "exe"
+
+[[function]]
+name = "SetEmxPitch"
+kind = "c"
+group = "emitters"
+register = ["0x00435D57"]
+impl = "0x00437140"
+args = "handle: lightuserdata|userdata, pitch: number"
+returns = "-"
+ru = "0x437140 -> 0x5e6750(handle, pitch): пишет множитель высоты в голос (поле +0x54, флаг 2 в +0x4A). Неверные аргументы: молча."
+conf = "exe"
+
+[[function]]
+name = "SetEmxPosition"
+kind = "c"
+group = "emitters"
+register = ["0x00435DAA"]
+impl = "0x004371E0"
+args = "handle: lightuserdata|userdata, position: lightuserdata|userdata"
+returns = "-"
+ru = "0x4371e0 -> 0x5e6580(handle, position); position — указатель на 3 float (CreatePosition/TEMP_POS/GetPlayerPosition). Неверные типы или нулевой указатель: молча."
+conf = "exe"
+
+[[function]]
+name = "SetEmxAzimuth"
+kind = "c"
+group = "emitters"
+register = ["0x00435DFD"]
+impl = "0x00437270"
+args = "handle: lightuserdata|userdata, angleY: number, angleX: number, distance: number"
+returns = "-"
+ru = "0x437270. Берёт слушателя 0 (0x5e73f0) и его позицию (0x5e7a40), вектор (0,0,distance) поворачивает на angleX градусов вокруг оси X (0xE2E5F8) и на angleY градусов вокруг оси Y (0xE2E604) (0x4a0370, градусы*0.0174533), прибавляет к позиции слушателя и ставит через 0x5e6580. Все 4 аргумента обязательны, иначе молча."
+conf = "exe"
+
+[[function]]
+name = "PlayStream"
+kind = "c"
+group = "music_streams"
+register = ["0x00435E50"]
+impl = "0x00437700"
+args = "stream: number, name: string|number, offset?: number"
+returns = "-"
+ru = "0x437700 -> 0x458d10(менеджер *0x12233FC, hasOffset, offset, delay=0.0). stream — 0 или 1; к имени дописывается \".exa\" (0x4d3ca0) и ищется запись 0x456070; найдена: 0x458110 запускает сразу, поток[+0xD0]=категория микса записи. Не найдена: ставится флаг ошибки поток[+0x200] (GetStreamStatus вернёт 0). offset — guess: секунды (скрипты: длительность_мс*0.001). Неверные типы: молча."
+conf = "exe"
+
+[[function]]
+name = "PrimeStream"
+kind = "c"
+group = "music_streams"
+register = ["0x00435EA3"]
+impl = "0x004374B0"
+args = "stream: number, name: string|number, offset?: number"
+returns = "-"
+ru = "0x4374b0. То же, что PlayStream, но delay = 100000.0 (double 0xE44970): поток открывается и буферизуется, время старта отложено (поток[+0x100] = часы микшера + delay); запуск — StartStream."
+conf = "exe"
+
+[[function]]
+name = "StartStream"
+kind = "c"
+group = "music_streams"
+register = ["0x00435EF6"]
+impl = "0x00437610"
+args = "stream: number"
+returns = "-"
+ru = "0x437610 -> 0x4582c0: обнуляет отложенное время старта поток[+0x100] и, если голос уже создан (поток[+0x16C]==1), шлёт команду старта. stream вне 0..1: молча."
+conf = "exe"
+
+[[function]]
+name = "StopStream"
+kind = "c"
+group = "music_streams"
+register = ["0x00435F49"]
+impl = "0x00437850"
+args = "stream: number, fadeTime: number = 0"
+returns = "-"
+ru = "0x437850 -> 0x458370(fadeTime). fadeTime зажимается в [0, 100]; < 1.19e-7: немедленная остановка; иначе затухание громкости до 0 через 0x4584f0(0, fadeTime) и флаг поток[+0xE0]=1. Единицы fadeTime — guess: секунды (по скриптам)."
+conf = "exe"
+
+[[function]]
+name = "SetStreamMixCategory"
+kind = "c"
+group = "music_streams"
+register = ["0x00435F9C"]
+impl = "0x004379B0"
+args = "stream: number, category: string|number"
+returns = "-"
+ru = "0x4379b0. поток[+0xD0] = sdbm(lower(category)); stream — 0 или 1 (потоки в *0x12233FC + 8 + i*4). Неверные типы: молча. В скриптах не вызывается."
+conf = "exe"
+
+[[function]]
+name = "SetStreamEmitterLocation"
+kind = "c"
+group = "music_streams"
+register = ["0x00435FEF"]
+impl = "0x00437A70"
+args = "(любые)"
+returns = "-"
+ru = "0x437a70: пустая функция (xor eax,eax; ret), ничего не делает."
+conf = "exe"
+
+[[function]]
+name = "SetStreamVolume"
+kind = "c"
+group = "music_streams"
+register = ["0x00436042"]
+impl = "0x00437D80"
+args = "stream: number, volume: number, time: number"
+returns = "-"
+ru = "0x437d80 -> 0x4584f0(volume, time). Все три обязательны. volume зажимается в [0,1], time в [0,100] (guess: секунды); пишет целевую громкость поток[+0xEC] и время поток[+0xF0]; игнорируется, пока идёт затухание StopStream (поток[+0xE0])."
+conf = "exe"
+
+[[function]]
+name = "SetStreamChannelVolume"
+kind = "c"
+group = "music_streams"
+register = ["0x00436095"]
+impl = "0x00437EF0"
+args = "stream: number, channel: number, volume: number, time: number"
+returns = "-"
+ru = "0x437ef0 -> 0x458ec0 -> 0x458670. Все четыре обязательны. stream 0..1, channel 0..7, volume в [0,1], time в [0,100]; команда в микшер (*0x1143360) для канала потока."
+conf = "exe"
+
+[[function]]
+name = "SetStreamEffect"
+kind = "c"
+group = "effects"
+register = ["0x004360E8"]
+impl = "0x004380D0"
+args = "stream: number, p2: number, p3: number, p4: number, p5: number, p6: number"
+returns = "-"
+ru = "0x4380d0 -> 0x458f10 -> 0x4587c0(поток, p2..p6). Все 6 обязательны, stream 0..1. Параметры эффекта потока шлются в микшер 0xca4e90 (p5 и p6 зажимаются в [0,100], p4 от 2.0). Смысл параметров в коде не подписан. В скриптах не вызывается."
+conf = "exe"
+
+[[function]]
+name = "SetGlobalEffect"
+kind = "c"
+group = "effects"
+register = ["0x0043613B"]
+impl = "0x00438600"
+args = "a1: number, a2: number, a3: number, a4: number, a5: number, a6: number"
+returns = "-"
+ru = "0x438600 -> 0x5e3d90 -> (*0x1223510)->vtbl[+0xBC](&desc, a6). desc = {+0: 0x9C, +4: a4, +8: a3 (умолч. 15.0), +0xC: a5 (умолч. 1.0), +0x10: a1, +0x14: a2}. Все 6 обязательны, иначе молча. Смысл полей — guess: параметры глобального ревербератора, a6 — время перехода."
+conf = "exe"
+
+[[function]]
+name = "SetPluginEffect"
+kind = "c"
+group = "effects"
+register = ["0x0043618E"]
+impl = "0x004383B0"
+args = "submix: string|number, plugin: string|number, paramIndex: number, value: number"
+returns = "-"
+ru = "0x4383b0 -> (*0x1223510)->vtbl[+0xC0](&desc). desc = {sdbm(submix), sdbm(plugin), int(paramIndex), value, 0, 0, флаги 1,1,1}. value обязателен (иначе молча); первые три при неверном типе дают 0. Скрипты: (\"SUBMIX1\", \"Delay\", 0, x)."
+conf = "exe"
+
+[[function]]
+name = "SetAuxEnabled"
+kind = "c"
+group = "effects"
+register = ["0x004361E1"]
+impl = "0x00438300"
+args = "enabled: boolean"
+returns = "-"
+ru = "0x438300. Только boolean. Вызывает (*0x1223510)->vtbl[+0xC0] с описателем {sdbm(\"SOUND_PLAYER\"), sdbm(\"Aux1\"), ..., флаг enabled}: включает/выключает посыл Aux1."
+conf = "exe"
+
+[[function]]
+name = "SetStreamChannelEffectSend"
+kind = "c"
+group = "effects"
+register = ["0x00436234"]
+impl = "0x00438830"
+args = "stream: number, channel: number, send: number"
+returns = "-"
+ru = "0x438830 -> 0x458740. stream 0..1, channel 0..7; send зажимается в [-1, 1]; команда 0xca4e90(0, send) каналу потока. Все три обязательны. В скриптах не вызывается."
+conf = "exe"
+
+[[function]]
+name = "GetStreamStatus"
+kind = "c"
+group = "music_streams"
+register = ["0x00436287"]
+impl = "0x00438970"
+args = "stream: number"
+returns = "status: number"
+ru = "0x438970 -> 0x4589a0. 0 = ошибка (флаг поток[+0x200], сбрасывается при чтении) или остановка (поток[+0x170]==2); 1 = буферизация (поток[+0x170] 1 или 3); 2 = играет (поток[+0x16C]==1); 3 = свободен. Неверный аргумент или stream вне 0..1: 0. Скрипты: {Error, Buffering, Active, Available}."
+conf = "bench"
+bench = "§35"
+
+[[function]]
+name = "GetStreamDuration"
+kind = "c"
+group = "music_streams"
+register = ["0x004362DA"]
+impl = "0x00438A80"
+args = "stream: number"
+returns = "seconds: number"
+ru = "0x438a80 -> 0x458a20: поток[+0x1E4] (uint, мс) * 0.001, если голос активен (поток[+0x16C]==1); иначе и при неверном аргументе -1."
+conf = "exe"
+
+[[function]]
+name = "SetStreamPrimeFunction"
+kind = "c"
+group = "music_streams"
+register = ["0x0043632D"]
+impl = "0x00437B70"
+args = "stream: number, functionName: string"
+returns = "-"
+ru = "0x437b70. Запоминает L и имя (непустое, < 64 символов) в *0x12233F0 + 8 + stream*0x44 и ставит C-обработчик 0x437a80 (0x458cd0). Когда поток сообщает состояние 2, обработчик ищет глобал по имени (gettable 0x633cb0), если это функция — вызывает её с одним аргументом stream (pcall 0x636570, без результатов) и снимает регистрацию (однократно)."
+conf = "exe"
+
+[[function]]
+name = "PrimeEarsAudioStream"
+kind = "c"
+group = "ears_streams"
+register = ["0x00436380"]
+impl = "0x00438F40"
+args = "name: string|number, volume: number = 1.0, category?: string|number"
+returns = "handle: lightuserdata"
+ru = "0x438f40 -> общий помощник 0x438bb0(name, category, volume). Имя хэшируется как есть: sdbm(lower(name)) 0x4dafd0 (расширение не добавляется и не убирается: \"x.stx\" передают с .stx) и ищется 0x456010 в каталоге *0x12233F8 (сравнение с запись[+0x6C]). Найдено: путь строит 0x4a8460, параметры из записи 0x4a84d0 (затухания, приоритет, категория), category при наличии заменяет категорию записи хэшем; 0x5e25f0 занимает один из 5 слотов менеджера *0x122350C (нужен флаг [+0x1744]). handle = счётчик менеджер[+0x1748] (1,2,3...), а не указатель. Неизвестное имя/нет слота/имя не строка: без ошибки, lightuserdata(0) (истинно в Lua). Поток только открыт, не запущен. В скриптах не вызывается."
+conf = "bench"
+bench = "§35"
+
+[[function]]
+name = "PlayEarsAudioStream"
+kind = "c"
+group = "ears_streams"
+register = ["0x004363D3"]
+impl = "0x00438D10"
+args = "nameOrHandle: string|number|lightuserdata|userdata, volume: number = 1.0, category?: string|number"
+returns = "handle: lightuserdata"
+ru = "0x438d10. Строка: то же, что PrimeEarsAudioStream (0x438bb0), затем старт 0x5e1fd0(handle): слот[+0x20C]=0x32 и (*0x1223510)->vtbl[+0x9C]. handle (от Prime): volume игнорируется, category при наличии пишется хэшем в слот[+0x248] (0x5e2230), затем тот же старт; возвращается тот же handle. Неизвестное имя: без ошибки, lightuserdata(0). Аргумент иного типа: lightuserdata(0)."
+conf = "bench"
+bench = "§35"
+
+[[function]]
+name = "StopEarsAudioStream"
+kind = "c"
+group = "ears_streams"
+register = ["0x00436426"]
+impl = "0x00439500"
+args = "handle: lightuserdata|userdata"
+returns = "-"
+ru = "0x439500. Копирует сохранённые параметры слота (0x5e2180) и вызывает 0x5e2040(handle, &params+0x18): затухание 0x5e9440 с авторским временем fade-out из записи потока; если оно 0 — немедленное закрытие. Неизвестный handle или не тот тип: молча."
+conf = "bench"
+bench = "§35"
+
+[[function]]
+name = "SetEarsAudioStreamStopMessage"
+kind = "c"
+group = "ears_streams"
+register = ["0x00436479"]
+impl = "0x004395D0"
+args = "handle: lightuserdata, message: string|number"
+returns = "-"
+ru = "0x4395d0. handle — строго lightuserdata, message непустая. Кладёт имя в карту handle->строка (*0x12233F0 + 0x90, 0x439a00). Слушатель 0x439580 (зарегистрирован 0x435ac0 в менеджере *0x122350C) при событии 3 потока (переход состояния к остановке, таблица 0xE2B0A0) шлёт синхронно сообщение sdbm(message) через 0x4c82c0 -> 0x408a00 (данные: указатель на handle) и удаляет запись (0x4397c0). Иначе молча."
+conf = "bench"
+bench = "§35"
+
+[[function]]
+name = "SetEnvelopeMap"
+kind = "c"
+group = "mixer"
+register = ["0x004364CC"]
+impl = "0x00439280"
+args = "index: number, xValues: table, yValues: table"
+returns = "ok: boolean"
+ru = "0x439280. index 0..63; таблицы обходятся lua_next (0x637650): yValues -> 0x120A680 + index*0x104, xValues -> 0x120A600 + index*0x104, не более 32 точек; число точек (0x120A700 + index*0x104) пишется только при равных длинах. false: index >= 64, больше 32 точек или длины различны. Особенность: при неверных типах аргументов возвращает true, ничего не сделав."
+conf = "exe"
+
+[[function]]
+name = "GetEnvelopeValue"
+kind = "c"
+group = "mixer"
+register = ["0x0043651F"]
+impl = "0x004390F0"
+args = "index: number, x: number"
+returns = "y: number"
+ru = "0x4390f0. Кусочно-линейная интерполяция по точкам SetEnvelopeMap; x ниже первой точки — первое y, выше последней — последнее y. index > 63, пустая огибающая или неверные аргументы: 0."
+conf = "exe"
+
+[[function]]
+name = "EclipseLog"
+kind = "c"
+group = "scripts"
+register = ["0x0043E5EA", "0x0043E7AA"]
+impl = "0x0043E5C0"
+args = "text: string"
+returns = "(последний аргумент)"
+ru = "0x43E5C0: mov eax, 1; ret — ничего не делает. Регистрируется в обоих состояниях Lua: 0x43E5EA — состояние +0x1C, 0x43E7AA — состояние +0x18."
+conf = "bench"
+bench = "§35"
+
+[[function]]
+name = "GetDuckCategoryName"
+kind = "c"
+group = "mixer"
+register = ["0x00466CEB"]
+impl = "0x00466D90"
+args = "category: lightuserdata"
+returns = "name: string"
+ru = "0x466d90. Для lightuserdata с ненулевым указателем возвращает C-строку по адресу указатель+0x2DC; для любого другого аргумента — пустую строку (0xE2F044). В скриптах не вызывается."
+conf = "bench"
+bench = "§35"
+
+[[function]]
+name = "CreateTimer"
+kind = "c"
+group = "timers"
+register = ["0x00467003"]
+impl = "0x00467710"
+args = "functionName: string|number, oneShot: boolean, useRealTime?: boolean"
+returns = "handle: number"
+ru = "0x467710. Занимает свободный слот из 128 (*0x122346C + 0x14, по 0x54 байта): [+0]=L, [+0xC]=имя (1..63 символа), [+0x4C]=oneShot, [+0x4D]=1 (остановлен), [+0x4E]=useRealTime. Возвращает индекс 0..127 или -1 (имя не строка/пустое/длиннее 63, второй аргумент не boolean, нет слотов). Таймер создаётся остановленным. oneShot==true: после срабатывания останавливается; false: период прибавляется заново."
+conf = "bench"
+bench = "§35"
+
+[[function]]
+name = "StartTimer"
+kind = "c"
+group = "timers"
+register = ["0x00467063"]
+impl = "0x00467880"
+args = "handle: number, period?: number"
+returns = "remaining: number"
+ru = "0x467880. Слот должен принадлежать этому же L. Если period — число (0x6257d0), остаток [+4] и период [+8] = int(period); остановленный таймер запускается ([+0x4D]=0, счётчик активных 0x1205404++). Возвращает остаток в мс (0 при неверном handle). Единицы — миллисекунды."
+conf = "bench"
+bench = "§35"
+
+[[function]]
+name = "SetTimerRate"
+kind = "c"
+group = "timers"
+register = ["0x004670B6"]
+impl = "0x004679F0"
+args = "handle: number, period: number"
+returns = "remaining: number"
+ru = "0x4679f0. Новый период [+8]=int(period), остаток [+4] сдвигается на разницу нового и старого периода; возвращает новый остаток, 0 при неверном handle. Запуск/остановку не меняет."
+conf = "exe"
+
+[[function]]
+name = "StopTimer"
+kind = "c"
+group = "timers"
+register = ["0x00467109"]
+impl = "0x00467C30"
+args = "handle: number"
+returns = "remaining: number"
+ru = "0x467c30. Если таймер шёл: помечает остановленным ([+0x4D]=1, 0x1205404--) и возвращает остаток в мс; иначе 0. Слот не освобождается."
+conf = "bench"
+bench = "§35"
+
+[[function]]
+name = "DeleteTimer"
+kind = "c"
+group = "timers"
+register = ["0x0046715C"]
+impl = "0x00467B20"
+args = "handle: number"
+returns = "-"
+ru = "0x467b20. Освобождает слот (L=0, остаток/период=0, имя пустое, флаги сброшены), уменьшает счётчик активных, если шёл. Неверный handle или чужой L: молча."
+conf = "bench"
+bench = "§35"
+
+[[function]]
+name = "QueryTimer"
+kind = "c"
+group = "timers"
+register = ["0x004671AF"]
+impl = "0x00467D50"
+args = "handle: number"
+returns = "remaining: number"
+ru = "0x467d50. Возвращает остаток [+4] в мс (целое, может быть <= 0) для слота этого L; при неверном handle 0. Идёт таймер или стоит — не сообщает. В скриптах не вызывается."
+conf = "bench"
+bench = "§35"
+
+[[function]]
+name = "SetMixValues"
+kind = "c"
+group = "mixer"
+register = ["0x0046804E"]
+impl = "0x00468290"
+args = "category: string|number, fade?: number, volume?: number, p4?: number, cutoff?: number, send?: number"
+returns = "-"
+ru = "0x468290. Заполняет описатель *0x1223470+8 умолчаниями {-1,-1,-1, 1.0, 1.0, 0, 0, режим REPLACE, cutoff 96000} и аргументами: fade -> +0x1C и +0x20, volume -> +0x14, p4 -> +0x18, cutoff (int) -> +0x3C, send -> +0x10; затем 0x5dc6e0(sdbm(category), описатель, микшер *0x1223508) -> 0x5dd3f0. category не строка или не найдена (0x5dc670): молча. Имена fade/volume/cutoff/send — guess по значениям в скриптах (\"WALLA\", 1, 0.5, 1, 24000, 0)."
+conf = "exe"
+
+[[function]]
+name = "ApplyMix"
+kind = "c"
+group = "mixer"
+register = ["0x004680AE"]
+impl = "0x00468540"
+args = "name: string|number, flag: boolean"
+returns = "-"
+ru = "0x468540. flag обязателен и только boolean. sdbm(name) ищется 0x4564f0 в таблице миксов каталога *0x12233F8 (+0x40, счётчик +0x44); найден: 0x5ddc30(микс, микшер *0x1223508) применяет все категории микса, в описатель кладётся (flag == false). Не найден/неверные типы: молча. Скрипты: ApplyMix(\"igc_16.mix\", true)."
+conf = "exe"
+
+[[function]]
+name = "RemoveMix"
+kind = "c"
+group = "mixer"
+register = ["0x00468101"]
+impl = "0x00468680"
+args = "name: string|number"
+returns = "-"
+ru = "0x468680. Ищет микс так же (0x4564f0) и вызывает 0x5ddd90: категориям микса возвращаются значения по умолчанию (-1,-1,-1,1,1,0,0, cutoff 96000). Второй аргумент (скрипты передают 1) не читается. Не найден: молча."
+conf = "exe"
+
+[[function]]
+name = "SetMasterVolume"
+kind = "c"
+group = "mixer"
+register = ["0x00468154"]
+impl = "0x004687E0"
+args = "volume: number"
+returns = "-"
+ru = "0x4687e0 -> (*0x1223510)->vtbl[+0xCC](volume). Не число или синглтон пуст: молча. В скриптах не вызывается."
+conf = "exe"
+
+[[function]]
+name = "RegisterScriptName"
+kind = "c"
+group = "scripts"
+register = ["0x004689EB"]
+impl = "0x00468E10"
+args = "name: string|number, script: lightuserdata"
+returns = "-"
+ru = "0x468e10. script — строго lightuserdata (указатель на объект LuaAudioScript, глобал gGUID во время загрузки чанка). Копирует имя (до 63 символов, 0xb96970) в объект+0x84, завершающий 0 в +0xC3. Вызывается из встроенного RegisterFunction. Неверные типы/нулевой указатель: молча."
+conf = "bench"
+bench = "§35"
+
+[[function]]
+name = "GetPositionValues"
+kind = "c"
+group = "positions"
+register = ["0x00468A4E"]
+impl = "0x00468FF0"
+args = "position: lightuserdata|userdata"
+returns = "x: number, y: number, z: number"
+ru = "0x468ff0. Читает 3 float по указателю. Неверный тип или нулевой указатель: 0, 0, 0."
+conf = "bench"
+bench = "§35"
+
+[[function]]
+name = "SetPositionValues"
+kind = "c"
+group = "positions"
+register = ["0x00468AA1"]
+impl = "0x004690C0"
+args = "position: lightuserdata|userdata, x: number, y: number, z: number"
+returns = "ok: boolean"
+ru = "0x4690c0. Пишет 3 float по указателю; true при успехе, false при неверных типах или нулевом указателе."
+conf = "bench"
+bench = "§35"
+
+[[function]]
+name = "GetPlayerPosition"
+kind = "c"
+group = "positions"
+register = ["0x00468AF4"]
+impl = "0x00469230"
+args = "playerIndex: number"
+returns = "position: lightuserdata | nil"
+ru = "0x469230. Игрок = (*0x12233A0)[+4][index] (index < [+0xC]), объект = игрок->vtbl[+0xC](); его координаты [+0x100..+0x108] копируются в общий буфер *0x1223474 + 0x14, возвращается указатель на буфер (перезаписывается следующим вызовом). Нет игрока/объекта или не число: nil. Без аргумента — nil (стенд §35): номер игрока обязателен, у одиночной игры 0."
+conf = "bench"
+bench = "§35"
+
+[[function]]
+name = "TEMP_POS"
+kind = "c"
+group = "positions"
+register = ["0x00468B47"]
+impl = "0x00469350"
+args = "x: number, y: number, z: number"
+returns = "position: lightuserdata | nil"
+ru = "0x469350. Пишет x,y,z в общий временный буфер *0x1223474 + 8 и возвращает указатель на него (перезаписывается следующим вызовом). Любой аргумент не число: nil."
+conf = "bench"
+bench = "§35"
+
+[[function]]
+name = "CreatePosition"
+kind = "c"
+group = "positions"
+register = ["0x00468B9A"]
+impl = "0x00469460"
+args = "x?: number, y?: number, z?: number"
+returns = "position: userdata"
+ru = "0x469460. Создаёт userdata 12 байт (0x638a40, без метатаблицы) с 3 float; если все три аргумента числа — x,y,z, иначе нули."
+conf = "bench"
+bench = "§35"
+
+[[function]]
+name = "GetPlatform"
+kind = "c"
+group = "scripts"
+register = ["0x00468BED"]
+impl = "0x00469580"
+args = ""
+returns = "platform: string"
+ru = "0x469580. Всегда возвращает строку \"windows\" (0xE32020)."
+conf = "bench"
+bench = "§35"
+
+[[function]]
+name = "GetImpactData"
+kind = "c"
+group = "positions"
+register = ["0x004696FB"]
+impl = "0x004697A0"
+args = "handle: lightuserdata"
+returns = "data: table"
+ru = "0x4697a0. handle — указатель на пару {объект, позиция}; из объект[0][+0x20] берётся интерфейс удара (0x469ad0) и читаются vtbl[+0x10..+0x24]. Таблица: velocity: number (умолч. 0), angle: number (умолч. 1.0), position: lightuserdata (второе слово handle, либо 0), materialA: string, materialB: string (умолч. \"collision_default\"), massA: number, massB: number (умолч. 0). При неверном handle возвращается таблица с умолчаниями."
+conf = "exe"
+
+[[function]]
+name = "FindVariable"
+kind = "c"
+group = "variables"
+register = ["0x0046A2CC"]
+impl = "0x0046A470"
+args = "name: string|number"
+returns = "variable: Variable | (ничего)"
+ru = "0x46a470. Менеджер переменных *0x1223428: поиск по sdbm(lower(name)) 0x442130, при отсутствии — создание 0x442170 (записи по 0x14 байт в [+0x24], предел [+0x20]). Возвращает userdata (4 байта, индекс) с метатаблицей \"Variable\". Аргумент не строка: 0 результатов. Ошибки luaL_error: \"LuaVariableFind: failed to create variable\", \"LuaVariableFind: out of memory\"."
+conf = "bench"
+bench = "§35"
+
+[[function]]
+name = "VariableGet"
+kind = "c"
+group = "variables"
+register = ["0x0046A324"]
+impl = "0x0046A5C0"
+args = "variable: Variable"
+returns = "value: Int32"
+ru = "0x46a5c0. Возвращает значение записи [+8] как userdata Int32 (0x46aed0). Ошибки: \"LuaVariableGet: Expected variable handle, but found something else.\\n\", \"LuaVariableGet: Invalid variable handle.\" (индекс -1). Сравнение Int32 с числом Lua через == всегда ложно, через < — ошибка (стенд §35)."
+conf = "bench"
+bench = "§35"
+
+[[function]]
+name = "VariableSet"
+kind = "c"
+group = "variables"
+register = ["0x0046A379"]
+impl = "0x0046A620"
+args = "variable: Variable, value: Int32|number|string"
+returns = "(последний аргумент)"
+ru = "0x46a620. value приводится 0x46af90 (Int32, число с отбрасыванием дроби, либо разбор строки); пишет запись[+8] и уведомляет 0x442240. return 1 без push: результатом оказывается верхний элемент стека. Ошибки: \"VariableSet: Expected variable handle as 1st argument.\\n\", \"VariableSet: Expected value variable handle.\\n\", \"Could not turn '%s' into an Int32.\\n\"."
+conf = "exe"
+
+[[function]]
+name = "GetSimTime"
+kind = "c"
+group = "timers"
+register = ["0x0046A7AB"]
+impl = "0x0046A850"
+args = ""
+returns = "time: UInt32"
+ru = "0x46a850. Возвращает userdata UInt32 (0x46aac0) со значением игровых часов 0x1205224 в миллисекундах (те же часы, что у таймеров; стоят на паузе). Число получают через Int32ToNumber: деление UInt32 целое, склейка со строкой даёт ошибку (стенд §35)."
+conf = "bench"
+bench = "§35"
+
+[[function]]
+name = "UInt32"
+kind = "c"
+group = "integers"
+register = ["0x0046A8FC"]
+impl = "0x0046AAA0"
+args = "value: UInt32|number|string"
+returns = "value: UInt32"
+ru = "0x46aaa0. Приводит аргумент 0x46ab80 (UInt32 как есть, число округляется, строка разбирается 0x4d6dd0) и создаёт userdata UInt32 (4 байта). Ошибка: \"Could not turn '%s' into an UInt32.\\n\"."
+conf = "bench"
+bench = "§35"
+
+[[function]]
+name = "Int32"
+kind = "c"
+group = "integers"
+register = ["0x0046A954"]
+impl = "0x0046AE80"
+args = "value: Int32|number|string"
+returns = "value: Int32"
+ru = "0x46ae80. Приводит аргумент 0x46af90 и создаёт userdata Int32 (4 байта). Ошибка: \"Could not turn '%s' into an Int32.\\n\"."
+conf = "bench"
+bench = "§35"
+
+[[function]]
+name = "Int32ToNumber"
+kind = "c"
+group = "integers"
+register = ["0x0046A9A9"]
+impl = "0x0046AEA0"
+args = "value: Int32|number|string"
+returns = "value: number"
+ru = "0x46aea0. Приводит аргумент 0x46af90 и возвращает его как число Lua (float, знаковое преобразование cvtsi2ss; точность теряется выше 2^24)."
+conf = "bench"
+bench = "§35"
+
+[[function]]
+name = "Base"
+kind = "c"
+group = "objects"
+register = ["0x0046B69C"]
+impl = "0x0046B7C0"
+args = "object: Base|string"
+returns = "object: Base"
+ru = "0x46B7C0. Base — как есть. Строка — GUID текстом {xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx} (скобка не обязательна; 32 цифры подряд не годятся). Разбор 0x46B4D0 в этой сборке сломан: сдвигается байт, а не слово (shl dl, cl), поэтому из 32 цифр остаются 8 — байты 0, 4, 8 и 12 GUID, каждый один в своём слове; {32C8D726-FA3D-AA11-464F-574C45523130} ищется как {00000026-003D-0000-4600-000045000000}. Поиск — реестр SimManager по GUID (0x445FF0), нужен флаг 0x8000000 в +0x14 (он есть почти у всех объектов). Объекты игры так не находятся: результат — пустая ссылка (userdata Base, tostring даёт nil). Ошибки: \"ToBasePtr: 1st argument should be a string or Base.\\n\", \"ToBasePtr: Could not turn '%s' into a GUID.\\n\"."
+conf = "bench"
+bench = "§35"
+
+[[function]]
+name = "DeleteBase"
+kind = "c"
+group = "objects"
+register = ["0x0046B6F4"]
+impl = "0x0046B7E0"
+args = "object: Base"
+returns = "(последний аргумент)"
+ru = "0x46B7E0. Отвязывает ссылку Base от объекта (вынимает звено из списка ссылок); сам объект не удаляется. Не Base — молча."
+conf = "exe"
+
+[[function]]
+name = "print"
+kind = "c"
+group = "scripts"
+register = ["0x0046BC72"]
+impl = "0x0046BCE0"
+args = "..."
+returns = "-"
+ru = "0x46BCE0 (заменяет стандартную 0x62D560). Склеивает tostring аргументов через табуляцию, берёт скрипт и строку вызвавшего и зовёт указатель 0x0110A6C0 (скрипт, строка, what, текст); в выпущенной игре там пустая 0x46BFC0 — вывод теряется."
+conf = "bench"
+bench = "§35"
+
+[[function]]
+name = "SendMessage"
+kind = "c"
+group = "messages"
+register = ["0x004C833A"]
+impl = "0x004C8510"
+args = "name: string, dataType?: string, data?: number|string|userdata|lightuserdata"
+returns = "(последний аргумент)"
+ru = "0x4C8510 → 0x4C82C0 → синхронная рассылка 0x408A00 по sdbm(lower(name)). Данные идут, только если dataType — строка (её текст не используется): число — указатель на float на стеке вызова, строка — указатель на копию текста (освобождается после рассылки), userdata — указатель на её память, lightuserdata — сам указатель; иначе данные NULL. Ошибка: \"LuaSendMsg expects a single string argument (the message id)\\n\"."
+conf = "bench"
+bench = "§35"
+
+[[function]]
+name = "SendMessageEx"
+kind = "c"
+group = "messages"
+register = ["0x004C8392"]
+impl = "0x004C86D0"
+args = "name: string, ...: nil|boolean|number|string|userdata (до 8)"
+returns = "...: значения, дописанные получателем"
+ru = "0x4C86D0. Аргументы со 2-го кладутся в структуру EARS::Framework::Lua::MsgData (vtable 0xE365DC; 8 пар {значение, тип}: 0 nil, 1 указатель, 2 число, 3 boolean, 4 строка; счётчик в +0x44), сообщение рассылается синхронно (0x408A00) с указателем на неё; всё, что получатель дописал после входных значений, возвращается скрипту (0x4C8460). Так отвечают iMsgLuaGetPlayerVenue и iMsgLuaGetVenueStats (0x6B01E0)."
+conf = "bench"
+bench = "§35"
+
+[[function]]
+name = "MessageReceiverNew"
+kind = "c"
+group = "messages"
+register = ["0x004CE7A9"]
+impl = "0x004CE840"
+args = "handle: number"
+returns = "receiver: MessageReceiver"
+ru = "0x4CE840. Создаёт userdata — получатель сообщений шины (конструктор 0x4CE090, vtable 0xE36C60) с номером handle и метатаблицей MessageReceiver. На сообщение движок зовёт глобальную MessageReceiverReceive(handle, имя, имяТипа|nil, данные|nil) через pcall (0x4CE610). Скрипты зовут обвязку NewMessageReceiver(fn). Ошибки: \"MessageReceiverNew expects an integer as its argument\\n\", \"MessageReceiver::LuaNew: out of memory\"."
+conf = "bench"
+bench = "§35"
+
+[[function]]
+name = "type"
+owner = "tolua"
+kind = "lib"
+group = "tolua"
+register = ["0x00629F28"]
+impl = "0x006297A0"
+conf = "exe"
+
+[[function]]
+name = "takeownership"
+owner = "tolua"
+kind = "lib"
+group = "tolua"
+register = ["0x00629F86"]
+impl = "0x006297C0"
+conf = "exe"
+
+[[function]]
+name = "releaseownership"
+owner = "tolua"
+kind = "lib"
+group = "tolua"
+register = ["0x00629FE2"]
+impl = "0x006298F0"
+conf = "exe"
+
+[[function]]
+name = "cast"
+owner = "tolua"
+kind = "lib"
+group = "tolua"
+register = ["0x0062A03E"]
+impl = "0x00629A10"
+conf = "exe"
+
+[[function]]
+name = "GetFootPoliceIntensity"
+kind = "c"
+group = "police"
+register = ["0x007874FB"]
+impl = "0x00787470"
+args = ""
+returns = "intensity: number | nil"
+ru = "0x787470. Читает CrimeManager *0x112AA1C (конструктор 0x7869d0), поле +0x2C74 — указатель на текущую запись преступления (выбирает 0x785c70). Указатель не нулевой: всегда 0.0; нулевой: nil. Настоящей интенсивности не возвращает. Регистрирует 0x7874f0 — метод Register привязки CrimeManager+0x2C68 (vtable 0xD69808), вызывается LuaManager для обоих состояний."
+conf = "bench"
+bench = "§35"
+
+[[function]]
+name = "GetCarPoliceIntensity"
+kind = "c"
+group = "police"
+register = ["0x0078751E"]
+impl = "0x007874B0"
+args = ""
+returns = "intensity: number | nil"
+ru = "0x7874b0. Побайтно то же, что GetFootPoliceIntensity: 0.0, если CrimeManager(*0x112AA1C)[+0x2C74] != 0, иначе nil."
+conf = "bench"
+bench = "§35"
+
+[[function]]
+name = "GetVehicleType"
+kind = "c"
+group = "vehicles"
+register = ["0x00880E3C"]
+impl = "0x00880860"
+args = ""
+returns = "type: number"
+ru = "0x880860. Машина игрока 0: P = (*0x12233A0)[+4][0], машина = [P-0x1F30+0x1E40] - 0x48 (0x7ff880). Возвращает машина[+0x980] (uint). Не в машине: 0. Списка значений в exe нет; по скриптам 1 Sports, 2 Muscle, 3 SedanNew, 4 SedanOld, 5 Pickup, 6 PanelVan, 7 Truck, 8 PoliceSedan, 9 PoliceVan."
+conf = "bench"
+bench = "§35"
+
+[[function]]
+name = "GetVehicleSpeed"
+kind = "c"
+group = "vehicles"
+register = ["0x00880E60"]
+impl = "0x008808C0"
+args = ""
+returns = "speed: number, isReversing: boolean"
+ru = "0x8808c0. speed = машина->vtbl[+0x1A8](); isReversing = байт [[машина+0x378]+0x18]+0x11 (0x549a40). Не в машине: 0, false. Единицы speed — guess: мили в час (скрипты называют MPH)."
+conf = "bench"
+bench = "§35"
+
+[[function]]
+name = "GetVehicleSpeedDelta"
+kind = "c"
+group = "vehicles"
+register = ["0x00880E82"]
+impl = "0x00880950"
+args = ""
+returns = "delta: number"
+ru = "0x880950. Возвращает float машина[+0x988]; не в машине: 0."
+conf = "bench"
+bench = "§35"
+
+[[function]]
+name = "GetVehicleAcceleration"
+kind = "c"
+group = "vehicles"
+register = ["0x00880EA7"]
+impl = "0x008809B0"
+args = ""
+returns = "acceleration: number"
+ru = "0x8809b0. Возвращает float машина[+0x904]; не в машине: 0."
+conf = "bench"
+bench = "§35"
+
+[[function]]
+name = "GetVehicleSkidEnergy"
+kind = "c"
+group = "vehicles"
+register = ["0x00880EC9"]
+impl = "0x00880A10"
+args = ""
+returns = "energy: number"
+ru = "0x880a10. Возвращает float машина[+0x8FC]; не в машине: 0."
+conf = "bench"
+bench = "§35"
+
+[[function]]
+name = "GetVehicleHealth"
+kind = "c"
+group = "vehicles"
+register = ["0x00880EEE"]
+impl = "0x00880A70"
+args = ""
+returns = "health: number"
+ru = "0x880a70. Возвращает машина->vtbl[+0xC0]() / машина->vtbl[+0xC4]() (guess: текущее/максимальное, доля 0..1); не в машине: 0. В скриптах не вызывается."
+conf = "bench"
+bench = "§35"
+
+[[function]]
+name = "GetVehicleRainVelocity"
+kind = "c"
+group = "vehicles"
+register = ["0x00880F10"]
+impl = "0x0087FDA0"
+args = ""
+returns = "velocity: number"
+ru = "0x87fda0. Заглушка: всегда 0.0."
+conf = "bench"
+bench = "§35"
+
+[[function]]
+name = "SetPlayerCarUsingSimpleAudio"
+kind = "c"
+group = "vehicles"
+register = ["0x00880F35"]
+impl = "0x00880AE0"
+args = "simple: boolean"
+returns = "-"
+ru = "0x880ae0. Аргумент строго boolean (0x4aecf0), иначе молча. Пишет глобальный байт 0xE541BC и, если игрок в машине, вызывает 0x873bb0(машина+0x7D0, simple)."
+conf = "exe"
+
+[[function]]
+name = "GetChaseVehicleStats"
+kind = "c"
+group = "vehicles"
+register = ["0x00880F57"]
+impl = "0x00880430"
+args = "index: number = 0"
+returns = "valid: boolean, handle: lightuserdata, type: number, speed: number, acceleration: number, sqrDistance: number"
+ru = "0x880430. Слот погони index 0..3 (иначе 0) в таблице 0x112E168 (по 12 байт: handle эмиттера, хэш звука, машина). Машина есть: true, handle, машина[+0x1BC], машина[+0x34], машина[+0x140], квадрат расстояния до игрока (позиция 0x471610()+0x30). Слот пуст: false, lightuserdata(0), 0, 0, 0, 1e7. От того, сидит ли игрок в машине, не зависит."
+conf = "bench"
+bench = "§35"
+
+[[function]]
+name = "SetChaseVehicleSound"
+kind = "c"
+group = "vehicles"
+register = ["0x00880F79"]
+impl = "0x0087FDC0"
+args = "name: string|number, index: number = 0, param3?: number"
+returns = "-"
+ru = "0x87fdc0. name обязателен (0x4aed30), иначе молча. Останавливает прежний эмиттер слота 0x5e6660, пишет sdbm(name) в слот[+4]; если в слоте есть машина, запускает эмиттер 0x5e6550(хэш, params) (param3 -> params[0]) и ставит ему pitch 0 (0x5e6750)."
+conf = "exe"
+
+[[function]]
+name = "error"
+owner = "_G"
+kind = "lib"
+group = "lua_base"
+register = ["0x00E2AA58"]
+impl = "0x0062D920"
+conf = "exe"
+
+[[function]]
+name = "getmetatable"
+owner = "_G"
+kind = "lib"
+group = "lua_base"
+register = ["0x00E2AA60"]
+impl = "0x0062D9F0"
+conf = "exe"
+
+[[function]]
+name = "setmetatable"
+owner = "_G"
+kind = "lib"
+group = "lua_base"
+register = ["0x00E2AA68"]
+impl = "0x0062DAB0"
+conf = "exe"
+
+[[function]]
+name = "getfenv"
+owner = "_G"
+kind = "lib"
+group = "lua_base"
+register = ["0x00E2AA70"]
+impl = "0x0062DD60"
+conf = "exe"
+
+[[function]]
+name = "setfenv"
+owner = "_G"
+kind = "lib"
+group = "lua_base"
+register = ["0x00E2AA78"]
+impl = "0x0062DD90"
+conf = "exe"
+
+[[function]]
+name = "next"
+owner = "_G"
+kind = "lib"
+group = "lua_base"
+register = ["0x00E2AA80"]
+impl = "0x0062E180"
+conf = "exe"
+
+[[function]]
+name = "ipairs"
+owner = "_G"
+kind = "lib"
+group = "lua_base"
+register = ["0x00E2AA88"]
+impl = "0x0062E300"
+conf = "exe"
+
+[[function]]
+name = "pairs"
+owner = "_G"
+kind = "lib"
+group = "lua_base"
+register = ["0x00E2AA90"]
+impl = "0x0062E220"
+conf = "exe"
+
+[[function]]
+name = "print"
+owner = "_G"
+kind = "lib"
+group = "lua_base"
+register = ["0x00E2AA98"]
+impl = "0x0062D560"
+conf = "exe"
+
+[[function]]
+name = "tonumber"
+owner = "_G"
+kind = "lib"
+group = "lua_base"
+register = ["0x00E2AAA0"]
+impl = "0x0062D740"
+conf = "exe"
+
+[[function]]
+name = "tostring"
+owner = "_G"
+kind = "lib"
+group = "lua_base"
+register = ["0x00E2AAA8"]
+impl = "0x0062EAF0"
+conf = "exe"
+
+[[function]]
+name = "type"
+owner = "_G"
+kind = "lib"
+group = "lua_base"
+register = ["0x00E2AAB0"]
+impl = "0x0062E110"
+conf = "exe"
+
+[[function]]
+name = "assert"
+owner = "_G"
+kind = "lib"
+group = "lua_base"
+register = ["0x00E2AAB8"]
+impl = "0x0062E7C0"
+conf = "exe"
+
+[[function]]
+name = "unpack"
+owner = "_G"
+kind = "lib"
+group = "lua_base"
+register = ["0x00E2AAC0"]
+impl = "0x0062E8C0"
+conf = "exe"
+
+[[function]]
+name = "rawequal"
+owner = "_G"
+kind = "lib"
+group = "lua_base"
+register = ["0x00E2AAC8"]
+impl = "0x0062DE80"
+conf = "exe"
+
+[[function]]
+name = "rawget"
+owner = "_G"
+kind = "lib"
+group = "lua_base"
+register = ["0x00E2AAD0"]
+impl = "0x0062DF00"
+conf = "exe"
+
+[[function]]
+name = "rawset"
+owner = "_G"
+kind = "lib"
+group = "lua_base"
+register = ["0x00E2AAD8"]
+impl = "0x0062DFC0"
+conf = "exe"
+
+[[function]]
+name = "pcall"
+owner = "_G"
+kind = "lib"
+group = "lua_base"
+register = ["0x00E2AAE0"]
+impl = "0x0062E950"
+conf = "exe"
+
+[[function]]
+name = "xpcall"
+owner = "_G"
+kind = "lib"
+group = "lua_base"
+register = ["0x00E2AAE8"]
+impl = "0x0062EA00"
+conf = "exe"
+
+[[function]]
+name = "collectgarbage"
+owner = "_G"
+kind = "lib"
+group = "lua_base"
+register = ["0x00E2AAF0"]
+impl = "0x0062E0A0"
+conf = "exe"
+
+[[function]]
+name = "gcinfo"
+owner = "_G"
+kind = "lib"
+group = "lua_base"
+register = ["0x00E2AAF8"]
+impl = "0x0062E050"
+conf = "exe"
+
+[[function]]
+name = "loadfile"
+owner = "_G"
+kind = "lib"
+group = "lua_base"
+register = ["0x00E2AB00"]
+impl = "0x0062E630"
+conf = "exe"
+
+[[function]]
+name = "dofile"
+owner = "_G"
+kind = "lib"
+group = "lua_base"
+register = ["0x00E2AB08"]
+impl = "0x0062E700"
+conf = "exe"
+
+[[function]]
+name = "loadstring"
+owner = "_G"
+kind = "lib"
+group = "lua_base"
+register = ["0x00E2AB10"]
+impl = "0x0062E4C0"
+conf = "exe"
+
+[[function]]
+name = "require"
+owner = "_G"
+kind = "lib"
+group = "lua_base"
+register = ["0x00E2AB18"]
+impl = "0x0062F1B0"
+conf = "exe"
+
+[[function]]
+name = "create"
+owner = "coroutine"
+kind = "lib"
+group = "lua_coroutine"
+register = ["0x00E2AB28"]
+impl = "0x0062F7C0"
+conf = "exe"
+
+[[function]]
+name = "wrap"
+owner = "coroutine"
+kind = "lib"
+group = "lua_coroutine"
+register = ["0x00E2AB30"]
+impl = "0x0062F850"
+conf = "exe"
+
+[[function]]
+name = "resume"
+owner = "coroutine"
+kind = "lib"
+group = "lua_coroutine"
+register = ["0x00E2AB38"]
+impl = "0x0062F650"
+conf = "exe"
+
+[[function]]
+name = "yield"
+owner = "coroutine"
+kind = "lib"
+group = "lua_coroutine"
+register = ["0x00E2AB40"]
+impl = "0x0062F880"
+conf = "exe"
+
+[[function]]
+name = "status"
+owner = "coroutine"
+kind = "lib"
+group = "lua_coroutine"
+register = ["0x00E2AB48"]
+impl = "0x0062F8A0"
+conf = "exe"
+
+[[function]]
+name = "concat"
+owner = "table"
+kind = "lib"
+group = "lua_table"
+register = ["0x00E2AA10"]
+impl = "0x00630330"
+conf = "exe"
+
+[[function]]
+name = "foreach"
+owner = "table"
+kind = "lib"
+group = "lua_table"
+register = ["0x00E2AA18"]
+impl = "0x0062FD80"
+conf = "exe"
+
+[[function]]
+name = "foreachi"
+owner = "table"
+kind = "lib"
+group = "lua_table"
+register = ["0x00E2AA20"]
+impl = "0x0062FC70"
+conf = "exe"
+
+[[function]]
+name = "getn"
+owner = "table"
+kind = "lib"
+group = "lua_table"
+register = ["0x00E2AA28"]
+impl = "0x0062FE70"
+conf = "exe"
+
+[[function]]
+name = "setn"
+owner = "table"
+kind = "lib"
+group = "lua_table"
+register = ["0x00E2AA30"]
+impl = "0x0062FED0"
+conf = "exe"
+
+[[function]]
+name = "sort"
+owner = "table"
+kind = "lib"
+group = "lua_table"
+register = ["0x00E2AA38"]
+impl = "0x006309E0"
+conf = "exe"
+
+[[function]]
+name = "insert"
+owner = "table"
+kind = "lib"
+group = "lua_table"
+register = ["0x00E2AA40"]
+impl = "0x0062FFE0"
+conf = "exe"
+
+[[function]]
+name = "remove"
+owner = "table"
+kind = "lib"
+group = "lua_table"
+register = ["0x00E2AA48"]
+impl = "0x00630190"
+conf = "exe"
+
+[[function]]
+name = "len"
+owner = "string"
+kind = "lib"
+group = "lua_string"
+register = ["0x00E2AB58"]
+impl = "0x0062A9E0"
+conf = "exe"
+
+[[function]]
+name = "sub"
+owner = "string"
+kind = "lib"
+group = "lua_string"
+register = ["0x00E2AB60"]
+impl = "0x0062AAB0"
+conf = "exe"
+
+[[function]]
+name = "lower"
+owner = "string"
+kind = "lib"
+group = "lua_string"
+register = ["0x00E2AB68"]
+impl = "0x0062AD00"
+conf = "exe"
+
+[[function]]
+name = "upper"
+owner = "string"
+kind = "lib"
+group = "lua_string"
+register = ["0x00E2AB70"]
+impl = "0x0062AF50"
+conf = "exe"
+
+[[function]]
+name = "char"
+owner = "string"
+kind = "lib"
+group = "lua_string"
+register = ["0x00E2AB78"]
+impl = "0x0062B4A0"
+conf = "exe"
+
+[[function]]
+name = "rep"
+owner = "string"
+kind = "lib"
+group = "lua_string"
+register = ["0x00E2AB80"]
+impl = "0x0062B1A0"
+conf = "exe"
+
+[[function]]
+name = "byte"
+owner = "string"
+kind = "lib"
+group = "lua_string"
+register = ["0x00E2AB88"]
+impl = "0x0062B380"
+conf = "exe"
+
+[[function]]
+name = "format"
+owner = "string"
+kind = "lib"
+group = "lua_string"
+register = ["0x00E2AB90"]
+impl = "0x0062D1D0"
+conf = "exe"
+
+[[function]]
+name = "dump"
+owner = "string"
+kind = "lib"
+group = "lua_string"
+register = ["0x00E2AB98"]
+impl = "0x0062B6D0"
+conf = "exe"
+
+[[function]]
+name = "find"
+owner = "string"
+kind = "lib"
+group = "lua_string"
+register = ["0x00E2ABA0"]
+impl = "0x0062C2D0"
+conf = "exe"
+
+[[function]]
+name = "gfind"
+owner = "string"
+kind = "lib"
+group = "lua_string"
+register = ["0x00E2ABA8"]
+impl = "0x0062C850"
+conf = "exe"
+
+[[function]]
+name = "gsub"
+owner = "string"
+kind = "lib"
+group = "lua_string"
+register = ["0x00E2ABB0"]
+impl = "0x0062CB50"
+conf = "exe"
+
+[[function]]
+name = "abs"
+owner = "math"
+kind = "lib"
+group = "lua_math"
+register = ["0x00E2A948"]
+impl = "0x00630BE0"
+conf = "exe"
+
+[[function]]
+name = "sin"
+owner = "math"
+kind = "lib"
+group = "lua_math"
+register = ["0x00E2A950"]
+impl = "0x00630CE0"
+conf = "exe"
+
+[[function]]
+name = "cos"
+owner = "math"
+kind = "lib"
+group = "lua_math"
+register = ["0x00E2A958"]
+impl = "0x00630DE0"
+conf = "exe"
+
+[[function]]
+name = "tan"
+owner = "math"
+kind = "lib"
+group = "lua_math"
+register = ["0x00E2A960"]
+impl = "0x00630EE0"
+conf = "exe"
+
+[[function]]
+name = "asin"
+owner = "math"
+kind = "lib"
+group = "lua_math"
+register = ["0x00E2A968"]
+impl = "0x00630FE0"
+conf = "exe"
+
+[[function]]
+name = "acos"
+owner = "math"
+kind = "lib"
+group = "lua_math"
+register = ["0x00E2A970"]
+impl = "0x006310E0"
+conf = "exe"
+
+[[function]]
+name = "atan"
+owner = "math"
+kind = "lib"
+group = "lua_math"
+register = ["0x00E2A978"]
+impl = "0x006311E0"
+conf = "exe"
+
+[[function]]
+name = "atan2"
+owner = "math"
+kind = "lib"
+group = "lua_math"
+register = ["0x00E2A980"]
+impl = "0x006312E0"
+conf = "exe"
+
+[[function]]
+name = "ceil"
+owner = "math"
+kind = "lib"
+group = "lua_math"
+register = ["0x00E2A988"]
+impl = "0x00631490"
+conf = "exe"
+
+[[function]]
+name = "floor"
+owner = "math"
+kind = "lib"
+group = "lua_math"
+register = ["0x00E2A990"]
+impl = "0x00631590"
+conf = "exe"
+
+[[function]]
+name = "mod"
+owner = "math"
+kind = "lib"
+group = "lua_math"
+register = ["0x00E2A998"]
+impl = "0x006316C0"
+conf = "exe"
+
+[[function]]
+name = "frexp"
+owner = "math"
+kind = "lib"
+group = "lua_math"
+register = ["0x00E2A9A0"]
+impl = "0x00632010"
+conf = "exe"
+
+[[function]]
+name = "ldexp"
+owner = "math"
+kind = "lib"
+group = "lua_math"
+register = ["0x00E2A9A8"]
+impl = "0x00632130"
+conf = "exe"
+
+[[function]]
+name = "sqrt"
+owner = "math"
+kind = "lib"
+group = "lua_math"
+register = ["0x00E2A9B0"]
+impl = "0x00631870"
+conf = "exe"
+
+[[function]]
+name = "min"
+owner = "math"
+kind = "lib"
+group = "lua_math"
+register = ["0x00E2A9B8"]
+impl = "0x006322F0"
+conf = "exe"
+
+[[function]]
+name = "max"
+owner = "math"
+kind = "lib"
+group = "lua_math"
+register = ["0x00E2A9C0"]
+impl = "0x006324E0"
+conf = "exe"
+
+[[function]]
+name = "log"
+owner = "math"
+kind = "lib"
+group = "lua_math"
+register = ["0x00E2A9C8"]
+impl = "0x00631B10"
+conf = "exe"
+
+[[function]]
+name = "log10"
+owner = "math"
+kind = "lib"
+group = "lua_math"
+register = ["0x00E2A9D0"]
+impl = "0x00631C10"
+conf = "exe"
+
+[[function]]
+name = "exp"
+owner = "math"
+kind = "lib"
+group = "lua_math"
+register = ["0x00E2A9D8"]
+impl = "0x00631D10"
+conf = "exe"
+
+[[function]]
+name = "deg"
+owner = "math"
+kind = "lib"
+group = "lua_math"
+register = ["0x00E2A9E0"]
+impl = "0x00631E10"
+conf = "exe"
+
+[[function]]
+name = "pow"
+owner = "math"
+kind = "lib"
+group = "lua_math"
+register = ["0x00E2A9E8"]
+impl = "0x00631960"
+conf = "exe"
+
+[[function]]
+name = "rad"
+owner = "math"
+kind = "lib"
+group = "lua_math"
+register = ["0x00E2A9F0"]
+impl = "0x00631F10"
+conf = "exe"
+
+[[function]]
+name = "random"
+owner = "math"
+kind = "lib"
+group = "lua_math"
+register = ["0x00E2A9F8"]
+impl = "0x006326D0"
+conf = "exe"
+
+[[function]]
+name = "randomseed"
+owner = "math"
+kind = "lib"
+group = "lua_math"
+register = ["0x00E2AA00"]
+impl = "0x00632860"
+conf = "exe"
+
+[[function]]
+name = "RegisterGroup"
+owner = "GroupManager"
+kind = "c"
+group = "groups"
+register = ["0x00E32148"]
+impl = "0x00469DB0"
+args = "self, name: string|number"
+returns = "group: Group"
+ru = "0x469db0. Имя читается из 2-го аргумента (вызов через двоеточие). sdbm(name) -> 0x43c140(менеджер *0x1223414, хэш, 1): находит или занимает один из 64 слотов (по 0x1C байт: хэш, счётчик ссылок, список, число членов) и увеличивает счётчик ссылок. Возвращает userdata Group (индекс слота). Ошибки: \"Expected group name argument to GroupManager:RegisterGroup.\\n\", \"Problems registering group '%s'\\n\"."
+conf = "bench"
+bench = "§35"
+
+[[function]]
+name = "FindGroup"
+owner = "GroupManager"
+kind = "c"
+group = "groups"
+register = ["0x00E32150"]
+impl = "0x00469E60"
+args = "self, name: string|number"
+returns = "group: Group | nil"
+ru = "0x469e60. Поиск слота по sdbm(name) 0x43c250 в *0x1223414; не найдено — nil, группа не создаётся. Ошибка: \"Expected group name argument to GroupManager:FindGroup.\\n\"."
+conf = "bench"
+bench = "§35"
+
+[[function]]
+name = "RemoveFromAllGroups"
+owner = "GroupManager"
+kind = "c"
+group = "groups"
+register = ["0x00E32158"]
+impl = "0x00469F00"
+args = "self, object: Base"
+returns = "(последний аргумент)"
+ru = "0x469f00. Из Base (0x46b980) запрашивает компонент 0x38523FC3 (vtbl[+0x10]) и вызывает 0x43c5d0(менеджер, компонент). return 1 без push. Ошибка: \"GroupManager:RemoveFromAllGroups called with nil Base object.\\n\". Пустая ссылка Base (объект не найден) роняет игру: 0x46B980 возвращает 0, и по нему читают без проверки (у AddMember — 0x469F85; стенд §35)."
+conf = "exe"
+
+[[function]]
+name = "__index"
+owner = "Group"
+kind = "c"
+group = "groups"
+register = ["0x00E32180"]
+impl = "0x004AEC30"
+args = "self, key: string"
+returns = "value"
+ru = "0x4aec30: поиск key в метатаблице Group (см. Variable.__index)."
+conf = "exe"
+
+[[function]]
+name = "AddMember"
+owner = "Group"
+kind = "c"
+group = "groups"
+register = ["0x00E32188"]
+impl = "0x00469F60"
+args = "self: Group, object: Base"
+returns = "(последний аргумент)"
+ru = "0x469f60. Через двоеточие. Компонент 0x38523FC3 объекта добавляется в группу 0x43c490 (бит группы в 64-битной маске компонент[+0x148]). Ошибки: \"Object is not a '%s'.\\n\" (Group), \"Expected Base as 2nd argument\". Пустая ссылка Base (объект не найден) роняет игру: 0x46B980 возвращает 0, и по нему читают без проверки (у AddMember — 0x469F85; стенд §35)."
+conf = "bench"
+bench = "§35"
+
+[[function]]
+name = "RemoveMember"
+owner = "Group"
+kind = "c"
+group = "groups"
+register = ["0x00E32190"]
+impl = "0x00469FF0"
+args = "self: Group, object: Base"
+returns = "(последний аргумент)"
+ru = "0x469ff0. Исключает объект из группы 0x43c4e0 (если индекс группы 0..63). Ошибки те же, что у AddMember. Пустая ссылка Base (объект не найден) роняет игру: 0x46B980 возвращает 0, и по нему читают без проверки (у AddMember — 0x469F85; стенд §35)."
+conf = "exe"
+
+[[function]]
+name = "IsMember"
+owner = "Group"
+kind = "c"
+group = "groups"
+register = ["0x00E32198"]
+impl = "0x0046A080"
+args = "self: Group, object: Base"
+returns = "(последний аргумент)"
+ru = "0x46a080. Заглушка: проверяет типы и получает компонент, но принадлежность не проверяет и boolean не кладёт; return 1 отдаёт верхний элемент стека (object), то есть всегда истинное значение. Ошибки те же, что у AddMember. Пустая ссылка Base (объект не найден) роняет игру: 0x46B980 возвращает 0, и по нему читают без проверки (у AddMember — 0x469F85; стенд §35)."
+conf = "exe"
+
+[[function]]
+name = "Clear"
+owner = "Group"
+kind = "c"
+group = "groups"
+register = ["0x00E321A0"]
+impl = "0x0046A0F0"
+args = "self: Group"
+returns = "(последний аргумент)"
+ru = "0x46a0f0. Заглушка: mov eax,1; ret — ничего не очищает, возвращает верхний элемент стека."
+conf = "bench"
+bench = "§35"
+
+[[function]]
+name = "GetMemberCount"
+owner = "Group"
+kind = "c"
+group = "groups"
+register = ["0x00E321A8"]
+impl = "0x0046A100"
+args = "self: Group"
+returns = "count: UInt32"
+ru = "0x46a100. Возвращает слот[+0x10] (число членов) как userdata UInt32, не число Lua. Ошибка: \"Object is not a '%s'.\\n\"."
+conf = "bench"
+bench = "§35"
+
+[[function]]
+name = "ForEachMember"
+owner = "Group"
+kind = "c"
+group = "groups"
+register = ["0x00E321B0"]
+impl = "0x0046A160"
+args = "self: Group, callback: function"
+returns = "(последний аргумент)"
+ru = "0x46a160. Идёт по списку членов (слот[+8], узел {объект, следующий}); для каждого вызывает копию верхнего аргумента с одним аргументом — Base объекта (0x46b880) — через luaD_call 0x6362d0 с 0 результатов. Результат callback отбрасывается, остановить обход нельзя; ошибка в callback пробрасывается наружу."
+conf = "bench"
+bench = "§35"
+
+[[function]]
+name = "__index"
+owner = "Variable"
+kind = "c"
+group = "variables"
+register = ["0x00E32340"]
+impl = "0x004AEC30"
+args = "self, key: string"
+returns = "value"
+ru = "0x4aec30 (общая для Variable, Group, MessageReceiver). Берёт метатаблицу self и возвращает из неё поле key (0x628120) — так находятся методы; nil, если поля нет."
+conf = "exe"
+
+[[function]]
+name = "__tostring"
+owner = "Variable"
+kind = "c"
+group = "variables"
+register = ["0x00E32348"]
+impl = "0x0046A690"
+args = "self: Variable"
+returns = "text: string"
+ru = "0x46a690. Значение записи форматируется 0x4d3b00 в строку. Ошибки те же, что у VariableGet."
+conf = "bench"
+bench = "§35"
+
+[[function]]
+name = "Set"
+owner = "Variable"
+kind = "c"
+group = "variables"
+register = ["0x00E32350"]
+impl = "0x0046A620"
+args = "self: Variable, value: Int32|number|string"
+returns = "(последний аргумент)"
+ru = "Тот же 0x46a620, что VariableSet; var:Set(v)."
+conf = "bench"
+bench = "§35"
+
+[[function]]
+name = "Get"
+owner = "Variable"
+kind = "c"
+group = "variables"
+register = ["0x00E32358"]
+impl = "0x0046A5C0"
+args = "self: Variable"
+returns = "value: Int32"
+ru = "Тот же 0x46a5c0, что VariableGet; вызывается через двоеточие: var:Get()."
+conf = "bench"
+bench = "§35"
+
+[[function]]
+name = "__tostring"
+owner = "UInt32"
+kind = "c"
+group = "integers"
+register = ["0x00E32518"]
+impl = "0x0046AC70"
+args = "a, b: UInt32|number|string"
+returns = "UInt32 | boolean | string"
+ru = "0x46ac70..0x46ae30. Беззнаковая 32-битная арифметика с переполнением по модулю 2^32, результат — новый UInt32; __eq и __lt — boolean (беззнаковое сравнение); __tostring — \"%u\". Деление на 0: luaL_error \"UInt32 operator / : Tried to divide by zero.\". Нет __le и __unm."
+conf = "bench"
+bench = "§35"
+
+[[function]]
+name = "__add"
+owner = "UInt32"
+kind = "c"
+group = "integers"
+register = ["0x00E32520"]
+impl = "0x0046AD00"
+args = "a, b: UInt32|number|string"
+returns = "UInt32 | boolean | string"
+ru = "0x46ac70..0x46ae30. Беззнаковая 32-битная арифметика с переполнением по модулю 2^32, результат — новый UInt32; __eq и __lt — boolean (беззнаковое сравнение); __tostring — \"%u\". Деление на 0: luaL_error \"UInt32 operator / : Tried to divide by zero.\". Нет __le и __unm."
+conf = "exe"
+
+[[function]]
+name = "__sub"
+owner = "UInt32"
+kind = "c"
+group = "integers"
+register = ["0x00E32528"]
+impl = "0x0046AD30"
+args = "a, b: UInt32|number|string"
+returns = "UInt32 | boolean | string"
+ru = "0x46ac70..0x46ae30. Беззнаковая 32-битная арифметика с переполнением по модулю 2^32, результат — новый UInt32; __eq и __lt — boolean (беззнаковое сравнение); __tostring — \"%u\". Деление на 0: luaL_error \"UInt32 operator / : Tried to divide by zero.\". Нет __le и __unm."
+conf = "exe"
+
+[[function]]
+name = "__mul"
+owner = "UInt32"
+kind = "c"
+group = "integers"
+register = ["0x00E32530"]
+impl = "0x0046AD60"
+args = "a, b: UInt32|number|string"
+returns = "UInt32 | boolean | string"
+ru = "0x46ac70..0x46ae30. Беззнаковая 32-битная арифметика с переполнением по модулю 2^32, результат — новый UInt32; __eq и __lt — boolean (беззнаковое сравнение); __tostring — \"%u\". Деление на 0: luaL_error \"UInt32 operator / : Tried to divide by zero.\". Нет __le и __unm."
+conf = "exe"
+
+[[function]]
+name = "__div"
+owner = "UInt32"
+kind = "c"
+group = "integers"
+register = ["0x00E32538"]
+impl = "0x0046AD90"
+args = "a, b: UInt32|number|string"
+returns = "UInt32 | boolean | string"
+ru = "0x46ac70..0x46ae30. Беззнаковая 32-битная арифметика с переполнением по модулю 2^32, результат — новый UInt32; __eq и __lt — boolean (беззнаковое сравнение); __tostring — \"%u\". Деление на 0: luaL_error \"UInt32 operator / : Tried to divide by zero.\". Нет __le и __unm."
+conf = "bench"
+bench = "§35"
+
+[[function]]
+name = "__eq"
+owner = "UInt32"
+kind = "c"
+group = "integers"
+register = ["0x00E32540"]
+impl = "0x0046ADE0"
+args = "a, b: UInt32|number|string"
+returns = "UInt32 | boolean | string"
+ru = "0x46ac70..0x46ae30. Беззнаковая 32-битная арифметика с переполнением по модулю 2^32, результат — новый UInt32; __eq и __lt — boolean (беззнаковое сравнение); __tostring — \"%u\". Деление на 0: luaL_error \"UInt32 operator / : Tried to divide by zero.\". Нет __le и __unm."
+conf = "exe"
+
+[[function]]
+name = "__lt"
+owner = "UInt32"
+kind = "c"
+group = "integers"
+register = ["0x00E32548"]
+impl = "0x0046AE30"
+args = "a, b: UInt32|number|string"
+returns = "UInt32 | boolean | string"
+ru = "0x46ac70..0x46ae30. Беззнаковая 32-битная арифметика с переполнением по модулю 2^32, результат — новый UInt32; __eq и __lt — boolean (беззнаковое сравнение); __tostring — \"%u\". Деление на 0: luaL_error \"UInt32 operator / : Tried to divide by zero.\". Нет __le и __unm."
+conf = "exe"
+
+[[function]]
+name = "__tostring"
+owner = "Int32"
+kind = "c"
+group = "integers"
+register = ["0x00E325F8"]
+impl = "0x0046B060"
+args = "a, b: Int32|number|string"
+returns = "Int32 | boolean | string"
+ru = "0x46b060..0x46b2c0. Знаковая 32-битная арифметика, результат — новый Int32; __unm — отрицание; __eq, __lt, __le — boolean; __tostring — \"%d\". Деление на 0: luaL_error \"Int32 operator / : Tried to divide by zero.\"."
+conf = "bench"
+bench = "§35"
+
+[[function]]
+name = "__unm"
+owner = "Int32"
+kind = "c"
+group = "integers"
+register = ["0x00E32600"]
+impl = "0x0046B0C0"
+args = "a, b: Int32|number|string"
+returns = "Int32 | boolean | string"
+ru = "0x46b060..0x46b2c0. Знаковая 32-битная арифметика, результат — новый Int32; __unm — отрицание; __eq, __lt, __le — boolean; __tostring — \"%d\". Деление на 0: luaL_error \"Int32 operator / : Tried to divide by zero.\"."
+conf = "exe"
+
+[[function]]
+name = "__add"
+owner = "Int32"
+kind = "c"
+group = "integers"
+register = ["0x00E32608"]
+impl = "0x0046B120"
+args = "a, b: Int32|number|string"
+returns = "Int32 | boolean | string"
+ru = "0x46b060..0x46b2c0. Знаковая 32-битная арифметика, результат — новый Int32; __unm — отрицание; __eq, __lt, __le — boolean; __tostring — \"%d\". Деление на 0: luaL_error \"Int32 operator / : Tried to divide by zero.\"."
+conf = "bench"
+bench = "§35"
+
+[[function]]
+name = "__sub"
+owner = "Int32"
+kind = "c"
+group = "integers"
+register = ["0x00E32610"]
+impl = "0x0046B150"
+args = "a, b: Int32|number|string"
+returns = "Int32 | boolean | string"
+ru = "0x46b060..0x46b2c0. Знаковая 32-битная арифметика, результат — новый Int32; __unm — отрицание; __eq, __lt, __le — boolean; __tostring — \"%d\". Деление на 0: luaL_error \"Int32 operator / : Tried to divide by zero.\"."
+conf = "exe"
+
+[[function]]
+name = "__mul"
+owner = "Int32"
+kind = "c"
+group = "integers"
+register = ["0x00E32618"]
+impl = "0x0046B180"
+args = "a, b: Int32|number|string"
+returns = "Int32 | boolean | string"
+ru = "0x46b060..0x46b2c0. Знаковая 32-битная арифметика, результат — новый Int32; __unm — отрицание; __eq, __lt, __le — boolean; __tostring — \"%d\". Деление на 0: luaL_error \"Int32 operator / : Tried to divide by zero.\"."
+conf = "exe"
+
+[[function]]
+name = "__div"
+owner = "Int32"
+kind = "c"
+group = "integers"
+register = ["0x00E32620"]
+impl = "0x0046B1B0"
+args = "a, b: Int32|number|string"
+returns = "Int32 | boolean | string"
+ru = "0x46b060..0x46b2c0. Знаковая 32-битная арифметика, результат — новый Int32; __unm — отрицание; __eq, __lt, __le — boolean; __tostring — \"%d\". Деление на 0: luaL_error \"Int32 operator / : Tried to divide by zero.\"."
+conf = "exe"
+
+[[function]]
+name = "__eq"
+owner = "Int32"
+kind = "c"
+group = "integers"
+register = ["0x00E32628"]
+impl = "0x0046B200"
+args = "a, b: Int32|number|string"
+returns = "Int32 | boolean | string"
+ru = "0x46b060..0x46b2c0. Знаковая 32-битная арифметика, результат — новый Int32; __unm — отрицание; __eq, __lt, __le — boolean; __tostring — \"%d\". Деление на 0: luaL_error \"Int32 operator / : Tried to divide by zero.\"."
+conf = "bench"
+bench = "§35"
+
+[[function]]
+name = "__lt"
+owner = "Int32"
+kind = "c"
+group = "integers"
+register = ["0x00E32630"]
+impl = "0x0046B260"
+args = "a, b: Int32|number|string"
+returns = "Int32 | boolean | string"
+ru = "0x46b060..0x46b2c0. Знаковая 32-битная арифметика, результат — новый Int32; __unm — отрицание; __eq, __lt, __le — boolean; __tostring — \"%d\". Деление на 0: luaL_error \"Int32 operator / : Tried to divide by zero.\"."
+conf = "bench"
+bench = "§35"
+
+[[function]]
+name = "__le"
+owner = "Int32"
+kind = "c"
+group = "integers"
+register = ["0x00E32638"]
+impl = "0x0046B2C0"
+args = "a, b: Int32|number|string"
+returns = "Int32 | boolean | string"
+ru = "0x46b060..0x46b2c0. Знаковая 32-битная арифметика, результат — новый Int32; __unm — отрицание; __eq, __lt, __le — boolean; __tostring — \"%d\". Деление на 0: luaL_error \"Int32 operator / : Tried to divide by zero.\"."
+conf = "exe"
+
+[[function]]
+name = "__gc"
+owner = "Base"
+kind = "c"
+group = "objects"
+register = ["0x00E326DC"]
+impl = "0x0046B7E0"
+args = "self: Base"
+returns = "-"
+ru = "0x46B7E0 — та же функция, что DeleteBase: сборщик мусора отвязывает ссылку."
+conf = "exe"
+
+[[function]]
+name = "__tostring"
+owner = "Base"
+kind = "c"
+group = "objects"
+register = ["0x00E326E4"]
+impl = "0x0046BA70"
+args = "self: Base"
+returns = "text: string"
+ru = "0x46BA70. GUID объекта текстом (0x4D9080); для пустой ссылки — без результата."
+conf = "bench"
+bench = "§35"
+
+[[function]]
+name = "__index"
+owner = "MessageReceiver"
+kind = "c"
+group = "messages"
+register = ["0x00E36AB0"]
+impl = "0x004AEC30"
+args = "self, key: string"
+returns = "value"
+ru = "0x4AEC30: поиск key в метатаблице MessageReceiver (см. Variable.__index)."
+conf = "exe"
+
+[[function]]
+name = "__gc"
+owner = "MessageReceiver"
+kind = "c"
+group = "messages"
+register = ["0x00E36AB8"]
+impl = "0x004CE980"
+args = "self: MessageReceiver"
+returns = "(последний аргумент)"
+ru = "0x4ce980 -> self->vtbl[0](0): деструктор объекта без освобождения памяти (память принадлежит userdata). Ошибка: \"MessageReceiver:Delete must be called on a MessageReceiver. Found something else.\\n\"."
+conf = "exe"
+
+[[function]]
+name = "AddMessage"
+owner = "MessageReceiver"
+kind = "c"
+group = "messages"
+register = ["0x00E36AC0"]
+impl = "0x004CE9C0"
+args = "self: MessageReceiver, messageName: string, dataTypeName?: string"
+returns = "(последний аргумент)"
+ru = "0x4CE9C0 → vtbl[+0x10] 0x4CE180: подписывает получатель на сообщение sdbm(lower(messageName)); повторная подписка на то же имя ничего не делает. dataTypeName только запоминается и приходит обработчику третьим аргументом (пустое — nil). Ошибки: \"MessageReceiver:AddMessage must be called on a MessageReceiver. Found something else.\\n\", \"MessageReceiver:AddMessage expects a string argument.\\n\"."
+conf = "bench"
+bench = "§35"
+
+[[function]]
+name = "Remove"
+owner = "MessageReceiver"
+kind = "c"
+group = "messages"
+register = ["0x00E36AC8"]
+impl = "0x004CEA60"
+args = "self: MessageReceiver, messageName: string|number"
+returns = "(последний аргумент)"
+ru = "0x4cea60 -> self->vtbl[+0x14](messageName): снимает подписку на сообщение. Ошибки: \"MessageReceiver:RemoveMessage must be called on a MessageReceiver. Found something else.\\n\", \"MessageReceiver:RemoveMessage expects a string argument.\\n\". Встроенная Lua-обёртка зовёт m_pReceiver:RemoveMessage, но метод в таблице называется Remove."
+conf = "bench"
+bench = "§35"
+
+[[function]]
+name = "RemoveAllMessages"
+owner = "MessageReceiver"
+kind = "c"
+group = "messages"
+register = ["0x00E36AD0"]
+impl = "0x004CEB00"
+args = "self: MessageReceiver"
+returns = "(последний аргумент)"
+ru = "0x4ceb00 -> self->vtbl[+0x18](): снимает все подписки. Ошибка (текст скопирован из AddMessage): \"MessageReceiver:AddMessage must be called on a MessageReceiver. Found something else.\\n\"."
+conf = "exe"
+
+[[function]]
+name = "RegisterFunction"
+kind = "lua"
+group = "scripts"
+source = "0x0110A6F0"
+args = "scriptName: string, functionName: string, fn: function"
+returns = "-"
+ru = "Встроенный текст Lua (чанк \"Global Lua Utility Functions\", грузит 0x4689E0). Кладёт fn в gFunctionRegistry[scriptName][functionName]; при первом имени скрипта зовёт RegisterScriptName(scriptName, gGUID) — так объект LuaAudioScript узнаёт своё имя."
+conf = "bench"
+bench = "§35"
+
+[[function]]
+name = "CallLuaFunction"
+kind = "lua"
+group = "scripts"
+source = "0x0110A6F0"
+args = "scriptName: string, functionName: string, ..."
+returns = "-"
+ru = "Встроенный текст Lua. Зовёт gFunctionRegistry[scriptName][functionName](...); нет функции — print. Со стороны движка её зовёт 0x468F40 (startup, shutdown)."
+conf = "bench"
+bench = "§35"
+
+[[function]]
+name = "NewMessageReceiver"
+kind = "lua"
+group = "messages"
+source = "0x011289F8"
+args = "receiveFunction: function(self, messageName, dataTypeName, data)"
+returns = "receiver: table"
+ru = "Встроенный текст Lua (чанк \"tolua: embedded Lua code\", грузит 0x4CE030). Таблица-обёртка {m_handle, m_pReceiver = MessageReceiverNew(handle), m_receiveFunction} с метатаблицей MessageReceiverMeta: методы AddMessage(имя [, имяТипа]), RemoveMessage(имя), RemoveAllMessages(), Delete(). RemoveMessage зовёт несуществующий m_pReceiver:RemoveMessage (метод C называется Remove) и даёт ошибку."
+conf = "bench"
+bench = "§35"
+
+[[function]]
+name = "MessageReceiverReceive"
+kind = "lua"
+group = "messages"
+source = "0x011289F8"
+args = "handle: number, messageName: string, dataTypeName: string|nil, data: lightuserdata|nil"
+returns = "-"
+ru = "Встроенный текст Lua. Находит обёртку в MessageReceiverRegistry[handle] и зовёт obj:m_receiveFunction(messageName, dataTypeName, data). Её зовёт движок (0x4CE610)."
+conf = "bench"
+bench = "§35"
+
+[[function]]
+name = "debug_print"
+kind = "lua"
+group = "scripts"
+source = "0x0110AA98"
+args = "flag, text"
+returns = "-"
+ru = "Встроенный текст Lua: пустая функция."
+conf = "exe"
+
+[[function]]
+name = "debug_screenprint"
+kind = "lua"
+group = "scripts"
+source = "0x0110AA98"
+args = "flag, text"
+returns = "-"
+ru = "Встроенный текст Lua: пустая функция."
+conf = "exe"

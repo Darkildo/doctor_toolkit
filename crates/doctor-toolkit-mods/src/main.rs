@@ -10,8 +10,10 @@
 //! `DOCTOR_TOOLKIT_MODS_SHOT=<file.png>` saves a screenshot once the mods are
 //! loaded and exits; `DOCTOR_TOOLKIT_MODS_SELECT=<id>` selects a mod first,
 //! `DOCTOR_TOOLKIT_MODS_INTEGRITY=1` runs the integrity check first,
-//! `DOCTOR_TOOLKIT_MODS_ASK=write` opens the question before writing and
-//! `DOCTOR_TOOLKIT_MODS_SIZE=<w>x<h>` sets the size of the window.
+//! `DOCTOR_TOOLKIT_MODS_ASK=write` opens the question before writing
+//! (`later` closes the question about the executable code of a mod, which
+//! opens by itself) and `DOCTOR_TOOLKIT_MODS_SIZE=<w>x<h>` sets the size of
+//! the window.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -148,6 +150,7 @@ impl ModsApp {
             player: Player::default(),
             play_after_write: false,
         };
+        app.player.in_memory = settings.resources_in_memory;
         let start = args
             .game
             .or_else(|| settings.remembered_game().map(PathBuf::from));
@@ -219,6 +222,9 @@ impl ModsApp {
         if capture.ask_write && self.panel.game().is_some() {
             capture.ask_write = false;
             self.panel.ask_apply();
+        }
+        if std::env::var("DOCTOR_TOOLKIT_MODS_ASK").as_deref() == Ok("later") {
+            self.panel.close_code_question();
         }
         if capture.frames < 12 {
             return;
@@ -293,6 +299,22 @@ impl ModsApp {
                     self.error = Some(error.to_string());
                 }
                 powered_by(ui);
+                ui.add_space(8.0);
+                // Stage 100: the resources of the mods in memory (off by
+                // default), kept in `mods.toml`.
+                if ui
+                    .checkbox(&mut self.player.in_memory, tr("play_mods.in_memory"))
+                    .on_hover_text(tr("play_mods.in_memory_hint"))
+                    .changed()
+                    && let Some(dir) = &self.config
+                    && let Err(error) = games::save_setting(
+                        dir,
+                        "resources_in_memory",
+                        if self.player.in_memory { "1" } else { "0" },
+                    )
+                {
+                    self.error = Some(error.to_string());
+                }
                 ui.add_space(8.0);
                 ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
                     self.title_and_game(ui);

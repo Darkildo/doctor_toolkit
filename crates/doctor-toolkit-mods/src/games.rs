@@ -26,6 +26,10 @@ pub struct Settings {
     pub language: String,
     /// The game folder used last.
     pub game: Option<PathBuf>,
+    /// "Play with mods" puts the resources of the mods into the game's
+    /// streams in memory (stage 100) instead of rebuilding the streams.
+    /// Off unless the file says `resources_in_memory = "1"`.
+    pub resources_in_memory: bool,
 }
 
 impl Settings {
@@ -52,7 +56,14 @@ impl Settings {
             .and_then(|v| v.as_str())
             .filter(|s| !s.is_empty())
             .map(PathBuf::from);
-        Self { language, game }
+        let resources_in_memory = own
+            .get("resources_in_memory")
+            .is_some_and(|v| v.as_str() == Some("1") || v.as_bool() == Some(true));
+        Self {
+            language,
+            game,
+            resources_in_memory,
+        }
     }
 
     /// The remembered game folder, if it still holds the game.
@@ -320,6 +331,12 @@ mod tests {
         std::fs::write(dir.path().join("settings.toml"), "language = \"ru\"\n").unwrap();
         assert_eq!(Settings::load(dir.path()).language, "ru");
         save_setting(dir.path(), "language", "en").unwrap();
+        // Resources in memory (stage 100): off unless switched on.
+        assert!(!Settings::load(dir.path()).resources_in_memory);
+        save_setting(dir.path(), "resources_in_memory", "1").unwrap();
+        assert!(Settings::load(dir.path()).resources_in_memory);
+        save_setting(dir.path(), "resources_in_memory", "0").unwrap();
+        assert!(!Settings::load(dir.path()).resources_in_memory);
         let game = dir.path().join("game");
         std::fs::create_dir_all(&game).unwrap();
         doctor_toolkit::testing::write_game(&game).unwrap();

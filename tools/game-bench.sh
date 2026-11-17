@@ -37,6 +37,8 @@
 #   type TEXT            type letters, digits, spaces, - _ .
 #   click X,Y            left click at game cursor position (see CLICK_MODE)
 #   move X,Y             pointer move without a click
+#   press [BUTTON]       press a mouse button (default 1) where the game cursor
+#                        is, e.g. after `look` brought it onto a menu button
 #   look DX,DY [N]       relative pointer motion N times: turns the camera
 #   wait SECONDS         pause
 #   until SECONDS        wait until SECONDS after the start of the game
@@ -500,6 +502,16 @@ dxvk_setup() {
 # GAME_OPTIONS is not set; a cmd.txt the bench did not write is never touched.
 game_options() {
     local file=$shadow/cmd.txt mark=$shadow/.game-bench/cmd.txt
+    # The game builds "<folder>/<stream>.str" in 256 bytes on the stack and
+    # crashes on a longer text (docs/analysis/story.md §9): with a folder of
+    # more than 112 characters (Z: and the path) some streams of the game no
+    # longer open, and the crash looks like a fault of the game or of a mod.
+    local seen
+    seen=$(realpath -m -- "$shadow")
+    if ((${#seen} + 2 > 112)); then
+        echo "WARNING: the shadow path is $((${#seen} + 2)) characters for the game; streams whose path is longer than $((254 - ${#seen} - 2)) crash it when they load (keep the shadow path under 112)" |
+            tee -a "$out/timeline.txt" >&2
+    fi
     # A cmd.txt that differs from the bench's (e.g. `doctor-toolkit play
     # --stream` replaced it for this run and puts it back afterwards) stays,
     # and so does the mark, so that a later run still takes the bench's away.
@@ -621,6 +633,7 @@ step() {
         done
         ;;
     click) click_at "$1" ;;
+    press) xdotool mousedown "${1:-1}" && sleep "${HOLD:-0.4}" && xdotool mouseup "${1:-1}" || true ;;
     move) xdotool mousemove "${1%,*}" "${1#*,}" || true ;;
     look)
         # Relative pointer motion: turns the camera in game.

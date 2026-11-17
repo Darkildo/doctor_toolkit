@@ -15,6 +15,7 @@ use crate::game::{GameAssets, GameInstance, ResourceIndex};
 use crate::resource::material::TextureRole;
 use crate::resource::mesh::{self, TYPE_MESH};
 use crate::resource::texture::{TYPE_TG4H, TexturePair, pair_of};
+use crate::workspace::Workspace;
 use crate::{Error, Result};
 
 const TYPE_METAMODEL: u32 = crate::hash::sdbm(b"metamodel");
@@ -174,4 +175,164 @@ pub fn textures_of(
         }
     }
     Ok(out)
+}
+
+impl TextureUse {
+    /// Replaces the pixels of every copy with `image` (PNG or DDS), one
+    /// operation of the workspace per copy; the caller joins them
+    /// ([`Workspace::squash`]). Returns the number of copies replaced.
+    pub fn replace(
+        &self,
+        game: &GameInstance,
+        ws: &mut Workspace,
+        image: &[u8],
+        is_png: bool,
+    ) -> Result<usize> {
+        let pairs = self.pairs(game)?;
+        for &(stream, pair) in &pairs {
+            ws.import_texture(game, stream, pair, image, is_png)?;
+        }
+        Ok(pairs.len())
+    }
+}
+
+/// What [`replace_all_copies`] did.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct Replaced {
+    /// Name of the texture.
+    pub name: String,
+    /// Name hash of the texture.
+    pub hash: u32,
+    /// Streams whose copy was replaced.
+    pub streams: Vec<String>,
+    /// Size and format of the texture before and after.
+    pub before: String,
+    pub after: String,
+}
+
+/// Replaces the pixels of every copy of the texture with name hash `hash`
+/// (every `tg4h` of the game with that id) with `image`, as one undoable
+/// operation. What the Retexture wizard does for each texture it changes.
+pub fn replace_all_copies(
+    game: &GameInstance,
+    ws: &mut Workspace,
+    index: &ResourceIndex,
+    hash: u32,
+    image: &[u8],
+    is_png: bool,
+) -> Result<Replaced> {
+    let copies = texture_copies(index).remove(&hash).unwrap_or_default();
+    if copies.is_empty() {
+        return Err(Error::InvalidArgument(format!(
+            "no texture {hash:08x} in the game"
+        )));
+    }
+    let usage = TextureUse {
+        hash,
+        name: String::new(),
+        role: TextureRole::Other,
+        sampler: String::new(),
+        materials: Vec::new(),
+        copies,
+        size: (0, 0),
+    };
+    let pairs = usage.pairs(game)?;
+    let since = ws.head();
+    let mut out: Option<Replaced> = None;
+    for &(stream, pair) in &pairs {
+        let before = {
+            let file = game.open_stream(stream)?;
+            crate::resource::texture::Texture::load(file.data(), file.layout(), pair)?.header
+        };
+        let after = ws.import_texture(game, stream, pair, image, is_png)?.header;
+        let name = game.streams()[stream].stream_name();
+        match &mut out {
+            Some(done) => done.streams.push(name),
+            None => {
+                out = Some(Replaced {
+                    name: after.name.clone(),
+                    hash,
+                    streams: vec![name],
+                    before: format!(
+                        "{}×{} {}",
+                        before.width,
+                        before.height,
+                        before.format().name()
+                    ),
+                    after: format!(
+                        "{}×{} {}, {} mip level(s)",
+                        after.width,
+                        after.height,
+                        after.format().name(),
+                        after.mip_count()
+                    ),
+                });
+            }
+        }
+    }
+    let done = out.expect("there is at least one copy");
+    if ws.head() > since + 1 {
+        let label = format!("Retexture {} ({} copies)", done.name, done.streams.len());
+        ws.squash(since, &label)?;
+    }
+    Ok(done)
+}
+
+/// Sets float parameters of the material `key` (a tint colour
+/// `g_TintColor0` holds four values): a material of the game files, or one
+/// the workspace added (a new material of an imported model). One undoable
+/// operation; returns `(parameter, old values, new values)` of what changed
+/// and the label of the operation (`None` when nothing changed).
+pub fn set_material_params(
+    game: &GameInstance,
+    ws: &mut Workspace,
+    key: &crate::workspace::ResourceKey,
+    params: &std::collections::BTreeMap<String, Vec<f32>>,
+) -> Result<(Vec<MaterialChange>, Option<String>)> {
+    use crate::import::file::FileTarget;
+    use crate::resource::material::{self, Material, ParamEdit, ParamEditValue};
+
+    if key.type_id != material::TYPE_MATERIAL {
+        return Err(Error::InvalidArgument(format!("{key} is not a material")));
+    }
+    let target = if ws.change(key).is_some_and(|c| c.is_added()) {
+        FileTarget::Added(key.clone())
+    } else {
+        let (stream, resource) = crate::tunables::locate(game, key)?;
+        FileTarget::game(game, stream, resource)?
+    };
+    // What changes, for the answer and the label; the writing itself is
+    // `material::apply_params`, shared with the editor and the command line.
+    let before = Material::parse(&target.current(game, ws)?)?;
+    let mut changes = Vec::new();
+    for (name, values) in params {
+        let old = before.floats(name).map(<[f32]>::to_vec);
+        if old.as_deref() != Some(values.as_slice()) {
+            changes.push(MaterialChange {
+                param: name.clone(),
+                before: old.unwrap_or_default(),
+                after: values.clone(),
+            });
+        }
+    }
+    let edits: Vec<ParamEdit> = params
+        .iter()
+        .map(|(name, values)| ParamEdit {
+            name: name.clone(),
+            value: ParamEditValue::Floats(values.clone()),
+        })
+        .collect();
+    let names: Vec<&str> = changes.iter().map(|c| c.param.as_str()).collect();
+    let (_, changed, label) = material::apply_params(game, ws, &target, &edits, |m| {
+        format!("Material {}: {}", m.name, names.join(", "))
+    })?;
+    Ok((changes, changed.then_some(label)))
+}
+
+/// One parameter [`set_material_params`] changed.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct MaterialChange {
+    pub param: String,
+    pub before: Vec<f32>,
+    pub after: Vec<f32>,
 }

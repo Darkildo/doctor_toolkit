@@ -1,7 +1,7 @@
 ---
 type: class
 status: partial
-confidence: data
+confidence: exe
 editions: ["1.0.789.0"]
 stages: [72, 73]
 sources: ["data/gf2/sim_classes.txt", "data/gf2/simgroup_schema.txt", "data/gf2/logic_schema.toml", "data/gf2/attr_types.toml"]
@@ -26,7 +26,7 @@ updated: 2026-11-16
 |---:|---|---|---|---|---|---:|
 | 0 | string | — | — | — | — | 104 |
 | 1 | int | — | — | — | — | 24 |
-| 2 | string | вход (сообщение, которое объект слушает) | — | `MsgIn` | роль: data | 24 |
+| 2 | string | вход (сообщение, которое объект слушает) | — | `MsgIn` | роль: exe | 24 |
 | 3 | string | — | — | — | — | 18 |
 | 4 | int | — | — | — | — | 70 |
 | 5 | guid | ссылка на объект (GUID) | — | [`Ref<TODSequencer>`](TODSequencer.md) | роль: data, смысл: data | 104 |

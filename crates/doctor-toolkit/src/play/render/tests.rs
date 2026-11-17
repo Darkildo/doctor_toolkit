@@ -37,10 +37,12 @@ fn options_make_the_module_configuration() {
         fov: 75,
         fxaa: true,
         sharpen: 400,
+        draw_merge: true,
         laa: true,
         ..Default::default()
     };
     let c = o.config();
+    assert!(c.draw_merge == 1 && c.draws() && !RenderConfig::default().draws());
     // Clamped like the module does.
     assert_eq!((c.fps, c.fov, c.sharpen), (10, 75, 100));
     assert!(c.fxaa && c.time_of_day && c.memory_log == 30);

@@ -12,7 +12,7 @@ name = "doctor-toolkit-gui"
 path = "src/main.rs"
 
 [dependencies]
-doctor-toolkit.workspace = true
+doctor-toolkit = { workspace = true, features = ["walk"] }
 doctor-toolkit-mods.workspace = true
 eframe = { version = "=0.37.0", default-features = false, features = ["default_fonts", "wgpu", "glow", "wayland", "x11"] }
 egui = "=0.37.0"
@@ -42,7 +42,7 @@ raw-window-handle = "0.6"
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging"] }
 
 [dev-dependencies]
-doctor-toolkit = { workspace = true, features = ["testing"] }
+doctor-toolkit = { workspace = true, features = ["testing", "walk"] }
 
 [features]
 default = ["audio"]

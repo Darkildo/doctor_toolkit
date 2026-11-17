@@ -10,7 +10,7 @@
 //! |---|---|
 //! | `simgroup` | attribute values (a removed attribute becomes the default), `position`, `model` |
 //! | `metamodel` | property values, condition values |
-//! | `variabledictionary` | `kind` and `value` of each variable |
+//! | `variabledictionary` | `kind` and `value` of each variable; new variables after the existing ones |
 //! | `partsdb` | everything: the document is the whole database (parts, variants, sets, ...) |
 
 use serde_json::Value as Json;
@@ -22,7 +22,7 @@ use crate::resource::metamodel::{MetaModel, PropValue};
 use crate::resource::metamodel_edit;
 use crate::resource::partsdb::PartsDb;
 use crate::resource::simgroup::{Guid, Hash32, SimGroup, Value};
-use crate::resource::variabledictionary::VariableDictionary;
+use crate::resource::variabledictionary::{Variable, VariableDictionary};
 use crate::{Error, Result};
 
 /// The result of [`apply_json`].
@@ -599,13 +599,14 @@ fn metamodel(data: &[u8], doc: &Json) -> Result<Imported> {
 fn variables(data: &[u8], doc: &Json) -> Result<Imported> {
     let mut dict = VariableDictionary::parse(data)?;
     let items = array(doc, "variables", "document")?;
-    if items.len() != dict.variables.len() {
+    if items.len() < dict.variables.len() {
         return Err(bad(format!(
-            "the document has {} variable(s), the dictionary {}; adding and removing is not supported",
+            "the document has {} variable(s), the dictionary {}; removing is not supported",
             items.len(),
             dict.variables.len()
         )));
     }
+    let known = dict.variables.len();
     let mut changes = Vec::new();
     for (k, (item, var)) in items.iter().zip(&mut dict.variables).enumerate() {
         let at = format!("variables[{k}]");
@@ -624,6 +625,43 @@ fn variables(data: &[u8], doc: &Json) -> Result<Imported> {
             }
         }
     }
+    // New variables: the items after the ones of the resource. The game
+    // finds a variable by the hash of its entry (SimGroup objects, saves)
+    // and by `sdbm(lower(name))` (Lua); the entry hash is any number no
+    // other variable of the game has (docs/formats/save.md §4).
+    for (k, item) in items.iter().enumerate().skip(known) {
+        let at = format!("variables[{k}]");
+        let name = field(item, "name", &at)?.as_str().unwrap_or_default();
+        if name.is_empty() || !name.bytes().all(|b| b.is_ascii_graphic()) {
+            return Err(bad(format!(
+                "{at}: a new variable needs a name of visible ASCII characters"
+            )));
+        }
+        let hash = hex_u32(field(item, "hash", &at)?, &at)?;
+        if dict
+            .variables
+            .iter()
+            .any(|v| v.hash.0 == hash || v.name.eq_ignore_ascii_case(name))
+        {
+            return Err(bad(format!(
+                "{at}: the dictionary already has a variable `{name}` or the hash {hash:08x}"
+            )));
+        }
+        let kind = int(field(item, "kind", &at)?, &at)? as u32;
+        let value = int(field(item, "value", &at)?, &at)? as u32;
+        changes.push(format!(
+            "new variable {name} ({hash:08x}): kind {kind}, value {value}"
+        ));
+        dict.variables.push(Variable {
+            name: name.to_string(),
+            hash: Hash32(hash),
+            kind,
+            value,
+            name_offset: 0,
+        });
+    }
+    // The entries of the resource are sorted by hash.
+    dict.variables.sort_by_key(|v| v.hash.0);
     let data = if changes.is_empty() {
         data.to_vec()
     } else {
@@ -708,7 +746,6 @@ mod tests {
 
     #[test]
     fn variable_values() {
-        use crate::resource::variabledictionary::Variable;
         let dict = VariableDictionary {
             version: 4,
             variables: vec![Variable {
@@ -727,6 +764,44 @@ mod tests {
         let parsed = VariableDictionary::parse(&imported.data).unwrap();
         assert_eq!(parsed.variables[0].value, 1);
         doc["variables"][0]["name"] = "Other".into();
+        assert!(apply_json(TYPE_VARIABLE_DICTIONARY, &data, &doc).is_err());
+    }
+
+    #[test]
+    fn new_variables_are_added_sorted_by_hash() {
+        let dict = VariableDictionary {
+            version: 4,
+            variables: vec![Variable {
+                name: "Bridge_Var".into(),
+                hash: Hash32(7),
+                kind: 1,
+                value: 0,
+                name_offset: 0,
+            }],
+        };
+        let data = dict.encode();
+        let mut doc = serde_json::to_value(&dict).unwrap();
+        let new = |name: &str, hash: &str| serde_json::json!({"name": name, "hash": hash, "kind": 1, "value": 0});
+        doc["variables"]
+            .as_array_mut()
+            .unwrap()
+            .push(new("mod_done", "00000003"));
+        let imported = apply_json(TYPE_VARIABLE_DICTIONARY, &data, &doc).unwrap();
+        assert_eq!(
+            imported.changes,
+            ["new variable mod_done (00000003): kind 1, value 0"]
+        );
+        let parsed = VariableDictionary::parse(&imported.data).unwrap();
+        let names: Vec<_> = parsed.variables.iter().map(|v| v.name.as_str()).collect();
+        assert_eq!(names, ["mod_done", "Bridge_Var"]);
+        assert_eq!(parsed.encode(), imported.data);
+        // The same hash or the same name twice, and a removed variable, are refused.
+        let mut clash = doc.clone();
+        clash["variables"][1] = new("other", "00000007");
+        assert!(apply_json(TYPE_VARIABLE_DICTIONARY, &data, &clash).is_err());
+        clash["variables"][1] = new("bridge_var", "00000009");
+        assert!(apply_json(TYPE_VARIABLE_DICTIONARY, &data, &clash).is_err());
+        doc["variables"].as_array_mut().unwrap().clear();
         assert!(apply_json(TYPE_VARIABLE_DICTIONARY, &data, &doc).is_err());
     }
 }

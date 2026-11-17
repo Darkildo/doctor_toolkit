@@ -4,8 +4,9 @@ name: Knowledge base
 # documentation alone): every note passes kb-lint — properties, links,
 # orphans, questions without a next step, names of closed files — and the
 # generated notes match data/gf2. The files generated from data/gf2 (JSON
-# Schema, the Python module of the value lists) are checked with them. Only
-# the library is built.
+# Schema, the Python module of the value lists) and docs/parity.md (from
+# data/toolkit/capabilities.toml) are checked with them. Only the library is
+# built.
 
 on:
   push:
@@ -13,6 +14,10 @@ on:
     paths:
       - "docs/**"
       - "data/gf2/**"
+      - "data/toolkit/**"
+      - "crates/doctor-toolkit/src/parity/**"
+      - "crates/doctor-toolkit/tests/parity.rs"
+      - "crates/doctor-toolkit-mods/i18n/en.toml"
       - "crates/doctor-toolkit/src/kb/**"
       - "crates/doctor-toolkit/src/game_types/**"
       - "crates/doctor-toolkit/build.rs"
@@ -23,6 +28,10 @@ on:
     paths:
       - "docs/**"
       - "data/gf2/**"
+      - "data/toolkit/**"
+      - "crates/doctor-toolkit/src/parity/**"
+      - "crates/doctor-toolkit/tests/parity.rs"
+      - "crates/doctor-toolkit-mods/i18n/en.toml"
       - "crates/doctor-toolkit/src/kb/**"
       - "crates/doctor-toolkit/src/game_types/**"
       - "crates/doctor-toolkit/build.rs"
@@ -46,7 +55,7 @@ concurrency:
 
 jobs:
   kb-lint:
-    name: kb-lint, kb-gen --check, types-gen --check
+    name: kb-lint, kb-gen --check, types-gen --check, parity-gen --check
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
@@ -54,4 +63,4 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      - run: cargo test -p doctor-toolkit --test kb --test types_gen
+      - run: cargo test -p doctor-toolkit --test kb --test types_gen --test parity

@@ -10,9 +10,10 @@ use clap::{Args, Subcommand};
 use doctor_toolkit::game::GameInstance;
 use doctor_toolkit::mods::integrity::{self, Condition, IntegrityOptions};
 use doctor_toolkit::mods::manager::{InstallReport, ModApplyOptions};
+use doctor_toolkit::mods::native::{self, Answer, NativeState};
 use doctor_toolkit::mods::vpat::{self, VpatPatch};
 use doctor_toolkit::mods::{
-    self, Incompatible, ModArchive, ModInfo, ModManager, Preview, Relations,
+    self, Incompatible, ModArchive, ModInfo, ModManager, NativeBuild, Preview, Relations,
 };
 use doctor_toolkit::workspace::{ApplyReport, ResourceKey, StreamAction, Workspace};
 
@@ -71,6 +72,27 @@ pub struct MetaArgs {
     /// for no condition [default: this program's version or newer]
     #[arg(long = "requires-manager", value_name = "CONDITION")]
     requires_manager: Option<String>,
+    /// Executable code of the mod: a 32-bit DLL for the `scripts` folder of
+    /// the game, `FILE` or `NAME.asi=FILE` (repeat for more). The mod is
+    /// written in format version 5; the mod manager installs the code only
+    /// after the player agrees to it, and only into the edition 1.0.789.0
+    #[arg(long = "native", value_name = "[NAME.asi=]FILE")]
+    native: Vec<String>,
+    /// The mod makes no sense without its code: it is not written into the
+    /// game at all while the code is not installed
+    #[arg(long = "native-required", requires = "native")]
+    native_required: bool,
+    /// The modules are plain ASI plug-ins that do not use doctor_platform.asi
+    #[arg(
+        long = "native-plain",
+        requires = "native",
+        conflicts_with = "platform_abi"
+    )]
+    native_plain: bool,
+    /// The ABI of the platform module the code was built with
+    /// (DOCTOR_ABI_VERSION of doctor_sdk.h) [default: the one of this program]
+    #[arg(long = "platform-abi", value_name = "N", requires = "native")]
+    platform_abi: Option<u32>,
 }
 
 /// `ID` or `ID=CONDITION`.
@@ -82,6 +104,21 @@ fn id_condition(text: &str) -> (String, String) {
 }
 
 impl MetaArgs {
+    /// The modules of `--native`, read from the disk.
+    fn native(&self) -> Result<Option<NativeBuild>> {
+        let spec = native::NativeSpec {
+            modules: self.native.clone(),
+            required: self.native_required,
+            plain: self.native_plain,
+            platform_abi: self.platform_abi,
+        };
+        let (build, warnings) = spec.read()?;
+        for warning in warnings {
+            out!("warning: {warning}");
+        }
+        Ok(build)
+    }
+
     fn info(&self) -> ModInfo {
         let editions = self
             .editions
@@ -121,6 +158,7 @@ impl MetaArgs {
             editions,
             requires_manager,
             made_on: Default::default(),
+            native: None,
         };
         ModInfo {
             id: self
@@ -145,6 +183,7 @@ impl MetaArgs {
         keys: Option<&[ResourceKey]>,
     ) -> Result<ModInfo> {
         let mut info = self.info();
+        info.relations.native = self.native()?;
         for edition in &mut info.relations.editions {
             if edition == "this" {
                 *edition =
@@ -292,6 +331,25 @@ pub enum ModsCommand {
     /// Take over a game patched by the old toolkit: adopt its backups as the
     /// originals and install its patches as mods
     ImportOld { game_dir: PathBuf },
+    /// Executable code of mods (format version 5): without ID, the state of
+    /// the code of every mod and the files the mod manager has in the game;
+    /// with ID, what the mod would install — and your answer. Nothing
+    /// executable is installed before `--allow`
+    Native {
+        game_dir: PathBuf,
+        /// The mod
+        id: Option<String>,
+        /// Agree to the code of the mod as it is now (each file by its
+        /// SHA-256); `mods apply` installs it
+        #[arg(long, requires = "id", conflicts_with_all = ["data_only", "forget"])]
+        allow: bool,
+        /// Use the mod without its code: only its data is written
+        #[arg(long, requires = "id", conflicts_with = "forget")]
+        data_only: bool,
+        /// Forget the answer: the code leaves the game and waits again
+        #[arg(long, requires = "id")]
+        forget: bool,
+    },
 }
 
 /// `integrity`.
@@ -343,6 +401,16 @@ pub fn run(command: ModsCommand) -> Result<()> {
                 report.payload_bytes,
                 report.file_size
             );
+            if report.native_modules > 0 {
+                out!(
+                    "the mod carries {} module(s) of executable code: the mod manager asks \
+                     the player before it installs them",
+                    report.native_modules
+                );
+            }
+            for note in &report.notes {
+                out!("note: {note}");
+            }
             Ok(())
         }
         ModsCommand::Info { file, resources } => info(&file, resources),
@@ -360,6 +428,7 @@ pub fn run(command: ModsCommand) -> Result<()> {
             for file in &files {
                 let report = mods.install_file(&game, file, !disabled)?;
                 print_install(&report);
+                ask_about_code(&game, &mods, &report.id)?;
             }
             out!(
                 "run `doctor-toolkit mods apply {}` to write the mods into the game",
@@ -377,6 +446,7 @@ pub fn run(command: ModsCommand) -> Result<()> {
             let info = meta.info_for(&game, &ws, None)?;
             let report = mods.install_workspace(&game, &ws, &info, None)?;
             print_install(&report);
+            ask_about_code(&game, &mods, &report.id)?;
             Ok(())
         }
         ModsCommand::Uninstall {
@@ -524,14 +594,27 @@ pub fn run(command: ModsCommand) -> Result<()> {
                 },
             )?;
             print_report(&report);
+            for path in &mods.native_report().removed {
+                out!("removed   {path}");
+            }
             Ok(())
         }
         ModsCommand::Unapply { game_dir, force } => {
             let (game, mut mods) = open(&game_dir)?;
             let report = mods.unapply(&game, force)?;
             print_report(&report);
+            for path in &mods.native_report().removed {
+                out!("removed   {path}");
+            }
             Ok(())
         }
+        ModsCommand::Native {
+            game_dir,
+            id,
+            allow,
+            data_only,
+            forget,
+        } => native_command(&game_dir, id.as_deref(), allow, data_only, forget),
         ModsCommand::Export {
             game_dir,
             id,
@@ -670,6 +753,141 @@ fn refuse_needed(mods: &ModManager, ids: &[String], verb: &str) -> Result<()> {
     Ok(())
 }
 
+/// After a mod is installed: what its code is and how to answer.
+fn ask_about_code(game: &GameInstance, mods: &ModManager, id: &str) -> Result<()> {
+    let Some(question) = native::question(mods, mods.native_host(), id)? else {
+        return Ok(());
+    };
+    if native::consent(mods, id)? == native::Consent::Code {
+        out!("  the executable code of {id} is the one you agreed to before");
+        return Ok(());
+    }
+    for line in question.lines() {
+        out!("  {line}");
+    }
+    out!(
+        "  to agree: `doctor-toolkit mods native {} {id} --allow`{}",
+        quote(game.root()),
+        if question.required {
+            "; to refuse, disable or uninstall the mod"
+        } else {
+            "; to use the mod without its code: `--data-only`"
+        }
+    );
+    Ok(())
+}
+
+fn native_command(
+    game_dir: &Path,
+    id: Option<&str>,
+    allow: bool,
+    data_only: bool,
+    forget: bool,
+) -> Result<()> {
+    let (game, mut mods) = open(game_dir)?;
+    let Some(id) = id else {
+        let states = native::states(&mods, mods.native_host())?;
+        let with_code: Vec<_> = mods
+            .mods()
+            .iter()
+            .filter(|m| m.manifest.native.is_some())
+            .collect();
+        if with_code.is_empty() {
+            out!("no installed mod has executable code");
+        }
+        for m in with_code {
+            let state = states
+                .iter()
+                .find(|(i, _)| *i == m.id)
+                .map_or_else(|| "the mod is disabled".to_owned(), |(_, s)| s.to_string());
+            out!(
+                "{}  {} {}: {state}",
+                m.id,
+                m.manifest.name,
+                m.manifest.version
+            );
+            for module in m.manifest.native.iter().flat_map(|n| &n.modules) {
+                out!(
+                    "    {}  {} byte(s)  sha256 {}",
+                    module.path(),
+                    module.payload.size,
+                    module.payload.sha256
+                );
+            }
+        }
+        for (path, owner) in native::written(&mods)? {
+            out!("in the game: {path}  ({owner})");
+        }
+        let host = mods.native_host();
+        if let Err(why) = &host.edition {
+            out!("the game: {why}");
+        }
+        match &host.loader {
+            Some(loader) => out!("ASI loader: {loader}"),
+            None => out!(
+                "ASI loader: none in the game folder{}",
+                if host.loader_binary.is_some() {
+                    "; the toolkit's is installed with the first module"
+                } else {
+                    ""
+                }
+            ),
+        }
+        return Ok(());
+    };
+    let Some(question) = native::question(&mods, mods.native_host(), id)? else {
+        bail!("mod `{id}` has no executable code");
+    };
+    if !(allow || data_only || forget) {
+        for line in question.lines() {
+            out!("{line}");
+        }
+        out!("your answer: {:?}", native::consent(&mods, id)?);
+        return Ok(());
+    }
+    if data_only && question.required {
+        bail!(
+            "mod `{id}` does not work without its code: agree with --allow, or disable or \
+             uninstall the mod"
+        );
+    }
+    let answer = if allow {
+        Some(Answer::Code)
+    } else if data_only {
+        Some(Answer::Data)
+    } else {
+        None
+    };
+    native::set_consent(&mods, id, answer)?;
+    // Code that is not agreed to any more leaves the game at once.
+    for path in native::prune(&mods)?.removed {
+        out!("removed   {path}");
+    }
+    mods.set_native_host(mods.native_host().clone());
+    match answer {
+        Some(Answer::Code) => {
+            for file in question.modules.iter().chain(&question.toolkit) {
+                out!("agreed: {}  sha256 {}", file.path, file.sha256);
+            }
+            if let Some(obstacle) = &question.obstacle {
+                out!("note: {}", obstacle.describe());
+            }
+            let installed = native::states(&mods, mods.native_host())?
+                .iter()
+                .any(|(i, s)| i == id && *s == NativeState::Installed);
+            if !installed {
+                out!(
+                    "run `doctor-toolkit mods apply {}` to install it",
+                    quote(game.root())
+                );
+            }
+        }
+        Some(Answer::Data) => out!("{id}: only its data is used; its code stays out of the game"),
+        None => out!("{id}: the answer is forgotten; its code waits for your consent"),
+    }
+    Ok(())
+}
+
 fn hint_apply(game: &GameInstance, mods: &ModManager) -> Result<()> {
     let status = mods.status(game)?;
     if !status.streams.iter().all(|s| s.up_to_date) {
@@ -746,6 +964,30 @@ fn info(file: &Path, resources: bool) -> Result<()> {
         m.streams().len(),
         m.payload_bytes()
     );
+    if let Some(code) = &m.native {
+        out!(
+            "EXECUTABLE CODE for the edition {} of the game{}{}: installed only after the \
+             player agrees",
+            code.edition,
+            match code.platform_abi {
+                Some(abi) => format!(", platform ABI {abi}"),
+                None => ", plain ASI plug-in(s)".to_owned(),
+            },
+            if code.required {
+                ", required (the mod does not work without it)"
+            } else {
+                ""
+            }
+        );
+        for module in &code.modules {
+            out!(
+                "  code {}  {} byte(s)  sha256 {}",
+                module.path(),
+                module.payload.size,
+                module.payload.sha256
+            );
+        }
+    }
     for file in &m.files {
         out!(
             "  file {}  {} byte(s){}",
@@ -937,7 +1179,7 @@ fn status(game: &GameInstance, mods: &ModManager) -> Result<()> {
 }
 
 fn print_report(report: &ApplyReport) {
-    if report.streams.is_empty() {
+    if report.streams.is_empty() && report.written.is_empty() {
         out!("nothing to do: the game is up to date");
     }
     for (stream, action) in &report.streams {

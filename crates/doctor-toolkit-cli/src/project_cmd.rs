@@ -2,20 +2,15 @@
 
 use std::io::Write as _;
 use std::path::PathBuf;
-use std::sync::atomic::AtomicBool;
 use std::time::Instant;
 
 use anyhow::{Context, Result, bail};
 use clap::{Args, Subcommand};
 
 use doctor_toolkit::game::GameInstance;
+use doctor_toolkit::navigation::GameIndex;
 use doctor_toolkit::navigation::index::default_cache_file;
-use doctor_toolkit::navigation::{GameIndex, unpack};
-use doctor_toolkit::project::config::BuildSettings;
-use doctor_toolkit::project::{
-    self, BuildOptions, CreateOptions, EntryState, Project, ProjectStatus,
-};
-use doctor_toolkit::resource::names::type_tags;
+use doctor_toolkit::project::{self, BuildOptions, EntryState, NewProject, Project, ProjectStatus};
 use doctor_toolkit::workspace::{ApplyOptions, Workspace};
 
 macro_rules! out {
@@ -171,29 +166,6 @@ pub fn run(command: ProjectCommand) -> Result<()> {
         } => {
             let game = GameInstance::open(&game_dir)?;
             let ws = Workspace::for_game(&game, workspace_dir.as_deref())?;
-            let type_ids: Vec<u32> = types
-                .iter()
-                .map(|t| {
-                    type_tags()
-                        .resolve(t)
-                        .with_context(|| format!("unknown type `{t}`"))
-                })
-                .collect::<Result<_>>()?;
-            let mut selection = if from_workspace {
-                project::workspace_selection(&game, &ws)?
-            } else {
-                unpack::select(&game, &streams, &type_ids)?
-            };
-            if from_workspace && !type_ids.is_empty() {
-                for (s, list) in &mut selection {
-                    let file = game.open_stream(*s)?;
-                    list.retain(|&r| type_ids.contains(&file.layout().resources[r].header.type_id));
-                }
-                selection.retain(|(_, l)| !l.is_empty());
-            }
-            if selection.is_empty() {
-                bail!("nothing to put into the project");
-            }
             let index = if no_index {
                 None
             } else {
@@ -214,32 +186,24 @@ pub fn run(command: ProjectCommand) -> Result<()> {
                 }
                 Some(index)
             };
-            let name = name.unwrap_or_else(|| {
-                project
-                    .file_name()
-                    .map(|n| n.to_string_lossy().into_owned())
-                    .unwrap_or_else(|| "Project".into())
-            });
             let started = Instant::now();
-            let (made, report) = project::create(
+            let (made, report) = project::create_from(
                 &game,
                 &ws,
                 index.as_ref(),
                 &project,
-                &CreateOptions {
+                &NewProject {
                     name,
                     id,
                     author,
-                    selection,
-                    settings: BuildSettings {
-                        textures: if dds { "dds" } else { "png" }.into(),
-                        models: model_format,
-                        shared: !no_shared,
-                        workspace: workspace_dir,
-                    },
+                    streams,
+                    types,
+                    from_workspace,
+                    dds,
+                    model_format: Some(model_format),
+                    no_shared,
                 },
-                &|_, _| {},
-                &AtomicBool::new(false),
+                workspace_dir,
             )?;
             out!(
                 "{}: {} resource(s) as {} file(s), {} entr{} ({} in shared/), {:.1} MiB in {:.1} s",

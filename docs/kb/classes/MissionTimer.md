@@ -27,7 +27,7 @@ updated: 2026-11-16
 | 1 | string | вход (сообщение, которое объект слушает) | `stop` | `MsgIn` | роль: exe, имя: data | 5 |
 | 3 | float | параметр | `seconds` | `Seconds` | роль: exe, имя: data, смысл: exe | 7 |
 | 5 | int | — | — | — | — | 3 |
-| 6 | int | — | — | — | — | 3 |
+| 6 | int | параметр | `show` | `Bool` | роль: exe, имя: exe, смысл: guess | 3 |
 | 7 | string | выход (сообщение, которое объект шлёт) | `on_expired` | `MsgOut` | роль: exe, имя: data | 6 |
 | 12 | int | — | — | — | — | 1 |
 
@@ -40,5 +40,6 @@ updated: 2026-11-16
 <!-- kb:manual:begin -->
 ## Заметки
 
-_Пока пусто._
+`start` (0): с флагом показа (6) заводит таймер интерфейса с подписью (2), иначе считает сам по `iMsgRunningTick`; через `seconds` (3) − `start_at` (9) шлёт `on_expired` (7). `stop` (1) — отмена и `on_stopped` (8); `pause` (10) и `resume` (11). Читатель `0x0090E570`, обработчик `0x0090EA70` (`exe`; прежний адрес `0x0090DF30` был неверен).
+Источник: docs/analysis/story.md §3.6.
 <!-- kb:manual:end -->

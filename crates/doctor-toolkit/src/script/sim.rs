@@ -11,7 +11,7 @@
 //! simplest behaviour the names suggest.
 
 use std::cell::RefCell;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
 
 use serde::Serialize;
@@ -60,7 +60,10 @@ struct Receiver {
 struct Timer {
     callback: String,
     once: bool,
-    auto_delete: bool,
+    /// Counted by the real clock in the game (`CreateTimer`'s third
+    /// argument); the mock has one clock.
+    #[allow(dead_code)]
+    real_time: bool,
     period: f64,
     due: Option<f64>,
     deleted: bool,
@@ -81,6 +84,12 @@ pub struct SimState {
     /// `SendMessage` only logs the message: the host delivers it (the run of
     /// a mission's logic, `logic_graph::run`, has its own message bus).
     pub external_bus: bool,
+    /// What `SendMessageEx` returns for a message (lower-case name): the
+    /// values a listener of the game appends, e.g. the venue of
+    /// `iMsgLuaGetPlayerVenue`.
+    pub answers: BTreeMap<String, Vec<Value>>,
+    /// Objects `Base` finds: GUIDs as [`normal_guid`] writes them.
+    pub objects: BTreeSet<String>,
     receivers: Vec<Receiver>,
     timers: Vec<Timer>,
     groups: BTreeMap<String, Value>,
@@ -155,6 +164,8 @@ const LOGGED: &[&str] = &[
     "GetFootPoliceIntensity",
     "GetCarPoliceIntensity",
     "EclipseLog",
+    "MessageReceiverNew",
+    "MessageReceiverReceive",
 ];
 
 impl Sim {
@@ -241,7 +252,6 @@ impl Sim {
                 let t = &mut s.timers[i];
                 if t.once {
                     t.due = None;
-                    t.deleted = t.auto_delete;
                 } else {
                     t.due = Some(due + t.period.max(0.001));
                 }
@@ -252,8 +262,13 @@ impl Sim {
                 });
                 cb
             };
+            // The game looks the name up each time, calls it with the number
+            // of the timer and skips a name that is not a function (0x467440).
             let f = self.vm.get_global(&callback);
-            if let Err(e) = self.vm.call(&f, Vec::new()) {
+            if !matches!(f, Value::Function(_)) {
+                continue;
+            }
+            if let Err(e) = self.vm.call(&f, vec![Value::Number(i as f64)]) {
                 let time = self.state.borrow().time;
                 self.state.borrow_mut().log.push(SimEvent::Error {
                     time,
@@ -269,6 +284,46 @@ impl Sim {
     }
 
     /// Value of a game variable.
+    /// Makes `Base` find an object with this GUID (any form the game reads).
+    pub fn add_object(&self, guid: &str) -> bool {
+        match normal_guid(guid) {
+            Some(g) => self.state.borrow_mut().objects.insert(g),
+            None => false,
+        }
+    }
+
+    /// `tostring` of a global of the script's Lua state.
+    pub fn vm_global_text(&mut self, name: &str) -> String {
+        let v = self.vm.get_global(name);
+        match self.vm.call_global("tostring", vec![v]) {
+            Ok(r) => r
+                .first()
+                .map_or_else(|| "nil".to_owned(), |v| self.vm.tostring(v)),
+            Err(e) => e.text(),
+        }
+    }
+
+    /// Whether the Lua state has a global of this name.
+    pub fn has_global(&self, name: &str) -> bool {
+        !self.vm.get_global(name).is_nil()
+    }
+
+    /// Whether the global table `table` has the field.
+    pub fn has_table_field(&self, table: &str, field: &str) -> bool {
+        self.vm
+            .get_global(table)
+            .as_table()
+            .is_some_and(|t| !t.get_str(field).is_nil())
+    }
+
+    /// What `SendMessageEx(message, …)` returns from now on.
+    pub fn answer(&self, message: &str, values: Vec<Value>) {
+        self.state
+            .borrow_mut()
+            .answers
+            .insert(message.to_lowercase(), values);
+    }
+
     pub fn variable(&self, name: &str) -> Option<Value> {
         self.state
             .borrow()
@@ -475,7 +530,8 @@ fn install(vm: &mut Vm, state: &Rc<RefCell<SimState>>) {
         if !st.borrow().external_bus {
             deliver(vm, &st, &message, arg(&args, 1), arg(&args, 2))?;
         }
-        Ok(Vec::new())
+        // The game returns 1 without pushing: the script gets its last argument.
+        Ok(args.last().cloned().into_iter().collect())
     });
     let st = state.clone();
     vm.register("SendMessageEx", move |vm, args| {
@@ -483,10 +539,12 @@ fn install(vm: &mut Vm, state: &Rc<RefCell<SimState>>) {
         let time = st.borrow().time;
         st.borrow_mut().log.push(SimEvent::Message {
             time,
-            message,
+            message: message.clone(),
             data: args.get(1).map(|d| text(vm, d)),
         });
-        Ok(vec![Value::Nil])
+        // What the listener of the game appends to the data comes back.
+        let answer = st.borrow().answers.get(&message.to_lowercase()).cloned();
+        Ok(answer.unwrap_or_default())
     });
     let st = state.clone();
     vm.register("NewMessageReceiver", move |_, args| {
@@ -551,11 +609,20 @@ fn install(vm: &mut Vm, state: &Rc<RefCell<SimState>>) {
     let st = state.clone();
     vm.register("CreateTimer", move |vm, args| {
         let callback = text(vm, &arg(&args, 0));
+        // As in the game (0x467710): a name of 1..63 characters and a boolean
+        // "one shot", or the handle is -1.
+        if !matches!(arg(&args, 0), Value::Str(_))
+            || callback.is_empty()
+            || callback.len() > 63
+            || !matches!(arg(&args, 1), Value::Bool(_))
+        {
+            return Ok(vec![Value::Number(-1.0)]);
+        }
         let mut s = st.borrow_mut();
         s.timers.push(Timer {
             callback,
             once: arg(&args, 1).truthy(),
-            auto_delete: arg(&args, 2).truthy(),
+            real_time: arg(&args, 2).truthy(),
             period: 1.0,
             due: None,
             deleted: false,
@@ -574,8 +641,9 @@ fn install(vm: &mut Vm, state: &Rc<RefCell<SimState>>) {
                 t.period = ms / 1000.0;
             }
             t.due = Some(now + t.period);
+            return Ok(vec![Value::Number((t.period * 1000.0).round())]);
         }
-        Ok(Vec::new())
+        Ok(vec![Value::Number(0.0)])
     });
     let st = state.clone();
     vm.register("StopTimer", move |_, args| {
@@ -608,10 +676,15 @@ fn install(vm: &mut Vm, state: &Rc<RefCell<SimState>>) {
     });
     let st = state.clone();
     vm.register("QueryTimer", move |_, args| {
-        let running = timer_index(&args)
-            .and_then(|i| st.borrow().timers.get(i).map(|t| t.due.is_some()))
-            .unwrap_or(false);
-        Ok(vec![Value::Bool(running)])
+        // Milliseconds left (0x467D50); 0 for a timer that does not exist.
+        let s = st.borrow();
+        let left = timer_index(&args)
+            .and_then(|i| s.timers.get(i))
+            .filter(|t| !t.deleted)
+            .map_or(0.0, |t| {
+                t.due.map_or(0.0, |due| ((due - s.time) * 1000.0).round())
+            });
+        Ok(vec![Value::Number(left)])
     });
 
     // Time and positions.
@@ -630,12 +703,16 @@ fn install(vm: &mut Vm, state: &Rc<RefCell<SimState>>) {
         let [x, y, z] = st.borrow().player;
         Ok(vec![position(x, y, z)])
     });
-    vm.register("CreatePosition", |_, _| Ok(vec![position(0.0, 0.0, 0.0)]));
     vm.register("GetPositionValues", |_, args| {
-        let Some(t) = arg(&args, 0).as_table().cloned() else {
-            return Err(LuaError::msg("GetPositionValues expects a position"));
-        };
-        Ok(vec![t.get_str("x"), t.get_str("y"), t.get_str("z")])
+        // The game reads three floats at a pointer: the data of a message
+        // sent with a number is a pointer to that number (the other two are
+        // whatever follows); anything that is no pointer gives 0, 0, 0.
+        let zero = Value::Number(0.0);
+        Ok(match arg(&args, 0) {
+            Value::Table(t) => vec![t.get_str("x"), t.get_str("y"), t.get_str("z")],
+            Value::Number(n) => vec![Value::Number(n), zero.clone(), zero],
+            _ => vec![zero.clone(), zero.clone(), zero],
+        })
     });
     vm.register("SetPositionValues", |_, args| {
         let Some(t) = arg(&args, 0).as_table().cloned() else {
@@ -646,7 +723,62 @@ fn install(vm: &mut Vm, state: &Rc<RefCell<SimState>>) {
         t.set_str("z", arg(&args, 3));
         Ok(Vec::new())
     });
-    vm.register("GetPlatform", |_, _| Ok(vec![Value::str("PC")]));
+    vm.register("GetPlatform", |_, _| Ok(vec![Value::str("windows")]));
+    // 32-bit integers are userdata in the game (GetSimTime, VariableGet and
+    // GetMemberCount return them); the mock keeps plain numbers, so the three
+    // conversions only cut the fraction.
+    for name in ["Int32", "UInt32", "Int32ToNumber"] {
+        vm.register(name, move |vm, args| {
+            let v = arg(&args, 0);
+            match v.as_number() {
+                Some(n) => Ok(vec![Value::Number(n.trunc())]),
+                None => Err(LuaError::msg(format!(
+                    "Could not turn '{}' into an Int32.",
+                    text(vm, &v)
+                ))),
+            }
+        });
+    }
+    for name in ["TEMP_POS", "CreatePosition"] {
+        vm.register(name, |_, args| {
+            let n = |i| arg(&args, i).as_number().unwrap_or(0.0);
+            Ok(vec![position(n(0), n(1), n(2))])
+        });
+    }
+
+    // Objects: `Base("{guid}")` is a weak reference; empty when the game has
+    // no such object. The game reads only four bytes of the text
+    // ([`guid_the_game_reads`]), so it finds no object of the game itself.
+    let st = state.clone();
+    vm.register("Base", move |vm, args| {
+        let v = arg(&args, 0);
+        if is_base(&v) {
+            return Ok(vec![v]);
+        }
+        let Value::Str(_) = v else {
+            return Err(LuaError::msg(
+                "ToBasePtr: 1st argument should be a string or Base.",
+            ));
+        };
+        let name = text(vm, &v);
+        let Some(guid) = normal_guid(&name) else {
+            return Err(LuaError::msg(format!(
+                "ToBasePtr: Could not turn '{name}' into a GUID."
+            )));
+        };
+        let guid = guid_the_game_reads(&guid);
+        let known = st.borrow().objects.contains(&guid);
+        Ok(vec![base(known.then_some(guid.as_str()))])
+    });
+    vm.register("DeleteBase", |_, args| {
+        let v = arg(&args, 0);
+        if is_base(&v)
+            && let Some(t) = v.as_table()
+        {
+            t.set_str("__base", Value::Bool(false));
+        }
+        Ok(args.last().cloned().into_iter().collect())
+    });
 
     // Variables: a handle is a table with Get and Set.
     let st = state.clone();
@@ -717,7 +849,7 @@ fn install(vm: &mut Vm, state: &Rc<RefCell<SimState>>) {
                 .borrow_mut()
                 .groups
                 .entry(name)
-                .or_insert_with(new_group)
+                .or_insert_with(|| new_group(&st))
                 .clone();
             Ok(vec![g])
         }),
@@ -730,6 +862,19 @@ fn install(vm: &mut Vm, state: &Rc<RefCell<SimState>>) {
             Ok(vec![
                 st.borrow().groups.get(&name).cloned().unwrap_or_default(),
             ])
+        }),
+    );
+    let st = state.clone();
+    gm.set_str(
+        "RemoveFromAllGroups",
+        native(move |vm, a| {
+            member(
+                vm,
+                &st.borrow().objects,
+                &arg(&a, 1),
+                "GroupManager:RemoveFromAllGroups",
+            )?;
+            Ok(a.last().cloned().into_iter().collect())
         }),
     );
     vm.set_global("GroupManager", Value::Table(gm));
@@ -747,7 +892,17 @@ fn install(vm: &mut Vm, state: &Rc<RefCell<SimState>>) {
         let st = state.clone();
         vm.register(name, move |vm, args| {
             log_call(vm, &st, name, &args);
-            Ok(vec![Value::Nil])
+            // On foot, as the mock's player always is (game-bench.md §35).
+            Ok(match name {
+                "GetVehicleSpeed" => vec![Value::Number(0.0), Value::Bool(false)],
+                "GetVehicleType"
+                | "GetVehicleSpeedDelta"
+                | "GetVehicleAcceleration"
+                | "GetVehicleSkidEnergy"
+                | "GetVehicleHealth"
+                | "GetVehicleRainVelocity" => vec![Value::Number(0.0)],
+                _ => vec![Value::Nil],
+            })
         });
     }
 }
@@ -796,41 +951,146 @@ fn log_call(vm: &Vm, st: &Rc<RefCell<SimState>>, function: &str, args: &[Value])
     });
 }
 
-fn new_group() -> Value {
-    let members = Rc::new(RefCell::new(Vec::<Value>::new()));
+/// A `Base` of the mock: a table whose `tostring` is the GUID, or nil for an
+/// empty reference (as in the game).
+fn base(guid: Option<&str>) -> Value {
+    let t = TableRef::new();
+    t.set_str("__base", guid.map_or(Value::Bool(false), Value::str));
+    let meta = TableRef::new();
+    meta.set_str(
+        "__tostring",
+        native(|_, a| {
+            let guid = arg(&a, 0)
+                .as_table()
+                .map(|t| t.get_str("__base"))
+                .unwrap_or_default();
+            Ok(match guid {
+                Value::Str(_) => vec![guid],
+                _ => Vec::new(),
+            })
+        }),
+    );
+    t.set_metatable(Some(meta));
+    Value::Table(t)
+}
+
+fn is_base(v: &Value) -> bool {
+    v.as_table().is_some_and(|t| !t.get_str("__base").is_nil())
+}
+
+/// The member a group function is given: a `Base` or the text of a GUID.
+/// An empty reference crashes the game (a read of address 0 at 0x00469F85).
+fn member(
+    vm: &Vm,
+    objects: &BTreeSet<String>,
+    v: &Value,
+    function: &str,
+) -> std::result::Result<String, LuaError> {
+    match v {
+        // The text of a GUID goes the way of `Base`: an object the game does
+        // not find is the same crash.
+        Value::Str(_) => {
+            let guid = normal_guid(&text(vm, v)).ok_or_else(|| {
+                LuaError::msg(format!(
+                    "ToBasePtr: Could not turn '{}' into a GUID.",
+                    text(vm, v)
+                ))
+            })?;
+            let guid = guid_the_game_reads(&guid);
+            if objects.contains(&guid) {
+                Ok(guid)
+            } else {
+                Err(LuaError::msg(format!(
+                    "{function} with a GUID the game does not find: the game crashes here (0x00469F85)"
+                )))
+            }
+        }
+        _ if is_base(v) => match v.as_table().map(|t| t.get_str("__base")) {
+            Some(Value::Str(s)) => Ok(String::from_utf8_lossy(&s).into_owned()),
+            _ => Err(LuaError::msg(format!(
+                "{function} with an empty Base: the game crashes here (0x00469F85)"
+            ))),
+        },
+        _ => Err(LuaError::msg(
+            "ToBasePtr: 1st argument should be a string or Base.",
+        )),
+    }
+}
+
+/// A GUID as the game prints it: `{XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX}`.
+/// The game's parser (0x46B4D0) takes it with or without braces, in either case.
+/// The GUID `Base` really looks for. The parser of the PC build (0x46B4D0)
+/// shifts a byte where it should shift a word, so of the 32 digits only eight
+/// survive: bytes 0, 4, 8 and 12 of the GUID, each alone in its 32-bit word.
+/// `{32C8D726-FA3D-AA11-464F-574C45523130}` is looked up as
+/// `{00000026-003D-0000-4600-000045000000}`. Takes and gives [`normal_guid`] text.
+pub fn guid_the_game_reads(normal: &str) -> String {
+    let t = normal.as_bytes();
+    let pair = |at: usize| String::from_utf8_lossy(&t[at..at + 2]).into_owned();
+    // Offsets in "{XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX}".
+    format!(
+        "{{000000{}-00{}-0000-{}00-0000{}000000}}",
+        pair(7),
+        pair(12),
+        pair(20),
+        pair(29)
+    )
+}
+
+pub fn normal_guid(text: &str) -> Option<String> {
+    let t = text.trim_start();
+    let t = t.strip_prefix('{').unwrap_or(t);
+    let body = t.get(..36)?;
+    let ok = body.bytes().enumerate().all(|(i, c)| match i {
+        8 | 13 | 18 | 23 => c == b'-',
+        _ => c.is_ascii_hexdigit(),
+    });
+    ok.then(|| format!("{{{}}}", body.to_ascii_uppercase()))
+}
+
+fn new_group(st: &Rc<RefCell<SimState>>) -> Value {
+    let members = Rc::new(RefCell::new(Vec::<String>::new()));
     let g = TableRef::new();
     let m = members.clone();
+    let state = st.clone();
     g.set_str(
         "AddMember",
-        native(move |_, a| {
-            let v = arg(&a, 1);
-            if !m.borrow().contains(&v) {
-                m.borrow_mut().push(v);
+        native(move |vm, a| {
+            let guid = member(vm, &state.borrow().objects, &arg(&a, 1), "Group:AddMember")?;
+            if !m.borrow().contains(&guid) {
+                m.borrow_mut().push(guid);
             }
-            Ok(Vec::new())
+            Ok(a.last().cloned().into_iter().collect())
         }),
     );
     let m = members.clone();
+    let state = st.clone();
     g.set_str(
         "RemoveMember",
-        native(move |_, a| {
-            let v = arg(&a, 1);
-            m.borrow_mut().retain(|x| *x != v);
-            Ok(Vec::new())
+        native(move |vm, a| {
+            let guid = member(
+                vm,
+                &state.borrow().objects,
+                &arg(&a, 1),
+                "Group:RemoveMember",
+            )?;
+            m.borrow_mut().retain(|x| *x != guid);
+            Ok(a.last().cloned().into_iter().collect())
         }),
     );
-    let m = members.clone();
+    // Stubs in the game: IsMember checks nothing (0x46A080) and Clear clears
+    // nothing (0x46A0F0); both give the script its last argument back.
+    let state = st.clone();
     g.set_str(
         "IsMember",
-        native(move |_, a| Ok(vec![Value::Bool(m.borrow().contains(&arg(&a, 1)))])),
+        native(move |vm, a| {
+            member(vm, &state.borrow().objects, &arg(&a, 1), "Group:IsMember")?;
+            Ok(a.last().cloned().into_iter().collect())
+        }),
     );
-    let m = members.clone();
     g.set_str(
         "Clear",
-        native(move |_, _| {
-            m.borrow_mut().clear();
-            Ok(Vec::new())
-        }),
+        native(move |_, a| Ok(a.last().cloned().into_iter().collect())),
     );
     let m = members.clone();
     g.set_str(
@@ -842,10 +1102,10 @@ fn new_group() -> Value {
         native(move |vm, a| {
             let f = arg(&a, 1);
             let list = members.borrow().clone();
-            for v in list {
-                vm.call(&f, vec![v])?;
+            for guid in list {
+                vm.call(&f, vec![base(Some(&guid))])?;
             }
-            Ok(Vec::new())
+            Ok(a.last().cloned().into_iter().collect())
         }),
     );
     Value::Table(g)

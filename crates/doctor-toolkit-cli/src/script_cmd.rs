@@ -8,8 +8,8 @@ use anyhow::{Context, Result, bail};
 use clap::Args;
 
 use doctor_toolkit::game::GameInstance;
-use doctor_toolkit::resource::lua::vm::Value;
-use doctor_toolkit::script::{self, ScriptGraph, deploy, library, sim::Sim};
+use doctor_toolkit::script::trial::{TrialEntry, TrialSource};
+use doctor_toolkit::script::{self, ScriptGraph, deploy, library};
 
 use crate::workspace_cmd::{self, EditMode};
 
@@ -121,27 +121,10 @@ fn compiled(path: &Path, graph: &ScriptGraph) -> Result<script::Compiled> {
 pub fn nodes(args: &Nodes) -> Result<()> {
     let g = ScriptGraph::new("x");
     if args.json {
-        let list: Vec<_> = library::all()
-            .iter()
-            .map(|d| {
-                let n = script::Node::new(0, d.kind, [0.0, 0.0]);
-                let (ins, outs) = library::pins(&g, &n).unwrap_or_default();
-                let pins = |v: Vec<library::Pin>| -> Vec<_> {
-                    v.into_iter()
-                        .map(|p| serde_json::json!({"name": p.name, "type": p.ty.name(), "label": p.label}))
-                        .collect()
-                };
-                serde_json::json!({
-                    "kind": d.kind, "title": d.title, "category": d.category.name(),
-                    "help": d.help, "verified": d.verified,
-                    "inputs": pins(ins), "outputs": pins(outs),
-                    "params": d.params.iter().map(|p| serde_json::json!({
-                        "name": p.name, "label": p.label, "default": serde_json::from_str::<serde_json::Value>(p.default).ok(),
-                    })).collect::<Vec<_>>(),
-                })
-            })
-            .collect();
-        out!("{}", serde_json::to_string_pretty(&list)?);
+        out!(
+            "{}",
+            serde_json::to_string_pretty(&script::trial::node_kinds())?
+        );
         return Ok(());
     }
     let mut category = None;
@@ -205,117 +188,21 @@ pub fn compile(args: &Compile) -> Result<()> {
 
 /// `script-run`
 pub fn run(args: &Run) -> Result<()> {
-    let path = &args.graph;
-    let ext = path
-        .extension()
-        .map(|e| e.to_string_lossy().to_ascii_lowercase())
-        .unwrap_or_default();
-    let name = path
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_default();
-    let (chunk, name) = match ext.as_str() {
-        "lua" => {
-            let source =
-                fs::read(path).with_context(|| format!("cannot read {}", path.display()))?;
-            let chunk =
-                doctor_toolkit::resource::lua::compile_for_game(&source, name.as_bytes())
-                    .map_err(|e| anyhow::anyhow!("{}:{}: {}", path.display(), e.line, e.message))?;
-            (chunk, name)
-        }
-        "luac" => {
-            let data = fs::read(path).with_context(|| format!("cannot read {}", path.display()))?;
-            let source = doctor_toolkit::resource::lua::Chunk::parse(&data)?.source();
-            let name = doctor_toolkit::resource::lua::file_name(&source).to_owned();
-            (data, name)
-        }
-        _ => {
-            let graph = read_graph(path)?;
-            let c = compiled(path, &graph)?;
-            (c.chunk.context("no chunk")?, graph.chunk_name())
-        }
-    };
-    let mut sim = Sim::new();
-    sim.vm.number_digits = args.number_digits;
-    sim.load(&chunk)?;
-    if sim.registered(&name, "startup") {
-        sim.start(&name)?;
+    let source = TrialSource::read(&args.graph)?;
+    let report = script::trial::run(&source, &args.steps, Some(args.number_digits))?;
+    for note in &report.notes {
+        eprintln!("{}: {note}", args.graph.display());
     }
-    let print = |sim: &mut Sim| -> Result<()> {
-        for line in std::mem::take(&mut sim.vm.printed) {
-            out!("{:8.3}  print {line}", sim.state.borrow().time);
+    for entry in &report.log {
+        match entry {
+            TrialEntry::Event(e) if args.json => out!("{}", serde_json::to_string(e)?),
+            _ => out!("{}", entry.line()),
         }
-        for e in sim.take_log() {
-            if args.json {
-                out!("{}", serde_json::to_string(&e)?);
-            } else {
-                out!("{}", describe(&e));
-            }
-        }
-        Ok(())
-    };
-    print(&mut sim)?;
-    for step in &args.steps {
-        let (what, arg) = step.split_once(':').unwrap_or((step.as_str(), ""));
-        match what {
-            "send" => sim.send(arg)?,
-            "wait" => sim.advance(arg.parse().with_context(|| format!("bad step {step}"))?)?,
-            "var" => {
-                let (n, v) = arg
-                    .split_once('=')
-                    .with_context(|| format!("bad step {step}"))?;
-                let value = match v.parse::<f64>() {
-                    Ok(x) => Value::Number(x),
-                    Err(_) => Value::str(v),
-                };
-                sim.set_variable(n, value);
-            }
-            "player" => {
-                let p: Vec<f64> = arg
-                    .split(',')
-                    .map(|s| s.trim().parse())
-                    .collect::<std::result::Result<_, _>>()
-                    .with_context(|| format!("bad step {step}"))?;
-                if p.len() != 3 {
-                    bail!("bad step {step}: player:X,Y,Z");
-                }
-                sim.state.borrow_mut().player = [p[0], p[1], p[2]];
-            }
-            "relay" => {
-                let (a, b) = arg
-                    .split_once('=')
-                    .with_context(|| format!("bad step {step}"))?;
-                sim.state.borrow_mut().relays.push((a.into(), b.into()));
-            }
-            "stop" => sim.stop(&name)?,
-            _ => bail!("unknown step {step:?} (send:, wait:, var:, player:, relay:, stop)"),
-        }
-        print(&mut sim)?;
+    }
+    if let Some(error) = report.error {
+        bail!("{error}");
     }
     Ok(())
-}
-
-fn describe(e: &script::sim::SimEvent) -> String {
-    use script::sim::SimEvent as E;
-    match e {
-        E::Message {
-            time,
-            message,
-            data,
-        } => match data {
-            Some(d) => format!("{time:8.3}  send {message} ({d})"),
-            None => format!("{time:8.3}  send {message}"),
-        },
-        E::Probe { time, file } => format!("{time:8.3}  probe {file}"),
-        E::Variable { time, name, value } => format!("{time:8.3}  set {name} = {value}"),
-        E::Call {
-            time,
-            function,
-            args,
-        } => format!("{time:8.3}  {function}({})", args.join(", ")),
-        E::Timer { time, callback } => format!("{time:8.3}  timer {callback}"),
-        E::Error { time, message } => format!("{time:8.3}  error {message}"),
-    }
 }
 
 fn stream_of(game: &GameInstance, name: &str) -> Result<usize> {

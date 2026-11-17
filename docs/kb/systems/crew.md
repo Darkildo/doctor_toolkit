@@ -1,40 +1,40 @@
 ---
 type: system
 status: partial
-confidence: exe
+confidence: bench
 editions: ["1.0.789.0"]
-stages: [72, 73, 23, 48, 63]
-sources: ["docs/analysis/live-link.md §13.5", "docs/analysis/tunables.md §2, §3", "docs/analysis/queens.md §4, §8", "docs/formats/mission-logic.md §5.2", "docs/analysis/game-bench.md §31.3", "data/gf2/enums.toml"]
-tags: [crew, family, player, live-link, upgrades]
+stages: [72, 73, 23, 48, 63, 82]
+sources: ["docs/analysis/crew.md", "docs/analysis/game-bench.md §44", "research/crew_survey.py", "crates/doctor-toolkit/tests/corpus/crew.rs", "docs/analysis/live-link.md §13.5", "docs/analysis/tunables.md §2, §3", "data/gf2/class_behavior.toml", "data/gf2/enums.toml"]
+tags: [crew, family, player, made-men, recruits, live-link, upgrades]
 updated: 2026-11-16
 ---
 # Команда игрока (семья)
 
-Команда игрока — члены его семьи (`corleone`). Известно устройство списка команды в памяти (живая связь, только чтение) и несколько параметров в данных; найм и поведение команды не разобраны.
+У игрока два списка: **семья** — до семи людей чести в древе (4 солдата, 2 капо, младший босс), и **команда** — до трёх из них, идущих за ним. Данные, найм, повышение, гибель, лицензии и дополнения разобраны; нового человека можно сделать одними данными ([пример](../experiments/new-crew-member.md)). Не решён его портрет.
 
 ## Что известно
 
-- Команда — `*0x0112989C` (`AddPlayerFamilyMember` `0x0090A370`, фабрика `0x006844C0`): 7 мест по 0x24 байта с `+0x18` (`0x0090B0A0`).
-- Поле места `+0` — флаги: бит 0 — место открыто, бит 1 — занято (`0x0090B690`).
-- `+4` — ранг, который просит место: 3, 3, 3, 3, 4, 4, 5 (солдат, капо, младший босс).
-- `+8` — ручка члена команды; член — ручка − 0x48 (`0x0090A5B0`), объект SimGroup (GUID `+0x20`); его ранг — `+0xD0` (`0x0079179B`; пишет `0x00791670`).
-- `+0x10` — специальности (`0x0090A5C5`): 0x04 подрывник, 0x08 поджигатель, 0x10 медвежатник, 0x20 инженер, 0x40 медик, 0x80 громила. Функция `0x009630E0` проверяет биты в этом порядке и возвращает ключ текста `$crew_specialty_demolition`, `_arsonist`, `_safe_cracker`, `_engineer`, `_medic`, `_bruiser`; в типах это перечисление [`crew_specialty`](../enums/crew_specialty.md).
-- Имя члена команды клиент живой связи берёт по GUID из SimGroup (`live family --names`). На стенде после `-stream` все 7 мест закрыты.
-- Параметры в данных (`gf2/globals_global`, см. [параметры](parameters.md)): `crew.corleone_associates.health` — `StandardDamageComponent` 0 = 2600 у 200 шаблонов `CommonNPC` с моделью `corleoneassociate_*` (что это охрана предприятий игрока — предположение).
-- Бонусы криминальных колец для команды — множители [UpgradeData](../classes/UpgradeData.md): `Bullet Proof Vests` 14 = 0.8, `Armor Piercing Bullets` 16 = 1.25, `Ammo Holsters` 17 = 1.5, `Brass Knuckles` 18 = 1.25, `Jail Break` 13 = 0.5 (все — probably; см. [улучшения](upgrades.md)).
-- Навыки члена семьи видны в меню Don's View → Family Tree → Upgrade; описание навыка подставляет значение атрибута `UpgradeData`.
-- Речь команды — события таблицы `get` (например `CREW_IM_DOWN_MEDIC`), см. [диалоги](dialogues.md).
-- «Люди чести» чужих семей — отдельные `CommonNPC` и `SimNpc` в `globals_global` (древо задания 3 показывает дона Кармине и четырёх), см. [семьи](families.md).
+- Семья — объект `*0x0112989C`: семь мест по 0x24 байта с `+0x18`: флаги (бит 0 открыто, бит 1 занято), ранг места (3, 3, 3, 3, 4, 4, 5), ручка `SimNpc`, специальности, GUID оружия ([адреса](../exe/player-crew.md)).
+- Рекруты — 81 шаблон `CommonNPC` с именем `NPC_CRW_0001…0081` в атрибуте `NPC.2` (`gf2/globals_global`), у каждого свой [SimNpc](../classes/SimNpc.md). Хэш текста имени (`NPC.18`) — `sdbm("name_" + NPC.2)`; биография — текст `<имя>_background`.
+- Специальности — биты `0x04`…`0x80` слова [NPCCrewComponent](../classes/NPCCrewComponent.md).0 ([crew_specialty](../enums/crew_specialty.md)); внешность — набор, пресет и элемент пресета базы частей `player` (`PartedAnimated`).
+- Места открывает сюжет: восемь сообщений `iMsgTreeType…` поднимают уровень древа 0…8 (`0x0090BA70`); уровень пишется в сохранение.
+- Найм: рекрут стоит в мире ([SpecificNpcRequester](../classes/SpecificNpcRequester.md) + `SpawnPoint`, 80 мест в трёх городах), игрок нанимает его разговором, если есть открытое свободное место солдата (`0x0090B220`). Объект [AddPlayerFamilyMember](../classes/AddPlayerFamilyMember.md) принимает человека сразу и сам открывает место.
+- Повышение — кнопка «Promote»: человек переходит в место старшего ранга и получает ещё одну специальность (`0x0090B330`, [ранги](../enums/crew_rank.md)).
+- Раненый возвращается; навсегда убирает только приговор «Mark for Death» (бит 29 флагов `SimNpc`, `0x0090B820`).
+- Оружейная лицензия (1 Basic … 4 Master) — байт записи заслуг человека: начальная — по флагам `SimNpc`, растёт с заслугами 10, 25, 70 ([weapon_licence](../enums/weapon_licence.md), [сохранения](saves.md)).
+- Рекруты дополнений (Tommy Cipolla, Jimmy Lira и семь запасных шаблонов) лежат в тех же данных и закрыты объектами [UnlockCheck](../classes/UnlockCheck.md) по флагу в объекте денег игрока.
+- Параметры: `crew.corleone_associates.health` (200 шаблонов `corleoneassociate_*`), множители [UpgradeData](../classes/UpgradeData.md) для команды — см. [параметры](parameters.md), [улучшения](upgrades.md); речь — события `CREW_*` ([диалоги](dialogues.md)).
 
 ## Что неизвестно
 
-- Запись команды (добавление NPC, `0x0090B4E0`) не проверена и модулем не делается.
-- Как игра открывает места и выбирает кандидатов; шаблоны нанимаемых людей в данных не выделены (имён вида `NPC_CRW_*` в документах и данных репозитория нет).
-- На что именно действует множитель `Jail Break`; значения навыков Specialty Focus (24 = 0.75/0.5) и других видны, но что они меняют, по данным не определить.
+- Почему у нового человека портрет по умолчанию: [вопрос](../questions/crew-portrait-of-new-member.md).
+- Специальность в деле (`CSACrewComponent`), таймеры больницы и тюрьмы, кто шлёт `iMsgCrewDeath`.
+- Биты 0 и 8 слова `NPCCrewComponent.0`, атрибуты `SimNpc` 2–7.
+- На что действуют множители `Jail Break` и Specialty Focus.
 
 ## Подробнее
 
+- [Команда: люди чести семьи игрока](../../analysis/crew.md)
+- [Стенд проверки в игре](../../analysis/game-bench.md) §44, §31.3
 - [Живая связь](../../analysis/live-link.md) §13.5, §13.9
-- [Параметры игры](../../analysis/tunables.md) §2 «Здоровье и экипаж», §3
-- [Нью-Йорк: устройство карты](../../analysis/queens.md) §4, §8
-- [Стенд проверки в игре](../../analysis/game-bench.md) §31.3
+- [Этап 82](../research/stage-82.md)

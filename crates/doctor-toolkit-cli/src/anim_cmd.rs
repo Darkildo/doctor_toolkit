@@ -11,17 +11,15 @@ use anyhow::{Context, Result, bail};
 use clap::Subcommand;
 use rayon::prelude::*;
 
+use doctor_toolkit::anim_edit::{self, ImportAnimation};
 use doctor_toolkit::character::{Character, MeshLocator, parse_selection};
 use doctor_toolkit::export::gltf::{SceneAnimation, SceneModel};
 use doctor_toolkit::game::{GameAssets, GameInstance};
-use doctor_toolkit::import::anim::{
-    ClipTarget, ImportOptions, RestPose, import_clip, read_animations,
-};
 use doctor_toolkit::resource::anim::{
     AnimBank, ClipEvent, FRAME_RATE, TYPE_BNK, bone_set, find_skeleton,
 };
 use doctor_toolkit::resource::anim_encode::{EncodeOptions, reencode};
-use doctor_toolkit::resource::anim_graph::{self, AnimGraph, GraphJson, Severity};
+use doctor_toolkit::resource::anim_graph::{self, AnimGraph, GraphJson};
 use doctor_toolkit::resource::anim_image::BankImage;
 use doctor_toolkit::resource::partsdb::PartsDb;
 use doctor_toolkit::scene::{self, ModelFormat};
@@ -273,69 +271,19 @@ fn find_bank(game: &GameInstance, key: &str) -> Result<(usize, usize, ResourceKe
     let key: ResourceKey = key
         .parse()
         .with_context(|| format!("`{key}` is not a resource key (stream:bnk:id)"))?;
-    if key.type_id != TYPE_BNK {
-        bail!("{key} is not an animation bank (bnk)");
-    }
-    let stream = game
-        .find_stream(&key.stream)
-        .with_context(|| format!("stream `{}` not found", key.stream))?;
-    let file = game.open_stream(stream)?;
-    let index = key
-        .find_in(file.layout())
-        .with_context(|| format!("{key} is not in its stream"))?;
+    let (stream, index) = anim_edit::find_bank(game, &key)?;
     Ok((stream, index, key))
 }
 
 /// Index of the clip named `text` (name or hexadecimal hash).
 fn find_clip(bank: &AnimBank, text: &str) -> Result<usize> {
-    bank.clips
-        .iter()
-        .position(|c| {
-            c.name
-                .as_deref()
-                .is_some_and(|n| n.eq_ignore_ascii_case(text))
-                || u32::from_str_radix(text.trim_start_matches("0x"), 16) == Ok(c.hash)
-        })
-        .or_else(|| {
-            let hash = doctor_toolkit::hash::sdbm(text.to_ascii_lowercase().as_bytes());
-            bank.clips.iter().position(|c| c.hash == hash)
-        })
-        .with_context(|| format!("the bank has no clip `{text}`"))
+    Ok(anim_edit::find_clip(bank, text)?)
 }
 
 fn import(args: ImportArgs) -> Result<()> {
     let game = Arc::new(GameInstance::open(&args.game_dir)?);
     let mut ws = workspace_cmd::open_for_edit(&game, &args.mode)?;
-    let (stream, index, key) = find_bank(&game, &args.bank)?;
-    let data = ws.current_data(&game, stream, index)?;
-    let bank = AnimBank::parse(&data)?;
-    let animations = read_animations(&args.file)
-        .with_context(|| format!("cannot read {}", args.file.display()))?;
-    let source = match &args.animation {
-        None => &animations[0],
-        Some(a) => match a.parse::<usize>() {
-            Ok(i) => animations.get(i),
-            Err(_) => animations.iter().find(|x| x.name.eq_ignore_ascii_case(a)),
-        }
-        .with_context(|| {
-            let names: Vec<&str> = animations.iter().map(|a| a.name.as_str()).collect();
-            format!("no animation `{a}` in the file (it has {names:?})")
-        })?,
-    };
-    let target = if args.add {
-        ClipTarget::Add {
-            name: args.clip.clone(),
-            entry: !args.no_entry,
-            priority: args.priority,
-            like: args
-                .like
-                .as_deref()
-                .map(|l| find_clip(&bank, l))
-                .transpose()?,
-        }
-    } else {
-        ClipTarget::Replace(find_clip(&bank, &args.clip)?)
-    };
+    let (_, _, key) = find_bank(&game, &args.bank)?;
     let map: HashMap<String, String> = match &args.map {
         Some(p) => serde_json::from_slice(
             &std::fs::read(p).with_context(|| format!("cannot read {}", p.display()))?,
@@ -343,33 +291,39 @@ fn import(args: ImportArgs) -> Result<()> {
         .with_context(|| format!("{}: expected a JSON object of names", p.display()))?,
         None => HashMap::new(),
     };
-    let options = ImportOptions {
-        encode: args.encode.options(),
-        looping: if args.looping {
-            Some(true)
-        } else if args.no_loop {
-            Some(false)
-        } else {
-            None
-        },
-        bone_set: args
-            .bone_set
-            .as_deref()
-            .map(|h| u32::from_str_radix(h.trim_start_matches("0x"), 16))
-            .transpose()
-            .context("--bone-set is a hexadecimal hash")?,
-        map,
-        rest: match args.rest.as_str() {
-            "as-is" => RestPose::AsIs,
-            "axes" => RestPose::Axes,
-            "retarget" => RestPose::Retarget,
-            _ => RestPose::Auto,
-        },
-    };
     let (resources, _) = game.build_index(|_| {});
     let mut assets = GameAssets::new(game.clone(), &resources);
     let rigs = assets.rigs().to_vec();
-    let (out, summary) = import_clip(&data, &rigs, source, &target, &options)?;
+    let done = anim_edit::import_animation(
+        &game,
+        &mut ws,
+        &rigs,
+        &key,
+        &ImportAnimation {
+            file: args.file.clone(),
+            clip: args.clip.clone(),
+            add: args.add,
+            no_entry: args.no_entry,
+            priority: args.priority,
+            like: args.like.clone(),
+            bone_set: args.bone_set.clone(),
+            animation: args.animation.clone(),
+            looping: if args.looping {
+                Some(true)
+            } else if args.no_loop {
+                Some(false)
+            } else {
+                None
+            },
+            map,
+            rest: Some(args.rest.clone()),
+            scheme: args.encode.scheme,
+            max_angle: args.encode.max_angle,
+            max_shift: args.encode.max_shift,
+        },
+        args.dry_run,
+    )?;
+    let summary = &done.summary;
     if args.json {
         out!("{}", serde_json::to_string_pretty(&summary)?);
     } else {
@@ -378,7 +332,7 @@ fn import(args: ImportArgs) -> Result<()> {
             summary.mode,
             summary.clip,
             summary.clip_hash,
-            source.name
+            done.source
         );
         out!(
             "  {} frames ({:.2} s at {FRAME_RATE} fps), {}, bone set {:08x}: {} bone(s), {} from the file",
@@ -419,13 +373,11 @@ fn import(args: ImportArgs) -> Result<()> {
     if args.dry_run {
         return Ok(());
     }
-    let label = format!("Import animation {} into {key}", summary.clip);
-    if !ws.set_resource(&game, stream, index, out, &label)? {
+    if done.operation.is_none() {
         out!("nothing changed");
         return Ok(());
     }
-    let name = game.streams()[stream].stream_name();
-    workspace_cmd::finish_edit(&game, &mut ws, &args.mode, vec![name])
+    workspace_cmd::finish_edit(&game, &mut ws, &args.mode, vec![done.stream])
 }
 
 fn events(
@@ -454,26 +406,13 @@ fn events(
         return Ok(());
     };
     let mut ws = workspace_cmd::open_for_edit(&game, mode)?;
-    let data = ws.current_data(&game, stream, index)?;
-    let bank = AnimBank::parse(&data)?;
-    let clip = find_clip(&bank, clip)?;
     let list: Vec<ClipEvent> = serde_json::from_slice(
         &std::fs::read(path).with_context(|| format!("cannot read {}", path.display()))?,
     )
     .with_context(|| format!("{}: expected a list of events", path.display()))?;
-    let mut image = BankImage::parse(&data)?;
-    image.set_events(clip, &list)?;
-    let out = image.encode()?;
-    let label = format!(
-        "Edit events of {} in {key}",
-        bank.clips[clip].display_name()
-    );
-    out!(
-        "{}: {} event(s)",
-        bank.clips[clip].display_name(),
-        list.len()
-    );
-    if !ws.set_resource(&game, stream, index, out, &label)? {
+    let (name, operation) = anim_edit::set_clip_events(&game, &mut ws, &key, clip, &list)?;
+    out!("{name}: {} event(s)", list.len());
+    if operation.is_none() {
         out!("nothing changed");
         return Ok(());
     }
@@ -947,7 +886,6 @@ fn graph(
         bail!("--set replaces the whole graph; --entry only filters printing");
     }
     let mut ws = workspace_cmd::open_for_edit(&game, mode)?;
-    let data = ws.current_data(&game, stream, index)?;
     let json: GraphJson = serde_json::from_slice(
         &std::fs::read(path).with_context(|| format!("cannot read {}", path.display()))?,
     )
@@ -957,10 +895,8 @@ fn graph(
             path.display()
         )
     })?;
-    let g = AnimGraph::from_json(&json)?;
-    let mut image = BankImage::parse(&data)?;
-    let issues = g.check(&image);
-    for issue in &issues {
+    let done = anim_edit::set_graph(&game, &mut ws, &key, &json)?;
+    for issue in &done.issues {
         out!(
             "{:?}: node {:?}: {}",
             issue.severity,
@@ -968,20 +904,12 @@ fn graph(
             issue.text
         );
     }
-    if issues.iter().any(|i| i.severity == Severity::Error) {
-        bail!("the graph has errors; nothing recorded");
-    }
-    g.store(&mut image)?;
-    let out = image.encode()?;
-    let label = format!("Edit the animation graph of {key}");
-    let stats = g.stats();
-    out!("{} entries, {} nodes", stats.entries, stats.nodes);
-    if !ws.set_resource(&game, stream, index, out, &label)? {
+    out!("{} entries, {} nodes", done.entries, done.nodes);
+    if done.operation.is_none() {
         out!("nothing changed");
         return Ok(());
     }
-    let name = game.streams()[stream].stream_name();
-    workspace_cmd::finish_edit(&game, &mut ws, mode, vec![name])
+    workspace_cmd::finish_edit(&game, &mut ws, mode, vec![done.stream])
 }
 
 fn node_types(json: bool) -> Result<()> {

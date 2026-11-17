@@ -93,7 +93,7 @@ pub fn endpoint(kit: &Toolkit) -> (Endpoint, &'static str) {
     )
 }
 
-fn connect(kit: &Toolkit) -> ToolResult<Client> {
+pub(crate) fn connect(kit: &Toolkit) -> ToolResult<Client> {
     let (endpoint, from) = endpoint(kit);
     Client::connect(&endpoint, "doctor-toolkit mcp", TIMEOUT).map_err(|e| match e {
         LinkError::Unreachable(_) => ToolError(format!(
@@ -106,7 +106,7 @@ fn connect(kit: &Toolkit) -> ToolResult<Client> {
 }
 
 /// A write into the running game: only when the module allows writes.
-fn connect_for_write(kit: &Toolkit) -> ToolResult<Client> {
+pub(crate) fn connect_for_write(kit: &Toolkit) -> ToolResult<Client> {
     let client = connect(kit)?;
     if !client.hello().writes {
         return fail(
@@ -114,6 +114,15 @@ fn connect_for_write(kit: &Toolkit) -> ToolResult<Client> {
              start the game with `play`, or turn writes on in the editor's live link options",
         );
     }
+    Ok(client)
+}
+
+/// [`connect_for_write`] for a write the game takes only while it runs or
+/// stands in a frame: refused, with what to do, while it stands at a
+/// breakpoint elsewhere (stage 104).
+fn connect_for_game_write(kit: &Toolkit) -> ToolResult<Client> {
+    let mut client = connect_for_write(kit)?;
+    super::debug::refuse_while_stopped(&mut client)?;
     Ok(client)
 }
 
@@ -231,7 +240,7 @@ pub fn teleport(kit: &Toolkit, p: TeleportParams) -> ToolResult<Output> {
     if p.position.iter().any(|v| !v.is_finite()) {
         return fail("the position must be three finite numbers");
     }
-    let mut client = connect_for_write(kit)?;
+    let mut client = connect_for_game_write(kit)?;
     let before = client.player().ok().flatten();
     let done = client.teleport(p.position, p.yaw_degrees.map(f32::to_radians))?;
     let after = client.player().ok().flatten();
@@ -251,7 +260,7 @@ pub fn send_message(kit: &Toolkit, p: SendMessageParams) -> ToolResult<Output> {
                 .ok_or_else(|| ToolError(format!("`{t}` is not a GUID (32 hexadecimal digits)")))
         })
         .transpose()?;
-    let mut client = connect_for_write(kit)?;
+    let mut client = connect_for_game_write(kit)?;
     let done = client.send(proto::MessageId::parse(&p.message), target)?;
     Ok(Output::Json(json!({
         "message": p.message,
@@ -264,7 +273,7 @@ pub fn lua(kit: &Toolkit, p: LuaParams) -> ToolResult<Output> {
     if p.code.trim().is_empty() {
         return fail("give Lua code");
     }
-    let mut client = connect_for_write(kit)?;
+    let mut client = connect_for_game_write(kit)?;
     let reply = client.lua(&p.code)?;
     Ok(Output::Json(json!({
         "ok": reply.ok,
@@ -326,7 +335,7 @@ pub struct StreamParams {
 
 fn connect_state(kit: &Toolkit, write: bool) -> ToolResult<Client> {
     let client = if write {
-        connect_for_write(kit)?
+        connect_for_game_write(kit)?
     } else {
         connect(kit)?
     };
@@ -566,7 +575,7 @@ fn guid_of(text: &str) -> ToolResult<proto::Guid> {
 
 fn connect_edits(kit: &Toolkit, write: bool) -> ToolResult<Client> {
     let client = if write {
-        connect_for_write(kit)?
+        connect_for_game_write(kit)?
     } else {
         connect(kit)?
     };

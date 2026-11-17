@@ -1,0 +1,38 @@
+{
+  "format": "doctor-toolkit-script",
+  "version": 1,
+  "name": "doctor_example",
+  "description": "Script of the example native mod (examples/native-class): calls the Lua functions the mod's DLLs add. On start it prints a sum and a text made by the C mod; on the message doctor_example_query it prints the numbers of DoctorCounterInfo() and sends doctor_example_count through DoctorSend.",
+  "start": {
+    "on_load": true
+  },
+  "variables": [],
+  "nodes": [
+    { "id": 1, "kind": "event.load", "pos": [0, 0] },
+    {
+      "id": 2,
+      "kind": "lua.code",
+      "pos": [200, 0],
+      "params": {
+        "code": "print(\"doctor_example:start:\" .. tostring(DoctorCAdd(2, 3)) .. \":\" .. tostring(DoctorCUpper(\"native\")))",
+        "inputs": [],
+        "outputs": []
+      }
+    },
+    { "id": 3, "kind": "event.message", "pos": [0, 200], "params": { "message": "doctor_example_query" } },
+    {
+      "id": 4,
+      "kind": "lua.code",
+      "pos": [200, 200],
+      "params": {
+        "code": "local heard = DoctorSend(\"doctor_example_count\")\nlocal objects, counted, sent, pings, swallowed, eclipse = DoctorCounterInfo()\nprint(\"doctor_example:query:\" .. tostring(heard) .. \":\" .. objects .. \":\" .. counted .. \":\" .. sent .. \":\" .. pings .. \":\" .. swallowed .. \":\" .. eclipse)",
+        "inputs": [],
+        "outputs": []
+      }
+    }
+  ],
+  "links": [
+    { "from": [1, "then"], "to": [2, "exec"] },
+    { "from": [3, "then"], "to": [4, "exec"] }
+  ]
+}

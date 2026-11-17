@@ -1,7 +1,7 @@
 ---
 type: class
 status: partial
-confidence: data
+confidence: exe
 editions: ["1.0.789.0"]
 stages: [72]
 sources: ["data/gf2/sim_classes.txt", "data/gf2/simgroup_schema.txt", "data/gf2/logic_schema.toml"]
@@ -30,13 +30,13 @@ updated: 2026-11-16
 | 4 | int | — | — | — | — | 52 |
 | 5 | string | — | — | — | — | 1 |
 | 6 | int | — | — | — | — | 35 |
-| 7 | string | выход (сообщение, которое объект шлёт) | — | `MsgOut` | роль: data | 36 |
+| 7 | string | вход (сообщение, которое объект слушает) | — | `MsgIn` | роль: exe | 36 |
 | 8 | int | — | — | — | — | 12 |
-| 9 | string | выход (сообщение, которое объект шлёт) | — | `MsgOut` | роль: data | 12 |
+| 9 | string | вход (сообщение, которое объект слушает) | — | `MsgIn` | роль: exe | 12 |
 | 10 | int | — | — | — | — | 4 |
-| 11 | string | выход (сообщение, которое объект шлёт) | — | `MsgOut` | роль: data | 4 |
+| 11 | string | вход (сообщение, которое объект слушает) | — | `MsgIn` | роль: exe | 4 |
 | 12 | int | — | — | — | — | 2 |
-| 13 | string | выход (сообщение, которое объект шлёт) | — | `MsgOut` | роль: data | 2 |
+| 13 | string | вход (сообщение, которое объект слушает) | — | `MsgIn` | роль: exe | 2 |
 
 ## Подробнее
 

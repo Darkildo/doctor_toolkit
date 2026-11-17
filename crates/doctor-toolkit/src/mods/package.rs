@@ -165,10 +165,9 @@ impl ModArchive {
             }
         }
         let used: std::collections::HashSet<&str> = manifest
-            .resources
-            .iter()
-            .map(|r| r.payload.sha256.as_str())
-            .chain(manifest.files.iter().map(|f| f.payload.sha256.as_str()))
+            .payloads()
+            .into_iter()
+            .map(|blob| blob.sha256.as_str())
             .collect();
         let unused = payloads
             .keys()
@@ -228,8 +227,20 @@ impl ModArchive {
     /// Reads and checks every payload.
     pub fn verify(&mut self) -> Result<()> {
         let blobs: Vec<Blob> = self.manifest.payloads().into_iter().cloned().collect();
+        let modules: Vec<(String, String)> = self
+            .manifest
+            .native
+            .iter()
+            .flat_map(|n| &n.modules)
+            .map(|m| (m.payload.sha256.clone(), m.file.clone()))
+            .collect();
         for blob in &blobs {
-            self.read_payload(blob)?;
+            let data = self.read_payload(blob)?;
+            // A module of code must be what the loader of the game loads.
+            if let Some((_, file)) = modules.iter().find(|(sha, _)| *sha == blob.sha256) {
+                super::native::check_module(&data)
+                    .map_err(|why| Error::mod_error(format!("native module `{file}`: {why}")))?;
+            }
         }
         Ok(())
     }

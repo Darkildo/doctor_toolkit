@@ -44,6 +44,8 @@ pub(crate) struct Package {
     pub out: Option<PathBuf>,
     /// The file built and its size.
     pub built: Option<(PathBuf, u64)>,
+    /// What the build tells the author about the mod (`BuildReport::notes`).
+    pub build_notes: Vec<String>,
     pub installed: Option<Result<String, String>>,
 }
 
@@ -62,6 +64,7 @@ impl Package {
             checked: None,
             out: None,
             built: None,
+            build_notes: Vec::new(),
             installed: None,
         };
         p.load(app);
@@ -133,7 +136,7 @@ impl Package {
         let mut info = self.info.clone();
         info.relations = self.relations.relations();
         let mut added = Vec::new();
-        if let (Some(game), Some(ws)) = (&app.game, &app.workspace) {
+        if let (Some(game), Some(ws)) = (&app.disk_game(), &app.workspace) {
             let keys = self.keys();
             added = mods::add_suggested_dependencies(&mut info, game, ws, keys.as_deref())
                 .map_err(|e| e.to_string())?;
@@ -146,12 +149,39 @@ impl Package {
     /// resources.
     pub fn run_checks(&mut self, app: &BrowserApp) {
         let mut c = Checked::default();
-        let (Some(game), Some(ws)) = (&app.game, &app.workspace) else {
+        let (Some(game), Some(ws)) = (&app.disk_game(), &app.workspace) else {
             c.errors.push(tr("wizard.package.no_changes").to_owned());
             self.checked = Some(c);
             return;
         };
         let keys = self.keys();
+        // The check of the edits themselves (stage 103; the same as "Check
+        // edits"): what it finds about the chosen changes.
+        match app.validate_edits() {
+            Ok(Some(report)) => {
+                let chosen = |f: &doctor_toolkit::validate::Finding| match (&f.key, &keys) {
+                    (Some(key), Some(keys)) => keys.iter().any(|k| k.to_string() == *key),
+                    _ => true,
+                };
+                let line = |f: &doctor_toolkit::validate::Finding| match f.place() {
+                    place if place.is_empty() => f.what.clone(),
+                    place => format!("{place}: {}", f.what),
+                };
+                // Conflicts with the game files are told below.
+                for f in report.errors.iter().filter(|f| chosen(f)) {
+                    if !f.what.starts_with("conflict:") {
+                        c.errors.push(line(f));
+                    }
+                }
+                for f in report.warnings.iter().filter(|f| chosen(f)) {
+                    if f.stream.is_none() {
+                        c.warnings.push(line(f));
+                    }
+                }
+            }
+            Ok(None) => {}
+            Err(error) => c.warnings.push(error),
+        }
         let info = match self.full_info(app) {
             Ok((info, added)) => {
                 for id in added {
@@ -375,6 +405,7 @@ impl Package {
         let (info, _) = self.full_info(app)?;
         let report = mods::build_from_workspace(ws, &info, keys.as_deref(), preview.as_ref(), out)
             .map_err(|e| e.to_string())?;
+        self.build_notes = report.notes;
         Ok(report.file_size)
     }
 
@@ -390,6 +421,9 @@ impl Package {
                 ("size", &crate::app::human_size(size)),
             ],
         ));
+        for note in &self.build_notes {
+            ui.colored_label(egui::Color32::YELLOW, note);
+        }
         ui.horizontal_wrapped(|ui| {
             if let Some(dir) = path.parent()
                 && ui.button(tr("wizard.package.show_folder")).clicked()
@@ -420,7 +454,7 @@ impl Package {
         path: &std::path::Path,
         ctx: &egui::Context,
     ) -> Result<String, String> {
-        let game = app.game.clone().ok_or(tr("edits.no_game"))?;
+        let game = app.disk_game().ok_or(tr("edits.no_game"))?;
         if let Some(reason) = app.write_lock() {
             return Err(reason);
         }

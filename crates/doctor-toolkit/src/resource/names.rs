@@ -95,12 +95,26 @@ pub fn bone_names() -> &'static NameTable {
 
 /// SimGroup class names (`Entity`, `CSystemCommands`, ...), keyed by the SDBM
 /// hash of the lower-case name.
+///
+/// The classes of native mods named by `DOCTOR_TOOLKIT_CLASSES`
+/// (`game_types::custom`) are in the table too.
 pub fn sim_classes() -> &'static NameTable {
     static TABLE: OnceLock<NameTable> = OnceLock::new();
     TABLE.get_or_init(|| {
-        NameTable::from_list_with(GF2_SIM_CLASSES, |name| {
-            sdbm(name.to_ascii_lowercase().as_bytes())
-        })
+        let mut table = engine_sim_classes();
+        for class in crate::game_types::custom::installed() {
+            table
+                .by_hash
+                .insert(class.hash, Box::leak(class.name.clone().into_boxed_str()));
+        }
+        table
+    })
+}
+
+/// SimGroup class names of the engine only.
+pub fn engine_sim_classes() -> NameTable {
+    NameTable::from_list_with(GF2_SIM_CLASSES, |name| {
+        sdbm(name.to_ascii_lowercase().as_bytes())
     })
 }
 

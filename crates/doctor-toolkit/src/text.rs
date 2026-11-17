@@ -14,7 +14,7 @@
 
 use std::collections::BTreeMap;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::game::{GameInstance, ResourceIndex};
 use crate::hash::{sdbm, string_id};
@@ -237,6 +237,160 @@ pub fn plan_add(
             tables: report,
         },
         edits: by_stream.into_iter().collect(),
+    })
+}
+
+/// A new text for an entry of the string tables.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StringEdit {
+    /// Hash of the entry ([`string_id`] of its name).
+    pub hash: u32,
+    pub text: String,
+    /// Only the columns of this language (a code as the tables name their
+    /// columns, any case); every column otherwise.
+    #[serde(default)]
+    pub language: Option<String>,
+}
+
+/// One text [`plan_edit`] changes.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct StringChange {
+    /// `<stream>#<resource>` of the table.
+    pub table: String,
+    /// The column: a language code, or `text`, `text1`, … of a table
+    /// without languages.
+    pub language: String,
+    pub old: String,
+    pub new: String,
+}
+
+/// An edit of one entry in several tables, ready to be recorded.
+#[derive(Debug, Clone)]
+pub struct EditPlan {
+    /// Tables that have the entry.
+    pub found: usize,
+    pub changes: Vec<StringChange>,
+    pub label: String,
+    edits: Vec<(usize, Vec<ResourceEdit>)>,
+}
+
+impl EditPlan {
+    /// Tables the edit changes.
+    pub fn tables(&self) -> usize {
+        self.edits.iter().map(|(_, list)| list.len()).sum()
+    }
+
+    /// Records the edit as one undoable operation; nothing when no text
+    /// changes.
+    pub fn commit(&self, ws: &mut Workspace, game: &GameInstance) -> Result<Option<u64>> {
+        if self.edits.is_empty() {
+            return Ok(None);
+        }
+        ws.change_resources(game, &self.label, &self.edits, &[])
+    }
+}
+
+/// Column names of a string table as the game index names them: its
+/// language codes, else `text`, `text1`, …
+pub fn column_names(table: &StringTable) -> Vec<String> {
+    if table.languages.is_empty() {
+        (0..table.strings.len())
+            .map(|i| {
+                if i == 0 {
+                    "text".to_owned()
+                } else {
+                    format!("text{i}")
+                }
+            })
+            .collect()
+    } else {
+        table.languages.clone()
+    }
+}
+
+/// Works out giving the entry of `edit` its new text in every one of
+/// `tables` that has it (as the workspace has them) — all tables of the
+/// game with [`all_tables`]: an entry usually lives in the table of every
+/// language. An entry no table has is an error; an entry that already has
+/// the text gives a plan without changes.
+pub fn plan_edit(
+    game: &GameInstance,
+    ws: &Workspace,
+    tables: &[TableRef],
+    edit: &StringEdit,
+) -> Result<EditPlan> {
+    plan_edits(game, ws, tables, std::slice::from_ref(edit))
+}
+
+/// [`plan_edit`] for several entries at once: one operation.
+pub fn plan_edits(
+    game: &GameInstance,
+    ws: &Workspace,
+    tables: &[TableRef],
+    edits: &[StringEdit],
+) -> Result<EditPlan> {
+    if edits.iter().any(|e| e.text.contains('\0')) {
+        return Err(Error::InvalidArgument(
+            "the text contains a NUL character".into(),
+        ));
+    }
+    let mut by_stream: BTreeMap<usize, Vec<ResourceEdit>> = BTreeMap::new();
+    let mut changes = Vec::new();
+    // Tables that have the entry, per edit.
+    let mut found = vec![0usize; edits.len()];
+    for t in tables {
+        let mut table = StringTable::parse(&ws.current_data(game, t.stream, t.resource)?)?;
+        let names = column_names(&table);
+        let mut changed = false;
+        for (e, edit) in edits.iter().enumerate() {
+            let Some(at) = table.find(edit.hash) else {
+                continue;
+            };
+            found[e] += 1;
+            for (c, name) in names.iter().enumerate() {
+                if edit
+                    .language
+                    .as_deref()
+                    .is_some_and(|l| !name.eq_ignore_ascii_case(l))
+                {
+                    continue;
+                }
+                if table.strings[c][at] != edit.text {
+                    changes.push(StringChange {
+                        table: format!("{}#{}", game.streams()[t.stream].stream_name(), t.resource),
+                        language: name.clone(),
+                        old: std::mem::replace(&mut table.strings[c][at], edit.text.clone()),
+                        new: edit.text.clone(),
+                    });
+                    changed = true;
+                }
+            }
+        }
+        if changed {
+            by_stream.entry(t.stream).or_default().push(ResourceEdit {
+                index: t.resource,
+                data: table.to_bytes()?,
+                storage: StorageChoice::Keep,
+            });
+        }
+    }
+    if let Some(e) = found.iter().position(|&n| n == 0) {
+        return Err(Error::InvalidArgument(format!(
+            "no string table has the entry {:08x}",
+            edits[e].hash
+        )));
+    }
+    let edits_out: Vec<(usize, Vec<ResourceEdit>)> = by_stream.into_iter().collect();
+    let count: usize = edits_out.iter().map(|(_, list)| list.len()).sum();
+    let label = match edits {
+        [one] => format!("Edit string 0x{:08x} in {count} table(s)", one.hash),
+        many => format!("Edit {} strings in {count} table(s)", many.len()),
+    };
+    Ok(EditPlan {
+        found: found.iter().copied().max().unwrap_or(0),
+        changes,
+        label,
+        edits: edits_out,
     })
 }
 

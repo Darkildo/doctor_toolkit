@@ -1360,13 +1360,13 @@ fn default_tone() -> Tone {
     }
 }
 
-#[cfg(test)]
-mod tests {
+#[cfg(any(test, feature = "testing"))]
+pub(crate) mod samples {
     use super::*;
     use crate::resource::audio_encode::{SampleSpec, build_inline};
     use crate::resource::video::input::Pcm;
 
-    fn sample(frames: usize) -> Vec<u8> {
+    pub(crate) fn sample(frames: usize) -> Vec<u8> {
         let pcm = Pcm {
             channels: 1,
             sample_rate: 22050,
@@ -1381,7 +1381,9 @@ mod tests {
         build_inline(&pcm, &spec).unwrap()
     }
 
-    fn bank() -> SoundBank {
+    /// A bank of two emitters (`a.emx` with two variations, `b.emx` with
+    /// one) and three samples.
+    pub(crate) fn bank() -> SoundBank {
         let tone = |s| Tone {
             sample: s,
             ..default_tone()
@@ -1495,6 +1497,12 @@ mod tests {
                 .collect(),
         }
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::samples::{bank, sample};
+    use super::*;
 
     #[test]
     fn bank_round_trips() {

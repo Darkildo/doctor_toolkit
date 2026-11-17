@@ -3,8 +3,8 @@ type: exe
 status: known
 confidence: exe
 editions: ["1.0.789.0"]
-stages: [72, 5, 32]
-sources: ["docs/analysis/new-resources.md §1.1", "docs/analysis/new-resources.md §1.2", "docs/analysis/launch-flags.md §3.4", "docs/analysis/gf2-pc-verification.md §3", "docs/analysis/live-link.md §14.5"]
+stages: [72, 5, 32, 100]
+sources: ["docs/analysis/new-resources.md §1.1", "docs/analysis/new-resources.md §1.2", "docs/analysis/launch-flags.md §3.4", "docs/analysis/gf2-pc-verification.md §3", "docs/analysis/live-link.md §14.5", "docs/analysis/resources-in-memory.md §8.1", "crates/doctor-toolkit-live/src/addr.rs", "crates/doctor-toolkit-live/src/edition.rs"]
 tags: [exe, resources, loading]
 updated: 2026-11-16
 ---
@@ -17,7 +17,9 @@ updated: 2026-11-16
 | `0x00421470` | загрузчик ресурса (из разбора блока `SHDR`) | new-resources.md §1.1 |
 | `0x004D0DB0` | разбор блока `SHDR`; держит флаг пропуска блоков | new-resources.md §1.1 |
 | `0x00421170` | глобальная таблица загруженных ресурсов: поиск по всем 128 битам GUID | new-resources.md §1.1; live-link.md §14.5 |
-| `0x004209C0` | хэш-таблица загруженных ресурсов (поиск) | new-resources.md §1.1 |
+| `0x004209C0` | хэш GUID ресурса для таблицы загруженных: четыре id старшим байтом вперёд (`0x004D9AF0`), затем `h = h · 65599 + байт` по 16 байтам; корзина — хэш по модулю числа корзин | new-resources.md §1.1; resources-in-memory.md §8.1; crates/doctor-toolkit-live/src/edition.rs |
+| `0x004D9AF0` | перестановка байтов в каждом из четырёх слов на месте (перед хэшем GUID) | resources-in-memory.md §8.1 |
+| `0x012053AC` | данные: указатель на таблицу загруженных ресурсов `{корзины, число корзин}`; запись — `+0` счётчик ссылок, `+6` флаги, `+8` данные (ноль, когда образ освобождён), `+0xC` размер, `+0x10` распределитель, `+0x1C` четыре id, `+0x2C` следующая запись корзины | resources-in-memory.md §8.1; crates/doctor-toolkit-live/src/addr.rs |
 | `0x01223980` | данные: таблица обработчиков типов ресурсов | new-resources.md §1.1 |
 | `0x0049C6E0` | регистрация обработчика типа по SDBM имени в нижнем регистре | new-resources.md §1.1 |
 | `0x00420BE0` | выбор распределителя по политике памяти | new-resources.md §1.1 |
@@ -30,9 +32,10 @@ updated: 2026-11-16
 
 ## Что неизвестно
 
-Политики памяти `volatile` и `0x58B1F4D8` в найденном списке регистрации нет — вероятно, регистрируются в другом месте.
+Политики памяти `volatile` и `0x58B1F4D8` в найденном списке регистрации нет — вероятно, регистрируются в другом месте. Кто обнуляет указатель данных записи после обработчика типа — не найдено (см. [образ ресурса после загрузки](../engine/resource-images.md)).
 
 ## Подробнее
 
 - [Новые ресурсы и потоки](../../analysis/new-resources.md) §1
 - [Сверка форматов](../../analysis/gf2-pc-verification.md) §3
+- [Подмена ресурсов в памяти](../../analysis/resources-in-memory.md) §8.1

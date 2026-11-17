@@ -86,7 +86,10 @@ impl BrowserApp {
         let ws = match self.workspace_mut() {
             Ok(ws) => ws,
             Err(error) => {
-                self.status = trf("level.cannot_open_workspace", &[("error", &error)]);
+                self.notify(
+                    super::Level::Error,
+                    trf("level.cannot_open_workspace", &[("error", &error)]),
+                );
                 return;
             }
         };
@@ -139,6 +142,29 @@ impl BrowserApp {
             self.apply(false);
             self.status = format!("{status}; {}", self.status);
         } else {
+            // The edit may have changed the layout of a staged stream (a
+            // cloned model in a new zone): its SimGroups have other places.
+            let before = self.restage();
+            let select: Vec<(Location, usize)> = match (&before, &self.game) {
+                (Some(old), Some(new)) => select
+                    .iter()
+                    .filter_map(|&(at, object)| {
+                        let at = crate::nav::Location {
+                            stream: at.stream,
+                            resource: at.resource,
+                        };
+                        let at = super::staging::remap(old, new, at)?;
+                        Some((
+                            Location {
+                                stream: at.stream,
+                                resource: at.resource,
+                            },
+                            object,
+                        ))
+                    })
+                    .collect(),
+                _ => select.to_vec(),
+            };
             self.refresh_status();
             for (&id, level) in &mut self.levels {
                 level.refresh(
@@ -149,8 +175,8 @@ impl BrowserApp {
                         None
                     },
                 );
-                if id == tab && select.len() > 1 {
-                    level.select_locations(select);
+                if id == tab && (select.len() > 1 || before.is_some()) {
+                    level.select_when_loaded(&select);
                 }
             }
             self.reload_docs(None);
@@ -167,6 +193,11 @@ impl BrowserApp {
         if std::mem::replace(&mut self.level_preset_used, true) {
             level.forget_preset();
         }
+        // A tab opened for zones ("Open in the level view" of a new zone).
+        if let Some(at) = self.zone.open_in_level.iter().position(|(i, _)| *i == id) {
+            let (_, zones) = self.zone.open_in_level.swap_remove(at);
+            level.load_on_open(zones);
+        }
         if let (Some(game), Some(index)) = (&self.game, &self.index) {
             level.open_game(game.clone(), index.clone());
         }
@@ -182,7 +213,11 @@ impl BrowserApp {
         level.live = marks;
         level.set_classic_camera(self.settings.level.classic_camera);
         level.live_edit = self.play.live.edit_info();
-        if let Some(action) = level.ui(ui, self.workspace.as_ref()) {
+        let action = level.ui(ui, self.workspace.as_ref());
+        if let Some(error) = level.take_preset_error() {
+            self.preset_failed(&error);
+        }
+        if let Some(action) = action {
             self.level_action(id, action);
         }
     }
@@ -375,6 +410,23 @@ fn record(
             (text, vec![(group, added.object)])
         })
         .map_err(|e| e.to_string()),
+        LevelAction::AddEmpty { group, class } => {
+            use doctor_toolkit::logic_graph::edit::{NodeTemplate, add_node};
+            use doctor_toolkit::logic_graph::schema::LogicSchema;
+            let schema = LogicSchema::gf2();
+            let hash = doctor_toolkit::resource::names::sim_classes()
+                .resolve(class.trim())
+                .filter(|&h| schema.layout(h).is_some())
+                .ok_or_else(|| trf("level.unknown_class", &[("class", &class)]))?;
+            add_node(game, index, ws, group, NodeTemplate::Empty(hash), is_taken)
+                .map(|(object, guid)| {
+                    (
+                        trf("level.added", &[("object", &object), ("guid", &guid)]),
+                        vec![(group, object)],
+                    )
+                })
+                .map_err(|e| e.to_string())
+        }
         LevelAction::Graph {
             graph,
             renumbered,

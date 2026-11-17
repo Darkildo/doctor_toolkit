@@ -12,8 +12,8 @@
 
 use super::{HALF_APERTURE_MM, Shot};
 use crate::resource::trinity::{
-    CURVE_FRAME_RATE, Command, CurveKey, Guid, PositionKey, RotationKey, SeqBlock, SeqMaster,
-    eval_curve, eval_curves, eval_rotations,
+    CURVE_FRAME_RATE, Command, CurveKey, FixedText, Guid, PositionKey, RotationKey, SeqBlock,
+    SeqMaster, eval_curve, eval_curves, eval_rotations,
 };
 use crate::{Error, Result};
 
@@ -491,6 +491,178 @@ pub fn delete_key(seq: &mut SeqMaster, target: Target, t: f32) -> Result<usize> 
     Ok(removed)
 }
 
+/// The camera's path values at `t` (seconds from the start of the shot):
+/// x, y, z and the angles in degrees, as [`set_camera`] takes them.
+pub fn camera_values(block: &SeqBlock, t: f32) -> Option<[f32; 6]> {
+    let index = command_at(block, Target::Camera, false, t)?;
+    let at = block.times()[index];
+    match &block.commands[index] {
+        Command::CameraCurves { curves, .. } => Some(eval_curves(curves, (t - at).max(0.0))),
+        _ => None,
+    }
+}
+
+/// Moves the whole camera path of the shot: `delta` (x, y, z and the angles
+/// x, y, z in degrees) is added to every key of every path. Returns how
+/// many keys changed.
+pub fn offset_camera(seq: &mut SeqMaster, delta: [f32; 6]) -> Result<usize> {
+    let block = block_mut(seq)?;
+    let mut changed = 0;
+    for c in &mut block.commands {
+        if let Command::CameraCurves { curves, .. } = c {
+            for (keys, d) in curves.iter_mut().zip(delta) {
+                if d == 0.0 {
+                    continue;
+                }
+                for k in keys.iter_mut() {
+                    k.value += d;
+                    changed += 1;
+                }
+            }
+        }
+    }
+    if changed == 0 {
+        return Err(Error::InvalidArgument("the shot has no camera path".into()));
+    }
+    Ok(changed)
+}
+
+/// Sets the focal length (millimetres) on every key of the shot's focal
+/// length curves: the lens of the whole shot. Returns how many keys changed.
+pub fn set_lens(seq: &mut SeqMaster, focal: f32) -> Result<usize> {
+    let block = block_mut(seq)?;
+    let mut changed = 0;
+    for c in &mut block.commands {
+        if let Command::CameraFov { keys, .. } = c {
+            for k in keys.iter_mut() {
+                k.value = focal.max(1.0);
+                changed += 1;
+            }
+        }
+    }
+    if changed == 0 {
+        return Err(Error::InvalidArgument(
+            "the shot has no focal length curve".into(),
+        ));
+    }
+    Ok(changed)
+}
+
+/// Moves an actor for the whole shot: `delta` is added to where it is
+/// created and to every position key. Returns how many places changed.
+pub fn offset_actor(seq: &mut SeqMaster, actor: Guid, delta: [f32; 3]) -> Result<usize> {
+    let block = block_mut(seq)?;
+    let mut changed = 0;
+    let mut add = |p: &mut [f32; 3]| {
+        for i in 0..3 {
+            p[i] += delta[i];
+        }
+        changed += 1;
+    };
+    for c in &mut block.commands {
+        match c {
+            Command::ActorCreate {
+                actor: a, position, ..
+            } if *a == actor => add(position),
+            Command::ActorTransform {
+                actor: a,
+                positions,
+                ..
+            } if *a == actor => positions.iter_mut().for_each(|k| add(&mut k.position)),
+            _ => {}
+        }
+    }
+    if changed == 0 {
+        return Err(Error::InvalidArgument(
+            "the actor is not in the shot".into(),
+        ));
+    }
+    Ok(changed)
+}
+
+/// Lets `actor` play clip `clip` instead of the one its first animation
+/// command names. Returns the clip it played.
+pub fn set_clip(seq: &mut SeqMaster, actor: Guid, clip: &str) -> Result<String> {
+    let block = block_mut(seq)?;
+    for c in &mut block.commands {
+        if let Command::ActorAnim {
+            actor: a,
+            clip: old,
+            ..
+        } = c
+            && *a == actor
+        {
+            return Ok(std::mem::replace(old, FixedText::new(clip)).text);
+        }
+    }
+    Err(Error::InvalidArgument(
+        "the actor plays no animation in the shot".into(),
+    ))
+}
+
+/// `command` with `fields` changed: the fields of its JSON form (as the
+/// export of a shot writes it; `op` stays). A text field takes a plain
+/// string.
+pub fn patch_command(command: &Command, fields: &serde_json::Value) -> Result<Command> {
+    let bad = Error::InvalidArgument;
+    let fields = fields
+        .as_object()
+        .ok_or_else(|| bad("the fields of a command are a JSON object".into()))?;
+    let mut value = serde_json::to_value(command).map_err(|e| bad(e.to_string()))?;
+    let object = value.as_object_mut().expect("a command is an object");
+    for (name, new) in fields {
+        if name == "op" {
+            return Err(bad("the kind of a command (`op`) cannot be changed".into()));
+        }
+        let Some(old) = object.get_mut(name) else {
+            let names: Vec<&str> = object
+                .keys()
+                .map(String::as_str)
+                .filter(|k| *k != "op")
+                .collect();
+            return Err(bad(format!(
+                "`{}` has no field `{name}`; fields: {}",
+                command.label(),
+                names.join(", ")
+            )));
+        };
+        *old = match (&*old, new) {
+            // Text in a fixed buffer: the string alone, the slack dropped.
+            (serde_json::Value::Object(o), serde_json::Value::String(text))
+                if o.contains_key("text") =>
+            {
+                serde_json::json!({ "text": text })
+            }
+            _ => new.clone(),
+        };
+    }
+    serde_json::from_value(value).map_err(|e| bad(format!("`{}`: {e}", command.label())))
+}
+
+/// Puts `command` in place of command `index` of the shot and, with `time`,
+/// moves it there (seconds from the start of the shot). Waits are the time
+/// line itself and are not replaced.
+pub fn replace_command(
+    seq: &mut SeqMaster,
+    index: usize,
+    command: Command,
+    time: Option<f32>,
+) -> Result<()> {
+    let block = block_mut(seq)?;
+    if matches!(block.commands.get(index), None | Some(Command::Wait { .. }))
+        || matches!(command, Command::Wait { .. })
+    {
+        return Err(Error::InvalidArgument(format!(
+            "no editable command {index}"
+        )));
+    }
+    block.commands[index] = command;
+    if let Some(time) = time {
+        block.move_command(index, time)?;
+    }
+    Ok(())
+}
+
 /// The time of the key of `target` before (`forward` false) or after `t`
 /// in shot `shot`, in seconds from the start of the shot.
 pub fn next_key(shot: &Shot, target: Target, t: f32, forward: bool) -> Option<f32> {
@@ -505,7 +677,7 @@ pub fn next_key(shot: &Shot, target: Target, t: f32, forward: bool) -> Option<f3
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::resource::trinity::{FixedText, camera_matrix};
+    use crate::resource::trinity::camera_matrix;
 
     fn guid() -> Guid {
         Guid(*b"\x01\x02\x03\x04\x05\x06\x07\x08DOCTORTK")

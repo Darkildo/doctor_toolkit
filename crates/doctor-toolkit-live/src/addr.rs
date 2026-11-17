@@ -246,6 +246,35 @@ pub const LUA_STRING_TEXT: u32 = 0x10;
 /// Where the bus continues after the five bytes the module's jump takes
 /// (`push ecx; mov edx,[esp+8]` at [`MESSAGE_SEND`]).
 pub const MESSAGE_SEND_RESUME: u32 = 0x0040_8A05;
+
+// --- Where the bus calls a listener (stage 78) -------------------------------
+//
+// A handler is `listener->vtable[1](message)`, `thiscall` with one argument
+// it removes itself. Three places call it, each with five bytes of whole
+// instructions without relative operands that a `call` of the module's
+// thunk replaces; the listener is in ECX at all three.
+
+/// The broadcast `0x00408A00`: `mov edx,[eax+4]; call edx` (EAX — the
+/// listener's method table).
+pub const MESSAGE_CALL_BROADCAST: u32 = 0x0040_8A8B;
+/// Delivery to one listener, `0x00408BF0(message, listener, force)`:
+/// `and bl,1; call edx` (EAX — the method table).
+pub const MESSAGE_CALL_DIRECT: u32 = 0x0040_8C31;
+/// The delayed queue (`0x00440760`) delivering to the listener an entry
+/// names: `and bl,1; call eax` (EAX — the handler itself).
+pub const MESSAGE_CALL_QUEUE: u32 = 0x0044_0819;
+/// Where each of the three goes on (the return address of the handler's
+/// caller, which the module's mark on the stack is told by).
+pub const MESSAGE_CALL_RETURNS: [u32; 3] = [0x0040_8A90, 0x0040_8C36, 0x0044_081E];
+/// Where the bus returns to when `0x0045C400(variable, data, force)` called
+/// it: a wrapper 25 places of the game send through. The place that sent the
+/// message is then the wrapper's caller.
+pub const MESSAGE_SEND_WRAPPER_RETURN: u32 = 0x0045_C428;
+/// Method table of the game's object pointer as message data:
+/// `{table, object + 0x48, next}` (constructor `0x0045CA00`).
+pub const MESSAGE_DATA_OBJECT_VTABLE: u32 = 0x00E3_1E2C;
+/// What the object pointer of message data points to: `object + 0x48`.
+pub const MESSAGE_DATA_OBJECT_ANCHOR: u32 = 0x48;
 /// Flags word of an object (`+0x14`); the SimManager sets `0x20000000` when
 /// it registers it (`0x004467C0`).
 pub const OBJECT_FLAGS: u32 = 0x14;
@@ -532,6 +561,61 @@ pub const READ_FILE_CALLS: [u32; 7] = [
 /// `mov edi, [0x00D55268]` of `0x00697ED0` (a read of a profile file that
 /// calls `edi` afterwards): becomes `mov edi, hook; nop`.
 pub const READ_FILE_LOADS: [u32; 1] = [0x0069_7F12];
+// --- Resources put into streams in memory (stage 100) -------------------------
+
+/// The read of the game's file device (`0x00ABEC10`): `ReadFile(handle,
+/// buffer, length, &read, NULL)` on a record `{handle, ?, position: u64}`
+/// — synchronous, no `OVERLAPPED`. Every stream, table of contents and
+/// archive the file system `0x00AC0AD0` opened is read here. One of
+/// [`READ_FILE_CALLS`]: the hook of the profile (stage 58) asks
+/// the resources first.
+pub const DEVICE_READ_CALL: u32 = 0x00AB_EC29;
+/// Import slot of `SetFilePointerEx`.
+pub const IAT_SET_FILE_POINTER_EX: u32 = 0x00D5_5124;
+/// `call [0x00D55124]` in the seek of the file device (`0x00ABEC40`):
+/// `SetFilePointerEx(handle, position, &new, FILE_BEGIN)`, skipped when
+/// the record already stands there. Becomes `call hook; nop`. The other
+/// calls of the slot (`0x00ABD845`, `0x00ABD89A` of the file class,
+/// `0x00ABECE1` of the truncation) are left alone: the game does not use
+/// them on streams.
+pub const DEVICE_SEEK_CALL: u32 = 0x00AB_EC64;
+/// Import slot of `SetFilePointer`.
+pub const IAT_SET_FILE_POINTER: u32 = 0x00D5_525C;
+/// `call [0x00D5525C]` in the same seek, after `SetFilePointerEx` failed:
+/// `SetFilePointer(handle, 0, NULL, FILE_CURRENT)` asks where the file
+/// stands.
+pub const DEVICE_TELL_CALL: u32 = 0x00AB_EC78;
+/// Import slot of `GetFileSizeEx`.
+pub const IAT_GET_FILE_SIZE_EX: u32 = 0x00D5_5128;
+/// `call [0x00D55128]` in the size of the file device (`0x00ABECA0`).
+pub const DEVICE_SIZE_CALL: u32 = 0x00AB_ECAE;
+/// Import slot of `CloseHandle`.
+pub const IAT_CLOSE_HANDLE: u32 = 0x00D5_5264;
+/// `call [0x00D55264]` in the close of the file device (`0x00ABEBE0`): the
+/// module forgets the handle there. The other 62 uses of the slot close
+/// threads, events and files of other code and are left alone.
+pub const DEVICE_CLOSE_CALL: u32 = 0x00AB_EBE8;
+/// The instructions stage 100 patches (six bytes each, `FF 15 slot`).
+pub const DEVICE_CALLS: [u32; 4] = [
+    DEVICE_SEEK_CALL,
+    DEVICE_TELL_CALL,
+    DEVICE_SIZE_CALL,
+    DEVICE_CLOSE_CALL,
+];
+/// Pointer to the table of loaded resources: `{buckets: *mut *mut Record,
+/// count: u32}` (`0x00421170` finds a record by its GUID, `0x00421550`
+/// puts one in). A record: `+0` reference count, `+6` flags (`u16`),
+/// `+8` data, `+0xC` size, `+0x10` allocator, `+0x1C` the four ids,
+/// `+0x2C` the next record of the bucket (`0x00421470` fills it).
+pub const RESOURCE_TABLE: u32 = 0x0120_53AC;
+/// Offsets in a record of that table.
+pub const RESOURCE_REFS: u32 = 0x00;
+pub const RESOURCE_FLAGS: u32 = 0x06;
+pub const RESOURCE_DATA: u32 = 0x08;
+pub const RESOURCE_SIZE: u32 = 0x0C;
+pub const RESOURCE_IDS: u32 = 0x1C;
+pub const RESOURCE_NEXT: u32 = 0x2C;
+
 /// Ticks of the simulation per second (`f32`; `0x0040A20C` divides by it).
 pub const SIM_HZ: u32 = 0x0110_AE4C;
 /// Whether the simulation takes fixed steps (byte; set by `0x0067C130`,

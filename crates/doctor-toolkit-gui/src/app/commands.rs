@@ -78,7 +78,11 @@ pub enum Command {
     Project,
     Mods,
     IntegrityCheck,
+    CheckEdits,
+    Hashes,
     SaveFile,
+    Sounds,
+    CrashReports,
     RebuildIndex,
     ApplyToGame,
     RevertGame,
@@ -86,6 +90,12 @@ pub enum Command {
     Play,
     PlayOptions,
     FindGames,
+    // Tools: new zones (stage 103)
+    NewStream,
+    NewSimGroup,
+    ZoneCell,
+    CloneResources,
+    AddResource,
     // Wizards
     Tasks,
     WizardRetexture,
@@ -95,9 +105,11 @@ pub enum Command {
     WizardTexts,
     WizardPlace,
     WizardVoice,
+    WizardZone,
     WizardPackage,
     // Help
     UserGuide,
+    KnowledgeBase,
     Shortcuts,
     ShowLog,
     About,
@@ -491,7 +503,17 @@ pub const COMMANDS: &[Spec] = &[
         Global,
     )),
     spec(C::IntegrityCheck, "cmd.integrity", Menu::Tools, &[], Global),
+    spec(C::CheckEdits, "cmd.check_edits", Menu::Tools, &[], Global),
+    spec(C::Hashes, "cmd.hashes", Menu::Tools, &[], Global),
     spec(C::SaveFile, "cmd.save_file", Menu::Tools, &[], Global),
+    spec(C::Sounds, "cmd.sounds", Menu::Tools, &[], Global),
+    spec(
+        C::CrashReports,
+        "cmd.crash_reports",
+        Menu::Tools,
+        &[],
+        Global,
+    ),
     spec(
         C::RebuildIndex,
         "cmd.rebuild_index",
@@ -511,6 +533,23 @@ pub const COMMANDS: &[Spec] = &[
     )),
     spec(C::PlayOptions, "cmd.play_options", Menu::Tools, &[], Global),
     spec(C::FindGames, "cmd.find_games", Menu::Tools, &[], Global),
+    group(spec(
+        C::NewStream,
+        "cmd.new_stream",
+        Menu::Tools,
+        &[],
+        Global,
+    )),
+    spec(C::NewSimGroup, "cmd.new_simgroup", Menu::Tools, &[], Global),
+    spec(C::ZoneCell, "cmd.zone_cell", Menu::Tools, &[], Global),
+    spec(
+        C::CloneResources,
+        "cmd.clone_resources",
+        Menu::Tools,
+        &[],
+        Global,
+    ),
+    spec(C::AddResource, "cmd.add_resource", Menu::Tools, &[], Global),
     spec(
         C::Tasks,
         "cmd.tasks",
@@ -567,6 +606,7 @@ pub const COMMANDS: &[Spec] = &[
         &[],
         Global,
     ),
+    spec(C::WizardZone, "cmd.wizard_zone", Menu::Wizards, &[], Global),
     group(spec(
         C::WizardPackage,
         "cmd.wizard_package",
@@ -581,6 +621,7 @@ pub const COMMANDS: &[Spec] = &[
         &[k(NONE, Key::F1)],
         Global,
     ),
+    spec(C::KnowledgeBase, "cmd.kb", Menu::Help, &[], Global),
     spec(
         C::Shortcuts,
         "cmd.shortcuts",
@@ -688,7 +729,7 @@ impl BrowserApp {
             | C::GizmoScale
             | C::GizmoLocal
             | C::GizmoSnap => self.front_level().is_some(),
-            C::Movies => game,
+            C::Movies | C::CheckEdits | C::Sounds | C::CrashReports => game,
             C::Project => true,
             C::RestoreOriginals => game && idle && self.play.running.is_empty(),
             C::Play => game && idle && self.play.running.is_empty() && !self.play.launched(),
@@ -699,7 +740,13 @@ impl BrowserApp {
             | C::WizardParams
             | C::WizardTexts
             | C::WizardPlace
-            | C::WizardVoice => game,
+            | C::WizardVoice
+            | C::WizardZone
+            | C::NewStream
+            | C::NewSimGroup
+            | C::ZoneCell
+            | C::CloneResources
+            | C::AddResource => game,
             C::WizardPackage => game && self.workspace.as_ref().is_some_and(|ws| !ws.is_empty()),
             C::RebuildIndex => game && !self.nav.busy(),
             C::ApplyToGame => {
@@ -918,7 +965,16 @@ impl BrowserApp {
             C::Project => self.open_project_tab(),
             C::Mods => self.mods_open = !self.mods_open,
             C::IntegrityCheck => self.integrity_check(),
+            C::CheckEdits => {
+                self.check_edits();
+            }
+            C::Hashes => self.dock_ops.push(DockOp::ShowPanel(Pane::Hashes)),
+            C::KnowledgeBase => self.open_knowledge(),
             C::SaveFile => self.open_save_file(),
+            C::Sounds => self.open_sound_window(),
+            C::CrashReports => {
+                self.open_crash_reports();
+            }
             C::RebuildIndex => {
                 if let Some(game) = self.game.clone()
                     && self.nav.rebuild(game)
@@ -936,7 +992,7 @@ impl BrowserApp {
                     self.dock_ops.push(DockOp::ShowPanel(Pane::Changes));
                     self.notify(Level::Warning, tr("status.apply_conflicts").to_owned());
                 } else {
-                    self.apply(false);
+                    self.apply_checked();
                 }
             }
             C::RevertGame => self.unapply(),
@@ -945,6 +1001,11 @@ impl BrowserApp {
             C::PlayOptions => self.play.options_open = true,
             C::FindGames => self.find_games(),
             C::Tasks => self.open_task_list(),
+            C::NewStream => self.open_zone_form(super::zone::Form::Stream),
+            C::NewSimGroup => self.open_zone_form(super::zone::Form::Group),
+            C::ZoneCell => self.open_zone_form(super::zone::Form::Cell),
+            C::CloneResources => self.open_zone_form(super::zone::Form::Clone),
+            C::AddResource => self.open_zone_form(super::zone::Form::Resource),
             C::WizardRetexture
             | C::WizardModel
             | C::WizardOutfit
@@ -952,6 +1013,7 @@ impl BrowserApp {
             | C::WizardTexts
             | C::WizardPlace
             | C::WizardVoice
+            | C::WizardZone
             | C::WizardPackage => {
                 if let Some(kind) = super::wizard::Kind::ALL
                     .into_iter()
@@ -1147,7 +1209,11 @@ mod tests {
             C::Project,
             C::Mods,
             C::IntegrityCheck,
+            C::CheckEdits,
+            C::Hashes,
             C::SaveFile,
+            C::Sounds,
+            C::CrashReports,
             C::RebuildIndex,
             C::ApplyToGame,
             C::RevertGame,
@@ -1155,6 +1221,11 @@ mod tests {
             C::Play,
             C::PlayOptions,
             C::FindGames,
+            C::NewStream,
+            C::NewSimGroup,
+            C::ZoneCell,
+            C::CloneResources,
+            C::AddResource,
             C::Tasks,
             C::WizardRetexture,
             C::WizardModel,
@@ -1163,8 +1234,10 @@ mod tests {
             C::WizardTexts,
             C::WizardPlace,
             C::WizardVoice,
+            C::WizardZone,
             C::WizardPackage,
             C::UserGuide,
+            C::KnowledgeBase,
             C::Shortcuts,
             C::ShowLog,
             C::About,
@@ -1236,5 +1309,25 @@ mod tests {
         };
         assert!(pos(C::Redo, Key::Z, true) < pos(C::Undo, Key::Z, false));
         assert!(pos(C::OpenStream, Key::O, true) < pos(C::OpenGame, Key::O, false));
+    }
+
+    /// The table of capabilities (`data/toolkit/capabilities.toml`, see
+    /// `docs/parity.md`) has every command of the menus and every wizard,
+    /// and names none the editor does not have.
+    #[test]
+    fn every_command_and_wizard_is_in_the_table_of_capabilities() {
+        use doctor_toolkit::parity::{self, Kind};
+
+        let mut names: Vec<String> = COMMANDS.iter().map(|s| s.key.to_owned()).collect();
+        for kind in crate::app::wizard::Kind::ALL {
+            names.push(format!("wizard.{}", kind.slug()));
+        }
+        assert!(names.len() > 80, "{}", names.len());
+        let problems = parity::table().check_names(
+            Kind::Editor,
+            names.iter().map(String::as_str),
+            names.iter().map(String::as_str),
+        );
+        assert!(problems.is_empty(), "{}", problems.join("\n"));
     }
 }

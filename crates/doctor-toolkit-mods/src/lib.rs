@@ -11,6 +11,7 @@
 //! writing, undo of the last change, the progress of writing; technical
 //! details are folded away.
 
+pub mod crash;
 pub mod games;
 pub mod guard;
 pub mod i18n;
@@ -24,10 +25,11 @@ mod build;
 mod cards;
 mod details;
 mod dialogs;
+mod native;
 
 pub use build::RelationsForm;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, channel};
 use std::sync::{Arc, Mutex};
@@ -109,6 +111,8 @@ pub struct Overview {
     pub(crate) sets: Vec<String>,
     /// The saved set the mods are arranged as now.
     pub(crate) current_set: Option<String>,
+    /// The executable code of the mods that have any (stage 81).
+    pub(crate) code: Vec<native::CodeView>,
 }
 
 impl Overview {
@@ -116,6 +120,10 @@ impl Overview {
         self.status
             .as_ref()
             .is_none_or(|s| s.streams.iter().all(|s| s.up_to_date))
+            // Code that was agreed to and is not in the game yet.
+            && !self.code.iter().any(|c| {
+                c.state == Some(doctor_toolkit::mods::native::NativeState::NotWritten)
+            })
     }
 
     fn foreign_changes(&self) -> bool {
@@ -230,6 +238,11 @@ pub struct ModsPanel {
     play_busy: Option<String>,
     undo: Option<Undo>,
     dialog: Option<dialogs::Dialog>,
+    /// The crash reports of the game (stage 99).
+    crash: Option<crash::CrashWatch>,
+    /// The questions about executable code already shown (mod and hashes):
+    /// each opens by itself once.
+    code_asked: HashSet<String>,
 }
 
 impl Default for ModsPanel {
@@ -266,6 +279,16 @@ impl ModsPanel {
             play_busy: None,
             undo: None,
             dialog: None,
+            crash: None,
+            code_asked: HashSet::new(),
+        }
+    }
+
+    /// Gives the game and the files of the toolkit as installing executable
+    /// code sees them, instead of looking them up: for tests.
+    pub fn set_native_host(&mut self, host: doctor_toolkit::mods::native::NativeHost) {
+        if let Some(manager) = &mut self.manager {
+            manager.set_native_host(host);
         }
     }
 
@@ -305,6 +328,7 @@ impl ModsPanel {
         self.selected = None;
         self.message = None;
         self.dialog = None;
+        self.crash = self.game.as_ref().map(|g| crash::CrashWatch::new(g.root()));
         let Some(game) = &self.game else { return };
         match ModManager::open(game) {
             Ok(manager) => {
@@ -548,6 +572,8 @@ impl ModsPanel {
                 self.selected = None;
             }
         }
+        // A mod with code nobody answered about yet: the question.
+        self.offer_code_question();
     }
 
     /// Deletes the files of a removed mod kept for the undo.
@@ -637,13 +663,19 @@ impl ModsPanel {
         );
     }
 
-    /// Asks whether to install `paths` (opened from the system: a double
+    /// Shows what the mod files `paths` hold and asks whether to install
+    /// them (the Install button; a file opened from the system: a double
     /// click on a mod file, "Open with"), then installs them.
     pub fn offer_install(&mut self, paths: Vec<PathBuf>) {
         if paths.is_empty() {
             return;
         }
-        self.dialog = Some(dialogs::Dialog::Install(paths));
+        // What each file holds: read and checked before the question.
+        let infos = paths
+            .iter()
+            .map(|p| doctor_toolkit::mods::file_info(p).map_err(|e| e.to_string()))
+            .collect();
+        self.dialog = Some(dialogs::Dialog::Install(paths, infos));
     }
 
     /// Installs the files dropped on the window; other files are refused
@@ -692,12 +724,38 @@ impl ModsPanel {
                             Some((p.done, p.total, p.stream.to_owned()));
                     })
                     .map_err(|e| e.to_string())?;
+                // The crash module and the list of mods for its reports.
+                for note in doctor_toolkit::crash::prepare(
+                    game,
+                    "doctor-toolkit-mods",
+                    "written into the game",
+                    true,
+                ) {
+                    doctor_toolkit::report::log(&note);
+                }
                 let enabled = manager.mods().iter().filter(|m| m.enabled).count();
+                let code = native::report_words(manager.native_report());
+                let mut text = written_words(&report, enabled);
+                let mut message = describe(&report, tr("mods.applied"));
+                if let Some(code) = code {
+                    if report.streams.is_empty() {
+                        text = code.clone();
+                        message = code.replace('\n', " ");
+                    } else {
+                        text = format!("{text}\n{code}");
+                    }
+                    for warning in report.warnings.iter().take(3) {
+                        if report.streams.is_empty() {
+                            text += "\n";
+                            text += &trf("mods.report_warning", &[("warning", warning)]);
+                        }
+                    }
+                }
                 Ok(Outcome {
-                    message: describe(&report, tr("mods.applied")),
+                    message,
                     report: Some(Report {
                         title: tr("mods.written_title").to_owned(),
-                        text: written_words(&report, enabled),
+                        text,
                         error: false,
                     }),
                     ..Outcome::default()
@@ -721,11 +779,22 @@ impl ModsPanel {
                             Some((p.done, p.total, p.stream.to_owned()));
                     })
                     .map_err(|e| e.to_string())?;
+                let code = native::report_words(manager.native_report());
+                let mut text = restored_words(&report);
+                let mut message = describe(&report, tr("mods.restored"));
+                if let Some(code) = code {
+                    if report.streams.is_empty() {
+                        text = code.clone();
+                        message = code.replace('\n', " ");
+                    } else {
+                        text = format!("{text}\n{code}");
+                    }
+                }
                 Ok(Outcome {
-                    message: describe(&report, tr("mods.restored")),
+                    message,
                     report: Some(Report {
                         title: tr("mods.restored_title").to_owned(),
-                        text: restored_words(&report),
+                        text,
                         error: false,
                     }),
                     ..Outcome::default()
@@ -980,6 +1049,29 @@ impl ModsPanel {
         );
     }
 
+    /// Writes the installed mod `id` as a mod file `out`.
+    pub fn export_mod(&mut self, ctx: &egui::Context, id: &str, out: PathBuf) {
+        let id = id.to_owned();
+        self.run_job(
+            ctx,
+            tr("mods.job_exporting"),
+            false,
+            JobKind::Quiet,
+            move |_, manager, _| {
+                let bytes = manager
+                    .export(&id, &out)
+                    .map_err(|e| trf("mods.cannot_export", &[("id", &id), ("error", &e)]))?;
+                Ok(Outcome::message(trf(
+                    "mods.exported",
+                    &[
+                        ("file", &out.display()),
+                        ("bytes", &trn("count.bytes", bytes, &[])),
+                    ],
+                )))
+            },
+        );
+    }
+
     /// Takes back the last change: switching, moving, removing a mod or
     /// using a set.
     pub fn undo(&mut self, ctx: &egui::Context) {
@@ -1076,6 +1168,17 @@ impl ModsPanel {
         self.action_bar(ui);
         ui.add_space(4.0);
         self.status_line(ui);
+        if let Some(watch) = &mut self.crash {
+            // While the game runs, look for a report of its crash.
+            if self.write_lock.is_some() {
+                ui.ctx()
+                    .request_repaint_after(std::time::Duration::from_secs(2));
+            }
+            if let Some(report) = watch.poll(false) {
+                self.message = Some((crash::CrashWatch::announcement(report), true));
+            }
+            watch.ui(ui);
+        }
         ui.separator();
         egui::ScrollArea::vertical()
             .id_salt("mods-panel")
@@ -1145,7 +1248,7 @@ impl ModsPanel {
                     .add_filter(tr("mods.filter_mods"), &["zip", "vpat"])
                     .pick_files()
             {
-                self.install_files(ui.ctx(), paths);
+                self.offer_install(paths);
             }
             if has_mods
                 && action_button(ui, idle, tr("mods.sort"), Prominence::Normal)
@@ -1231,6 +1334,12 @@ impl ModsPanel {
                 &mut self.ignore_compatibility,
                 tr("mods.ignore_compatibility"),
             );
+            if let Some(game) = &self.game {
+                ui.separator();
+                if let Some(note) = crash::switch(ui, game.root()) {
+                    self.message = Some((note, false));
+                }
+            }
         })
         .response
         .on_hover_text(tr("mods.more_hint"));
@@ -1436,6 +1545,7 @@ fn overview(game: &GameInstance, manager: &ModManager) -> Overview {
             .map(|s| s.name)
             .collect(),
         current_set: manager.current_set(),
+        code: native::views(manager),
     }
 }
 

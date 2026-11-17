@@ -421,7 +421,7 @@ pub struct Change {
 }
 
 /// One value that changes, for the summary of a set of changes.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct DiffLine {
     pub id: String,
     pub label: String,
@@ -589,6 +589,128 @@ pub fn kind_of(class: u32, attribute: u16, stored: Option<&Value>) -> Option<Val
         Kind::Int | Kind::Hash => Some(ValueKind::Int),
         _ => None,
     }
+}
+
+// ------------------------------------------------------------ operation
+
+/// How the new values of a tunable are given.
+#[derive(Debug, Clone, PartialEq)]
+pub enum NewValues {
+    /// The same value for every object.
+    All(f64),
+    /// Every object's own value times this (whole numbers are rounded).
+    Multiply(f64),
+}
+
+impl Reading {
+    /// The new value of every object of `tunable`, checked against its kind
+    /// and bounds.
+    pub fn new_values(
+        &self,
+        tunable: &Tunable,
+        new: &NewValues,
+    ) -> std::result::Result<Vec<(usize, f64)>, String> {
+        match *new {
+            NewValues::All(value) => {
+                tunable.check(value)?;
+                Ok(self.objects.iter().map(|o| (o.object, value)).collect())
+            }
+            NewValues::Multiply(factor) => self
+                .objects
+                .iter()
+                .map(|o| {
+                    let mut v = o.value * factor;
+                    if tunable.kind != ValueKind::Float {
+                        v = v.round();
+                    }
+                    tunable
+                        .check(v)
+                        .map(|()| (o.object, v))
+                        .map_err(|e| format!("{}: {} ({e})", o.label, tunable.format(v)))
+                })
+                .collect(),
+        }
+    }
+}
+
+/// One tunable to change, as the command line and the MCP server give it.
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct SetTunable {
+    /// Id of the tunable, as the list gives it (`weapons.pistol.damage`).
+    pub id: String,
+    /// The new value for every object of the tunable (0 or 1 for a switch).
+    #[serde(default)]
+    pub value: Option<f64>,
+    /// Or: multiply the value of every object by this (whole numbers are
+    /// rounded), keeping their differences.
+    #[serde(default)]
+    pub multiply: Option<f64>,
+}
+
+/// A tunable of the curated list by id.
+pub fn by_id(id: &str) -> Result<&'static Tunable> {
+    let id = id.trim();
+    gf2()
+        .iter()
+        .find(|t| t.id.eq_ignore_ascii_case(id))
+        .ok_or_else(|| Error::InvalidArgument(format!("no tunable `{id}` on the list")))
+}
+
+/// The changes `sets` ask for, with the current values read through `ws`.
+pub fn changes(
+    game: &GameInstance,
+    ws: Option<&Workspace>,
+    sets: &[SetTunable],
+) -> Result<Vec<Change>> {
+    sets.iter()
+        .map(|set| {
+            let tunable = by_id(&set.id)?;
+            let new = match (set.value, set.multiply) {
+                (Some(v), None) => NewValues::All(v),
+                (None, Some(f)) => NewValues::Multiply(f),
+                _ => {
+                    return Err(Error::InvalidArgument(format!(
+                        "{}: give either a value or a factor",
+                        tunable.id
+                    )));
+                }
+            };
+            let values = tunable
+                .read(game, ws)?
+                .new_values(tunable, &new)
+                .map_err(|e| Error::InvalidArgument(format!("{}: {e}", tunable.id)))?;
+            Ok(Change {
+                tunable: tunable.clone(),
+                values,
+            })
+        })
+        .collect()
+}
+
+/// Changes tunables of the curated list as one undoable operation. Returns
+/// what changed and the label of the operation (`None` when every value
+/// was already there).
+pub fn set(
+    game: &GameInstance,
+    ws: &mut Workspace,
+    sets: &[SetTunable],
+) -> Result<(Vec<DiffLine>, Option<String>)> {
+    let changes = changes(game, Some(ws), sets)?;
+    let (_, diff) = plan(game, Some(ws), &changes)?;
+    let Some(first) = changes.first() else {
+        return Ok((diff, None));
+    };
+    let label = match changes.len() {
+        1 => format!("Game parameter: {}", first.tunable.label),
+        n => format!(
+            "Game parameters: {} and {} more",
+            first.tunable.label,
+            n - 1
+        ),
+    };
+    let done = apply(game, ws, &changes, &label)?;
+    Ok((diff, done.map(|_| label)))
 }
 
 #[cfg(test)]

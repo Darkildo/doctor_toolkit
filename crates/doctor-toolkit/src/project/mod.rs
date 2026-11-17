@@ -46,7 +46,9 @@ use crate::{Error, Result};
 
 pub use cache::BuildCache;
 pub use config::{PROJECT_FILE, ProjectConfig};
-pub use create::{CreateOptions, CreateReport, create, workspace_selection};
+pub use create::{
+    CreateOptions, CreateReport, NewProject, create, create_from, workspace_selection,
+};
 pub use manifest::{Entry, Kind, SourceManifest};
 pub use patch::SimGroupPatch;
 

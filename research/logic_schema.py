@@ -26,16 +26,25 @@ decides the pin it becomes in the logic graph:
 - `asset`: a GUID attribute that references resources (an id repeated 4 times);
 - `param`: everything else.
 
+Attributes read in the code of the classes (data/gf2/class_behavior.toml,
+stage 79) are put over the result by research/class_behavior.py: their names,
+and the direction of those that name a message.
+
 Names and the direction of a few attributes come from reading the decompiled
-readers by hand (MANUAL below); their confidence is given there.
+readers by hand (MANUAL below); their confidence is given there. The last
+block of MANUAL holds the message attributes the data rule had guessed and
+that were then read from the code (some hash the name later than the reader):
+no pin of the game is left with confidence `data` for a message.
 """
 import collections
+import io
 import json
 import os
 import struct
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import class_behavior  # noqa: E402
 from simgroup_survey import packets, rel  # noqa: E402
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -130,16 +139,22 @@ MANUAL = {
                          2: ('on_inside', 'out', E, G), 3: ('delay', 'param', E, G),
                          4: ('enable', 'in', E, D), 5: ('disable', 'in', E, D)},
     'TriggerDistance': {0: ('source', 'link', D, G), 1: ('target', 'link', D, G), 2: ('enable', 'in', E, D),
-                        3: ('disable', 'in', E, D), 4: ('send', 'out', D, D), 5: ('distance', 'param', E, D)},
-    'TriggerFollow': {2: ('enable', 'in', E, D), 3: ('disable', 'in', E, D), 4: ('on_start', 'out', D, D),
-                      5: ('on_stop', 'out', D, D)},
-    # AndEventGate 0x479730: four condition names kept as strings (+0x50 …
-    # +0x68), output +0x7C after delay +0x78, reset subscribed at +0x84.
-    'AndEventGate': {0: ('condition_1', 'in', D, D), 1: ('condition_2', 'in', D, D),
-                     2: ('condition_3', 'in', D, D), 3: ('condition_4', 'in', D, D),
+                        3: ('disable', 'in', E, D), 4: ('send', 'out', E, D), 5: ('distance', 'param', E, D)},
+    'TriggerFollow': {2: ('enable', 'in', E, D), 3: ('disable', 'in', E, D), 4: ('on_start', 'out', E, D),
+                      5: ('on_stop', 'out', E, D)},
+    # AndEventGate 0x479730: four conditions interned and subscribed in the
+    # reader itself (0x4DAFD0 -> 0x408260 -> 0x407E60, handles +0x50 … +0x68,
+    # a bit of +0x70 per condition in use), output +0x7C after delay +0x78,
+    # reset subscribed at +0x84.
+    'AndEventGate': {0: ('condition_1', 'in', E, D), 1: ('condition_2', 'in', E, D),
+                     2: ('condition_3', 'in', E, D), 3: ('condition_4', 'in', E, D),
                      4: ('send+delay=5', 'out', E, D), 5: ('delay', 'param', E, D), 6: ('reset', 'in', E, D)},
-    'MessageRelay': {0: ('trigger', 'in', D, D), 1: ('send', 'out', E, D)},
-    'ForwardSender': {0: ('trigger', 'in', D, D), 1: ('send', 'out', E, D), 2: ('send_2', 'out', E, G)},
+    # MessageRelay 0x47AB10: attr 0 goes to the relay base 0x4CF7C0, which
+    # interns it and subscribes the object (0x4DAFD0 -> 0x408260 -> 0x407E60).
+    'MessageRelay': {0: ('trigger', 'in', E, D), 1: ('send', 'out', E, D)},
+    # ForwardSender 0x99E010: attr 0 (and 1) go to 0x99D1D0, a wrapper of the
+    # subscription 0x4089B0 with the listener of the object (+0x3C).
+    'ForwardSender': {0: ('trigger', 'in', E, D), 1: ('send', 'out', E, D), 2: ('send_2', 'out', E, G)},
     'VariableOperator': {0: ('trigger', 'in', E, D), 1: ('trigger_2', 'in', E, G), 2: ('variable', 'param', E, D),
                          3: ('operation', 'param', E, G), 4: ('operand', 'param', E, G)},
     # VariableSwitch 0x476FC0: 29 attributes (jump table of 29 entries, 0–28).
@@ -155,12 +170,15 @@ MANUAL = {
                        **{7 + 3 * k: ('delay_%d' % (k + 1), 'param', E, G) for k in range(8)}},
     'VariableWatcher': {0: ('activate', 'in', E, D), 1: ('deactivate', 'in', E, D), 2: ('send', 'out', E, D),
                         4: ('variable', 'param', E, D), 5: ('comparison', 'param', E, G), 6: ('value', 'param', E, G)},
+    # 3 and 14: stage 77, reader 0x008FBA00 and the save writer 0x008FD0F0 (docs/analysis/story.md §3.1)
     'Checkpoint': {0: ('title', 'param', E, D), 1: ('number', 'param', E, D), 2: ('chapter', 'param', E, D),
+                   3: ('chapter_number', 'param', E, D),
                    7: ('load', 'in', E, D), 8: ('on_loaded', 'out', E, D), 9: ('on_started', 'out', E, D),
-                   10: ('on_restarted', 'out', E, D)},
+                   10: ('on_restarted', 'out', E, D), 14: ('save_as_number', 'param', E, E)},
     'TestCurrentCheckpoint': {0: ('comparison', 'param', E, G), 1: ('checkpoint', 'param', E, D),
                               2: ('test', 'in', E, D), 3: ('on_true', 'out', E, D), 4: ('on_false', 'out', E, D)},
-    'CheckpointFailure': {3: ('fail', 'in', E, D)},
+    # 0 and 1: two string ids joined into the reason of the failure (0x008FC470)
+    'CheckpointFailure': {0: ('reason', 'param', E, E), 1: ('reason_2', 'param', E, E), 3: ('fail', 'in', E, D)},
     'TestTimeOfDay': {0: ('test', 'in', E, D), 1: ('from_hour', 'param', E, D), 2: ('to_hour', 'param', E, D),
                       3: ('on_true', 'out', E, D), 4: ('on_false', 'out', E, D)},
     'TestBuildingOwnership': {0: ('building', 'param', E, G), 1: ('family', 'param', E, G), 2: ('test', 'in', E, D),
@@ -168,16 +186,18 @@ MANUAL = {
     'TestScore': {0: ('score', 'param', E, G), 2: ('comparison', 'param', E, G), 3: ('test', 'in', E, D),
                   4: ('on_true', 'out', E, D), 5: ('on_false', 'out', E, D)},
     'TestFamilySettings': {1: ('test', 'in', E, D), 2: ('on_true', 'out', E, G), 3: ('on_false', 'out', E, G)},
-    'TestUpgrade': {2: ('test', 'in', E, D), 3: ('on_true', 'out', D, G), 4: ('on_false', 'out', E, G)},
-    'TestBuildingState': {2: ('test', 'in', E, D), 3: ('on_true', 'out', D, G)},
-    'MissionTimer': {0: ('start', 'in', E, D), 1: ('stop', 'in', E, D), 3: ('seconds', 'param', E, D),
+    'TestUpgrade': {2: ('test', 'in', E, D), 3: ('on_true', 'out', E, G), 4: ('on_false', 'out', E, G)},
+    'TestBuildingState': {2: ('test', 'in', E, D), 3: ('on_true', 'out', E, G)},
+    # 2 and 6: the timer on the screen and its caption (handler 0x0090EA70, docs/analysis/story.md §3.6)
+    'MissionTimer': {0: ('start', 'in', E, D), 1: ('stop', 'in', E, D), 2: ('caption', 'param', E, E),
+                     3: ('seconds', 'param', E, D), 6: ('show', 'param', E, E),
                      7: ('on_expired', 'out', E, D)},
     'UIHudObjective': {0: ('show', 'in', E, D), 1: ('hide', 'in', E, D), 2: ('style', 'param', E, G),
                        3: ('text', 'param', E, G)},
     'UIHudTutorial': {0: ('show', 'in', E, D), 1: ('hide', 'in', E, D), 2: ('text', 'param', E, G)},
     'UIFanfare': {0: ('show', 'in', E, D), 1: ('text', 'param', E, G)},
     'PhoneMessage': {0: ('call', 'in', E, D), 1: ('cancel', 'in', E, G), 2: ('conversation', 'param', E, D),
-                     9: ('on_complete', 'out', D, D)},
+                     9: ('on_complete', 'out', E, D)},
     'SpawnPoint': {0: ('spawn_set', 'link', D, G), 4: ('enable', 'in', E, G), 5: ('disable', 'in', E, G),
                    6: ('on_spawned', 'out', E, G)},
     'FuncSpawn': {0: ('spawn', 'in', E, D), 1: ('on_spawned', 'out', E, D), 2: ('template', 'link', D, G)},
@@ -187,16 +207,27 @@ MANUAL = {
                             7: ('sequence', 'asset', D, D)},
     'InGameVideoPlayer': {0: ('play', 'in', E, D), 1: ('movie', 'param', E, D), 2: ('folder', 'param', E, D),
                           3: ('on_end', 'out', E, D)},
-    'ScriptedSequence': {0: ('start', 'in', E, D), 1: ('on_end', 'out', D, G), 2: ('on_end_2', 'out', D, G),
+    'ScriptedSequence': {0: ('start', 'in', E, D), 1: ('on_end', 'out', E, G), 2: ('on_end_2', 'out', E, G),
                          3: ('actor', 'link', D, G)},
     'HitMission': {11: ('on_complete', 'out', E, D), 12: ('on_fail', 'out', E, D)},
     'DynamicJob': {0: ('job', 'param', E, D), 1: ('accept', 'in', E, D), 4: ('on_cancelled', 'out', E, D),
                    5: ('on_completed', 'out', E, D), 7: ('reset', 'in', E, D)},
     'DynamicJobInvoker': {0: ('start', 'in', E, D)},
-    'JobReward': {13: ('give', 'in', E, D), 14: ('on_given', 'out', E, D)},
+    # 15-17: handler 0x00891AE0 (docs/analysis/story.md §7)
+    'JobReward': {13: ('give', 'in', E, D), 14: ('on_given', 'out', E, D), 15: ('enable', 'in', E, E),
+                  16: ('disable', 'in', E, E), 17: ('reset', 'in', E, E)},
+    'AutoSave': {0: ('save', 'in', E, E)},
     'GiveItemRelay': {0: ('give', 'in', E, D), 1: ('item', 'link', D, G)},
-    'ChangeNPCSettings': {0: ('apply', 'in', E, D), 1: ('apply_2', 'in', E, G), 2: ('npc', 'link', D, G)},
-    'ChangeDialog': {0: ('apply', 'in', E, D), 1: ('npc', 'link', D, G), 3: ('dialog', 'param', E, D)},
+    # ChangeNPCSettings 0x70FBD0 keeps the hashes of 3 and 6 (+0x70, +0x80);
+    # its handler interns them into message variables of the NPC (0x710260:
+    # NPC +0x1FC0 and +0x1FE0), and the NPC sends those (0x6F7C10, 0x7CAC60).
+    'ChangeNPCSettings': {0: ('apply', 'in', E, D), 1: ('apply_2', 'in', E, G), 2: ('npc', 'link', D, G),
+                          3: (None, 'out', E, None), 6: (None, 'out', E, None)},
+    # ChangeDialog 0x6EB140 keeps the strings of 4 and 7 (+0x78, +0xB8); its
+    # handler gives them to the same variables of the NPC (0x6EB400: 0x408980
+    # into NPC +0x1FC0 and +0x1FE0).
+    'ChangeDialog': {0: ('apply', 'in', E, D), 1: ('npc', 'link', D, G), 3: ('dialog', 'param', E, D),
+                     4: (None, 'out', E, None), 7: (None, 'out', E, None)},
     'PlaySound': {1: ('play', 'in', E, D), 2: ('stop', 'in', E, D)},
     'PlayAudioStream': {0: ('play', 'in', E, D), 1: ('stop', 'in', E, D), 3: ('stream', 'asset', D, G)},
     'SetAudioMix': {0: ('apply', 'in', E, D), 1: ('remove', 'in', E, G)},
@@ -204,7 +235,7 @@ MANUAL = {
     'SetTimeOfDay': {0: ('apply', 'in', E, D), 3: ('hour', 'param', E, D)},
     'ExecuteScoreEvent': {0: ('execute', 'in', E, D), 1: ('event', 'param', E, G)},
     'ExecuteVFX': {0: ('play', 'in', E, D), 1: ('stop', 'in', E, D), 7: ('vfx', 'asset', D, D)},
-    'PlayerTeleportRelay': {1: ('teleport', 'in', E, D), 2: ('on_arrived', 'out', D, D)},
+    'PlayerTeleportRelay': {1: ('teleport', 'in', E, D), 2: ('on_arrived', 'out', E, D)},
     'SetInvulnerability': {0: ('npc', 'link', D, G), 1: ('enable', 'in', E, D), 2: ('disable', 'in', E, D)},
     'Door': {11: ('open', 'in', E, D), 12: ('open_2', 'in', E, G), 13: ('close', 'in', E, D),
              14: ('lock', 'in', E, D), 15: ('unlock', 'in', E, D), 18: ('on_opened', 'out', E, D)},
@@ -221,6 +252,48 @@ MANUAL = {
     # EnableDisableStreams 0x812980: both messages subscribed (0x4089B0,
     # +0x50 and +0x58).
     'EnableDisableStreams': {0: ('activate', 'in', E, G), 1: ('deactivate', 'in', E, G)},
+
+    # Message attributes that logic_readers.py could not classify (a shared
+    # label, a helper call, a jump table Ghidra did not follow, or a string or
+    # hash that is interned later than the reader) and that the data rule had
+    # guessed. Read from the code of godfather2.exe 1.0.789.0 by hand (stage
+    # 78, docs/analysis/message-bus.md); a name of None keeps the pin unnamed.
+    # Subscribed in the reader through 0x4089B0 (directly, or by 0x99D1D0 of
+    # the relay base, which calls it with the listener +0x3C of the object):
+    'AmbientAudioForcedSelection': {1: (None, 'in', E, None)},  # 0x6A6DA0
+    'CSAPhone': {1: (None, 'in', E, None)},  # 0x8D8970, case at 0x8D8A9C
+    'CombatRelay': {0: (None, 'in', E, None)},  # 0x99D550
+    'GuardRelay': {2: (None, 'in', E, None)},  # 0x99EB80
+    'HireCrewRelay': {1: (None, 'in', E, None)},  # 0x99EF60
+    'PatrolRelay': {1: (None, 'in', E, None)},  # 0x99F4D0
+    'WitnessCrime': {1: (None, 'in', E, None)},  # 0x9A0D80; the data rule said `out`
+    # GangsterNpcRequester 0x6BA9B0: odd attributes from 5 are subscribed
+    # (0x4089B0 at 0x6BAAC2); the data rule said `out`.
+    'GangsterNpcRequester': {i: (None, 'in', E, None) for i in (7, 9, 11, 13)},
+    # PrioritizeEvents 0x6AADB0 keeps four strings per entry (8 entries of 5
+    # attributes from 3); the manager *0x11299AC subscribes itself to them
+    # when the object registers (0x6AAC90 -> 0x6AA0E0: 0x4089B0).
+    'PrioritizeEvents': {i: (None, 'in', E, None) for i in (11, 33, 34, 35)},
+    # TODSequencerAction 0x833760 keeps the string (+0xA0); the constructor
+    # 0x833B10 subscribes the object to it after the reader, when attribute 1
+    # is 1 (0x4089B0 at 0x833BE0).
+    'TODSequencerAction': {2: (None, 'in', E, None)},
+    # Interned without a subscription (0x408240 or 0x408980) and sent:
+    'GenericCSA': {9: (None, 'out', E, None)},  # 0x8DAB90; sent at 0x8DB519; the data rule said `in`
+    'TeamCapturableCSA': {2: (None, 'out', E, None)},  # 0x8DFEF0; sent at 0x8DFEA5, 0x8E04F9
+    'SimpleChatterBox': {14: (None, 'out', E, None)},  # 0x6F24D0 -> 0x6F2320 case 5; sent at 0x6F1EA7
+    # ChangeBuildingSettings 0x6B86A0 keeps the hashes (+0x74, +0x7C, +0x80);
+    # its handler 0x6B91C0 interns them into message variables of the building
+    # (+0x26C, +0x1DC, +0x29C), and the building sends those (0x6AE104,
+    # 0x6AEC1E, 0x6AE394). The data rule said `in` for 4.
+    'ChangeBuildingSettings': {4: (None, 'out', E, None), 6: (None, 'out', E, None), 8: (None, 'out', E, None)},
+    # Not messages of the bus: the hash is compared with the event of the data
+    # of iMsgPreScoreboardUpdate (StealMutator, handler 0x895B50) and of
+    # iMsgPostScoreboardUpdate (class aeaf6570, handler 0x8B2860); the string
+    # of Item 31 is a name read back by 0x707510 ("bullet_<name>", 0x852B10).
+    'StealMutator': {1: ('score_event', 'param', E, G)},
+    0xAEAF6570: {2: ('score_event', 'param', E, G)},
+    'Item': {31: ('name', 'param', E, G)},
 }
 
 CATEGORY_RULES = [
@@ -307,7 +380,7 @@ def main(root, readers_path):
         stats[(pin, conf)] += 1
 
     for cls_name, table in MANUAL.items():
-        h = sdbm_lower(cls_name)
+        h = cls_name if isinstance(cls_name, int) else sdbm_lower(cls_name)
         for i, (name, pin, conf, name_conf) in table.items():
             entry = pins.setdefault((h, i), [None, 'param', None, None, kinds.get((h, i))])
             entry[0] = name
@@ -315,7 +388,7 @@ def main(root, readers_path):
                 entry[1], entry[2] = pin, conf
             entry[3] = name_conf
 
-    out = sys.stdout
+    out = io.StringIO()
     out.write('# Pins of SimGroup classes for the logic graph of The Godfather II (PC).\n')
     out.write('# Generated by research/logic_schema.py from the game files and the decompiled\n')
     out.write('# attribute readers of godfather2.exe; see docs/logic-graph.md §2.\n#\n')
@@ -365,6 +438,9 @@ def main(root, readers_path):
                 fields.append('kind = "%s"' % kind)
             out.write('  { %s },\n' % ', '.join(fields))
         out.write(']\n\n')
+    # Names and message pins read in the code of the classes
+    # (data/gf2/class_behavior.toml) go over what is derived here.
+    sys.stdout.write(class_behavior.apply_schema(out.getvalue()))
     for k, v in sorted(stats.items(), key=str):
         print(k, v, file=sys.stderr)
 

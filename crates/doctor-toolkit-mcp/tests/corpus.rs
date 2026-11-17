@@ -574,3 +574,281 @@ async fn a_new_area_is_made_through_the_server() {
     );
     assert_eq!(before, stat_all(&dir), "the game folder changed");
 }
+
+/// The tools of stage 104 (packages B, D, E, G) on the real game: game
+/// parameters, the speech tables and the mixer, the world grid, the ground
+/// and a walk over the collision of a district, objects put on the ground.
+#[tokio::test(flavor = "multi_thread")]
+async fn authoring_tools_on_the_game() {
+    let Some(dir) = game_dir() else {
+        return;
+    };
+    let before = stat_all(&dir);
+    let temp = tempfile::tempdir().unwrap();
+    let mut config = doctor_toolkit_mcp::Config::new(&dir);
+    config.bridge = None;
+    config.workspace = Some(temp.path().join("workspace"));
+    config.output_dir = Some(temp.path().join("out"));
+    config.allow_edits = true;
+    let mut c = Client::start(doctor_toolkit_mcp::open(&config).unwrap());
+    c.initialize().await;
+
+    // Every curated parameter is found in this edition of the game.
+    let list = c.json("tunables", json!({ "limit": 300 })).await;
+    let rows = list["tunables"].as_array().unwrap();
+    assert!(rows.len() >= 30, "{}", rows.len());
+    let missing: Vec<&Value> = rows
+        .iter()
+        .filter(|r| r["now"]["unavailable"].is_string())
+        .collect();
+    assert!(missing.is_empty(), "{missing:?}");
+    let set = c
+        .json(
+            "set_tunables",
+            json!({ "changes": [{ "id": "weapons.pistol.damage", "multiply": 2 }] }),
+        )
+        .await;
+    assert_eq!(set["changed"], true, "{set}");
+    assert_eq!(set["done"]["changed_values"].as_array().unwrap().len(), 4);
+
+    // Speech and the mixer.
+    let speakers = c
+        .json("speech", json!({ "show": "speakers", "limit": 5 }))
+        .await;
+    assert!(speakers["total"].as_u64().unwrap() > 10, "{speakers}");
+    let events = c.json("speech", json!({ "limit": 3 })).await;
+    assert!(events["records"].as_u64().unwrap() > 100, "{events}");
+    let mixer = c.json("mix", json!({})).await;
+    assert!(mixer["categories"].as_array().unwrap().len() > 5, "{mixer}");
+    let name = mixer["mixes"][0]["name"].as_str().unwrap().to_owned();
+    let one = c.json("mix", json!({ "name": name })).await;
+    assert!(one["channels"].is_array(), "{one}");
+
+    // The world grid of a city.
+    let grids = c.json("zone_cells", json!({ "level": "gf2/miami" })).await;
+    assert!(!grids["grids"].as_array().unwrap().is_empty(), "{grids}");
+    let cells = c
+        .json(
+            "zone_cells",
+            json!({ "level": "gf2/miami", "cells": true, "filter": "bonita", "limit": 5 }),
+        )
+        .await;
+    assert!(cells["total"].as_u64().unwrap() > 0, "{cells}");
+
+    // The ground of a district: a prop of a street zone stands on it.
+    let zone = "gf2/miami/local/bonita/high/terrain06";
+    let started = Instant::now();
+    let objects = c
+        .json("level_objects", json!({ "stream": zone, "limit": 500 }))
+        .await;
+    let placed: Vec<&Value> = objects["objects"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|o| o["position"].is_array() && o["model"].is_string())
+        .collect();
+    assert!(!placed.is_empty(), "{objects}");
+    let prop = placed[placed.len() / 2];
+    let at: Vec<f64> = prop["position"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_f64().unwrap())
+        .collect();
+    let ground = c
+        .json(
+            "ground",
+            json!({ "streams": [zone], "point": [at[0], at[1] + 30.0, at[2]] }),
+        )
+        .await;
+    assert!(
+        ground["world"]["colliders"].as_u64().unwrap() > 0,
+        "{ground}"
+    );
+    let y = ground["ground"][1]
+        .as_f64()
+        .unwrap_or_else(|| panic!("{ground}"));
+    assert!(y < at[1] + 30.0 && y > at[1] - 60.0, "{ground}");
+    eprintln!(
+        "ground under {}: {y:.2} in {:?}",
+        prop["object"],
+        started.elapsed()
+    );
+    // A ray straight down gives the same ground.
+    let ray = c
+        .json(
+            "ground",
+            json!({
+                "streams": [zone],
+                "ray_origin": [at[0], at[1] + 30.0, at[2]],
+                "ray_direction": [0, -2, 0],
+            }),
+        )
+        .await;
+    let ray_y = ray["ground"][1].as_f64().unwrap_or_else(|| panic!("{ray}"));
+    assert!((ray_y - y).abs() < 0.05, "{ray} against {ground}");
+
+    // Lifted by 25 m and put down: the object comes back onto what is under it.
+    let object = prop["object"].as_str().unwrap();
+    let dropped = c
+        .json(
+            "move_object",
+            json!({ "object": object, "offset": [0.0, 25.0, 0.0], "on_ground": true }),
+        )
+        .await;
+    assert_eq!(dropped["changed"], true, "{dropped}");
+    let new_y = dropped["done"]["moved"][0]["new_position"][1]
+        .as_f64()
+        .unwrap();
+    assert!(new_y < at[1] + 20.0, "it came down: {dropped}");
+    // A new object on the ground at that point.
+    let added = c
+        .json(
+            "add_object",
+            json!({
+                "group": object.rsplit_once(':').unwrap().0,
+                "template": object,
+                "position": [at[0] + 2.0, at[1] + 40.0, at[2]],
+                "on_ground": true,
+            }),
+        )
+        .await;
+    assert_eq!(added["changed"], true, "{added}");
+
+    // A walk of a few metres over the collision: an answer either way, with the path.
+    let walk = c
+        .json(
+            "walk_route",
+            json!({
+                "streams": [zone],
+                "from": [at[0], y + 0.5, at[2]],
+                "to": [at[0] + 4.0, y + 0.5, at[2] + 3.0],
+            }),
+        )
+        .await;
+    assert!(
+        ["reached", "stuck", "fell", "timed_out"].contains(&walk["outcome"].as_str().unwrap()),
+        "{walk}"
+    );
+    assert!(walk["path"].as_array().unwrap().len() >= 2, "{walk}");
+    eprintln!(
+        "walk: {} after {} m",
+        walk["outcome"], walk["walked_metres"]
+    );
+
+    drop(c);
+    assert_eq!(stat_all(&dir), before, "the game folder is only read");
+}
+
+/// Stage 104: the cut-scene `igc16` is read and edited with the tools alone
+/// in a temporary workspace — the camera of two shots, an actor and the
+/// time of a subtitle — and a mod of it says that it carries the whole
+/// sound; the other shots and the game folder stay as they were.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_cut_scene_is_edited_through_the_server() {
+    let Some(dir) = game_dir() else {
+        return;
+    };
+    let before = stat_all(&dir);
+    let temp = tempfile::tempdir().unwrap();
+    let mut config = doctor_toolkit_mcp::Config::new(&dir);
+    config.bridge = None;
+    config.workspace = Some(temp.path().join("workspace"));
+    config.allow_edits = true;
+    let kit = doctor_toolkit_mcp::open(&config).unwrap();
+    let mut c = Client::start(kit);
+    c.initialize().await;
+    let stream =
+        "gf2/cuba/global/objectives/chapter60-mission08-killingcastro/cp_734/_734_igc_content";
+    let near = |v: &Value, expected: f64| (v.as_f64().unwrap() - expected).abs() < 2e-3;
+
+    let all = c.json("cutscenes", json!({})).await;
+    assert!(all["total"].as_u64().unwrap() >= 20, "{}", all["total"]);
+    assert!(all["shots"].as_u64().unwrap() >= 250, "{}", all["shots"]);
+    let scene = c.json("cutscenes", json!({ "stream": stream })).await;
+    assert_eq!(scene["cutscene"], "igc16", "{scene}");
+    assert_eq!(scene["shots"].as_array().unwrap().len(), 17);
+    let track = scene["audio"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| !a["subtitles"].as_array().unwrap().is_empty())
+        .expect("a sound track with subtitles")
+        .clone();
+    assert_eq!(track["subtitles"][0]["start_ms"], 5064, "{track}");
+    let at = |shot: &str| json!({ "stream": stream, "shot": shot, "time": 0.5 });
+    let s02 = c.json("cutscenes", at("igc16_s02")).await;
+    let camera = &s02["moment"]["camera"];
+    assert!(near(&camera["position"][1], 6.668), "{camera}");
+    assert!(near(&camera["focal_length"], 50.0), "{camera}");
+    let s03 = c.json("cutscenes", at("igc16_s03")).await;
+
+    c.json(
+        "cutscene_camera",
+        json!({ "stream": stream, "shot": "igc16_s01", "offset": [0.0, 1.5, 0.0], "focal_length": 35.0 }),
+    )
+    .await;
+    c.json(
+        "cutscene_camera",
+        json!({
+            "stream": stream, "shot": "igc16_s02", "offset": [0.0, 0.8, 1.5],
+            "turn": [-8.0, 0.0, 0.0], "focal_length": 28.0,
+        }),
+    )
+    .await;
+    c.json(
+        "cutscene_actor",
+        json!({
+            "stream": stream, "shot": "igc16_s02", "actor": "igc16_player_herc",
+            "offset": [-1.2, 0.0, 0.0],
+        }),
+    )
+    .await;
+    let retimed = c
+        .json(
+            "edit_subtitle",
+            json!({ "entry": track["entry"], "line": 0, "start_ms": 1500, "duration_ms": 6000 }),
+        )
+        .await;
+    assert!(
+        retimed["done"]["file_bytes"].as_u64().unwrap() > 10_000_000,
+        "the whole sound is the change: {retimed}"
+    );
+
+    let after = c.json("cutscenes", at("igc16_s02")).await;
+    let camera = &after["moment"]["camera"];
+    assert!(near(&camera["position"][1], 7.468), "{camera}");
+    assert!(near(&camera["position"][2], 7.307), "{camera}");
+    assert!(near(&camera["rotation"][0], -8.786), "{camera}");
+    assert!(near(&camera["focal_length"], 28.0), "{camera}");
+    let player = after["moment"]["actors"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["name"] == "igc16_player_herc")
+        .unwrap();
+    assert!(near(&player["position"][0], -269.733), "{player}");
+    assert_eq!(
+        c.json("cutscenes", at("igc16_s03")).await["moment"],
+        s03["moment"],
+        "the third shot is untouched"
+    );
+    let scene = c.json("cutscenes", json!({ "stream": stream })).await;
+    let line = &scene["audio"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["entry"] == track["entry"])
+        .unwrap()["subtitles"][0];
+    assert_eq!(line["start_ms"], 1500, "{line}");
+    assert_eq!(line["duration_ms"], 6000, "{line}");
+
+    let checked = c.json("validate", json!({})).await;
+    assert_eq!(checked["ok"], true, "{checked}");
+    let built = c.json("mod_build", json!({ "name": "Doctor igc16" })).await;
+    assert_eq!(built["resources"], 2, "{built}");
+    let notes = built["notes"].as_array().unwrap();
+    assert_eq!(notes.len(), 1, "{built}");
+    assert!(notes[0].as_str().unwrap().contains("whole"), "{built}");
+    assert_eq!(before, stat_all(&dir), "the game folder changed");
+}

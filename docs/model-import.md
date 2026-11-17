@@ -54,7 +54,17 @@ $T model-import "$GAME" STREAM 319 box.glb --new doctor_box --retarget 42
 показывает план (таблица частей, ресурсы, предупреждения) и предпросмотр
 нового меша на GPU с новыми материалами и текстурами. Переключатель
 «Replace the model» / «New model set» с именем и номерами ресурсов для
-перенаправления. **Record in workspace** записывает операцию.
+перенаправления. У нового набора — **Into stream** (этап 103): поток, куда
+он попадёт, — игры или новый поток рабочего пространства (кнопка «…»
+предлагает новые); пусто — поток образца. **Collision** — «as the model
+has» или новая коллизия Havok по импортируемой геометрии (`mesh`, `hull`,
+`box`), на которую направляется metamodel. Это параметры `stream` и
+`collision` инструмента `import_model` и `--to`, `--collision` команды
+`model-import` (`ImportPlan::put_into`, `ImportOptions::collision`; общая
+функция — `zone_ops::plan_model_import`). **Record in workspace** записывает
+операцию. Без рук:
+`DOCTOR_TOOLKIT_GUI_ZONE=import:file=,template=<поток>#<ресурс>,name=,stream=,collision=`
+(`docs/levels.md` §12).
 `DOCTOR_TOOLKIT_GUI_IMPORT=<file.glb>` открывает окно для выбранного
 ресурса (снимки экрана, `docs/viewers.md` §5).
 

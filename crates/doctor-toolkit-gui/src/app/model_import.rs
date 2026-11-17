@@ -25,6 +25,12 @@ pub(crate) struct ModelImport {
     as_new: bool,
     new_name: String,
     retarget: String,
+    /// The stream a new model set goes into (of the game or new); the
+    /// stream of the target when empty.
+    into: String,
+    /// New collision built from the imported geometry: `mesh`, `hull`,
+    /// `box`; none when empty.
+    collision: String,
     plan: Option<Result<model::ImportPlan, String>>,
     preview: Option<ModelPreview>,
     /// Counter that keeps preview meshes apart in the renderer cache.
@@ -214,8 +220,16 @@ impl BrowserApp {
                 .then(|| state.new_name.trim().to_owned()),
             retarget: retarget.unwrap_or_default(),
             format: None,
-            collision: None,
+            collision: match doctor_toolkit::zone_ops::parse_collision(Some(&state.collision)) {
+                Ok(kind) => kind,
+                Err(error) => {
+                    self.model_import.plan = Some(Err(error.to_string()));
+                    return;
+                }
+            },
         };
+        let into =
+            (state.as_new && !state.into.trim().is_empty()).then(|| state.into.trim().to_owned());
         if self.assets.is_none() {
             self.assets = Some(doctor_toolkit::game::GameAssets::new(game.clone(), &index));
         }
@@ -229,8 +243,15 @@ impl BrowserApp {
             .and_then(|gltf| {
                 let ws = self.workspace.as_ref().ok_or(tr("import.no_workspace"))?;
                 let assets = self.assets.as_mut().expect("created above");
-                model::plan(&game, ws, &index, assets, stream, resource, &gltf, &options)
-                    .map_err(|e| e.to_string())
+                let mut plan =
+                    model::plan(&game, ws, &index, assets, stream, resource, &gltf, &options)
+                        .map_err(|e| e.to_string())?;
+                if let Some(into) = &into {
+                    let into = doctor_toolkit::zone_ops::any_stream(&game, ws, into)
+                        .map_err(|e| e.to_string())?;
+                    plan.put_into(&game, ws, &into).map_err(|e| e.to_string())?;
+                }
+                Ok(plan)
             });
         self.model_import.preview = None;
         if let Ok(plan) = &result {
@@ -266,6 +287,7 @@ impl BrowserApp {
         let mut open = true;
         let mut replan = false;
         let mut record = false;
+        let new_streams = self.new_stream_names();
         egui::Window::new(tr("import.title"))
             .open(&mut open)
             .default_size([760.0, 720.0])
@@ -310,7 +332,53 @@ impl BrowserApp {
                     if state.new_name.trim().is_empty() {
                         ui.colored_label(Color32::YELLOW, tr("import.need_name"));
                     }
+                    ui.horizontal(|ui| {
+                        ui.label(tr("import.into"));
+                        replan |= ui
+                            .add(
+                                egui::TextEdit::singleline(&mut state.into)
+                                    .hint_text(tr("import.into_default"))
+                                    .desired_width(260.0),
+                            )
+                            .on_hover_text(tr("import.into_hint"))
+                            .lost_focus();
+                        if !new_streams.is_empty() {
+                            ui.menu_button("…", |ui| {
+                                for name in &new_streams {
+                                    if ui.button(name).clicked() {
+                                        state.into = name.clone();
+                                        replan = true;
+                                        ui.close();
+                                    }
+                                }
+                            });
+                        }
+                    });
                 }
+                ui.horizontal(|ui| {
+                    ui.label(tr("import.collision"));
+                    let label = |kind: &str| match kind {
+                        "mesh" => tr("import.collision_mesh"),
+                        "hull" => tr("import.collision_hull"),
+                        "box" => tr("import.collision_box"),
+                        _ => tr("import.collision_none"),
+                    };
+                    egui::ComboBox::from_id_salt("model_import_collision")
+                        .selected_text(label(&state.collision))
+                        .show_ui(ui, |ui| {
+                            for kind in ["", "mesh", "hull", "box"] {
+                                replan |= ui
+                                    .selectable_value(
+                                        &mut state.collision,
+                                        kind.to_owned(),
+                                        label(kind),
+                                    )
+                                    .changed();
+                            }
+                        })
+                        .response
+                        .on_hover_text(tr("import.collision_hint"));
+                });
                 ui.separator();
                 match &state.plan {
                     None => {

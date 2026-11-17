@@ -172,8 +172,63 @@ local function dt_emx(name)
   return name .. ".emx"
 end
 
+-- VariableGet gives a 32-bit integer object (userdata), not a Lua number.
 local function dt_get(name)
-  return VariableGet(FindVariable(name))
+  return Int32ToNumber(VariableGet(FindVariable(name)))
+end
+
+-- PlayEarsAudioStream finds a stream by its name as given, `.stx` included.
+function dt.stx(name)
+  name = tostring(name)
+  if string.find(string.lower(name), "%.stx$") then
+    return name
+  end
+  return name .. ".stx"
+end
+
+-- A sound or stream that was not found is the light userdata 0: true in Lua.
+function dt.ok(handle)
+  return handle ~= nil and handle ~= false and tostring(handle) ~= "userdata: 00000000"
+end
+
+-- An object by its GUID text; tostring of a reference that found nothing is nil.
+function dt.valid(object)
+  return object ~= nil and tostring(object) ~= nil
+end
+
+-- Group methods with an empty reference crash the game (0x00469F85).
+function dt.member(group, method, member)
+  local object = Base(member)
+  if dt.valid(object) then
+    group[method](group, object)
+  end
+end
+
+-- IsMember and Clear do nothing in the game: both are done with ForEachMember.
+function dt.is_member(group, member)
+  local guid, found = tostring(Base(member)), false
+  if guid ~= nil then
+    group:ForEachMember(function(m)
+      if tostring(m) == guid then
+        found = true
+      end
+    end)
+  end
+  return found
+end
+
+function dt.clear(group)
+  local members = {}
+  group:ForEachMember(function(m)
+    table.insert(members, m)
+  end)
+  for i = 1, table.getn(members) do
+    group:RemoveMember(members[i])
+  end
+end
+
+function dt.second(a, b)
+  return b
 end
 
 -- Game variables made here hold whole numbers: true and false become 1 and 0.
@@ -904,8 +959,8 @@ impl<'a> Compiler<'a> {
             "string.length" => format!("string.len({})", i("text")),
             "var.get" => format!("V.{}", self.param_str(id, "variable")),
             "engine.get" => format!("dt_get({})", i("name")),
-            "game.sim_time" => "(GetSimTime() / 1000)".into(),
-            "game.player_position" => "GetPlayerPosition()".into(),
+            "game.sim_time" => "(Int32ToNumber(GetSimTime()) / 1000)".into(),
+            "game.player_position" => "GetPlayerPosition(0)".into(),
             "game.position_xyz" => {
                 let axis = match pin {
                     "x" => 1,
@@ -925,11 +980,21 @@ impl<'a> Compiler<'a> {
             "game.vehicle_type" => "GetVehicleType()".into(),
             "game.platform" => "GetPlatform()".into(),
             "group.find" => format!("GroupManager:FindGroup({})", i("name")),
-            "group.count" => format!("({}):GetMemberCount()", i("group")),
+            "group.count" => format!("Int32ToNumber(({}):GetMemberCount())", i("group")),
             "group.contains" => {
                 let (g, m) = (i("group"), i("member"));
-                format!("({g}):IsMember({m})")
+                format!("dt.is_member({g}, {m})")
             }
+            "game.in_vehicle" => "dt.second(GetVehicleSpeed())".into(),
+            "game.vehicle_speed_delta" => "GetVehicleSpeedDelta()".into(),
+            "game.vehicle_acceleration" => "GetVehicleAcceleration()".into(),
+            "game.vehicle_skid" => "GetVehicleSkidEnergy()".into(),
+            "game.vehicle_health" => "GetVehicleHealth()".into(),
+            "object.from_guid" => format!("Base({})", i("guid")),
+            "object.valid" => format!("dt.valid({})", i("object")),
+            "object.guid" => format!("tostring({})", i("object")),
+            "audio.handle_valid" => format!("dt.ok({})", i("handle")),
+            "message.data_number" => format!("dt_axis({}, 1)", i("data")),
             _ => "nil".into(),
         }
     }
@@ -1154,7 +1219,7 @@ impl<'a> Compiler<'a> {
                 let name = if kind == "audio.play_emx" {
                     format!("dt_emx({name})")
                 } else {
-                    name
+                    format!("dt.stx({name})")
                 };
                 self.line(
                     ind,
@@ -1198,13 +1263,49 @@ impl<'a> Compiler<'a> {
                 } else {
                     "RemoveMember"
                 };
-                self.line(ind, id, &format!("{}:{f}({m})", receiver(&g)));
+                self.line(ind, id, &format!("dt.member({g}, \"{f}\", {m})"));
                 self.follow(ind, id, "then");
             }
             ("group.clear", _) => {
                 self.comment(ind, id, "");
                 let g = self.input(id, "group");
-                self.line(ind, id, &format!("{}:Clear()", receiver(&g)));
+                self.line(ind, id, &format!("dt.clear({g})"));
+                self.follow(ind, id, "then");
+            }
+            ("audio.prime_stream", _) => {
+                self.comment(ind, id, "");
+                let (name, vol) = (self.input(id, "stream"), self.input(id, "volume"));
+                self.line(
+                    ind,
+                    id,
+                    &format!(
+                        "{} = PrimeEarsAudioStream(dt.stx({name}), {vol})",
+                        slot(id, "handle")
+                    ),
+                );
+                self.follow(ind, id, "then");
+            }
+            ("audio.start_stream", _) => {
+                self.comment(ind, id, "");
+                let h = self.input(id, "handle");
+                self.line(ind, id, &format!("PlayEarsAudioStream({h})"));
+                self.follow(ind, id, "then");
+            }
+            ("audio.stream_stop_message", _) => {
+                self.comment(ind, id, "");
+                let (h, m) = (self.input(id, "handle"), self.input(id, "message"));
+                self.line(ind, id, &format!("SetEarsAudioStreamStopMessage({h}, {m})"));
+                self.follow(ind, id, "then");
+            }
+            ("audio.apply_mix" | "audio.remove_mix", _) => {
+                self.comment(ind, id, "");
+                let m = self.input(id, "mix");
+                let call = if kind == "audio.apply_mix" {
+                    format!("ApplyMix({m}, true)")
+                } else {
+                    format!("RemoveMix({m})")
+                };
+                self.line(ind, id, &call);
                 self.follow(ind, id, "then");
             }
             ("lua.call", _) => {

@@ -11,8 +11,8 @@
 //! [`ModelChoice::CloneWithCollision`] ([`clone_model_with_collision`]), which
 //! gives the clone a new `hkx` of its own built from its meshes.
 
-use crate::container::ustream::{Resource, Storage, StreamLayout};
-use crate::create::{self, CloneOptions, NewResource, Remap, UsedIds};
+use crate::container::ustream::Storage;
+use crate::create::{self, CloneOptions, Remap, UsedIds};
 use crate::game::{GameInstance, ResourceIndex};
 use crate::import::collision as new_collision;
 use crate::resource::hkx::collision::{CollisionKind, CollisionMesh};
@@ -446,19 +446,15 @@ pub fn clone_model_with_collision(
         .get(&header.ids)
         .map(|ids| ids[3])
         .ok_or_else(|| Error::InvalidArgument("the metamodel was not cloned".into()))?;
-    let before = match game.find_stream(target) {
-        Some(target_index) => {
-            place_for_clones(game, layout, at.stream, target_index, target, &clones)?
-        }
-        // A stream the workspace creates holds its resources in the order
-        // they were added, SimGroups last.
-        None if ws.new_stream(target).is_some() => None,
-        None => {
-            return Err(Error::InvalidArgument(format!(
-                "stream {target} is neither in the game nor new"
-            )));
-        }
-    };
+    if game.find_stream(target).is_none() && ws.new_stream(target).is_none() {
+        return Err(Error::InvalidArgument(format!(
+            "stream {target} is neither in the game nor new"
+        )));
+    }
+    // No place in a stream the workspace creates, after the sources in the
+    // same stream, else before the first SimGroup.
+    let last = clones.iter().filter_map(|c| c.source).max().unwrap_or(0);
+    let before = crate::zone_ops::place_for_clones(game, ws, at.stream, target, last)?;
     let clones: Vec<_> = extra.into_iter().chain(clones).collect();
     let additions: Vec<NewResourceEdit> = clones
         .iter()
@@ -482,50 +478,6 @@ pub fn clone_model_with_collision(
     drop(stream);
     ws.add_resources(game, &label, &additions)?;
     Ok((new_id, keys))
-}
-
-/// Where clones of resources of stream `source` go in the game stream
-/// `target_index`: after their sources in the same stream, else before the
-/// first SimGroup so that the targets come first. The place is a resource of
-/// the original stream: the game file may hold resources the workspace added
-/// and applied, and those cannot be places.
-fn place_for_clones(
-    game: &GameInstance,
-    layout: &StreamLayout,
-    source: usize,
-    target_index: usize,
-    target: &str,
-    clones: &[NewResource],
-) -> Result<Option<ResourceKey>> {
-    let original = {
-        let path = game.original_path(&game.streams()[target_index]);
-        let data = std::fs::read(&path).map_err(|e| Error::io(&path, e))?;
-        StreamLayout::parse(&data)?
-    };
-    let is_original = |r: &&Resource| {
-        ResourceKey::new(target, &r.header)
-            .find_in(&original)
-            .is_some()
-    };
-    let before = if target_index == source {
-        let last = clones.iter().filter_map(|c| c.source).max().unwrap_or(0);
-        layout
-            .resources
-            .iter()
-            .skip(last + 1)
-            .find(|r| is_original(r))
-            .map(|r| ResourceKey::new(target, &r.header))
-    } else {
-        let target_stream = game.open_stream(target_index)?;
-        target_stream
-            .layout()
-            .resources
-            .iter()
-            .filter(|r| r.header.type_id == TYPE_SIMGROUP)
-            .find(|r| is_original(r))
-            .map(|r| ResourceKey::new(target, &r.header))
-    };
-    Ok(before)
 }
 
 /// What [`add_group`] made.
@@ -668,4 +620,60 @@ pub fn add_group(
         guids,
         rewired,
     })
+}
+
+/// Adds an object of class `class` with the empty packets of the schema's
+/// layout to the SimGroup at `at` (a game SimGroup or one the workspace
+/// added), optionally placed at `position`. One undoable operation. Returns
+/// the index and GUID of the new object.
+pub fn add_empty_at(
+    game: &GameInstance,
+    index: &crate::game::ResourceIndex,
+    ws: &mut Workspace,
+    at: &GroupAt,
+    class: u32,
+    position: Option<[f32; 3]>,
+    taken: &dyn Fn(&Guid) -> bool,
+) -> Result<(usize, Guid)> {
+    let schema = crate::logic_graph::LogicSchema::gf2();
+    let layout = schema.layout(class).ok_or_else(|| {
+        Error::InvalidArgument(format!("the schema has no layout of class {class:08x}"))
+    })?;
+    let name = group_stream(game, ws, at)?;
+    let mut g = current_group_at(game, ws, at)?;
+    let guid = new_guid(&g, &format!("{name}/logic{}", g.objects.len()), taken);
+    let object = g.push_object(class, guid, layout)?;
+    if let Some(p) = position {
+        let mut m = [
+            [1.0, 0.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0, 0.0],
+            [0.0, 0.0, 0.0, 1.0],
+        ];
+        m[3][..3].copy_from_slice(&p);
+        g.set_transform(object, m).map_err(|e| {
+            Error::InvalidArgument(format!(
+                "objects of this class are not placed in the world ({e}); leave `position` out"
+            ))
+        })?;
+    }
+    let class_name = schema
+        .class_name(class)
+        .map_or_else(|| format!("{class:08x}"), str::to_owned);
+    let label = format!("Add logic node {object} ({class_name}) to {name}");
+    if let GroupAt::Game(group) = at
+        && let Some(problem) = crate::level::compat::check_resource_data(
+            game,
+            index,
+            Some(ws),
+            (group.stream, group.resource),
+            &g.encode(),
+        )?
+        .into_iter()
+        .next()
+    {
+        return Err(Error::InvalidArgument(problem));
+    }
+    set_group(game, ws, at, &g, &label)?;
+    Ok((object, guid))
 }

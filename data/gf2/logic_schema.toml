@@ -552,8 +552,11 @@ attrs = [
 [packet.AddPlayerFamilyMember]
 hash = "57737500"
 attrs = [
-  { i = 0, pin = "in", conf = "exe", kind = "string" },
-  { i = 1, pin = "link", conf = "data", kind = "guid" },
+  { i = 0, pin = "in", conf = "exe", name = "add", name_conf = "exe", kind = "string" },
+  { i = 1, pin = "link", conf = "data", name = "sim_npc", name_conf = "exe", kind = "guid" },
+  { i = 2, pin = "param", name = "rank", name_conf = "exe", kind = "int" },
+  { i = 3, pin = "param", name = "specialties", name_conf = "exe", kind = "int" },
+  { i = 4, pin = "param", name = "flags", name_conf = "exe" },
 ]
 
 [packet.AmbientAudioConfiguration]
@@ -576,27 +579,28 @@ attrs = [
 hash = "adc23d35"
 attrs = [
   { i = 0, pin = "in", conf = "exe", kind = "string" },
-  { i = 1, pin = "in", conf = "data", kind = "string" },
+  { i = 1, pin = "in", conf = "exe", kind = "string" },
   { i = 2, pin = "link", conf = "data", kind = "guid" },
 ]
 
 [packet.AmbientAudioSelection]
 hash = "0d833dae"
 attrs = [
-  { i = 0, pin = "link", conf = "data", kind = "guid" },
-  { i = 1, pin = "out", conf = "exe", kind = "string" },
+  { i = 0, pin = "link", conf = "data", name = "configuration", name_conf = "exe", kind = "guid" },
+  { i = 1, pin = "out", conf = "exe", name = "on_selected", name_conf = "exe", kind = "string" },
+  { i = 2, pin = "out", conf = "exe", name = "on_deselected", name_conf = "exe" },
 ]
 
 [packet.AndEventGate]
 hash = "7be194ee"
 attrs = [
-  { i = 0, pin = "in", conf = "data", name = "condition_1", name_conf = "data", kind = "string" },
-  { i = 1, pin = "in", conf = "data", name = "condition_2", name_conf = "data", kind = "string" },
-  { i = 2, pin = "in", conf = "data", name = "condition_3", name_conf = "data", kind = "string" },
-  { i = 3, pin = "in", conf = "data", name = "condition_4", name_conf = "data", kind = "string" },
-  { i = 4, pin = "out", conf = "exe", name = "send", name_conf = "data", delay = 5, kind = "string" },
-  { i = 5, pin = "param", conf = "exe", name = "delay", name_conf = "data", kind = "float" },
-  { i = 6, pin = "in", conf = "exe", name = "reset", name_conf = "data", kind = "string" },
+  { i = 0, pin = "in", conf = "exe", name = "condition_1", name_conf = "exe", kind = "string" },
+  { i = 1, pin = "in", conf = "exe", name = "condition_2", name_conf = "exe", kind = "string" },
+  { i = 2, pin = "in", conf = "exe", name = "condition_3", name_conf = "exe", kind = "string" },
+  { i = 3, pin = "in", conf = "exe", name = "condition_4", name_conf = "exe", kind = "string" },
+  { i = 4, pin = "out", conf = "exe", name = "send", name_conf = "exe", delay = 5, kind = "string" },
+  { i = 5, pin = "param", conf = "exe", name = "delay", name_conf = "exe", kind = "float" },
+  { i = 6, pin = "in", conf = "exe", name = "reset", name_conf = "exe", kind = "string" },
 ]
 
 [packet.AnimateLight]
@@ -621,13 +625,15 @@ attrs = [
 [packet.AttributeRelay]
 hash = "5f43e2b5"
 attrs = [
-  { i = 2, pin = "link", conf = "data", kind = "guid" },
+  { i = 0, pin = "param", name = "flags", name_conf = "exe", kind = "int" },
+  { i = 1, pin = "param", name = "target_group", name_conf = "exe", kind = "string" },
+  { i = 2, pin = "link", conf = "data", name = "target", name_conf = "exe", kind = "guid" },
 ]
 
 [packet.AutoSave]
 hash = "41b65f6c"
 attrs = [
-  { i = 0, pin = "in", conf = "exe", kind = "string" },
+  { i = 0, pin = "in", conf = "exe", name = "save", name_conf = "exe", kind = "string" },
 ]
 
 [packet.Bank]
@@ -691,7 +697,7 @@ attrs = [
 [packet.CSAPhone]
 hash = "8136ec1d"
 attrs = [
-  { i = 1, pin = "in", conf = "data", kind = "string" },
+  { i = 1, pin = "in", conf = "exe", kind = "string" },
   { i = 3, pin = "link", conf = "data", kind = "guid" },
   { i = 13, pin = "link", conf = "data", kind = "guid" },
   { i = 15, pin = "asset", conf = "data", kind = "guid" },
@@ -729,9 +735,9 @@ attrs = [
   { i = 0, pin = "in", conf = "exe", kind = "string" },
   { i = 1, pin = "in", conf = "exe", kind = "string" },
   { i = 2, pin = "link", conf = "data", kind = "guid" },
-  { i = 4, pin = "in", conf = "data", kind = "string" },
-  { i = 6, pin = "out", conf = "data", kind = "string" },
-  { i = 8, pin = "out", conf = "data", kind = "string" },
+  { i = 4, pin = "out", conf = "exe", kind = "string" },
+  { i = 6, pin = "out", conf = "exe", kind = "string" },
+  { i = 8, pin = "out", conf = "exe", kind = "string" },
 ]
 
 [packet.ChangeCitySettings]
@@ -746,8 +752,8 @@ attrs = [
   { i = 0, pin = "in", conf = "exe", name = "apply", name_conf = "data", kind = "string" },
   { i = 1, pin = "link", conf = "data", name = "npc", name_conf = "guess", kind = "guid" },
   { i = 3, pin = "param", conf = "exe", name = "dialog", name_conf = "data", kind = "string" },
-  { i = 4, pin = "in", conf = "data", kind = "string" },
-  { i = 7, pin = "out", conf = "data", kind = "string" },
+  { i = 4, pin = "out", conf = "exe", kind = "string" },
+  { i = 7, pin = "out", conf = "exe", kind = "string" },
 ]
 
 [packet.ChangeFamilySettings]
@@ -760,15 +766,35 @@ attrs = [
 [packet.ChangeNPCSettings]
 hash = "a0294054"
 attrs = [
-  { i = 0, pin = "in", conf = "exe", name = "apply", name_conf = "data", kind = "string" },
-  { i = 1, pin = "in", conf = "exe", name = "apply_2", name_conf = "guess", kind = "string" },
-  { i = 2, pin = "link", conf = "data", name = "npc", name_conf = "guess", kind = "guid" },
-  { i = 3, pin = "out", conf = "data", kind = "string" },
-  { i = 6, pin = "out", conf = "data", kind = "string" },
-  { i = 21, pin = "asset", conf = "data", kind = "guid" },
-  { i = 22, pin = "asset", conf = "data", kind = "guid" },
-  { i = 23, pin = "asset", conf = "data", kind = "guid" },
-  { i = 24, pin = "link", conf = "data", kind = "guid" },
+  { i = 0, pin = "in", conf = "exe", name = "apply", name_conf = "exe", kind = "string" },
+  { i = 1, pin = "in", conf = "exe", name = "restore", name_conf = "exe", kind = "string" },
+  { i = 2, pin = "link", conf = "data", name = "npc", name_conf = "exe", kind = "guid" },
+  { i = 3, pin = "out", conf = "exe", name = "on_f2f_success", name_conf = "exe", kind = "string" },
+  { i = 4, pin = "out", conf = "exe", name = "on_f2f_fail_intimidate", name_conf = "exe", kind = "string" },
+  { i = 5, pin = "out", conf = "exe", name = "on_f2f_fail_negotiate", name_conf = "exe", kind = "string" },
+  { i = 6, pin = "out", conf = "exe", name = "on_f2f_started", name_conf = "exe", kind = "string" },
+  { i = 7, pin = "out", conf = "exe", name = "on_f2f_complete", name_conf = "guess", kind = "string" },
+  { i = 8, pin = "out", conf = "exe", name = "on_event_20d0", name_conf = "guess", kind = "string" },
+  { i = 9, pin = "out", conf = "exe", name = "on_event_20d8", name_conf = "guess", kind = "string" },
+  { i = 10, pin = "out", conf = "exe", name = "on_gun_damage", name_conf = "guess", kind = "string" },
+  { i = 11, pin = "out", conf = "exe", name = "on_non_gun_damage", name_conf = "guess", kind = "string" },
+  { i = 12, pin = "out", conf = "exe", name = "on_first_time_player_seen", name_conf = "guess", kind = "string" },
+  { i = 13, pin = "out", conf = "exe", name = "on_event_20f0", name_conf = "guess" },
+  { i = 14, pin = "out", conf = "exe", name = "on_event_20f8", name_conf = "guess" },
+  { i = 15, pin = "out", conf = "exe", name = "on_death", name_conf = "guess", kind = "string" },
+  { i = 16, pin = "out", conf = "exe", name = "on_deleted", name_conf = "guess", kind = "string" },
+  { i = 17, pin = "out", conf = "exe", name = "on_stunned", name_conf = "guess", kind = "string" },
+  { i = 18, pin = "out", conf = "exe", name = "on_grabbed", name_conf = "guess", kind = "string" },
+  { i = 19, pin = "out", conf = "exe", name = "on_to_knees", name_conf = "guess", kind = "string" },
+  { i = 20, pin = "param", name = "chatter_0", name_conf = "guess" },
+  { i = 21, pin = "asset", conf = "data", name = "chatter_1", name_conf = "guess", kind = "guid" },
+  { i = 22, pin = "asset", conf = "data", name = "chatter_2", name_conf = "guess", kind = "guid" },
+  { i = 23, pin = "asset", conf = "data", name = "chatter_3", name_conf = "guess", kind = "guid" },
+  { i = 24, pin = "link", conf = "data", name = "job_chatter_files", name_conf = "exe", kind = "guid" },
+  { i = 25, pin = "param", name = "flags", name_conf = "exe" },
+  { i = 26, pin = "param", name = "mask_index", name_conf = "guess", kind = "int" },
+  { i = 27, pin = "param", name = "dialog_file", name_conf = "exe", kind = "string" },
+  { i = 28, pin = "param", name = "mode", name_conf = "guess", kind = "int" },
 ]
 
 [packet.ChangePersistentBuildingSettings]
@@ -825,6 +851,7 @@ attrs = [
   { i = 0, pin = "param", conf = "exe", name = "title", name_conf = "data", kind = "string" },
   { i = 1, pin = "param", conf = "exe", name = "number", name_conf = "data", kind = "int" },
   { i = 2, pin = "param", conf = "exe", name = "chapter", name_conf = "data", kind = "string" },
+  { i = 3, pin = "param", conf = "exe", name = "chapter_number", name_conf = "data", kind = "int" },
   { i = 5, pin = "link", conf = "data", kind = "guid" },
   { i = 7, pin = "in", conf = "exe", name = "load", name_conf = "data", kind = "string" },
   { i = 8, pin = "out", conf = "exe", name = "on_loaded", name_conf = "data", kind = "string" },
@@ -833,11 +860,14 @@ attrs = [
   { i = 11, pin = "link", conf = "data", kind = "guid" },
   { i = 12, pin = "link", conf = "data", kind = "guid" },
   { i = 13, pin = "link", conf = "data", kind = "guid" },
+  { i = 14, pin = "param", conf = "exe", name = "save_as_number", name_conf = "exe", kind = "int" },
 ]
 
 [packet.CheckpointFailure]
 hash = "d1460da2"
 attrs = [
+  { i = 0, pin = "param", conf = "exe", name = "reason", name_conf = "exe", kind = "hash" },
+  { i = 1, pin = "param", conf = "exe", name = "reason_2", name_conf = "exe", kind = "hash" },
   { i = 2, pin = "link", conf = "data", kind = "guid" },
   { i = 3, pin = "in", conf = "exe", name = "fail", name_conf = "data", kind = "string" },
 ]
@@ -865,8 +895,9 @@ attrs = [
 [packet.CombatRelay]
 hash = "e2d45fbd"
 attrs = [
-  { i = 0, pin = "in", conf = "data", kind = "string" },
-  { i = 1, pin = "link", conf = "data", kind = "guid" },
+  { i = 0, pin = "in", conf = "exe", name = "attack", name_conf = "exe", kind = "string" },
+  { i = 1, pin = "link", conf = "data", name = "enemy", name_conf = "exe", kind = "guid" },
+  { i = 2, pin = "param", name = "flags", name_conf = "exe", kind = "int" },
 ]
 
 [packet.CommonNPC]
@@ -922,7 +953,27 @@ attrs = [
 [packet.Destructible]
 hash = "0a7039c8"
 attrs = [
-  { i = 11, pin = "asset", conf = "data", kind = "guid" },
+  { i = 0, pin = "param", name = "destroy_on_death", name_conf = "exe", kind = "int" },
+  { i = 1, pin = "param", name = "target_type", name_conf = "exe", kind = "int" },
+  { i = 2, pin = "param", name = "targeting_range", name_conf = "exe", kind = "float" },
+  { i = 3, pin = "param", name = "fade_on_death", name_conf = "exe", kind = "int" },
+  { i = 4, pin = "param", name = "venue_id", name_conf = "exe", kind = "int" },
+  { i = 5, pin = "param", name = "destroy_metamodel_on_death", name_conf = "exe", kind = "int" },
+  { i = 6, pin = "param", name = "value_190", name_conf = "guess", kind = "float" },
+  { i = 7, pin = "param", name = "throwable_flags", name_conf = "exe", kind = "int" },
+  { i = 8, pin = "param", name = "guid_1b4", name_conf = "guess" },
+  { i = 9, pin = "param", name = "guid_1c4", name_conf = "guess" },
+  { i = 10, pin = "param", name = "bounce_impact_type", name_conf = "exe", kind = "string" },
+  { i = 11, pin = "asset", conf = "data", name = "bounce_vfx_asset", name_conf = "exe", kind = "guid" },
+  { i = 12, pin = "param", name = "value_1ec", name_conf = "guess", kind = "float" },
+  { i = 13, pin = "param", name = "impact_damage", name_conf = "guess", kind = "float" },
+  { i = 14, pin = "param", name = "value_1f0", name_conf = "guess", kind = "float" },
+  { i = 15, pin = "param", name = "angular_velocity_mult", name_conf = "guess", kind = "float" },
+  { i = 16, pin = "param", name = "translation_x", name_conf = "exe", kind = "float" },
+  { i = 17, pin = "param", name = "translation_y", name_conf = "exe", kind = "float" },
+  { i = 18, pin = "param", name = "translation_z", name_conf = "exe", kind = "float" },
+  { i = 19, pin = "param", name = "targeting_offset", name_conf = "guess", kind = "vec3" },
+  { i = 20, pin = "param", name = "value_208", name_conf = "guess" },
 ]
 
 [packet.DonControlGadget]
@@ -940,16 +991,30 @@ attrs = [
 [packet.Door]
 hash = "63c15f4e"
 attrs = [
-  { i = 11, pin = "in", conf = "exe", name = "open", name_conf = "data", kind = "string" },
+  { i = 0, pin = "param", name = "auto_close_time", name_conf = "exe", kind = "float" },
+  { i = 1, pin = "param", name = "door_speed", name_conf = "exe", kind = "float" },
+  { i = 2, pin = "param", name = "forward_hinge_offset", name_conf = "exe", kind = "float" },
+  { i = 3, pin = "param", name = "backward_hinge_offset", name_conf = "exe", kind = "float" },
+  { i = 4, pin = "param", name = "use_custom_open_angles", name_conf = "exe", kind = "int" },
+  { i = 5, pin = "param", name = "open_forward_angle", name_conf = "exe", kind = "float" },
+  { i = 6, pin = "param", name = "open_backward_angle", name_conf = "exe", kind = "float" },
+  { i = 7, pin = "param", name = "slide_distance", name_conf = "exe", kind = "float" },
+  { i = 8, pin = "param", name = "door_flags", name_conf = "exe", kind = "int" },
+  { i = 9, pin = "param", name = "venue_id", name_conf = "exe", kind = "int" },
+  { i = 10, pin = "param", name = "door_type", name_conf = "exe", kind = "int" },
+  { i = 11, pin = "in", conf = "exe", name = "open", name_conf = "exe", kind = "string" },
   { i = 12, pin = "in", conf = "exe", name = "open_2", name_conf = "guess", kind = "string" },
-  { i = 13, pin = "in", conf = "exe", name = "close", name_conf = "data", kind = "string" },
-  { i = 14, pin = "in", conf = "exe", name = "lock", name_conf = "data", kind = "string" },
-  { i = 15, pin = "in", conf = "exe", name = "unlock", name_conf = "data", kind = "string" },
-  { i = 16, pin = "link", conf = "data", kind = "guid" },
-  { i = 18, pin = "out", conf = "exe", name = "on_opened", name_conf = "data", kind = "string" },
-  { i = 19, pin = "asset", conf = "data", kind = "guid" },
-  { i = 20, pin = "asset", conf = "data", kind = "guid" },
-  { i = 21, pin = "asset", conf = "data", kind = "guid" },
+  { i = 13, pin = "in", conf = "exe", name = "close", name_conf = "exe", kind = "string" },
+  { i = 14, pin = "in", conf = "exe", name = "lock", name_conf = "exe", kind = "string" },
+  { i = 15, pin = "in", conf = "exe", name = "unlock", name_conf = "exe", kind = "string" },
+  { i = 16, pin = "link", conf = "data", name = "paired_door", name_conf = "exe", kind = "guid" },
+  { i = 17, pin = "param", name = "flag_23", name_conf = "guess", kind = "int" },
+  { i = 18, pin = "out", conf = "exe", name = "on_opened", name_conf = "exe", kind = "string" },
+  { i = 19, pin = "asset", conf = "data", name = "open_audio", name_conf = "guess", kind = "guid" },
+  { i = 20, pin = "asset", conf = "data", name = "close_audio", name_conf = "guess", kind = "guid" },
+  { i = 21, pin = "asset", conf = "data", name = "locked_audio", name_conf = "exe", kind = "guid" },
+  { i = 22, pin = "param", name = "guid_380", name_conf = "guess" },
+  { i = 23, pin = "param", name = "interior_stream", name_conf = "exe", kind = "guid" },
 ]
 
 [packet.DynamicDebrisManager]
@@ -1019,19 +1084,24 @@ attrs = [
 [packet.EnableDisableStreams]
 hash = "585bca8e"
 attrs = [
-  { i = 0, pin = "in", conf = "exe", name = "activate", name_conf = "guess", kind = "string" },
-  { i = 1, pin = "in", conf = "exe", name = "deactivate", name_conf = "guess", kind = "string" },
+  { i = 0, pin = "in", conf = "exe", name = "activate", name_conf = "exe", kind = "string" },
+  { i = 1, pin = "in", conf = "exe", name = "deactivate", name_conf = "exe", kind = "string" },
+  { i = 2, pin = "param", name = "enable_stream_0", name_conf = "exe", kind = "hash" },
+  { i = 7, pin = "param", name = "disable_stream_0", name_conf = "exe", kind = "hash" },
+  { i = 17, pin = "param", name = "flags", name_conf = "exe", kind = "int" },
+  { i = 18, pin = "param", name = "priority", name_conf = "exe" },
 ]
 
 [packet.EnterExitTrigger]
 hash = "c8c5d222"
 attrs = [
-  { i = 0, pin = "out", conf = "exe", name = "on_enter", name_conf = "data", kind = "string" },
-  { i = 1, pin = "out", conf = "exe", name = "on_exit", name_conf = "data", kind = "string" },
-  { i = 2, pin = "out", conf = "exe", name = "on_inside", name_conf = "guess", kind = "string" },
-  { i = 3, pin = "param", conf = "exe", name = "delay", name_conf = "guess", kind = "float" },
-  { i = 4, pin = "in", conf = "exe", name = "enable", name_conf = "data", kind = "string" },
-  { i = 5, pin = "in", conf = "exe", name = "disable", name_conf = "data", kind = "string" },
+  { i = 0, pin = "out", conf = "exe", name = "on_enter", name_conf = "exe", kind = "string" },
+  { i = 1, pin = "out", conf = "exe", name = "on_exit", name_conf = "exe", kind = "string" },
+  { i = 2, pin = "out", conf = "exe", name = "on_inside", name_conf = "exe", kind = "string" },
+  { i = 3, pin = "param", conf = "exe", name = "inside_interval", name_conf = "exe", kind = "float" },
+  { i = 4, pin = "in", conf = "exe", name = "enable", name_conf = "exe", kind = "string" },
+  { i = 5, pin = "in", conf = "exe", name = "disable", name_conf = "exe", kind = "string" },
+  { i = 6, pin = "param", name = "flags", name_conf = "exe", kind = "int" },
 ]
 
 [packet.Entity]
@@ -1050,7 +1120,7 @@ attrs = [
 [packet.EventAdaptor]
 hash = "2752414b"
 attrs = [
-  { i = 0, pin = "in", conf = "exe", kind = "string" },
+  { i = 0, pin = "in", conf = "exe", name = "event", name_conf = "exe", kind = "string" },
 ]
 
 [packet.ExecuteScoreEvent]
@@ -1063,14 +1133,20 @@ attrs = [
 [packet.ExecuteVFX]
 hash = "92f62833"
 attrs = [
-  { i = 0, pin = "in", conf = "exe", name = "play", name_conf = "data", kind = "string" },
-  { i = 1, pin = "in", conf = "exe", name = "stop", name_conf = "data", kind = "string" },
-  { i = 2, pin = "in", conf = "exe", kind = "string" },
-  { i = 3, pin = "in", conf = "exe", kind = "string" },
-  { i = 4, pin = "in", conf = "exe", kind = "string" },
-  { i = 5, pin = "in", conf = "exe", kind = "string" },
-  { i = 7, pin = "asset", conf = "data", name = "vfx", name_conf = "data", kind = "guid" },
-  { i = 10, pin = "link", conf = "data", kind = "guid" },
+  { i = 0, pin = "in", conf = "exe", name = "play", name_conf = "exe", kind = "string" },
+  { i = 1, pin = "in", conf = "exe", name = "stop", name_conf = "exe", kind = "string" },
+  { i = 2, pin = "in", conf = "exe", name = "show", name_conf = "exe", kind = "string" },
+  { i = 3, pin = "in", conf = "exe", name = "hide", name_conf = "exe", kind = "string" },
+  { i = 4, pin = "in", conf = "exe", name = "shadow_on", name_conf = "exe", kind = "string" },
+  { i = 5, pin = "in", conf = "exe", name = "shadow_off", name_conf = "exe", kind = "string" },
+  { i = 6, pin = "param", name = "vfx_alt", name_conf = "exe" },
+  { i = 7, pin = "asset", conf = "data", name = "vfx", name_conf = "exe", kind = "guid" },
+  { i = 8, pin = "param", name = "flags", name_conf = "exe", kind = "int" },
+  { i = 9, pin = "param", name = "param_f8", name_conf = "guess" },
+  { i = 10, pin = "link", conf = "data", name = "attach_to", name_conf = "exe", kind = "guid" },
+  { i = 11, pin = "param", name = "attach_point_alt", name_conf = "exe" },
+  { i = 12, pin = "param", name = "attach_point", name_conf = "guess", kind = "string" },
+  { i = 13, pin = "param", name = "offset", name_conf = "exe" },
 ]
 
 [packet.FadeScreenFx]
@@ -1098,9 +1174,15 @@ attrs = [
 [packet.FilteredNpcRequester]
 hash = "91f69a72"
 attrs = [
-  { i = 0, pin = "in", conf = "exe", kind = "string" },
-  { i = 6, pin = "link", conf = "data", kind = "guid" },
-  { i = 7, pin = "link", conf = "data", kind = "guid" },
+  { i = 0, pin = "in", conf = "exe", name = "request", name_conf = "exe", kind = "string" },
+  { i = 1, pin = "param", name = "chance_percent", name_conf = "exe", kind = "int" },
+  { i = 2, pin = "param", name = "busy_count_min", name_conf = "exe", kind = "int" },
+  { i = 3, pin = "param", name = "busy_count_max", name_conf = "exe", kind = "int" },
+  { i = 4, pin = "param", name = "idle_count_min", name_conf = "exe", kind = "int" },
+  { i = 5, pin = "param", name = "idle_count_max", name_conf = "exe", kind = "int" },
+  { i = 6, pin = "link", conf = "data", name = "genome_filter_busy", name_conf = "exe", kind = "guid" },
+  { i = 7, pin = "link", conf = "data", name = "genome_filter_idle", name_conf = "exe", kind = "guid" },
+  { i = 8, pin = "param", name = "flags", name_conf = "exe", kind = "int" },
 ]
 
 [packet.FixedCameraInfo]
@@ -1113,7 +1195,7 @@ attrs = [
 [packet.ForwardSender]
 hash = "81b9523a"
 attrs = [
-  { i = 0, pin = "in", conf = "data", name = "trigger", name_conf = "data", kind = "string" },
+  { i = 0, pin = "in", conf = "exe", name = "trigger", name_conf = "data", kind = "string" },
   { i = 1, pin = "out", conf = "exe", name = "send", name_conf = "data", kind = "string" },
   { i = 2, pin = "out", conf = "exe", name = "send_2", name_conf = "guess", kind = "string" },
 ]
@@ -1121,18 +1203,21 @@ attrs = [
 [packet.FuncSpawn]
 hash = "4b590617"
 attrs = [
-  { i = 0, pin = "in", conf = "exe", name = "spawn", name_conf = "data", kind = "string" },
-  { i = 1, pin = "out", conf = "exe", name = "on_spawned", name_conf = "data", kind = "string" },
-  { i = 2, pin = "link", conf = "data", name = "template", name_conf = "guess", kind = "guid" },
+  { i = 0, pin = "in", conf = "exe", name = "spawn", name_conf = "exe", kind = "string" },
+  { i = 1, pin = "out", conf = "exe", name = "on_spawned", name_conf = "exe", kind = "string" },
+  { i = 2, pin = "link", conf = "data", name = "template", name_conf = "exe", kind = "guid" },
+  { i = 3, pin = "param", name = "place_at", name_conf = "exe" },
+  { i = 4, pin = "param", name = "flags", name_conf = "exe", kind = "int" },
+  { i = 5, pin = "param", name = "unknown_5", name_conf = "guess", kind = "int" },
 ]
 
 [packet.GangsterNpcRequester]
 hash = "b965931c"
 attrs = [
-  { i = 7, pin = "out", conf = "data", kind = "string" },
-  { i = 9, pin = "out", conf = "data", kind = "string" },
-  { i = 11, pin = "out", conf = "data", kind = "string" },
-  { i = 13, pin = "out", conf = "data", kind = "string" },
+  { i = 7, pin = "in", conf = "exe", kind = "string" },
+  { i = 9, pin = "in", conf = "exe", kind = "string" },
+  { i = 11, pin = "in", conf = "exe", kind = "string" },
+  { i = 13, pin = "in", conf = "exe", kind = "string" },
 ]
 
 [packet.GenericCSA]
@@ -1142,14 +1227,40 @@ attrs = [
   { i = 6, pin = "asset", conf = "data", kind = "guid" },
   { i = 7, pin = "in", conf = "exe", kind = "string" },
   { i = 8, pin = "in", conf = "exe", kind = "string" },
-  { i = 9, pin = "in", conf = "data", kind = "string" },
+  { i = 9, pin = "out", conf = "exe", kind = "string" },
+]
+
+[packet.GenomeFilter]
+hash = "f550a64f"
+attrs = [
+  { i = 0, pin = "param", name = "field_0", name_conf = "guess", kind = "int" },
+  { i = 1, pin = "param", name = "field_1", name_conf = "guess", kind = "int" },
+  { i = 2, pin = "param", name = "field_2", name_conf = "guess", kind = "int" },
+  { i = 3, pin = "param", name = "field_3", name_conf = "guess", kind = "hash" },
+  { i = 4, pin = "param", name = "field_4", name_conf = "guess", kind = "hash" },
+  { i = 5, pin = "param", name = "field_5", name_conf = "guess", kind = "hash" },
+  { i = 6, pin = "param", name = "field_6", name_conf = "guess", kind = "hash" },
+  { i = 7, pin = "param", name = "field_7", name_conf = "guess", kind = "hash" },
+  { i = 8, pin = "param", name = "field_8", name_conf = "guess", kind = "float" },
+  { i = 9, pin = "param", name = "field_9", name_conf = "guess", kind = "int" },
+  { i = 10, pin = "param", name = "field_10", name_conf = "guess", kind = "int" },
+  { i = 11, pin = "param", name = "byte_11", name_conf = "guess", kind = "int" },
+  { i = 12, pin = "param", name = "byte_12", name_conf = "guess", kind = "int" },
+  { i = 13, pin = "param", name = "byte_13", name_conf = "guess", kind = "int" },
+  { i = 14, pin = "param", name = "byte_14", name_conf = "guess", kind = "int" },
+  { i = 16, pin = "param", name = "field_16", name_conf = "guess" },
+  { i = 17, pin = "param", name = "field_17", name_conf = "guess" },
+  { i = 18, pin = "param", name = "field_18", name_conf = "guess" },
+  { i = 19, pin = "param", name = "field_19", name_conf = "guess" },
 ]
 
 [packet.GiveItemRelay]
 hash = "26277e4d"
 attrs = [
-  { i = 0, pin = "in", conf = "exe", name = "give", name_conf = "data", kind = "string" },
-  { i = 1, pin = "link", conf = "data", name = "item", name_conf = "guess", kind = "guid" },
+  { i = 0, pin = "in", conf = "exe", name = "give", name_conf = "exe", kind = "string" },
+  { i = 1, pin = "link", conf = "data", name = "item", name_conf = "exe", kind = "guid" },
+  { i = 2, pin = "param", name = "count", name_conf = "exe", kind = "int" },
+  { i = 3, pin = "param", name = "flags", name_conf = "exe", kind = "int" },
 ]
 
 [packet.GlowBonus]
@@ -1162,7 +1273,10 @@ attrs = [
 [packet.GuardRelay]
 hash = "76d6d5cc"
 attrs = [
-  { i = 2, pin = "in", conf = "data", kind = "string" },
+  { i = 0, pin = "param", name = "radius", name_conf = "guess", kind = "float" },
+  { i = 1, pin = "param", name = "radius_2", name_conf = "guess", kind = "float" },
+  { i = 2, pin = "in", conf = "exe", name = "guard", name_conf = "exe", kind = "string" },
+  { i = 3, pin = "param", name = "flags", name_conf = "exe", kind = "int" },
 ]
 
 [packet.Gun]
@@ -1185,7 +1299,7 @@ attrs = [
 hash = "fd4a5a3c"
 attrs = [
   { i = 0, pin = "link", conf = "data", kind = "guid" },
-  { i = 1, pin = "in", conf = "data", kind = "string" },
+  { i = 1, pin = "in", conf = "exe", kind = "string" },
 ]
 
 [packet.HitMission]
@@ -1207,10 +1321,13 @@ attrs = [
 [packet.HudIndicatorControl]
 hash = "4f5ece85"
 attrs = [
-  { i = 0, pin = "in", conf = "exe", kind = "string" },
-  { i = 1, pin = "in", conf = "exe", kind = "string" },
-  { i = 2, pin = "link", conf = "data", kind = "guid" },
-  { i = 6, pin = "link", conf = "data", kind = "guid" },
+  { i = 0, pin = "in", conf = "exe", name = "enable", name_conf = "exe", kind = "string" },
+  { i = 1, pin = "in", conf = "exe", name = "disable", name_conf = "exe", kind = "string" },
+  { i = 2, pin = "link", conf = "data", name = "target", name_conf = "exe", kind = "guid" },
+  { i = 3, pin = "param", name = "height_offset", name_conf = "guess" },
+  { i = 4, pin = "param", name = "indicator", name_conf = "exe", kind = "int" },
+  { i = 5, pin = "param", name = "custom_name", name_conf = "exe", kind = "string" },
+  { i = 6, pin = "link", conf = "data", name = "job", name_conf = "exe", kind = "guid" },
 ]
 
 [packet.InGameVideoPlayer]
@@ -1227,17 +1344,42 @@ hash = "ba0142f7"
 attrs = [
   { i = 1, pin = "in", conf = "exe", name = "disable", name_conf = "exe", kind = "string" },
   { i = 2, pin = "in", conf = "exe", name = "enable", name_conf = "exe", kind = "string" },
-  { i = 3, pin = "out", conf = "exe", name = "on_start", name_conf = "guess", kind = "string" },
-  { i = 4, pin = "out", conf = "exe", name = "on_finish", name_conf = "guess", kind = "string" },
-  { i = 9, pin = "asset", conf = "data", kind = "guid" },
-  { i = 15, pin = "link", conf = "data", kind = "guid" },
+  { i = 3, pin = "out", conf = "exe", name = "on_start", name_conf = "exe", kind = "string" },
+  { i = 4, pin = "out", conf = "exe", name = "on_finish", name_conf = "exe", kind = "string" },
+  { i = 5, pin = "param", name = "name_hash_5", name_conf = "guess", kind = "string" },
+  { i = 6, pin = "param", name = "name_hash_6", name_conf = "guess", kind = "string" },
+  { i = 7, pin = "param", name = "name_hash_7", name_conf = "guess", kind = "string" },
+  { i = 8, pin = "param", name = "bank_key", name_conf = "exe", kind = "guid" },
+  { i = 9, pin = "asset", conf = "data", name = "bank", name_conf = "exe", kind = "guid" },
+  { i = 10, pin = "param", name = "overlap_shape", name_conf = "guess", kind = "int" },
+  { i = 11, pin = "param", name = "flags", name_conf = "exe", kind = "hash" },
+  { i = 12, pin = "param", name = "user_category_mask", name_conf = "exe", kind = "int" },
+  { i = 13, pin = "param", name = "unknown_13", name_conf = "guess", kind = "float" },
+  { i = 14, pin = "param", name = "unknown_14", name_conf = "guess", kind = "float" },
+  { i = 15, pin = "link", conf = "data", name = "genome_filter", name_conf = "exe", kind = "guid" },
+  { i = 16, pin = "param", name = "max_users", name_conf = "guess", kind = "int" },
+  { i = 17, pin = "param", name = "use_radius", name_conf = "exe", kind = "float" },
+  { i = 18, pin = "param", name = "max_height_diff", name_conf = "exe", kind = "float" },
+  { i = 19, pin = "param", name = "arrive_radius", name_conf = "exe", kind = "float" },
+  { i = 20, pin = "param", name = "unknown_hash_20", name_conf = "guess", kind = "hash" },
+  { i = 21, pin = "param", name = "unknown_21", name_conf = "guess", kind = "float" },
+  { i = 22, pin = "param", name = "unknown_22", name_conf = "guess", kind = "float" },
+  { i = 23, pin = "param", name = "unknown_23", name_conf = "guess", kind = "float" },
+  { i = 24, pin = "param", name = "unknown_24", name_conf = "guess", kind = "float" },
+  { i = 25, pin = "param", name = "unknown_25", name_conf = "guess", kind = "float" },
+  { i = 26, pin = "param", name = "unknown_26", name_conf = "guess", kind = "float" },
+  { i = 27, pin = "param", name = "unknown_27", name_conf = "guess", kind = "float" },
+  { i = 28, pin = "param", name = "unknown_28", name_conf = "guess", kind = "float" },
+  { i = 29, pin = "param", name = "building_id", name_conf = "exe", kind = "int" },
+  { i = 30, pin = "param", name = "unknown_hash_30", name_conf = "guess", kind = "hash" },
 ]
 
 [packet.InterestingObjectRelay]
 hash = "cd255e5a"
 attrs = [
-  { i = 0, pin = "in", conf = "exe", kind = "string" },
-  { i = 1, pin = "link", conf = "data", kind = "guid" },
+  { i = 0, pin = "in", conf = "exe", name = "trigger", name_conf = "exe", kind = "string" },
+  { i = 1, pin = "link", conf = "data", name = "interesting_object", name_conf = "exe", kind = "guid" },
+  { i = 2, pin = "param", name = "flags", name_conf = "exe", kind = "int" },
 ]
 
 [packet.IntersectionNodeController]
@@ -1251,7 +1393,9 @@ attrs = [
 [packet.Item]
 hash = "4ecfbe13"
 attrs = [
-  { i = 14, pin = "out", conf = "exe", kind = "string" },
+  { i = 3, pin = "param", name = "type", name_conf = "exe", kind = "int" },
+  { i = 4, pin = "param", name = "amount", name_conf = "exe", kind = "int" },
+  { i = 14, pin = "out", conf = "exe", name = "on_pickup", name_conf = "exe", kind = "string" },
   { i = 15, pin = "out", conf = "exe", kind = "string" },
   { i = 19, pin = "asset", conf = "data", kind = "guid" },
   { i = 20, pin = "asset", conf = "data", kind = "guid" },
@@ -1262,7 +1406,7 @@ attrs = [
   { i = 26, pin = "asset", conf = "data", kind = "guid" },
   { i = 27, pin = "asset", conf = "data", kind = "guid" },
   { i = 28, pin = "link", conf = "data", kind = "guid" },
-  { i = 31, pin = "out", conf = "data", kind = "string" },
+  { i = 31, pin = "param", conf = "exe", name = "name", name_conf = "guess", kind = "string" },
 ]
 
 [packet.JobReward]
@@ -1270,9 +1414,9 @@ hash = "96a9da2c"
 attrs = [
   { i = 13, pin = "in", conf = "exe", name = "give", name_conf = "data", kind = "string" },
   { i = 14, pin = "out", conf = "exe", name = "on_given", name_conf = "data", kind = "string" },
-  { i = 15, pin = "in", conf = "exe", kind = "string" },
-  { i = 16, pin = "in", conf = "exe", kind = "string" },
-  { i = 17, pin = "in", conf = "exe", kind = "string" },
+  { i = 15, pin = "in", conf = "exe", name = "enable", name_conf = "exe", kind = "string" },
+  { i = 16, pin = "in", conf = "exe", name = "disable", name_conf = "exe", kind = "string" },
+  { i = 17, pin = "in", conf = "exe", name = "reset", name_conf = "exe", kind = "string" },
   { i = 18, pin = "link", conf = "data", kind = "guid" },
 ]
 
@@ -1310,9 +1454,17 @@ attrs = [
 [packet.MessageRelay]
 hash = "120f25aa"
 attrs = [
-  { i = 0, pin = "in", conf = "data", name = "trigger", name_conf = "data", kind = "string" },
-  { i = 1, pin = "out", conf = "exe", name = "send", name_conf = "data", kind = "string" },
-  { i = 3, pin = "link", conf = "data", kind = "guid" },
+  { i = 0, pin = "in", conf = "exe", name = "trigger", name_conf = "exe", kind = "string" },
+  { i = 1, pin = "out", conf = "exe", name = "send", name_conf = "exe", kind = "string" },
+  { i = 2, pin = "param", name = "group", name_conf = "exe" },
+  { i = 3, pin = "link", conf = "data", name = "target", name_conf = "exe", kind = "guid" },
+  { i = 4, pin = "param", name = "data_object", name_conf = "exe" },
+]
+
+[packet.MessageRelayBase]
+hash = "e794215b"
+attrs = [
+  { i = 0, pin = "param", name = "flags", name_conf = "exe" },
 ]
 
 [packet.MicrophoneManager]
@@ -1328,15 +1480,24 @@ attrs = [
   { i = 0, pin = "in", conf = "exe", name = "start", name_conf = "data", kind = "string" },
   { i = 1, pin = "in", conf = "exe", name = "stop", name_conf = "data", kind = "string" },
   { i = 3, pin = "param", conf = "exe", name = "seconds", name_conf = "data", kind = "float" },
+  { i = 6, pin = "param", conf = "exe", name = "show", name_conf = "exe", kind = "int" },
   { i = 7, pin = "out", conf = "exe", name = "on_expired", name_conf = "data", kind = "string" },
+]
+
+[packet.MoneyAdaptor]
+hash = "c17ed7a5"
+attrs = [
+  { i = 0, pin = "param", name = "amount", name_conf = "exe", kind = "int" },
+  { i = 1, pin = "param", name = "category", name_conf = "exe", kind = "int" },
+  { i = 2, pin = "param", name = "sound", name_conf = "exe", kind = "string" },
 ]
 
 [packet.MultiManager]
 hash = "6df50074"
 attrs = [
   { i = 0, pin = "in", conf = "exe", name = "trigger", name_conf = "exe", kind = "string" },
-  { i = 1, pin = "param", name = "max_fires", name_conf = "guess", kind = "int" },
-  { i = 2, pin = "param", name = "flags", name_conf = "guess", kind = "int" },
+  { i = 1, pin = "param", name = "max_fires", name_conf = "exe", kind = "int" },
+  { i = 2, pin = "param", name = "flags", name_conf = "exe", kind = "int" },
   { i = 3, pin = "out", conf = "exe", name = "send_1", name_conf = "exe", delay = 4, kind = "string" },
   { i = 4, pin = "param", conf = "exe", name = "delay_1", name_conf = "exe", kind = "float" },
   { i = 5, pin = "out", conf = "exe", name = "send_2", name_conf = "exe", delay = 6, kind = "string" },
@@ -1358,15 +1519,16 @@ attrs = [
 [packet.MultiRemoveTarget]
 hash = "087e3d6e"
 attrs = [
-  { i = 0, pin = "in", conf = "exe", kind = "string" },
-  { i = 1, pin = "link", conf = "data", kind = "guid" },
-  { i = 2, pin = "link", conf = "data", kind = "guid" },
-  { i = 3, pin = "link", conf = "data", kind = "guid" },
-  { i = 4, pin = "link", conf = "data", kind = "guid" },
-  { i = 5, pin = "link", conf = "data", kind = "guid" },
-  { i = 6, pin = "link", conf = "data", kind = "guid" },
-  { i = 7, pin = "link", conf = "data", kind = "guid" },
-  { i = 8, pin = "link", conf = "data", kind = "guid" },
+  { i = 0, pin = "in", conf = "exe", name = "trigger", name_conf = "exe", kind = "string" },
+  { i = 1, pin = "link", conf = "data", name = "target_1", name_conf = "exe", kind = "guid" },
+  { i = 2, pin = "link", conf = "data", name = "target_2", name_conf = "exe", kind = "guid" },
+  { i = 3, pin = "link", conf = "data", name = "target_3", name_conf = "exe", kind = "guid" },
+  { i = 4, pin = "link", conf = "data", name = "target_4", name_conf = "exe", kind = "guid" },
+  { i = 5, pin = "link", conf = "data", name = "target_5", name_conf = "exe", kind = "guid" },
+  { i = 6, pin = "link", conf = "data", name = "target_6", name_conf = "exe", kind = "guid" },
+  { i = 7, pin = "link", conf = "data", name = "target_7", name_conf = "exe", kind = "guid" },
+  { i = 8, pin = "link", conf = "data", name = "target_8", name_conf = "exe", kind = "guid" },
+  { i = 9, pin = "param", name = "flags", name_conf = "exe" },
 ]
 
 [packet.MultiplayerDonCameraInfo]
@@ -1436,6 +1598,14 @@ attrs = [
   { i = 4, pin = "link", conf = "data", kind = "guid" },
 ]
 
+[packet.NPCRequester]
+hash = "0842eb5b"
+attrs = [
+  { i = 0, pin = "param", name = "building_id", name_conf = "exe", kind = "int" },
+  { i = 1, pin = "param", name = "held_item", name_conf = "guess" },
+  { i = 2, pin = "param", name = "delete_on_unload", name_conf = "exe", kind = "int" },
+]
+
 [packet.NetMessageRelay]
 hash = "a2165167"
 attrs = [
@@ -1450,10 +1620,17 @@ attrs = [
   { i = 1, pin = "in", conf = "exe", name = "remove", name_conf = "guess", kind = "string" },
 ]
 
+[packet.OrEventGate]
+hash = "9dc66782"
+attrs = [
+  { i = 0, pin = "param", name = "lockout", name_conf = "exe", kind = "float" },
+]
+
 [packet.PatrolRelay]
 hash = "619d7ee5"
 attrs = [
-  { i = 1, pin = "in", conf = "data", kind = "string" },
+  { i = 0, pin = "param", name = "path", name_conf = "guess", kind = "guid" },
+  { i = 1, pin = "in", conf = "exe", name = "patrol", name_conf = "exe", kind = "string" },
 ]
 
 [packet.PersonOfInfluence]
@@ -1474,25 +1651,33 @@ attrs = [
   { i = 0, pin = "in", conf = "exe", name = "call", name_conf = "data", kind = "string" },
   { i = 1, pin = "in", conf = "exe", name = "cancel", name_conf = "guess", kind = "string" },
   { i = 2, pin = "param", conf = "exe", name = "conversation", name_conf = "data", kind = "string" },
-  { i = 9, pin = "out", conf = "data", name = "on_complete", name_conf = "data", kind = "string" },
+  { i = 9, pin = "out", conf = "exe", name = "on_complete", name_conf = "data", kind = "string" },
 ]
 
 [packet.PlayAudioStream]
 hash = "1fb0c602"
 attrs = [
-  { i = 0, pin = "in", conf = "exe", name = "play", name_conf = "data", kind = "string" },
-  { i = 1, pin = "in", conf = "exe", name = "stop", name_conf = "data", kind = "string" },
-  { i = 3, pin = "asset", conf = "data", name = "stream", name_conf = "guess", kind = "guid" },
+  { i = 0, pin = "in", conf = "exe", name = "play", name_conf = "exe", kind = "string" },
+  { i = 1, pin = "in", conf = "exe", name = "stop", name_conf = "exe", kind = "string" },
+  { i = 2, pin = "in", conf = "exe", name = "prepare", name_conf = "exe" },
+  { i = 3, pin = "asset", conf = "data", name = "stream", name_conf = "exe", kind = "guid" },
+  { i = 5, pin = "param", name = "param_130_enum", name_conf = "exe", kind = "int" },
+  { i = 6, pin = "param", name = "param_130", name_conf = "guess" },
+  { i = 7, pin = "out", conf = "exe", name = "on_stream_event", name_conf = "guess" },
 ]
 
 [packet.PlaySound]
 hash = "b1a6d45b"
 attrs = [
-  { i = 1, pin = "in", conf = "exe", name = "play", name_conf = "data", kind = "string" },
-  { i = 2, pin = "in", conf = "exe", name = "stop", name_conf = "data", kind = "string" },
-  { i = 3, pin = "asset", conf = "data", kind = "guid" },
-  { i = 4, pin = "asset", conf = "data", kind = "guid" },
-  { i = 5, pin = "link", conf = "data", kind = "guid" },
+  { i = 0, pin = "param", name = "flags", name_conf = "exe", kind = "int" },
+  { i = 1, pin = "in", conf = "exe", name = "play", name_conf = "exe", kind = "string" },
+  { i = 2, pin = "in", conf = "exe", name = "stop", name_conf = "exe", kind = "string" },
+  { i = 3, pin = "asset", conf = "data", name = "sound", name_conf = "exe", kind = "guid" },
+  { i = 4, pin = "asset", conf = "data", name = "sound_fallback", name_conf = "exe", kind = "guid" },
+  { i = 5, pin = "link", conf = "data", name = "attach_entity", name_conf = "exe", kind = "guid" },
+  { i = 6, pin = "in", conf = "exe", name = "attach", name_conf = "exe" },
+  { i = 7, pin = "param", name = "param_c0_enum", name_conf = "exe", kind = "int" },
+  { i = 8, pin = "param", name = "param_c0", name_conf = "guess" },
 ]
 
 [packet.Player]
@@ -1568,12 +1753,13 @@ attrs = [
 [packet.PlayerTeleportRelay]
 hash = "96676985"
 attrs = [
-  { i = 1, pin = "in", conf = "exe", name = "teleport", name_conf = "data", kind = "string" },
-  { i = 2, pin = "out", conf = "data", name = "on_arrived", name_conf = "data", kind = "string" },
-  { i = 3, pin = "link", conf = "data", kind = "guid" },
-  { i = 4, pin = "link", conf = "data", kind = "guid" },
-  { i = 5, pin = "link", conf = "data", kind = "guid" },
-  { i = 6, pin = "link", conf = "data", kind = "guid" },
+  { i = 0, pin = "param", name = "flags", name_conf = "exe", kind = "int" },
+  { i = 1, pin = "in", conf = "exe", name = "teleport", name_conf = "exe", kind = "string" },
+  { i = 2, pin = "out", conf = "exe", name = "on_arrived", name_conf = "exe", kind = "string" },
+  { i = 3, pin = "link", conf = "data", name = "partition_0", name_conf = "guess", kind = "guid" },
+  { i = 4, pin = "link", conf = "data", name = "partition_1", name_conf = "guess", kind = "guid" },
+  { i = 5, pin = "link", conf = "data", name = "partition_2", name_conf = "guess", kind = "guid" },
+  { i = 6, pin = "link", conf = "data", name = "partition_3", name_conf = "guess", kind = "guid" },
 ]
 
 [packet.PressureComponent]
@@ -1587,10 +1773,10 @@ hash = "47e72b38"
 attrs = [
   { i = 1, pin = "in", conf = "exe", kind = "string" },
   { i = 2, pin = "in", conf = "exe", kind = "string" },
-  { i = 11, pin = "in", conf = "data", kind = "string" },
-  { i = 33, pin = "in", conf = "data", kind = "string" },
-  { i = 34, pin = "in", conf = "data", kind = "string" },
-  { i = 35, pin = "in", conf = "data", kind = "string" },
+  { i = 11, pin = "in", conf = "exe", kind = "string" },
+  { i = 33, pin = "in", conf = "exe", kind = "string" },
+  { i = 34, pin = "in", conf = "exe", kind = "string" },
+  { i = 35, pin = "in", conf = "exe", kind = "string" },
 ]
 
 [packet.RewardDestructible]
@@ -1622,17 +1808,18 @@ attrs = [
 hash = "8bd0e0eb"
 attrs = [
   { i = 0, pin = "in", conf = "exe", name = "start", name_conf = "data", kind = "string" },
-  { i = 1, pin = "out", conf = "data", name = "on_end", name_conf = "guess", kind = "string" },
-  { i = 2, pin = "out", conf = "data", name = "on_end_2", name_conf = "guess", kind = "string" },
+  { i = 1, pin = "out", conf = "exe", name = "on_end", name_conf = "guess", kind = "string" },
+  { i = 2, pin = "out", conf = "exe", name = "on_end_2", name_conf = "guess", kind = "string" },
   { i = 3, pin = "link", conf = "data", name = "actor", name_conf = "guess", kind = "guid" },
 ]
 
 [packet.SendStimulus]
 hash = "d081ffa2"
 attrs = [
-  { i = 0, pin = "in", conf = "exe", kind = "string" },
-  { i = 1, pin = "link", conf = "data", kind = "guid" },
-  { i = 2, pin = "link", conf = "data", kind = "guid" },
+  { i = 0, pin = "in", conf = "exe", name = "send", name_conf = "exe", kind = "string" },
+  { i = 1, pin = "link", conf = "data", name = "stim", name_conf = "exe", kind = "guid" },
+  { i = 2, pin = "link", conf = "data", name = "source", name_conf = "exe", kind = "guid" },
+  { i = 3, pin = "param", name = "flags", name_conf = "exe", kind = "hash" },
 ]
 
 [packet.Sentient]
@@ -1729,33 +1916,38 @@ attrs = [
   { i = 7, pin = "asset", conf = "data", kind = "guid" },
   { i = 8, pin = "link", conf = "data", kind = "guid" },
   { i = 9, pin = "link", conf = "data", kind = "guid" },
-  { i = 14, pin = "out", conf = "data", kind = "string" },
+  { i = 14, pin = "out", conf = "exe", kind = "string" },
 ]
 
 [packet.SitObject]
 hash = "d5f282bd"
 attrs = [
-  { i = 0, pin = "in", conf = "exe", kind = "string" },
-  { i = 1, pin = "in", conf = "exe", kind = "string" },
-  { i = 2, pin = "in", conf = "exe", kind = "string" },
-  { i = 3, pin = "link", conf = "data", kind = "guid" },
-  { i = 4, pin = "link", conf = "data", kind = "guid" },
+  { i = 0, pin = "in", conf = "exe", name = "sit", name_conf = "exe", kind = "string" },
+  { i = 1, pin = "in", conf = "exe", name = "enable", name_conf = "exe", kind = "string" },
+  { i = 2, pin = "in", conf = "exe", name = "disable", name_conf = "exe", kind = "string" },
+  { i = 3, pin = "link", conf = "data", name = "furniture", name_conf = "guess", kind = "guid" },
+  { i = 4, pin = "link", conf = "data", name = "object_2", name_conf = "guess", kind = "guid" },
+  { i = 5, pin = "param", name = "unknown_5", name_conf = "guess", kind = "float" },
+  { i = 6, pin = "param", name = "flags", name_conf = "exe", kind = "int" },
 ]
 
 [packet.SpawnPoint]
 hash = "fbf7edd5"
 attrs = [
-  { i = 0, pin = "link", conf = "data", name = "spawn_set", name_conf = "guess", kind = "guid" },
-  { i = 4, pin = "in", conf = "exe", name = "enable", name_conf = "guess", kind = "string" },
-  { i = 5, pin = "in", conf = "exe", name = "disable", name_conf = "guess", kind = "string" },
-  { i = 6, pin = "out", conf = "exe", name = "on_spawned", name_conf = "guess", kind = "string" },
+  { i = 0, pin = "link", conf = "data", name = "requester", name_conf = "exe", kind = "guid" },
+  { i = 1, pin = "param", name = "unknown_1", name_conf = "guess", kind = "int" },
+  { i = 2, pin = "param", name = "flags", name_conf = "exe", kind = "int" },
+  { i = 3, pin = "param", name = "reuse_distance", name_conf = "exe" },
+  { i = 4, pin = "in", conf = "exe", name = "enable", name_conf = "exe", kind = "string" },
+  { i = 5, pin = "in", conf = "exe", name = "disable", name_conf = "exe", kind = "string" },
+  { i = 6, pin = "out", conf = "exe", name = "on_spawned", name_conf = "exe", kind = "string" },
 ]
 
 [packet.SpecificNpcRequester]
 hash = "d31f07cd"
 attrs = [
-  { i = 0, pin = "in", conf = "exe", kind = "string" },
-  { i = 1, pin = "link", conf = "data", kind = "guid" },
+  { i = 0, pin = "in", conf = "exe", name = "request", name_conf = "exe", kind = "string" },
+  { i = 1, pin = "link", conf = "data", name = "sim_npc", name_conf = "exe", kind = "guid" },
 ]
 
 [packet.SpreeBonus]
@@ -1777,13 +1969,24 @@ attrs = [
 hash = "1460edd3"
 attrs = [
   { i = 0, pin = "link", conf = "data", kind = "guid" },
-  { i = 1, pin = "in", conf = "data", kind = "string" },
+  { i = 1, pin = "param", conf = "exe", name = "score_event", name_conf = "guess", kind = "string" },
 ]
 
 [packet.Stim]
 hash = "2017e685"
 attrs = [
   { i = 4, pin = "link", conf = "data", kind = "guid" },
+]
+
+[packet.StreamSet]
+hash = "9c326942"
+attrs = [
+  { i = 0, pin = "in", conf = "exe", name = "load", name_conf = "exe" },
+  { i = 1, pin = "out", conf = "exe", name = "on_loaded", name_conf = "exe" },
+  { i = 2, pin = "param", name = "stream_0", name_conf = "exe", kind = "guid" },
+  { i = 20, pin = "param", name = "nested_set_0", name_conf = "exe" },
+  { i = 21, pin = "param", name = "nested_set_1", name_conf = "exe" },
+  { i = 23, pin = "param", name = "stream_flag_0", name_conf = "guess" },
 ]
 
 [packet.TODMessage]
@@ -1795,7 +1998,7 @@ attrs = [
 [packet.TODSequencerAction]
 hash = "f7a92bbe"
 attrs = [
-  { i = 2, pin = "in", conf = "data", kind = "string" },
+  { i = 2, pin = "in", conf = "exe", kind = "string" },
   { i = 5, pin = "link", conf = "data", kind = "guid" },
   { i = 6, pin = "link", conf = "data", kind = "guid" },
 ]
@@ -1803,25 +2006,29 @@ attrs = [
 [packet.TeamCapturableCSA]
 hash = "617f1a1b"
 attrs = [
-  { i = 2, pin = "out", conf = "data", kind = "string" },
+  { i = 2, pin = "out", conf = "exe", kind = "string" },
   { i = 5, pin = "in", conf = "exe", kind = "string" },
 ]
 
 [packet.TestBuildingOwnership]
 hash = "500b9169"
 attrs = [
-  { i = 0, pin = "param", conf = "exe", name = "building", name_conf = "guess", kind = "int" },
-  { i = 1, pin = "param", conf = "exe", name = "family", name_conf = "guess", kind = "hash" },
-  { i = 2, pin = "in", conf = "exe", name = "test", name_conf = "data", kind = "string" },
-  { i = 3, pin = "out", conf = "exe", name = "on_true", name_conf = "data", kind = "string" },
-  { i = 4, pin = "out", conf = "exe", name = "on_false", name_conf = "data", kind = "string" },
+  { i = 0, pin = "param", conf = "exe", name = "building", name_conf = "exe", kind = "int" },
+  { i = 1, pin = "param", conf = "exe", name = "family", name_conf = "exe", kind = "hash" },
+  { i = 2, pin = "in", conf = "exe", name = "test", name_conf = "exe", kind = "string" },
+  { i = 3, pin = "out", conf = "exe", name = "on_true", name_conf = "exe", kind = "string" },
+  { i = 4, pin = "out", conf = "exe", name = "on_false", name_conf = "exe", kind = "string" },
+  { i = 5, pin = "param", name = "flags", name_conf = "exe", kind = "int" },
 ]
 
 [packet.TestBuildingState]
 hash = "34deb5cb"
 attrs = [
-  { i = 2, pin = "in", conf = "exe", name = "test", name_conf = "data", kind = "string" },
-  { i = 3, pin = "out", conf = "data", name = "on_true", name_conf = "guess", kind = "string" },
+  { i = 0, pin = "param", name = "building", name_conf = "exe", kind = "int" },
+  { i = 1, pin = "param", name = "state", name_conf = "exe", kind = "int" },
+  { i = 2, pin = "in", conf = "exe", name = "test", name_conf = "exe", kind = "string" },
+  { i = 3, pin = "out", conf = "exe", name = "on_true", name_conf = "exe", kind = "string" },
+  { i = 4, pin = "out", conf = "exe", name = "on_false", name_conf = "exe" },
 ]
 
 [packet.TestCurrentCheckpoint]
@@ -1872,11 +2079,11 @@ attrs = [
 [packet.TestTimeOfDay]
 hash = "f40bce26"
 attrs = [
-  { i = 0, pin = "in", conf = "exe", name = "test", name_conf = "data", kind = "string" },
-  { i = 1, pin = "param", conf = "exe", name = "from_hour", name_conf = "data", kind = "int" },
-  { i = 2, pin = "param", conf = "exe", name = "to_hour", name_conf = "data", kind = "int" },
-  { i = 3, pin = "out", conf = "exe", name = "on_true", name_conf = "data", kind = "string" },
-  { i = 4, pin = "out", conf = "exe", name = "on_false", name_conf = "data", kind = "string" },
+  { i = 0, pin = "in", conf = "exe", name = "test", name_conf = "exe", kind = "string" },
+  { i = 1, pin = "param", conf = "exe", name = "from_hour", name_conf = "exe", kind = "int" },
+  { i = 2, pin = "param", conf = "exe", name = "to_hour", name_conf = "exe", kind = "int" },
+  { i = 3, pin = "out", conf = "exe", name = "on_true", name_conf = "exe", kind = "string" },
+  { i = 4, pin = "out", conf = "exe", name = "on_false", name_conf = "exe", kind = "string" },
 ]
 
 [packet.TestUpgrade]
@@ -1884,7 +2091,7 @@ hash = "fe615a2a"
 attrs = [
   { i = 1, pin = "link", conf = "data", kind = "guid" },
   { i = 2, pin = "in", conf = "exe", name = "test", name_conf = "data", kind = "string" },
-  { i = 3, pin = "out", conf = "data", name = "on_true", name_conf = "guess", kind = "string" },
+  { i = 3, pin = "out", conf = "exe", name = "on_true", name_conf = "guess", kind = "string" },
   { i = 4, pin = "out", conf = "exe", name = "on_false", name_conf = "guess", kind = "string" },
 ]
 
@@ -1929,51 +2136,76 @@ attrs = [
 [packet.TriggerAuto]
 hash = "acbdfe47"
 attrs = [
-  { i = 0, pin = "out", conf = "exe", name = "send", name_conf = "data", delay = 1, kind = "string" },
-  { i = 1, pin = "param", conf = "exe", name = "delay", name_conf = "data", kind = "float" },
-  { i = 2, pin = "param", name = "flags", name_conf = "guess", kind = "int" },
+  { i = 0, pin = "out", conf = "exe", name = "send", name_conf = "exe", delay = 1, kind = "string" },
+  { i = 1, pin = "param", conf = "exe", name = "delay", name_conf = "exe", kind = "float" },
+  { i = 2, pin = "param", name = "flags", name_conf = "exe", kind = "int" },
 ]
 
 [packet.TriggerBase]
 hash = "d16a98a9"
 attrs = [
-  { i = 0, pin = "in", conf = "exe", name = "fire", name_conf = "guess", kind = "string" },
-  { i = 1, pin = "in", conf = "exe", name = "enable", name_conf = "data", kind = "string" },
-  { i = 2, pin = "in", conf = "exe", name = "disable", name_conf = "data", kind = "string" },
-  { i = 4, pin = "out", conf = "exe", name = "on_enter", name_conf = "data", delay = 5, kind = "string" },
-  { i = 5, pin = "param", conf = "exe", name = "delay", name_conf = "guess", kind = "float" },
-  { i = 6, pin = "param", conf = "exe", name = "max_fires", name_conf = "guess", kind = "int" },
-  { i = 7, pin = "out", conf = "exe", name = "on_exit", name_conf = "data", kind = "string" },
-  { i = 8, pin = "param", conf = "exe", name = "enabled", name_conf = "guess", kind = "int" },
-  { i = 11, pin = "param", conf = "exe", name = "range", name_conf = "guess" },
+  { i = 0, pin = "in", conf = "exe", name = "toggle", name_conf = "exe", kind = "string" },
+  { i = 1, pin = "in", conf = "exe", name = "enable", name_conf = "exe", kind = "string" },
+  { i = 2, pin = "in", conf = "exe", name = "disable", name_conf = "exe", kind = "string" },
+  { i = 3, pin = "param", name = "shape", name_conf = "exe" },
+  { i = 4, pin = "out", conf = "exe", name = "on_enter", name_conf = "exe", delay = 5, kind = "string" },
+  { i = 5, pin = "param", conf = "exe", name = "delay", name_conf = "exe", kind = "float" },
+  { i = 6, pin = "param", conf = "exe", name = "max_fires", name_conf = "exe", kind = "int" },
+  { i = 7, pin = "out", conf = "exe", name = "on_reverse", name_conf = "exe", kind = "string" },
+  { i = 8, pin = "param", conf = "exe", name = "flags", name_conf = "exe", kind = "int" },
+  { i = 9, pin = "param", name = "fire_on_leave", name_conf = "exe", kind = "int" },
+  { i = 10, pin = "param", name = "refire_interval", name_conf = "exe", kind = "float" },
+  { i = 11, pin = "param", conf = "exe", name = "min_speed", name_conf = "exe" },
 ]
 
 [packet.TriggerDistance]
 hash = "20d492cd"
 attrs = [
-  { i = 0, pin = "link", conf = "data", name = "source", name_conf = "guess", kind = "guid" },
-  { i = 1, pin = "link", conf = "data", name = "target", name_conf = "guess", kind = "guid" },
-  { i = 2, pin = "in", conf = "exe", name = "enable", name_conf = "data", kind = "string" },
-  { i = 3, pin = "in", conf = "exe", name = "disable", name_conf = "data", kind = "string" },
-  { i = 4, pin = "out", conf = "data", name = "send", name_conf = "data", kind = "string" },
-  { i = 5, pin = "param", conf = "exe", name = "distance", name_conf = "data", kind = "float" },
+  { i = 0, pin = "link", conf = "data", name = "source", name_conf = "exe", kind = "guid" },
+  { i = 1, pin = "link", conf = "data", name = "target", name_conf = "exe", kind = "guid" },
+  { i = 2, pin = "in", conf = "exe", name = "enable", name_conf = "exe", kind = "string" },
+  { i = 3, pin = "in", conf = "exe", name = "disable", name_conf = "exe", kind = "string" },
+  { i = 4, pin = "out", conf = "exe", name = "send", name_conf = "exe", kind = "string" },
+  { i = 5, pin = "param", conf = "exe", name = "distance", name_conf = "exe", kind = "float" },
+  { i = 6, pin = "param", name = "delay", name_conf = "exe" },
+  { i = 7, pin = "param", name = "max_fires", name_conf = "exe", kind = "int" },
+  { i = 8, pin = "param", name = "flags", name_conf = "exe", kind = "int" },
+  { i = 9, pin = "param", name = "check_interval", name_conf = "exe", kind = "float" },
 ]
 
 [packet.TriggerFilter]
 hash = "23039dd0"
 attrs = [
-  { i = 1, pin = "link", conf = "data", kind = "guid" },
+  { i = 0, pin = "param", name = "who", name_conf = "exe", kind = "int" },
+  { i = 1, pin = "link", conf = "data", name = "only_entity", name_conf = "exe", kind = "guid" },
+  { i = 2, pin = "param", name = "include_dead", name_conf = "exe", kind = "int" },
 ]
 
 [packet.TriggerFollow]
 hash = "b6a75e49"
 attrs = [
-  { i = 0, pin = "link", conf = "data", kind = "guid" },
-  { i = 1, pin = "link", conf = "data", kind = "guid" },
-  { i = 2, pin = "in", conf = "exe", name = "enable", name_conf = "data", kind = "string" },
-  { i = 3, pin = "in", conf = "exe", name = "disable", name_conf = "data", kind = "string" },
-  { i = 4, pin = "out", conf = "data", name = "on_start", name_conf = "data", kind = "string" },
-  { i = 5, pin = "out", conf = "data", name = "on_stop", name_conf = "data", kind = "string" },
+  { i = 0, pin = "link", conf = "data", name = "source", name_conf = "exe", kind = "guid" },
+  { i = 1, pin = "link", conf = "data", name = "target", name_conf = "exe", kind = "guid" },
+  { i = 2, pin = "in", conf = "exe", name = "enable", name_conf = "exe", kind = "string" },
+  { i = 3, pin = "in", conf = "exe", name = "disable", name_conf = "exe", kind = "string" },
+  { i = 4, pin = "out", conf = "exe", name = "on_near", name_conf = "exe", kind = "string" },
+  { i = 5, pin = "out", conf = "exe", name = "on_far", name_conf = "exe", kind = "string" },
+  { i = 6, pin = "out", conf = "exe", name = "on_between", name_conf = "exe", kind = "string" },
+  { i = 7, pin = "param", name = "near_distance", name_conf = "exe", kind = "float" },
+  { i = 8, pin = "param", name = "far_distance", name_conf = "exe", kind = "float" },
+  { i = 9, pin = "param", name = "delay", name_conf = "exe" },
+  { i = 10, pin = "param", name = "max_fires", name_conf = "exe", kind = "int" },
+  { i = 11, pin = "param", name = "flags", name_conf = "exe", kind = "int" },
+  { i = 12, pin = "param", name = "check_interval", name_conf = "exe", kind = "float" },
+]
+
+[packet.TriggerHurt]
+hash = "f26bb307"
+attrs = [
+  { i = 0, pin = "param", name = "damage", name_conf = "exe", kind = "float" },
+  { i = 1, pin = "param", name = "damage_param_30", name_conf = "guess", kind = "int" },
+  { i = 2, pin = "param", name = "damage_param_38", name_conf = "guess", kind = "int" },
+  { i = 3, pin = "param", name = "flags", name_conf = "exe", kind = "int" },
 ]
 
 [packet.TriggerRandom]
@@ -1982,28 +2214,28 @@ attrs = [
   { i = 0, pin = "in", conf = "exe", name = "trigger", name_conf = "exe", kind = "string" },
   { i = 1, pin = "param", conf = "exe", name = "weight_1", name_conf = "exe", kind = "float" },
   { i = 2, pin = "out", conf = "exe", name = "send_1", name_conf = "exe", delay = 3, kind = "string" },
-  { i = 3, pin = "param", conf = "exe", name = "delay_1", name_conf = "guess", kind = "float" },
+  { i = 3, pin = "param", conf = "exe", name = "delay_1", name_conf = "exe", kind = "float" },
   { i = 4, pin = "param", conf = "exe", name = "weight_2", name_conf = "exe", kind = "float" },
   { i = 5, pin = "out", conf = "exe", name = "send_2", name_conf = "exe", delay = 6, kind = "string" },
-  { i = 6, pin = "param", conf = "exe", name = "delay_2", name_conf = "guess", kind = "float" },
+  { i = 6, pin = "param", conf = "exe", name = "delay_2", name_conf = "exe", kind = "float" },
   { i = 7, pin = "param", conf = "exe", name = "weight_3", name_conf = "exe", kind = "float" },
   { i = 8, pin = "out", conf = "exe", name = "send_3", name_conf = "exe", delay = 9, kind = "string" },
-  { i = 9, pin = "param", conf = "exe", name = "delay_3", name_conf = "guess", kind = "float" },
+  { i = 9, pin = "param", conf = "exe", name = "delay_3", name_conf = "exe", kind = "float" },
   { i = 10, pin = "param", conf = "exe", name = "weight_4", name_conf = "exe", kind = "float" },
   { i = 11, pin = "out", conf = "exe", name = "send_4", name_conf = "exe", delay = 12, kind = "string" },
-  { i = 12, pin = "param", conf = "exe", name = "delay_4", name_conf = "guess", kind = "float" },
+  { i = 12, pin = "param", conf = "exe", name = "delay_4", name_conf = "exe", kind = "float" },
   { i = 13, pin = "param", conf = "exe", name = "weight_5", name_conf = "exe", kind = "float" },
   { i = 14, pin = "out", conf = "exe", name = "send_5", name_conf = "exe", delay = 15, kind = "string" },
-  { i = 15, pin = "param", conf = "exe", name = "delay_5", name_conf = "guess", kind = "float" },
+  { i = 15, pin = "param", conf = "exe", name = "delay_5", name_conf = "exe", kind = "float" },
   { i = 16, pin = "param", conf = "exe", name = "weight_6", name_conf = "exe", kind = "float" },
   { i = 17, pin = "out", conf = "exe", name = "send_6", name_conf = "exe", delay = 18, kind = "string" },
-  { i = 18, pin = "param", conf = "exe", name = "delay_6", name_conf = "guess", kind = "float" },
+  { i = 18, pin = "param", conf = "exe", name = "delay_6", name_conf = "exe", kind = "float" },
   { i = 19, pin = "param", conf = "exe", name = "weight_7", name_conf = "exe", kind = "float" },
   { i = 20, pin = "out", conf = "exe", name = "send_7", name_conf = "exe", delay = 21 },
-  { i = 21, pin = "param", conf = "exe", name = "delay_7", name_conf = "guess" },
+  { i = 21, pin = "param", conf = "exe", name = "delay_7", name_conf = "exe" },
   { i = 22, pin = "param", conf = "exe", name = "weight_8", name_conf = "exe", kind = "float" },
   { i = 23, pin = "out", conf = "exe", name = "send_8", name_conf = "exe", delay = 24 },
-  { i = 24, pin = "param", conf = "exe", name = "delay_8", name_conf = "guess" },
+  { i = 24, pin = "param", conf = "exe", name = "delay_8", name_conf = "exe" },
 ]
 
 [packet.TrinityGameSequence]
@@ -2025,14 +2257,36 @@ attrs = [
 [packet.UIHudMiniMapMarker]
 hash = "fe6cfa1c"
 attrs = [
-  { i = 9, pin = "in", conf = "exe", kind = "string" },
-  { i = 10, pin = "in", conf = "exe", kind = "string" },
-  { i = 11, pin = "in", conf = "exe", kind = "string" },
-  { i = 12, pin = "in", conf = "exe", kind = "string" },
-  { i = 13, pin = "in", conf = "exe", kind = "string" },
-  { i = 16, pin = "link", conf = "data", kind = "guid" },
-  { i = 18, pin = "link", conf = "data", kind = "guid" },
-  { i = 23, pin = "asset", conf = "data", kind = "guid" },
+  { i = 0, pin = "param", name = "icon", name_conf = "guess", kind = "int" },
+  { i = 1, pin = "param", name = "param_e0", name_conf = "guess", kind = "int" },
+  { i = 2, pin = "param", name = "angle", name_conf = "guess" },
+  { i = 3, pin = "param", name = "param_e4", name_conf = "guess", kind = "int" },
+  { i = 4, pin = "param", name = "param_e8", name_conf = "guess", kind = "int" },
+  { i = 5, pin = "param", name = "color_mode", name_conf = "exe", kind = "int" },
+  { i = 6, pin = "param", name = "color", name_conf = "exe", kind = "hash" },
+  { i = 7, pin = "param", name = "show_on_spawn", name_conf = "exe", kind = "int" },
+  { i = 8, pin = "param", name = "flag_0", name_conf = "guess", kind = "int" },
+  { i = 9, pin = "in", conf = "exe", name = "show", name_conf = "exe", kind = "string" },
+  { i = 10, pin = "in", conf = "exe", name = "show_if_target", name_conf = "exe", kind = "string" },
+  { i = 11, pin = "in", conf = "exe", name = "hide", name_conf = "exe", kind = "string" },
+  { i = 12, pin = "in", conf = "exe", name = "hide_if_target", name_conf = "exe", kind = "string" },
+  { i = 13, pin = "in", conf = "exe", name = "set_target", name_conf = "exe", kind = "string" },
+  { i = 14, pin = "param", name = "target_kind", name_conf = "exe", kind = "int" },
+  { i = 15, pin = "param", name = "offset", name_conf = "guess", kind = "vec3" },
+  { i = 16, pin = "link", conf = "data", name = "target_entity", name_conf = "exe", kind = "guid" },
+  { i = 17, pin = "param", name = "target_kind2", name_conf = "exe" },
+  { i = 18, pin = "link", conf = "data", name = "target_npc", name_conf = "exe", kind = "guid" },
+  { i = 19, pin = "param", name = "target_id", name_conf = "guess" },
+  { i = 20, pin = "param", name = "param_c0", name_conf = "guess", kind = "int" },
+  { i = 21, pin = "param", name = "cities", name_conf = "guess", kind = "string" },
+  { i = 22, pin = "param", name = "param_100", name_conf = "guess", kind = "float" },
+  { i = 23, pin = "asset", conf = "data", name = "vfx", name_conf = "exe", kind = "guid" },
+  { i = 24, pin = "param", name = "vfx_param", name_conf = "guess", kind = "int" },
+  { i = 25, pin = "param", name = "force_f0_one", name_conf = "exe", kind = "int" },
+  { i = 26, pin = "param", name = "param_f0", name_conf = "guess", kind = "int" },
+  { i = 27, pin = "param", name = "param_f4", name_conf = "guess", kind = "float" },
+  { i = 28, pin = "param", name = "param_f8", name_conf = "guess", kind = "float" },
+  { i = 29, pin = "param", name = "param_fc", name_conf = "guess", kind = "int" },
 ]
 
 [packet.UIHudObjective]
@@ -2063,8 +2317,9 @@ attrs = [
 [packet.UnlockCheck]
 hash = "4f194024"
 attrs = [
-  { i = 0, pin = "out", conf = "exe", kind = "string" },
-  { i = 1, pin = "out", conf = "exe", kind = "string" },
+  { i = 0, pin = "out", conf = "exe", name = "unlocked", name_conf = "exe", kind = "string" },
+  { i = 1, pin = "out", conf = "exe", name = "locked", name_conf = "exe", kind = "string" },
+  { i = 2, pin = "param", name = "check", name_conf = "exe", kind = "int" },
 ]
 
 [packet.UpgradeData]
@@ -2077,59 +2332,79 @@ attrs = [
   { i = 29, pin = "link", conf = "data", kind = "guid" },
 ]
 
+[packet.VariableCombiner]
+hash = "c7becb2f"
+attrs = [
+  { i = 0, pin = "in", conf = "exe", name = "activate", name_conf = "exe" },
+  { i = 1, pin = "out", conf = "exe", name = "send", name_conf = "exe" },
+  { i = 2, pin = "param", name = "delay", name_conf = "exe" },
+  { i = 3, pin = "param", name = "mode", name_conf = "exe" },
+  { i = 4, pin = "param", name = "variable_1", name_conf = "exe" },
+  { i = 5, pin = "param", name = "variable_2", name_conf = "exe" },
+  { i = 6, pin = "param", name = "variable_3", name_conf = "exe" },
+  { i = 7, pin = "param", name = "variable_4", name_conf = "exe" },
+  { i = 8, pin = "param", name = "variable_5", name_conf = "exe" },
+  { i = 9, pin = "param", name = "variable_6", name_conf = "exe" },
+  { i = 10, pin = "param", name = "variable_7", name_conf = "exe" },
+  { i = 11, pin = "param", name = "variable_8", name_conf = "exe" },
+]
+
 [packet.VariableOperator]
 hash = "5ee8ce40"
 attrs = [
-  { i = 0, pin = "in", conf = "exe", name = "trigger", name_conf = "data", kind = "string" },
+  { i = 0, pin = "in", conf = "exe", name = "trigger", name_conf = "exe", kind = "string" },
   { i = 1, pin = "in", conf = "exe", name = "trigger_2", name_conf = "guess", kind = "string" },
-  { i = 2, pin = "param", conf = "exe", name = "variable", name_conf = "data", kind = "hash" },
-  { i = 3, pin = "param", conf = "exe", name = "operation", name_conf = "guess", kind = "int" },
-  { i = 4, pin = "param", conf = "exe", name = "operand", name_conf = "guess", kind = "int" },
+  { i = 2, pin = "param", conf = "exe", name = "variable", name_conf = "exe", kind = "hash" },
+  { i = 3, pin = "param", conf = "exe", name = "operation", name_conf = "exe", kind = "int" },
+  { i = 4, pin = "param", conf = "exe", name = "operand", name_conf = "exe", kind = "int" },
 ]
 
 [packet.VariableSwitch]
 hash = "5555e170"
 attrs = [
-  { i = 0, pin = "in", conf = "exe", name = "trigger", name_conf = "data", kind = "string" },
-  { i = 1, pin = "param", conf = "exe", name = "variable", name_conf = "data", kind = "hash" },
+  { i = 0, pin = "in", conf = "exe", name = "trigger", name_conf = "exe", kind = "string" },
+  { i = 1, pin = "param", conf = "exe", name = "variable", name_conf = "exe", kind = "hash" },
   { i = 2, pin = "param", conf = "exe", name = "variable_name", name_conf = "data", kind = "string" },
-  { i = 3, pin = "out", conf = "exe", name = "default", name_conf = "data", delay = 4, kind = "string" },
-  { i = 4, pin = "param", conf = "exe", name = "default_delay", name_conf = "guess", kind = "float" },
-  { i = 5, pin = "param", conf = "exe", name = "value_1", name_conf = "data", kind = "int" },
-  { i = 6, pin = "out", conf = "exe", name = "case_1", name_conf = "data", delay = 7, kind = "string" },
-  { i = 7, pin = "param", conf = "exe", name = "delay_1", name_conf = "guess", kind = "float" },
-  { i = 8, pin = "param", conf = "exe", name = "value_2", name_conf = "data", kind = "int" },
-  { i = 9, pin = "out", conf = "exe", name = "case_2", name_conf = "data", delay = 10, kind = "string" },
-  { i = 10, pin = "param", conf = "exe", name = "delay_2", name_conf = "guess", kind = "float" },
-  { i = 11, pin = "param", conf = "exe", name = "value_3", name_conf = "data", kind = "int" },
-  { i = 12, pin = "out", conf = "exe", name = "case_3", name_conf = "data", delay = 13, kind = "string" },
-  { i = 13, pin = "param", conf = "exe", name = "delay_3", name_conf = "guess", kind = "float" },
-  { i = 14, pin = "param", conf = "exe", name = "value_4", name_conf = "data", kind = "int" },
-  { i = 15, pin = "out", conf = "exe", name = "case_4", name_conf = "data", delay = 16, kind = "string" },
-  { i = 16, pin = "param", conf = "exe", name = "delay_4", name_conf = "guess", kind = "float" },
-  { i = 17, pin = "param", conf = "exe", name = "value_5", name_conf = "data", kind = "int" },
-  { i = 18, pin = "out", conf = "exe", name = "case_5", name_conf = "data", delay = 19, kind = "string" },
-  { i = 19, pin = "param", conf = "exe", name = "delay_5", name_conf = "guess" },
-  { i = 20, pin = "param", conf = "exe", name = "value_6", name_conf = "data", kind = "int" },
-  { i = 21, pin = "out", conf = "exe", name = "case_6", name_conf = "data", delay = 22, kind = "string" },
-  { i = 22, pin = "param", conf = "exe", name = "delay_6", name_conf = "guess" },
-  { i = 23, pin = "param", conf = "exe", name = "value_7", name_conf = "data", kind = "int" },
-  { i = 24, pin = "out", conf = "exe", name = "case_7", name_conf = "data", delay = 25, kind = "string" },
-  { i = 25, pin = "param", conf = "exe", name = "delay_7", name_conf = "guess" },
-  { i = 26, pin = "param", conf = "exe", name = "value_8", name_conf = "data", kind = "int" },
-  { i = 27, pin = "out", conf = "exe", name = "case_8", name_conf = "data", delay = 28, kind = "string" },
-  { i = 28, pin = "param", conf = "exe", name = "delay_8", name_conf = "guess" },
+  { i = 3, pin = "out", conf = "exe", name = "default", name_conf = "exe", delay = 4, kind = "string" },
+  { i = 4, pin = "param", conf = "exe", name = "default_delay", name_conf = "exe", kind = "float" },
+  { i = 5, pin = "param", conf = "exe", name = "value_1", name_conf = "exe", kind = "int" },
+  { i = 6, pin = "out", conf = "exe", name = "case_1", name_conf = "exe", delay = 7, kind = "string" },
+  { i = 7, pin = "param", conf = "exe", name = "delay_1", name_conf = "exe", kind = "float" },
+  { i = 8, pin = "param", conf = "exe", name = "value_2", name_conf = "exe", kind = "int" },
+  { i = 9, pin = "out", conf = "exe", name = "case_2", name_conf = "exe", delay = 10, kind = "string" },
+  { i = 10, pin = "param", conf = "exe", name = "delay_2", name_conf = "exe", kind = "float" },
+  { i = 11, pin = "param", conf = "exe", name = "value_3", name_conf = "exe", kind = "int" },
+  { i = 12, pin = "out", conf = "exe", name = "case_3", name_conf = "exe", delay = 13, kind = "string" },
+  { i = 13, pin = "param", conf = "exe", name = "delay_3", name_conf = "exe", kind = "float" },
+  { i = 14, pin = "param", conf = "exe", name = "value_4", name_conf = "exe", kind = "int" },
+  { i = 15, pin = "out", conf = "exe", name = "case_4", name_conf = "exe", delay = 16, kind = "string" },
+  { i = 16, pin = "param", conf = "exe", name = "delay_4", name_conf = "exe", kind = "float" },
+  { i = 17, pin = "param", conf = "exe", name = "value_5", name_conf = "exe", kind = "int" },
+  { i = 18, pin = "out", conf = "exe", name = "case_5", name_conf = "exe", delay = 19, kind = "string" },
+  { i = 19, pin = "param", conf = "exe", name = "delay_5", name_conf = "exe" },
+  { i = 20, pin = "param", conf = "exe", name = "value_6", name_conf = "exe", kind = "int" },
+  { i = 21, pin = "out", conf = "exe", name = "case_6", name_conf = "exe", delay = 22, kind = "string" },
+  { i = 22, pin = "param", conf = "exe", name = "delay_6", name_conf = "exe" },
+  { i = 23, pin = "param", conf = "exe", name = "value_7", name_conf = "exe", kind = "int" },
+  { i = 24, pin = "out", conf = "exe", name = "case_7", name_conf = "exe", delay = 25, kind = "string" },
+  { i = 25, pin = "param", conf = "exe", name = "delay_7", name_conf = "exe" },
+  { i = 26, pin = "param", conf = "exe", name = "value_8", name_conf = "exe", kind = "int" },
+  { i = 27, pin = "out", conf = "exe", name = "case_8", name_conf = "exe", delay = 28, kind = "string" },
+  { i = 28, pin = "param", conf = "exe", name = "delay_8", name_conf = "exe" },
 ]
 
 [packet.VariableWatcher]
 hash = "29155ec0"
 attrs = [
-  { i = 0, pin = "in", conf = "exe", name = "activate", name_conf = "data", kind = "string" },
-  { i = 1, pin = "in", conf = "exe", name = "deactivate", name_conf = "data", kind = "string" },
-  { i = 2, pin = "out", conf = "exe", name = "send", name_conf = "data", kind = "string" },
-  { i = 4, pin = "param", conf = "exe", name = "variable", name_conf = "data", kind = "hash" },
-  { i = 5, pin = "param", conf = "exe", name = "comparison", name_conf = "guess", kind = "int" },
-  { i = 6, pin = "param", conf = "exe", name = "value", name_conf = "guess", kind = "int" },
+  { i = 0, pin = "in", conf = "exe", name = "activate", name_conf = "exe", kind = "string" },
+  { i = 1, pin = "in", conf = "exe", name = "deactivate", name_conf = "exe", kind = "string" },
+  { i = 2, pin = "out", conf = "exe", name = "send", name_conf = "exe", kind = "string" },
+  { i = 3, pin = "param", name = "delay", name_conf = "exe" },
+  { i = 4, pin = "param", conf = "exe", name = "variable", name_conf = "exe", kind = "hash" },
+  { i = 5, pin = "param", conf = "exe", name = "comparison", name_conf = "exe", kind = "int" },
+  { i = 6, pin = "param", conf = "exe", name = "value", name_conf = "exe", kind = "int" },
+  { i = 7, pin = "param", name = "flags", name_conf = "exe", kind = "int" },
+  { i = 8, pin = "param", name = "max_fires", name_conf = "exe" },
 ]
 
 [packet.VehicleDamageComponent]
@@ -2230,7 +2505,7 @@ attrs = [
 [packet.WitnessCrime]
 hash = "eea446d9"
 attrs = [
-  { i = 1, pin = "out", conf = "data", kind = "string" },
+  { i = 1, pin = "in", conf = "exe", kind = "string" },
   { i = 2, pin = "link", conf = "data", kind = "guid" },
 ]
 
@@ -2248,10 +2523,16 @@ attrs = [
   { i = 1, pin = "link", conf = "data", kind = "guid" },
 ]
 
+[packet.ZoneStreamEnable]
+hash = "c8f2456f"
+attrs = [
+  { i = 0, pin = "param", name = "cell_name", name_conf = "exe", kind = "string" },
+]
+
 [packet.aeaf6570]
 hash = "aeaf6570"
 attrs = [
-  { i = 2, pin = "in", conf = "data", kind = "string" },
+  { i = 2, pin = "param", conf = "exe", name = "score_event", name_conf = "guess", kind = "string" },
 ]
 
 [packet.c640736f]

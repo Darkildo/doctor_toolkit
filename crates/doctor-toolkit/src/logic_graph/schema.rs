@@ -146,6 +146,20 @@ fn class_hash(name: &str) -> u32 {
     }
 }
 
+/// An attribute of a packet with its meaning ([`LogicSchema::typed_attrs`]).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct TypedAttr {
+    pub index: u16,
+    pub name: Option<String>,
+    #[serde(rename = "type")]
+    pub ty: SemanticType,
+    pub conf: Confidence,
+    /// Values of the game files that fit the type, and all values seen.
+    pub seen: Option<(u32, u32)>,
+    /// Where a hand-read type comes from.
+    pub source: Option<&'static str>,
+}
+
 impl LogicSchema {
     /// Parses the TOML schema and the list of engine messages (one name per
     /// line, `#` comments).
@@ -206,10 +220,33 @@ impl LogicSchema {
         Ok(schema)
     }
 
-    /// The schema of The Godfather II (PC).
+    /// The schema of The Godfather II (PC): the classes of the engine and
+    /// the classes of native mods named by `DOCTOR_TOOLKIT_CLASSES`
+    /// (`game_types::custom`).
     pub fn gf2() -> &'static Self {
         static SCHEMA: OnceLock<LogicSchema> = OnceLock::new();
-        SCHEMA.get_or_init(|| Self::parse(GF2_SCHEMA, GF2_ENGINE).expect("valid built-in schema"))
+        SCHEMA.get_or_init(|| {
+            let mut schema = Self::engine();
+            schema.add_custom(crate::game_types::custom::installed());
+            schema
+        })
+    }
+
+    /// The classes of the engine only.
+    pub fn engine() -> Self {
+        Self::parse(GF2_SCHEMA, GF2_ENGINE).expect("valid built-in schema")
+    }
+
+    /// Adds classes of native mods (checked by `game_types::custom::parse`):
+    /// their names, categories, packets and the layout of a new object.
+    pub fn add_custom(&mut self, classes: &[crate::game_types::custom::CustomClass]) {
+        for class in classes {
+            let layout = class.layout(self);
+            self.names.insert(class.hash, class.name.clone());
+            self.categories.insert(class.hash, class.category);
+            self.layouts.insert(class.hash, layout);
+            self.packets.insert(class.hash, class.pins());
+        }
     }
 
     /// Attributes of a class packet that the schema knows.
@@ -277,6 +314,35 @@ impl LogicSchema {
             }
             _ => crate::game_types::attr_type(class, index).map(|t| (t.ty, t.conf)),
         }
+    }
+
+    /// Every attribute of the packet of `class` whose meaning is known
+    /// (message pins and the typed attributes), by index.
+    pub fn typed_attrs(&self, class: u32) -> Vec<TypedAttr> {
+        let mut indexes: Vec<u16> = self.packet(class).iter().map(|a| a.index).collect();
+        indexes.extend(
+            crate::game_types::attr_types()
+                .iter()
+                .filter(|r| r.0 == class)
+                .map(|r| r.1),
+        );
+        indexes.sort_unstable();
+        indexes.dedup();
+        indexes
+            .into_iter()
+            .filter_map(|index| {
+                let (ty, conf) = self.semantic(class, index)?;
+                let extra = crate::game_types::attr_type(class, index);
+                Some(TypedAttr {
+                    index,
+                    name: self.attr(class, index).and_then(|a| a.name.clone()),
+                    ty,
+                    conf,
+                    seen: extra.map(|e| e.seen),
+                    source: extra.map(|e| e.source).filter(|s| !s.is_empty()),
+                })
+            })
+            .collect()
     }
 
     /// Pins of an object: every schema attribute of its packets that is not

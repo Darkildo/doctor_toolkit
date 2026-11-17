@@ -996,3 +996,105 @@ pub(super) fn document_bytes(type_id: u32, value: &Value) -> Result<Vec<u8>> {
         ))),
     }
 }
+
+/// A new project as a surface describes it: stream and type names.
+#[derive(Debug, Clone, Default, PartialEq, serde::Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct NewProject {
+    /// Name of the project and its mod [default: the folder name].
+    #[serde(default)]
+    pub name: Option<String>,
+    /// Mod id [default: made from the name].
+    #[serde(default)]
+    pub id: Option<String>,
+    #[serde(default)]
+    pub author: String,
+    /// Streams to take, e.g. `gf2/frontend`.
+    #[serde(default)]
+    pub streams: Vec<String>,
+    /// Only resources of these types: tags such as `tg4h`.
+    #[serde(default)]
+    pub types: Vec<String>,
+    /// Take the resources the workspace changes, as it has them, instead of
+    /// whole streams.
+    #[serde(default)]
+    pub from_workspace: bool,
+    /// Textures as DDS instead of PNG.
+    #[serde(default)]
+    pub dds: bool,
+    /// Model format: glb (default), fbx, obj, usd, usda, usdc or usdz.
+    #[serde(default)]
+    pub model_format: Option<String>,
+    /// Keep resources equal in several streams in each stream's folder.
+    #[serde(default)]
+    pub no_shared: bool,
+}
+
+/// Makes a project in `root` (a new or empty directory) of what `new`
+/// names; `workspace_dir` is written into the project when it is not the
+/// game's default workspace.
+pub fn create_from(
+    game: &GameInstance,
+    ws: &Workspace,
+    index: Option<&GameIndex>,
+    root: &Path,
+    new: &NewProject,
+    workspace_dir: Option<std::path::PathBuf>,
+) -> Result<(Project, CreateReport)> {
+    if new.from_workspace != new.streams.is_empty() {
+        return Err(Error::InvalidArgument(
+            "give the streams to take, or take the changes of the workspace (not both)".into(),
+        ));
+    }
+    let type_ids: Vec<u32> = new
+        .types
+        .iter()
+        .map(|t| {
+            type_tags()
+                .resolve(t)
+                .ok_or_else(|| Error::InvalidArgument(format!("unknown type `{t}`")))
+        })
+        .collect::<Result<_>>()?;
+    let mut selection = if new.from_workspace {
+        workspace_selection(game, ws)?
+    } else {
+        crate::navigation::unpack::select(game, &new.streams, &type_ids)?
+    };
+    if new.from_workspace && !type_ids.is_empty() {
+        for (s, list) in &mut selection {
+            let file = game.open_stream(*s)?;
+            list.retain(|&r| type_ids.contains(&file.layout().resources[r].header.type_id));
+        }
+        selection.retain(|(_, l)| !l.is_empty());
+    }
+    if selection.is_empty() {
+        return Err(Error::InvalidArgument(
+            "nothing to put into the project".into(),
+        ));
+    }
+    let name = new.name.clone().unwrap_or_else(|| {
+        root.file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "Project".into())
+    });
+    create(
+        game,
+        ws,
+        index,
+        root,
+        &CreateOptions {
+            name,
+            id: new.id.clone(),
+            author: new.author.clone(),
+            selection,
+            settings: BuildSettings {
+                textures: if new.dds { "dds" } else { "png" }.into(),
+                models: new.model_format.clone().unwrap_or_else(|| "glb".into()),
+                shared: !new.no_shared,
+                workspace: workspace_dir,
+            },
+        },
+        &|_, _| {},
+        &AtomicBool::new(false),
+    )
+}

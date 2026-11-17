@@ -1,13 +1,49 @@
 # Messages the engine itself sends or listens to: identifiers named in
 # godfather2.exe (iMsg* strings, and names engine code gives to the message
-# table through 0x408240, 0x408980, 0x4089B0). See research/ghidra/README.md.
+# table through 0x408240, 0x408980, 0x4089B0, or 0x4DAFD0 -> 0x408260).
+# See research/ghidra/README.md; research/bus_sites.py lists the places and
+# its `check` tells when a name of the code is missing here.
+AICombatEventData*
+ambient_brandish_fist
+ambient_brush_shoulders
+ambient_check_time
+ambient_cough
+ambient_ogle_lady
+ambient_smoke
+ambient_stretch
+AmbientAudioPerformanceRequest
+audio: play
+AvoidStreetEventData*
+bodyfall
+breakable collision off
+breakable collision on
+change posture
+collision off
+collision on
+createimpactexc1
+createimpactexc2
 deactivate_exploder1_vfx
 deactivate_exploder_vfx
 deactivate_healer1_vfx
 deactivate_healer_vfx
 deactivate_vest1_vfx
 deactivate_vest_vfx
+deathspray off
+deathspray on
+enable PA
+execution end
+footstep
+footstepl_1
+footstepl_2
+footstepl_3
+footstepl_4
+footstepr_1
+footstepr_2
+footstepr_3
+footstepr_4
 fs_DCG_0h
+hit react heavy
+hit react light
 iMsgAccomplishmentEnterScreen
 iMsgAccomplishmentExitScreen
 iMsgAISound
@@ -99,6 +135,7 @@ iMsgDamage
 iMsgDealtDamage
 iMsgDealtDeathDamage
 iMsgDeleteEntity
+iMsgDeleteEventHandler
 iMsgDespawnAllSpawnedPoliceVehicles
 iMsgDespawnCrew
 iMsgDisableAudioOcclusion
@@ -565,10 +602,49 @@ iMsgWeaponWheelSelect
 iMsgWindowHasGainedInputFocus
 iMsgWindowHasLostInputFocus
 iMsgWitnessedPlayerCrime
+iMsgZoneRenderCollisionActivated
 iNeoMsgBuildingChangedOwner
+item attach
+item detach
+item switch
+item throw
+item use
+living world prop attach
+living world prop detach
+living world prop drop
+living world prop plant
+motion_blur_off
+motion_blur_on
+Multiplayer Has gone into Overtime
 mus_safehouse_award_msg
+paired player detach
+paired player unlock
+paired_sentient_detach
+paired_sentient_resume
 play_credits_movie
+prop attach
+prop detach
+ragdoll window start
+rws: send message
+Sent to a sentient to stop them from burning
+Sent to an entity to clear falling flag
+Sent to an entity to commence falling
+Sent to an entity when paired animation change required
+set expression
+set_metamodel_var
 spawn_captureables_oil
 spawn_healer
+special tommygun use
+Stimulus_HearPressure_MsgData*
+StimulusData*
+take damage point
 UIScoreboard_HideDelayed_Internal
 UIScoreboard_TimerUpdate_Internal
+use csa
+use phone
+vfx: play
+vfx: start prop use vfx
+vfx: stop
+vfx: stop prop use vfx
+vibration: play
+vox: play

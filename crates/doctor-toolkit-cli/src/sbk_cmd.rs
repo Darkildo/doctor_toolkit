@@ -3,13 +3,13 @@
 use std::io::Write as _;
 use std::path::PathBuf;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result};
 use clap::Args;
 
-use doctor_toolkit::game::{GameInstance, StreamFile};
-use doctor_toolkit::resource::audio::{Sample, TYPE_SBK};
-use doctor_toolkit::resource::audio_encode::encode_like;
-use doctor_toolkit::resource::sbk::{SoundBank, cmd, emx_name, name_hash};
+use doctor_toolkit::game::GameInstance;
+use doctor_toolkit::resource::audio::Sample;
+use doctor_toolkit::resource::sbk::{SoundBank, cmd};
+use doctor_toolkit::sound_edit::{self, SbkEdit, SoundAdd};
 use doctor_toolkit::workspace::{ResourceKey, Workspace};
 
 use crate::workspace_cmd::{self, EditMode};
@@ -130,83 +130,26 @@ fn parse_hex(text: &str) -> Result<u32, String> {
     u32::from_str_radix(text.trim_start_matches("0x"), 16).map_err(|e| e.to_string())
 }
 
-/// A bank of the game, as the workspace has it.
-struct BankRef {
-    key: ResourceKey,
-    stream_index: usize,
-    index: usize,
-    data: Vec<u8>,
-}
-
-fn load_bank(game: &GameInstance, ws: &Workspace, key: &str) -> Result<BankRef> {
-    let key: ResourceKey = key.parse()?;
-    if key.type_id != TYPE_SBK {
-        bail!("{key} is not an sbk resource");
-    }
-    let stream_index = game
-        .find_stream(&key.stream)
-        .with_context(|| format!("no stream {}", key.stream))?;
-    let stream = StreamFile::open(&game.streams()[stream_index].path)?;
-    let index = key
-        .find_in(stream.layout())
-        .with_context(|| format!("{key} is not in its stream"))?;
-    let data = ws.current_data(game, stream_index, index)?;
-    Ok(BankRef {
-        key,
-        stream_index,
-        index,
-        data,
-    })
-}
-
 fn find_emitter(bank: &SoundBank, text: &str) -> Result<usize> {
     bank.find_emitter(text)
         .with_context(|| format!("the bank has no emitter {text}"))
-}
-
-/// Saves an edited bank: refuses problems the original did not have.
-fn save(
-    game: &GameInstance,
-    ws: &mut Workspace,
-    bank_ref: &BankRef,
-    before: &SoundBank,
-    bank: &SoundBank,
-    label: &str,
-) -> Result<()> {
-    let old = before.validate();
-    let new: Vec<String> = bank
-        .validate()
-        .into_iter()
-        .filter(|p| !old.contains(p))
-        .collect();
-    if !new.is_empty() {
-        bail!("the edit breaks the bank:\n  {}", new.join("\n  "));
-    }
-    ws.set_resource(
-        game,
-        bank_ref.stream_index,
-        bank_ref.index,
-        bank.to_bytes(),
-        label,
-    )?;
-    Ok(())
 }
 
 /// `sbk-info`.
 pub fn info(args: &InfoArgs) -> Result<()> {
     let game = GameInstance::open(&args.game_dir)?;
     let ws = Workspace::for_game(&game, args.workspace_dir.as_deref())?;
-    let bank_ref = load_bank(&game, &ws, &args.key)?;
-    let bank = SoundBank::parse(&bank_ref.data)?;
+    let bank_ref = sound_edit::load_bank(&game, &ws, &args.key.parse()?)?;
+    let bank = &bank_ref.bank;
     let only = args
         .emitter
         .as_deref()
-        .map(|e| find_emitter(&bank, e))
+        .map(|e| find_emitter(bank, e))
         .transpose()?;
     if args.json {
         let value = match only {
             Some(i) => serde_json::to_value(&bank.emitters[i])?,
-            None => serde_json::to_value(&bank)?,
+            None => serde_json::to_value(bank)?,
         };
         out!("{}", serde_json::to_string_pretty(&value)?);
         return Ok(());
@@ -299,196 +242,58 @@ pub fn info(args: &InfoArgs) -> Result<()> {
 pub fn edit(args: &EditArgs) -> Result<()> {
     let game = GameInstance::open(&args.game_dir)?;
     let mut ws = workspace_cmd::open_for_edit(&game, &args.mode)?;
-    let bank_ref = load_bank(&game, &ws, &args.key)?;
-    let before = SoundBank::parse(&bank_ref.data)?;
-    let mut bank = before.clone();
-    let i = find_emitter(&bank, &args.emitter)?;
-    let mut changed = Vec::new();
-    {
-        let e = &mut bank.emitters[i];
-        let mut set = |name: &str, done: bool| {
-            if done {
-                changed.push(name.to_owned());
-            }
-        };
-        if let Some(v) = args.volume {
-            e.track.volume = v;
-        }
-        set("volume", args.volume.is_some());
-        if let Some(v) = args.pitch_range {
-            e.track.pitch_range = v;
-        }
-        set("pitch range", args.pitch_range.is_some());
-        if let Some(v) = args.attn_range {
-            e.track.attn_range = v;
-        }
-        set("attenuation range", args.attn_range.is_some());
-        if let Some(v) = args.falloff {
-            if v.is_nan() || v <= 0.0 {
-                bail!("falloff must be positive");
-            }
-            e.falloff = v;
-        }
-        set("falloff", args.falloff.is_some());
-        if let Some(v) = args.priority {
-            e.priority = v;
-        }
-        set("priority", args.priority.is_some());
-        if let Some(v) = args.poly_max {
-            if v == 0 {
-                bail!("poly max must be at least 1");
-            }
-            e.poly_max = v;
-        }
-        set("poly max", args.poly_max.is_some());
-        if let Some(v) = args.flags {
-            e.flags = u8::try_from(v).context("flags are one byte")?;
-        }
-        set("flags", args.flags.is_some());
-        if let Some(v) = args.select {
-            e.track.select = v;
-        }
-        set("variation choice", args.select.is_some());
-        if let Some(v) = args.mix {
-            e.mix_category = v;
-        }
-        set("mixer category", args.mix.is_some());
-    }
-    if let Some(p) = args.pitch {
-        bank.set_pitch(i, p)?;
-        changed.push("pitch".into());
-    }
-    if let Some(v) = args.velocity {
-        bank.set_velocity(i, v)?;
-        changed.push("velocity".into());
-    }
-    if let Some(v) = args.remove_variation {
-        bank.remove_variation(i, v)?;
-        changed.push(format!("variation {v} removed"));
-    }
-    if changed.is_empty() {
-        bail!("nothing to change: give --volume, --pitch, --velocity, … (see --help)");
-    }
-    let label = format!(
-        "Edit sound {} of {}: {}",
-        bank.emitter_label(i),
-        bank_ref.key.stream,
-        changed.join(", ")
-    );
-    save(&game, &mut ws, &bank_ref, &before, &bank, &label)?;
-    out!("{label}");
-    workspace_cmd::finish_edit(
+    let key: ResourceKey = args.key.parse()?;
+    let label = sound_edit::edit_bank(
         &game,
         &mut ws,
-        &args.mode,
-        vec![bank_ref.key.stream.clone()],
-    )
+        &key,
+        &SbkEdit {
+            emitter: args.emitter.clone(),
+            volume: args.volume,
+            pitch: args.pitch,
+            pitch_range: args.pitch_range,
+            attn_range: args.attn_range,
+            velocity: args.velocity,
+            falloff: args.falloff,
+            priority: args.priority,
+            poly_max: args.poly_max,
+            flags: args.flags,
+            select: args.select,
+            mix: args.mix,
+            remove_variation: args.remove_variation,
+        },
+    )?;
+    out!("{label}");
+    workspace_cmd::finish_edit(&game, &mut ws, &args.mode, vec![key.stream.clone()])
 }
 
 /// `sound-add`.
 pub fn add(args: &AddArgs) -> Result<()> {
     let game = GameInstance::open(&args.game_dir)?;
     let mut ws = workspace_cmd::open_for_edit(&game, &args.mode)?;
-    let bank_ref = load_bank(&game, &ws, &args.key)?;
-    let before = SoundBank::parse(&bank_ref.data)?;
-    let mut bank = before.clone();
-    if bank.emitters.is_empty() {
-        bail!("the bank has no emitter to take the parameters from");
-    }
-    let template = match (&args.emitter, &args.like) {
-        (Some(e), _) | (None, Some(e)) => find_emitter(&bank, e)?,
-        (None, None) => 0,
-    };
-    // The format of the emitter's first sound.
-    let header = bank
-        .instrument_of(template)
-        .and_then(|ins| bank.instruments[ins].tones.first())
-        .and_then(|tone| bank.samples.get(tone.sample as usize))
-        .and_then(|s| Sample::parse_inline(&s.bytes, 0).ok())
-        .map(|s| s.header)
-        .context("the emitter has no sound to take the format from")?;
-    let mut header = header;
-    if let Some(rate) = args.rate {
-        header.sample_rate = rate;
-    }
-    if let Some(channels) = args.channels {
-        header.channels = channels;
-    }
-    let mut encoded = Vec::new();
-    for path in &args.inputs {
-        let pcm = doctor_toolkit::resource::video::import::read_audio_file(path)
-            .with_context(|| format!("reading {}", path.display()))?;
-        if pcm.frames() == 0 {
-            bail!("{} holds no audio", path.display());
-        }
-        let (fitted, data) = encode_like(&pcm, &header)?;
-        out!(
-            "{}: {} Hz, {} channel(s), {:.2} s",
-            path.display(),
-            header.sample_rate,
-            header.channels,
-            fitted.frames() as f64 / f64::from(header.sample_rate)
-        );
-        encoded.push(data);
-    }
-    let label = if let Some(name) = &args.new {
-        let name = emx_name(name);
-        let hash = name_hash(&name);
-        // The game plays the first loaded bank that has the name.
-        for other in other_banks(&game, &ws, &bank_ref)? {
-            if other.1.emitters.iter().any(|e| e.template_id == hash) {
-                bail!("{name} ({hash:08x}) is already an emitter of {}", other.0);
-            }
-        }
-        let n = bank.add_emitter(&name, template, encoded)?;
-        format!(
-            "Add sound {name} ({hash:08x}, emitter #{n}, {} variation(s)) to {}",
-            args.inputs.len(),
-            bank_ref.key.stream
-        )
-    } else {
-        let mut first = None;
-        for data in encoded {
-            let v = bank.add_variation(template, data)?;
-            first.get_or_insert(v);
-        }
-        format!(
-            "Add {} variation(s) to sound {} of {}",
-            args.inputs.len(),
-            bank.emitter_label(template),
-            bank_ref.key.stream
-        )
-    };
-    save(&game, &mut ws, &bank_ref, &before, &bank, &label)?;
-    out!("{label}");
-    workspace_cmd::finish_edit(
+    let key: ResourceKey = args.key.parse()?;
+    let done = sound_edit::add_sounds(
         &game,
         &mut ws,
-        &args.mode,
-        vec![bank_ref.key.stream.clone()],
-    )
-}
-
-/// Every other `sbk` bank of the game, as the workspace has it.
-fn other_banks(
-    game: &GameInstance,
-    ws: &Workspace,
-    this: &BankRef,
-) -> Result<Vec<(String, SoundBank)>> {
-    let mut banks = Vec::new();
-    for (stream_index, file) in game.streams().iter().enumerate() {
-        let stream = StreamFile::open(&file.path)?;
-        for (index, resource) in stream.layout().resources.iter().enumerate() {
-            if resource.header.type_id != TYPE_SBK
-                || (stream_index == this.stream_index && index == this.index)
-            {
-                continue;
-            }
-            let data = ws.current_data(game, stream_index, index)?;
-            if let Ok(bank) = SoundBank::parse(&data) {
-                banks.push((file.stream_name(), bank));
-            }
-        }
+        &key,
+        &SoundAdd {
+            files: args.inputs.clone(),
+            emitter: args.emitter.clone(),
+            new: args.new.clone(),
+            like: args.like.clone(),
+            rate: args.rate,
+            channels: args.channels,
+        },
+    )?;
+    for s in &done.sounds {
+        out!(
+            "{}: {} Hz, {} channel(s), {:.2} s",
+            s.file,
+            s.sample_rate,
+            s.channels,
+            s.seconds
+        );
     }
-    Ok(banks)
+    out!("{}", done.operation);
+    workspace_cmd::finish_edit(&game, &mut ws, &args.mode, vec![done.stream])
 }

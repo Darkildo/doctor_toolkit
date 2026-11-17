@@ -346,6 +346,39 @@ pub fn top_level_stream(stream: &str) -> Option<String> {
     Some(format!("{folder}/{name}"))
 }
 
+/// The point a new one is copied from: the default point of the stream
+/// that sends no message, else any point without a message (a point with a
+/// message would start its checkpoint again).
+pub fn spawn_template(points: &[SpawnPoint]) -> Option<&SpawnPoint> {
+    points
+        .iter()
+        .find(|p| p.kind == Some(2) && p.message.is_none())
+        .or_else(|| points.iter().find(|p| p.message.is_none()))
+}
+
+/// A new `PlayerSpawn` at `at`: a copy of `template` recorded in the
+/// workspace (one operation). The game has it once the workspace is given
+/// to it, so a launch at the point applies the workspace first. Returns the
+/// index of the copy in its SimGroup and its GUID.
+pub fn copy_spawn(
+    game: &GameInstance,
+    ws: &mut crate::workspace::Workspace,
+    template: &SpawnPoint,
+    at: [f32; 3],
+    taken: &dyn Fn(&Guid) -> bool,
+) -> Result<(usize, Guid)> {
+    let stream = game
+        .find_stream(&template.stream)
+        .ok_or_else(|| Error::InvalidArgument(format!("no stream {}", template.stream)))?;
+    let from = template.position.unwrap_or(at);
+    let offset = [at[0] - from[0], at[1] - from[1], at[2] - from[2]];
+    let group = crate::level::Location {
+        stream,
+        resource: template.resource,
+    };
+    crate::level::edit::duplicate(game, ws, group, template.object, offset, taken)
+}
+
 /// The point of `points` nearest to `at` (with its distance in metres):
 /// where "Play from here" starts.
 pub fn nearest_spawn(points: &[SpawnPoint], at: [f32; 3]) -> Option<(&SpawnPoint, f32)> {

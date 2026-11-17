@@ -14,6 +14,10 @@
 //!
 //! `redirect` lines (stage 46, [`crate::files`]) name files the game opens
 //! from elsewhere: the path in the game folder, `|`, the file it gets.
+//! `resources` lines (stage 100, [`crate::resources`]) name streams the
+//! module composes in memory: the stream in the game folder, `|`, its
+//! resource patch and, after another `|`, the file to compose from when
+//! that is not the game's own stream.
 
 use crate::DEFAULT_PORT;
 
@@ -41,6 +45,13 @@ pub struct Config {
     pub files_log: bool,
     /// Files the game opens from elsewhere (stage 46).
     pub redirects: Vec<crate::files::Redirect>,
+    /// Streams the module composes from the game's file and a resource
+    /// patch (stage 100): the stream, and its patch file.
+    pub resources: Vec<crate::resources::PatchLine>,
+    /// Whether the module writes every composed stream next to its patch
+    /// (`<patch>.composed`, for comparing it with what "apply" writes).
+    /// Off unless the file says `resources_dump=1`.
+    pub resources_dump: bool,
 }
 
 impl Default for Config {
@@ -53,6 +64,8 @@ impl Default for Config {
             journal: true,
             files_log: false,
             redirects: Vec::new(),
+            resources: Vec::new(),
+            resources_dump: false,
         }
     }
 }
@@ -87,6 +100,14 @@ impl Config {
                         out.redirects.push(r);
                     }
                 }
+                "resources" => {
+                    if out.resources.len() < crate::resources::MAX_PATCHES
+                        && let Some(r) = crate::resources::PatchLine::parse(value)
+                    {
+                        out.resources.push(r);
+                    }
+                }
+                "resources_dump" => out.resources_dump = matches!(value, "1" | "true" | "yes"),
                 _ => {}
             }
         }
@@ -113,12 +134,23 @@ impl Config {
             out.push_str(&r.to_line());
             out.push_str("\r\n");
         }
+        if self.resources_dump {
+            out.push_str("resources_dump=1\r\n");
+        }
+        if !self.resources.is_empty() {
+            out.push_str("# streams composed in memory from a resource patch (stage 100)\r\n");
+        }
+        for r in &self.resources {
+            out.push_str("resources=");
+            out.push_str(&r.to_line());
+            out.push_str("\r\n");
+        }
         out
     }
 
     /// Whether the module hooks the files the game opens.
     pub fn hooks_files(&self) -> bool {
-        self.files_log || !self.redirects.is_empty()
+        self.files_log || !self.redirects.is_empty() || !self.resources.is_empty()
     }
 }
 
@@ -145,6 +177,19 @@ mod tests {
                     to: "GODFATH0.viv".into(),
                 },
             ],
+            resources: vec![
+                crate::resources::PatchLine {
+                    from: "gf2/cuba.str".into(),
+                    to: "Z:\\cache\\overlay\\game\\gf2\\cuba.str".into(),
+                    base: None,
+                },
+                crate::resources::PatchLine {
+                    from: "gf2/miami.str".into(),
+                    to: "Z:\\cache\\overlay\\game\\gf2\\miami.str".into(),
+                    base: Some("_doctor_toolkit/backups/gf2/miami.str".into()),
+                },
+            ],
+            resources_dump: true,
         };
         assert_eq!(Config::parse(&c.to_text()), c);
         assert!(c.hooks_files());
@@ -164,6 +209,8 @@ mod tests {
                 journal: true,
                 files_log: false,
                 redirects: Vec::new(),
+                resources: Vec::new(),
+                resources_dump: false,
             }
         );
         // A bad redirect line is left out.

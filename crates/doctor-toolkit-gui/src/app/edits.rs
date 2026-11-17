@@ -21,6 +21,12 @@ const LOCK_HOLDER: &str = doctor_toolkit::bridge::EDITOR;
 impl BrowserApp {
     /// Opens the game's workspace if it has one; it is created on the first edit.
     pub(super) fn open_workspace(&mut self) {
+        self.load_workspace();
+        self.refresh_status();
+    }
+
+    /// [`Self::open_workspace`] without comparing it with the game.
+    pub(super) fn load_workspace(&mut self) {
         self.workspace = None;
         self.ws_lock = None;
         self.ws_status = None;
@@ -39,11 +45,13 @@ impl BrowserApp {
                 }
             }
         }
-        self.refresh_status();
     }
 
     /// Compares the workspace with the game again and updates the marks.
     pub(super) fn refresh_status(&mut self) {
+        // A stream or a resource of a new stream came or went: the game the
+        // views show lists the new streams as they are now.
+        self.restage();
         self.changes.invalidate();
         self.ws_status = match (&self.game, &self.workspace) {
             (Some(game), Some(ws)) => match ws.status(game) {
@@ -136,7 +144,18 @@ impl BrowserApp {
                 name,
                 text,
                 everywhere,
-            } => self.add_string(loc, name, text, everywhere),
+                translations,
+            } => {
+                if everywhere && !translations.is_empty() {
+                    let translations = translations.into_iter().collect();
+                    self.add_string_translated(&name, &text, &translations);
+                } else {
+                    self.add_string(loc, name, text, everywhere);
+                }
+            }
+            ViewAction::EditStrings(edits) => {
+                self.edit_strings_everywhere(&edits);
+            }
             ViewAction::ImportTexture { pair, path } => {
                 self.import_texture(loc.stream, pair, &path)
             }
@@ -168,6 +187,7 @@ impl BrowserApp {
             }
             ViewAction::Unlink(key) => self.unlink_external(&key),
             ViewAction::OpenInLevel => self.cine_open = Some(loc),
+            ViewAction::OpenSound { page, mix } => self.open_sound_page(page, mix),
             ViewAction::StartWizard(task) => {
                 if let Some(kind) = super::wizard::Kind::from_slug(task) {
                     let start = super::wizard::Start {
@@ -628,7 +648,9 @@ impl BrowserApp {
         match action {
             Some(ChangesAction::Undo) => self.undo(),
             Some(ChangesAction::Redo) => self.redo(),
-            Some(ChangesAction::Apply(force)) => self.apply(force),
+            // Overwriting foreign changes was confirmed in the panel.
+            Some(ChangesAction::Apply(true)) => self.apply(true),
+            Some(ChangesAction::Apply(false)) => self.apply_checked(),
             Some(ChangesAction::Unapply) => self.unapply(),
             Some(ChangesAction::Revert(keys)) => self.revert(&keys),
             Some(ChangesAction::RevertFiles(keys)) => self.revert_files(&keys),

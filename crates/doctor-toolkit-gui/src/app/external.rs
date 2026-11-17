@@ -205,7 +205,9 @@ impl BrowserApp {
             let text = self.external.preset.take().unwrap_or_default();
             match text.parse::<Format>() {
                 Ok(format) => self.open_external(loc, format),
-                Err(error) => eprintln!("DOCTOR_TOOLKIT_GUI_EXTERNAL: {error}"),
+                Err(error) => {
+                    self.preset_failed(&format!("DOCTOR_TOOLKIT_GUI_EXTERNAL: {error}"));
+                }
             }
         }
         if self.external.links.is_empty() {

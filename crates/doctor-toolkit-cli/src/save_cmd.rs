@@ -49,7 +49,7 @@ pub fn run(args: SaveArgs) -> Result<()> {
     if args.json {
         println!(
             "{}",
-            serde_json::to_string_pretty(&to_json(&save, &chunks))?
+            serde_json::to_string_pretty(&view::to_json(&save, &chunks))?
         );
         return Ok(());
     }
@@ -73,56 +73,9 @@ pub fn run(args: SaveArgs) -> Result<()> {
     Ok(())
 }
 
-fn to_json(save: &SaveFile, chunks: &[&save::Chunk]) -> serde_json::Value {
-    let listed: Vec<_> = save
-        .chunks
-        .iter()
-        .map(|c| {
-            json!({
-                "id": format!("{:08x}", c.id),
-                "name": c.name(),
-                "offset": c.offset,
-                "size": c.data.len(),
-            })
-        })
-        .collect();
-    let decoded: serde_json::Map<String, serde_json::Value> = chunks
-        .iter()
-        .map(|c| {
-            let value = match c.content() {
-                Ok(save::Content::Raw) => json!({ "hex": hex(&c.data) }),
-                Ok(content) => json!(content),
-                Err(e) => json!({ "error": e.to_string(), "hex": hex(&c.data) }),
-            };
-            (c.name(), value)
-        })
-        .collect();
-    json!({
-        "name": save.description,
-        "title": save.title,
-        "profile": save.profile,
-        "city": save.city,
-        "play_time": save.play_time,
-        "play_seconds": save.play_seconds,
-        "version": save.version,
-        "capacity": save.capacity,
-        "used": save.used,
-        "mask": save.mask,
-        "checksums": save.checksums,
-        "chunks": listed,
-        "content": decoded,
-    })
-}
-
-fn hex(data: &[u8]) -> String {
-    data.iter().map(|b| format!("{b:02x}")).collect()
-}
-
 /// Lists the saves of a folder and the folders below it.
 fn list(dir: &Path, as_json: bool) -> Result<()> {
-    let mut files = Vec::new();
-    collect(dir, &mut files)?;
-    files.sort();
+    let files = view::save_files(dir)?;
     let mut rows = Vec::new();
     for path in &files {
         let Ok(save) = SaveFile::open(path) else {
@@ -149,22 +102,6 @@ fn list(dir: &Path, as_json: bool) -> Result<()> {
         println!("{}", serde_json::to_string_pretty(&rows)?);
     } else if files.is_empty() {
         println!("no saves in {}", dir.display());
-    }
-    Ok(())
-}
-
-fn collect(dir: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
-    let entries = std::fs::read_dir(dir).with_context(|| format!("reading {}", dir.display()))?;
-    for entry in entries {
-        let path = entry?.path();
-        if path.is_dir() {
-            collect(&path, out)?;
-        } else if path
-            .metadata()
-            .is_ok_and(|m| m.len() == save::FILE_SIZE as u64)
-        {
-            out.push(path);
-        }
     }
     Ok(())
 }

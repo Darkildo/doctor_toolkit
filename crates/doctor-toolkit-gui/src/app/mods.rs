@@ -16,18 +16,21 @@ impl BrowserApp {
             return;
         }
         // Open the mods of the current game the first time the window shows it.
-        let same_game = match (self.mods.game(), &self.game) {
+        // The game folder: the mod manager is about what is written into it.
+        let game = self.disk_game();
+        let same_game = match (self.mods.game(), &game) {
             (Some(a), Some(b)) => Arc::ptr_eq(a, b),
             (None, None) => true,
             _ => false,
         };
         if !same_game {
-            self.mods.set_game(self.game.clone(), ctx);
+            self.mods.set_game(game, ctx);
         }
         if self.integrity_queued && !self.mods.is_busy() && self.mods.game().is_some() {
             self.integrity_queued = false;
             self.mods.check_integrity(ctx);
         }
+        self.mods_preset(ctx);
         let mut open = self.mods_open;
         let mut event = None;
         egui::Window::new(tr("window.mods"))
@@ -46,6 +49,37 @@ impl BrowserApp {
                 self.files_changed();
             }
             Some(PanelEvent::PlayWithMods) | None => {}
+        }
+    }
+
+    /// `DOCTOR_TOOLKIT_GUI_MODS=info=<file>` shows what a mod file holds
+    /// (the question before installing); `export=<id>:<file>` writes an
+    /// installed mod as a mod file. Once the window has read the mods.
+    fn mods_preset(&mut self, ctx: &egui::Context) {
+        if self.mods_preset.is_none() || self.mods.is_busy() || self.mods.manager().is_none() {
+            return;
+        }
+        let spec = self.mods_preset.take().unwrap_or_default();
+        match spec.split_once('=') {
+            Some(("info", file)) => {
+                let path = std::path::PathBuf::from(file);
+                if let Err(error) = doctor_toolkit::mods::file_info(&path) {
+                    self.preset_failed(&format!("DOCTOR_TOOLKIT_GUI_MODS: {file}: {error}"));
+                }
+                self.mods.offer_install(vec![path]);
+            }
+            Some(("export", rest)) => match rest.split_once(':') {
+                Some((id, file)) => {
+                    self.mods.export_mod(ctx, id, file.into());
+                    self.mods.wait();
+                    if let Some((message, true)) = self.mods.message() {
+                        let message = message.to_owned();
+                        self.preset_failed(&format!("DOCTOR_TOOLKIT_GUI_MODS: {message}"));
+                    }
+                }
+                None => self.preset_failed("DOCTOR_TOOLKIT_GUI_MODS: export=<id>:<file>"),
+            },
+            _ => self.preset_failed(&format!("DOCTOR_TOOLKIT_GUI_MODS: unknown item {spec}")),
         }
     }
 

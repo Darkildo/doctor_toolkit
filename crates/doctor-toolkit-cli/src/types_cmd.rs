@@ -234,13 +234,27 @@ fn message_cmd(name: &str, search: bool, limit: usize, json: bool) -> Result<()>
                 .join(", ")
         );
     }
-    for s in info.sent_by {
+    for s in &info.sent_by {
         out!("sent besides SimGroups by: {s}");
+    }
+    if info.engine_listens > 0 {
+        out!(
+            "heard by engine code: {} place(s) subscribe to it",
+            info.engine_listens
+        );
     }
     if let Some(s) = info.summary {
         out!("what: {s}");
     }
-    out!("data: {}", info.data);
+    match (info.data_conf, info.data_source) {
+        (Some(conf), Some(source)) => out!("data: {} ({conf}; {source})", info.data),
+        _ => out!("data: {}", info.data),
+    }
+    for key in info.data.split(" | ") {
+        if let Some(t) = game_types::message::data_type(key) {
+            out!("  {key}: {}", t.summary);
+        }
+    }
     out!(
         "confidence: {} ({})",
         info.conf.unwrap_or("—"),

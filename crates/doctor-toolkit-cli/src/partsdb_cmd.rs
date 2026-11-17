@@ -5,14 +5,14 @@ use std::io::Write as _;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result};
 use clap::{Args, Subcommand};
 
 use doctor_toolkit::character::{Character, MeshLocator, parse_selection};
 use doctor_toolkit::game::{GameAssets, GameInstance};
 use doctor_toolkit::hash::sdbm;
-use doctor_toolkit::resource::partsdb::{MODEL_SLOTS, Part, PartsDb};
-use doctor_toolkit::resource::simgroup::Hash32;
+use doctor_toolkit::outfit::{self, AllowVariant, NewPart};
+use doctor_toolkit::resource::partsdb::PartsDb;
 
 use crate::logic_cmd::export_data;
 use crate::workspace_cmd::{self, EditMode};
@@ -26,7 +26,6 @@ macro_rules! out {
 }
 
 const TYPE_PARTSDB: u32 = sdbm(b"partsdb");
-const TYPE_MESH: u32 = sdbm(b"mesh");
 
 /// Which database: stream and name (or resource index).
 #[derive(Args, Clone)]
@@ -159,14 +158,14 @@ pub fn run(command: PartsdbCommand) -> Result<()> {
             mode,
         } => add_part(
             &db,
-            AddPart {
+            NewPart {
                 name,
                 slot,
                 meshes,
                 tags,
                 variant,
-                sets,
-                all_sets,
+                // `--all-sets` and no `--set` both mean every set.
+                sets: if all_sets { Vec::new() } else { sets },
                 only,
             },
             &mode,
@@ -178,7 +177,16 @@ pub fn run(command: PartsdbCommand) -> Result<()> {
             sets,
             only,
             mode,
-        } => allow(&db, &variant, slot.as_deref(), &sets, only, &mode),
+        } => allow(
+            &db,
+            &AllowVariant {
+                variant,
+                slot,
+                sets,
+                only,
+            },
+            &mode,
+        ),
         PartsdbCommand::Character {
             db,
             set,
@@ -248,24 +256,6 @@ fn list(game_dir: &std::path::Path, stream_name: &str) -> Result<()> {
     Ok(())
 }
 
-/// Mesh names of a stream by id.
-fn mesh_names(file: &doctor_toolkit::game::StreamFile) -> std::collections::HashMap<u32, String> {
-    let mut names = std::collections::HashMap::new();
-    for (index, r) in file.layout().resources.iter().enumerate() {
-        if r.header.type_id != TYPE_MESH {
-            continue;
-        }
-        if let Ok(data) = file.resource_data(index)
-            && let Ok(at) =
-                doctor_toolkit::io::read_u32(&data, 0x20, doctor_toolkit::io::Endian::Little)
-            && let Ok(name) = doctor_toolkit::io::cstr(&data, at as usize)
-        {
-            names.insert(r.header.ids[3], String::from_utf8_lossy(name).into_owned());
-        }
-    }
-    names
-}
-
 fn show(
     args: &DbArgs,
     workspace_dir: Option<&std::path::Path>,
@@ -278,7 +268,7 @@ fn show(
         out!("{}", serde_json::to_string_pretty(db)?);
         return Ok(());
     }
-    let names = mesh_names(&o.game.open_stream(o.stream)?);
+    let names = outfit::mesh_names(&o.game.open_stream(o.stream)?);
     let kind = match db.kind {
         2 => "characters",
         4 => "vehicle",
@@ -353,125 +343,35 @@ fn show(
     Ok(())
 }
 
-struct AddPart {
-    name: String,
-    slot: String,
-    meshes: Vec<String>,
-    tags: Vec<String>,
-    variant: Option<String>,
-    sets: Vec<String>,
-    all_sets: bool,
-    only: bool,
-}
-
-fn set_indices(db: &PartsDb, names: &[String], all: bool) -> Result<Vec<usize>> {
-    if all || names.is_empty() {
-        return Ok((0..db.sets.len()).collect());
-    }
-    names
-        .iter()
-        .map(|n| {
-            db.set_index(n)
-                .or_else(|| n.parse().ok().filter(|&i: &usize| i < db.sets.len()))
-                .with_context(|| format!("no set `{n}` in `{}`", db.name))
-        })
-        .collect()
-}
-
-fn save(o: &Opened, args: &DbArgs, mode: &EditMode, label: &str) -> Result<()> {
-    let data = o.db.encode()?;
+fn add_part(args: &DbArgs, add: NewPart, mode: &EditMode) -> Result<()> {
+    let o = open(args, mode.workspace_dir.as_deref())?;
     let mut ws = workspace_cmd::open_for_edit(&o.game, mode)?;
-    ws.set_resource(&o.game, o.stream, o.resource, data, label)?;
+    let done = outfit::record_part(&o.game, &mut ws, (o.stream, o.resource), &add)?;
+    for id in &done.meshes_not_in_stream {
+        out!("note: mesh {id} is not in the stream's game files (new in the workspace?)");
+    }
+    out!(
+        "part {} `{}` in slot {}, variant {} `{}`, {} set(s) changed",
+        done.part.unwrap_or_default(),
+        add.name,
+        done.slot,
+        done.variant,
+        done.variant_name,
+        done.sets_changed
+    );
     workspace_cmd::finish_edit(&o.game, &mut ws, mode, vec![args.stream.clone()])
 }
 
-fn add_part(args: &DbArgs, add: AddPart, mode: &EditMode) -> Result<()> {
-    let mut o = open(args, mode.workspace_dir.as_deref())?;
-    if add.meshes.len() > MODEL_SLOTS {
-        bail!("at most {MODEL_SLOTS} meshes per part");
-    }
-    let slot =
-        o.db.slot_index(&add.slot)
-            .with_context(|| format!("no slot `{}`; slots: {}", add.slot, o.db.slots.join(", ")))?;
-    let names = mesh_names(&o.game.open_stream(o.stream)?);
-    let mut models = [Hash32(0); MODEL_SLOTS];
-    for (m, text) in models.iter_mut().zip(&add.meshes) {
-        let by_name = names
-            .iter()
-            .find(|(_, n)| n.eq_ignore_ascii_case(text))
-            .map(|(&id, _)| id);
-        let id = match by_name {
-            Some(id) => id,
-            None => u32::from_str_radix(text.trim_start_matches("0x"), 16).with_context(|| {
-                format!("`{text}` is neither a mesh name in the stream nor a hexadecimal id")
-            })?,
-        };
-        if !names.contains_key(&id) {
-            out!("note: mesh {id:08x} is not in the stream's game files (new in the workspace?)");
-        }
-        *m = Hash32(id);
-    }
-    if o.db.part_index(&add.name).is_some() {
-        bail!("`{}` already has a part `{}`", o.db.name, add.name);
-    }
-    let part = o.db.add_part(Part {
-        name: add.name.clone(),
-        slot: Some(slot),
-        models,
-        label: String::new(),
-        tags: add.tags,
-    })?;
-    let variant_name = add.variant.unwrap_or_else(|| add.name.clone());
-    let variant = o.db.add_variant(&variant_name, vec![part as u16])?;
-    let sets = set_indices(&o.db, &add.sets, add.all_sets)?;
-    let mut changed = 0;
-    for &s in &sets {
-        changed += o.db.allow_variant(s, slot, variant, add.only)? as usize;
-    }
-    out!(
-        "part {part} `{}` in slot {}, variant {variant} `{variant_name}`, {changed} set(s) changed",
-        add.name,
-        o.db.slots[slot]
-    );
-    let label = format!("Add part {} to parts database {}", add.name, o.db.name);
-    save(&o, args, mode, &label)
-}
-
-fn allow(
-    args: &DbArgs,
-    variant: &str,
-    slot: Option<&str>,
-    sets: &[String],
-    only: bool,
-    mode: &EditMode,
-) -> Result<()> {
-    let mut o = open(args, mode.workspace_dir.as_deref())?;
-    let v =
-        o.db.variant_index(variant)
-            .with_context(|| format!("no variant `{variant}`"))?;
-    let slot = match slot {
-        Some(s) => {
-            o.db.slot_index(s)
-                .with_context(|| format!("no slot `{s}`"))?
-        }
-        None => o.db.variants[v]
-            .parts
-            .iter()
-            .find_map(|&p| o.db.parts[p as usize].slot)
-            .context("the variant's parts have no slot; give --slot")?,
-    };
-    let sets = set_indices(&o.db, sets, false)?;
-    let mut changed = 0;
-    for &s in &sets {
-        changed += o.db.allow_variant(s, slot, v, only)? as usize;
-    }
-    if changed == 0 {
+fn allow(args: &DbArgs, params: &AllowVariant, mode: &EditMode) -> Result<()> {
+    let o = open(args, mode.workspace_dir.as_deref())?;
+    let mut ws = workspace_cmd::open_for_edit(&o.game, mode)?;
+    let done = outfit::record_allow(&o.game, &mut ws, (o.stream, o.resource), params)?;
+    if done.sets_changed == 0 {
         out!("no change");
         return Ok(());
     }
-    out!("{changed} set(s) changed");
-    let label = format!("Allow variant {variant} in parts database {}", o.db.name);
-    save(&o, args, mode, &label)
+    out!("{} set(s) changed", done.sets_changed);
+    workspace_cmd::finish_edit(&o.game, &mut ws, mode, vec![args.stream.clone()])
 }
 
 fn character(

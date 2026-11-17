@@ -13,6 +13,8 @@
 //! - [`fov`]: the field of view of the player's camera;
 //! - [`post`]: FXAA and sharpening instead of the plain copy of the scene
 //!   into the back buffer;
+//! - [`draws`]: the draw calls of the frame — counted, written out for one
+//!   frame on request, and the calls that change nothing dropped;
 //! - [`memory`]: the test of Large Address Aware (the free addresses below
 //!   2 GB reserved) and lines about the address space in the log.
 //!
@@ -25,6 +27,7 @@
 #![allow(clippy::too_many_arguments)]
 
 mod d3d;
+mod draws;
 mod fov;
 mod memory;
 mod pace;
@@ -43,6 +46,8 @@ use doctor_toolkit_live::render::{self, RenderConfig};
 pub const MODULE_VERSION: &str = concat!("doctor_render ", env!("CARGO_PKG_VERSION"));
 
 static MODULE: AtomicU32 = AtomicU32::new(0);
+/// The thread that loaded the module: the game's main thread.
+pub(crate) static MAIN_THREAD: AtomicU32 = AtomicU32::new(0);
 static CONFIG: OnceLock<RenderConfig> = OnceLock::new();
 /// What was installed, or why nothing was.
 static INSTALLED: OnceLock<Result<Vec<String>, String>> = OnceLock::new();
@@ -100,6 +105,7 @@ fn install(config: &RenderConfig) -> Result<Vec<String>, String> {
     pace::install(config, &mut done);
     fov::install(config, &mut done);
     post::install(config, &mut done);
+    draws::install(config, &mut done);
     Ok(done)
 }
 
@@ -135,6 +141,8 @@ pub unsafe extern "system" fn DllMain(module: *mut c_void, reason: u32, _: *mut 
     if reason == win::DLL_PROCESS_ATTACH {
         let _ = std::panic::catch_unwind(|| {
             MODULE.store(module as usize as u32, Ordering::Relaxed);
+            // SAFETY: plain Win32 call.
+            MAIN_THREAD.store(unsafe { win::GetCurrentThreadId() }, Ordering::Relaxed);
             // SAFETY: plain Win32 calls allowed under the loader lock.
             unsafe { win::DisableThreadLibraryCalls(module) };
             let config = std::fs::read_to_string(module_dir().join(render::CONFIG_FILE))

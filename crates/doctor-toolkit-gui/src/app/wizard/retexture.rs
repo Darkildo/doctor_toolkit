@@ -668,12 +668,9 @@ impl Task for Retexture {
                     &[("texture", &s.texture.name)],
                 ));
             };
-            let pairs = s.texture.pairs(&game).map_err(|e| e.to_string())?;
-            for (stream, pair) in pairs {
-                app.workspace_mut()?
-                    .import_texture(&game, stream, pair, &new.bytes, new.is_png)
-                    .map_err(|e| e.to_string())?;
-            }
+            s.texture
+                .replace(&game, app.workspace_mut()?, &new.bytes, new.is_png)
+                .map_err(|e| e.to_string())?;
             names.push(s.texture.name.clone());
         }
         Ok(trn(

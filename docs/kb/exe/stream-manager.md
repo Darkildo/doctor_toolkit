@@ -3,8 +3,8 @@ type: exe
 status: known
 confidence: exe
 editions: ["1.0.789.0"]
-stages: [72, 34, 48, 45, 32, 84]
-sources: ["docs/analysis/live-link.md §4", "docs/analysis/live-link.md §12.3", "docs/analysis/live-link.md §13.3", "docs/analysis/new-resources.md §3.1", "docs/analysis/new-resources.md §3.2", "docs/analysis/new-resources.md §3.3", "docs/analysis/launch-flags.md §3.1", "docs/formats/toc.md §3.2", "crates/doctor-toolkit-live/src/addr.rs", "crates/doctor-toolkit-live/src/edition.rs", "godfather2.exe 0x00401F40, 0x004A82B0", "docs/formats/wgi.md §4", "docs/formats/simgroup.md §1.1"]
+stages: [72, 34, 48, 45, 32, 84, 99]
+sources: ["docs/analysis/live-link.md §4", "docs/analysis/live-link.md §12.3", "docs/analysis/live-link.md §13.3", "docs/analysis/new-resources.md §3.1", "docs/analysis/new-resources.md §3.2", "docs/analysis/new-resources.md §3.3", "docs/analysis/launch-flags.md §3.1", "docs/formats/toc.md §3.2", "crates/doctor-toolkit-live/src/addr.rs", "crates/doctor-toolkit-live/src/edition.rs", "godfather2.exe 0x00401F40, 0x004A82B0", "docs/formats/wgi.md §4", "docs/formats/simgroup.md §1.1", "docs/analysis/crash-reports.md §5", "docs/analysis/game-bench.md §37"]
 tags: [exe, streams, loading]
 updated: 2026-11-16
 ---
@@ -24,7 +24,7 @@ updated: 2026-11-16
 | `0x004061F0` | проверка «parented stream»: такой поток не грузится сам по себе | new-resources.md §3.1 |
 | `0x004040D0` | загрузка `<имя>.toc` (до 32 загруженных TOC: массив `+0xA4`, счётчик `+0x124`) | new-resources.md §3.1 |
 | `0x00405900` | `u32 IdOf(this, имя, 0)`, `thiscall`, `RET 8`: id потока по имени | live-link.md §13.3; crates/doctor-toolkit-live/src/addr.rs |
-| `0x004025A0` | `Record* RecordOf(this, id)`, `thiscall`, `RET 4`: корзины `+0x50`, их число `+0x54` | live-link.md §13.3; crates/doctor-toolkit-live/src/addr.rs |
+| `0x004025A0` | `Record* RecordOf(this, id)`, `thiscall`, `RET 4`: корзины `+0x50`, их число `+0x54` (`id % число`); узел корзины — `{id, запись, следующий}`. Отчёт о падении обходит корзины и перечисляет записи не в состоянии 3; у запрошенных и ещё не читаемых потоков состояние 0, у читаемого — 1 (стенд, game-bench.md §37) | live-link.md §13.3; crates/doctor-toolkit-live/src/addr.rs |
 | `0x00404C40` | `Unload(this, Record*)`, `thiscall`, `RET 4` (→ `0x004048C0`) | live-link.md §13.3; live-link.md §12.3; crates/doctor-toolkit-live/src/addr.rs |
 | `0x004048C0` | выгрузка потока (из `0x00404C40`) | live-link.md §12.3 |
 | `0x008139D0` | обработчик класса `LoadStream` | live-link.md §12.3; crates/doctor-toolkit-live/src/addr.rs |

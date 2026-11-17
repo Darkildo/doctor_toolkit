@@ -22,6 +22,7 @@
 pub mod cast;
 pub mod edit;
 pub mod gltf;
+pub mod ops;
 pub mod sound;
 pub mod video;
 pub mod world;

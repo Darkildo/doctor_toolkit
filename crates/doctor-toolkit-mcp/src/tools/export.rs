@@ -12,7 +12,7 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use doctor_toolkit::container::big::{BigArchive, find_archives, is_tool_entry, normalize_name};
+use doctor_toolkit::container::big::normalize_name;
 use doctor_toolkit::game::GameAssets;
 use doctor_toolkit::hash::sdbm;
 use doctor_toolkit::resource::audio::{Sample, parse_sbk, wav};
@@ -31,6 +31,8 @@ use crate::state::{ToolError, ToolResult, Toolkit, fail};
 
 const TYPE_SBK: u32 = sdbm(b"sbk");
 const TYPE_METAMODEL: u32 = sdbm(b"metamodel");
+const TYPE_PARTSDB: u32 = sdbm(b"partsdb");
+const TYPE_APX: u32 = sdbm(b"apx");
 
 // ------------------------------------------------------------ parameters
 
@@ -41,7 +43,10 @@ pub struct ExportParams {
     pub resource: String,
     /// Format: texture `png` (default) or `dds`; mesh and metamodel `glb`
     /// (default), `gltf`, `obj`, `fbx`, `usd`, `usda`; collision (hkx) `obj`
-    /// (default) or `glb`, with its JSON; sound bank (sbk) `wav` (one file
+    /// (default) or `glb`, with its JSON; interface file (apx) `parts`
+    /// (default: its movie `.apt`, constants `.const` and embedded textures
+    /// as PNG, or as `dds`); parts database `glb` with `set`
+    /// (one assembled character); sound bank (sbk) `wav` (one file
     /// per sound); Lua `lua` (decompiled source, default) or `luac`; font
     /// `png` (atlas and glyph JSON); `json` for every type `resource_json`
     /// shows (string tables, SimGroups, metamodels, parts databases,
@@ -56,6 +61,17 @@ pub struct ExportParams {
     /// Read the game files only, without the edits of the workspace.
     #[serde(default)]
     pub original: Option<bool>,
+    /// A parts database with format `glb`: assemble this set (name or
+    /// number) into one character or vehicle and write it as one model.
+    #[serde(default)]
+    pub set: Option<String>,
+    /// With `set`: choices as `SLOT=VARIANT`, `PRESET=ITEM` (names or
+    /// numbers) or `tag=TAG` [default: the first variant of every slot].
+    #[serde(default)]
+    pub choices: Vec<String>,
+    /// With `set`: level of detail (characters) or damage state (vehicles), from 0.
+    #[serde(default)]
+    pub lod: Option<usize>,
 }
 
 #[derive(Debug, Default, Deserialize, JsonSchema)]
@@ -310,6 +326,78 @@ pub fn export(kit: &Toolkit, p: ExportParams) -> ToolResult<Output> {
                 );
             }
         }
+        (TYPE_PARTSDB, Some("glb")) => {
+            use doctor_toolkit::character::{Character, MeshLocator, parse_selection};
+            let db = doctor_toolkit::resource::partsdb::PartsDb::parse(&src.data)?;
+            let Some(set) = p.set.as_deref() else {
+                let names: Vec<&str> = db.sets.iter().map(|s| s.name.as_str()).collect();
+                return fail(format!(
+                    "give `set`: the set of `{}` to assemble. Sets: {}",
+                    db.name,
+                    names.join(", ")
+                ));
+            };
+            let set = db
+                .set_index(set)
+                .or_else(|| set.parse().ok().filter(|&i: &usize| i < db.sets.len()))
+                .ok_or_else(|| ToolError(format!("no set `{set}` in `{}`", db.name)))?;
+            let selection = parse_selection(&db, set, &p.choices)?;
+            let near = kit.game.find_stream(&src.key.stream).unwrap_or(0);
+            let meshes = MeshLocator::new(kit.resources());
+            let character = Character::load(
+                &kit.game,
+                &meshes,
+                near,
+                &db,
+                set,
+                &selection,
+                p.lod.unwrap_or(0),
+            )?;
+            for part in &character.parts {
+                notes.push(format!(
+                    "{} -> {} ({:08x})",
+                    part.name, part.model.name, part.mesh_id
+                ));
+            }
+            for &part in &character.assembly.culled {
+                notes.push(format!("{} hidden by a culling tag", db.parts[part].name));
+            }
+            for (name, id) in &character.missing {
+                notes.push(format!("{name}: mesh {id:08x} not found"));
+            }
+            if character.parts.is_empty() {
+                return fail(format!(
+                    "set `{}` shows no mesh of the game files; {}",
+                    db.sets[set].name,
+                    notes.join("; ")
+                ));
+            }
+            let mut assets = GameAssets::new(kit.game.clone(), kit.resources());
+            files.push(write(kit, &base, "glb", &character.to_glb(&mut assets)?)?);
+        }
+        (TYPE_APX, None | Some("parts" | "png" | "dds")) => {
+            use doctor_toolkit::resource::apx::{AptFile, TAG_APT, TAG_CONSTANTS};
+            let apx = AptFile::parse(&src.data)?;
+            if let Some(block) = apx.block(TAG_APT) {
+                files.push(write(kit, &base, "apt", &block.data)?);
+            }
+            if let Some(block) = apx.block(TAG_CONSTANTS) {
+                files.push(write(kit, &base, "const", &block.data)?);
+            }
+            for (position, texture) in apx.textures()?.iter().enumerate() {
+                let name = format!("{base}_{position}_{}", sanitize(&texture.header.name));
+                if format == Some("dds") {
+                    files.push(write(kit, &name, "dds", &texture.to_dds()?)?);
+                } else {
+                    files.push(write(kit, &name, "png", &texture.to_png(0)?)?);
+                }
+            }
+            notes.push(format!(
+                "{}: the movie (.apt), the constants (.const) and the embedded textures; \
+                 apx_edit puts an edited part back",
+                apx.title().unwrap_or_default()
+            ));
+        }
         (hkx::TYPE_HKX, None | Some("obj" | "glb")) => {
             let physics = Physics::parse(&src.data)?;
             let mesh = physics_mesh(&physics);
@@ -369,6 +457,15 @@ pub fn export(kit: &Toolkit, p: ExportParams) -> ToolResult<Output> {
                 src.key.ids[3],
             );
             files.push(write(kit, &base, "json", &pretty(&doc)?)?);
+        }
+        // A cut-scene shot: the camera and the actors as one animation.
+        (doctor_toolkit::resource::trinity::TYPE_TRINITY_SEQ_MASTER, Some("glb" | "gltf")) => {
+            let Some((stream, resource)) = src.at else {
+                return fail("a shot the workspace added has no stream of the game to read");
+            };
+            let (glb, info) = super::cutscene::shot_glb(kit, ws.as_ref(), stream, resource)?;
+            files.push(write(kit, &base, "glb", &glb)?);
+            notes.push(info.to_string());
         }
         (TYPE_GRAPH, None | Some("json")) => {
             let graph = Graph::parse(&src.data)?;
@@ -513,23 +610,15 @@ pub fn media(kit: &Toolkit, p: MediaParams) -> ToolResult<Output> {
             })))
         }
         ("sounds", name) => {
-            let mut seen = std::collections::HashSet::new();
-            let mut found: Vec<(String, PathBuf)> = Vec::new();
-            for archive in find_archives(kit.game.root())? {
-                let big = BigArchive::open(&archive)?;
-                for e in &big.entries {
-                    if is_tool_entry(&e.name) || !seen.insert(normalize_name(&e.name)) {
-                        continue;
-                    }
-                    let matches = match name {
-                        Some(n) => normalize_name(&e.name) == normalize_name(&n.replace('/', "\\")),
-                        None => wanted(&e.name),
-                    };
-                    if matches {
-                        found.push((e.name.clone(), archive.clone()));
-                    }
-                }
-            }
+            let all = doctor_toolkit::sound::archive_sounds(kit.game.root(), None)?;
+            let found: Vec<(String, String)> = all
+                .into_iter()
+                .filter(|e| match name {
+                    Some(n) => normalize_name(&e.name) == normalize_name(&n.replace('/', "\\")),
+                    None => wanted(&e.name),
+                })
+                .map(|e| (e.name, e.archive))
+                .collect();
             let Some(name) = name else {
                 let total = found.len();
                 let list: Vec<String> = found.into_iter().map(|(n, _)| n).collect();
@@ -543,13 +632,8 @@ pub fn media(kit: &Toolkit, p: MediaParams) -> ToolResult<Output> {
                     "no sound `{name}` in the archives; list them without `name`"
                 ));
             };
-            let key = FileKey::archive_entry(&entry);
-            let data = match &ws {
-                Some(ws) => ws.current_file(&kit.game, &key)?,
-                None => doctor_toolkit::workspace::files::original_data(kit.game.root(), &key)?,
-            };
-            let sample = Sample::parse_snu(&data)?;
-            let h = &sample.header;
+            let data = doctor_toolkit::sound::archive_sound_data(&kit.game, ws.as_ref(), &entry)?;
+            let info = doctor_toolkit::sound::sound_info(&data)?;
             let mut files = Vec::new();
             if p.wav.unwrap_or(false) {
                 let stem = sanitize(entry.trim_end_matches(".exa.snu"));
@@ -557,24 +641,20 @@ pub fn media(kit: &Toolkit, p: MediaParams) -> ToolResult<Output> {
                     kit,
                     &format!("sounds/{stem}"),
                     "wav",
-                    &sample.to_wav()?,
+                    &Sample::parse_snu(&data)?.to_wav()?,
                 )?);
             }
-            let subtitles = doctor_toolkit::resource::speech::subtitles(&data)
-                .ok()
-                .flatten()
-                .map(|t| {
-                    t.languages
-                        .iter()
-                        .zip(&t.strings)
-                        .map(|(l, c)| json!({ "language": l, "text": c.first() }))
-                        .collect::<Vec<_>>()
-                });
+            let subtitles = info.subtitles.as_ref().map(|texts| {
+                texts
+                    .iter()
+                    .map(|(l, t)| json!({ "language": l, "text": t }))
+                    .collect::<Vec<_>>()
+            });
             Ok(Output::Json(json!({
                 "sound": entry,
-                "channels": h.channels,
-                "sample_rate": h.sample_rate,
-                "seconds": sample.duration(),
+                "channels": info.channels,
+                "sample_rate": info.sample_rate,
+                "seconds": info.seconds,
                 "subtitles": subtitles,
                 "files": files,
                 "note": "import_sound replaces it, edit_subtitle changes its subtitles",

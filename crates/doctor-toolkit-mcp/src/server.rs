@@ -18,6 +18,9 @@ use crate::resources;
 use crate::state::{ToolResult, Toolkit};
 use crate::tools::{self, Output};
 
+mod cutscene;
+mod debug;
+
 /// What the model is told when it connects (every server).
 pub const INSTRUCTIONS: &str = "\
 doctor-toolkit reads the files of The Godfather II (PC, EARS engine): streams of resources \
@@ -35,6 +38,14 @@ variabledictionary variables by name) read its state; live_profile measures it f
 export writes a resource as files (model, texture, sound, JSON, ...) and media lists and \
 exports the game's movies and streamed sounds, into the folder given with --output-dir. \
 mods shows the mod manager, integrity checks the game files against their originals. \
+cutscenes lists the in-engine cut-scenes and shows a shot: actors, commands, camera keys. \
+game_log reads the journal of the running game (prints, Lua errors, messages), crash_reports \
+the reports of its crashes, detect_games the copies of the game on this computer. \
+Without the game: logic_run runs the logic of a mission or a SimGroup, script_run tries a \
+script, ground and walk_route answer from the collision of zones (what is under a point, where \
+a ray lands, whether a player walks from A to B); tunables lists game parameters, speech, mix \
+and animation_graph the sound and animation tables, zone_cells the world grid, save_info a \
+save file; unpack and project_new write resources as editable files into the output folder. \
 The resources doctor-toolkit://docs/formats/*.md describe every file format. kb_search and \
 kb_note read the knowledge base (doctor-toolkit://kb/index.md is its map): what is known about \
 the engine and the game, SimGroup classes, addresses of the executable, experiments, open \
@@ -55,19 +66,32 @@ add_simgroup a SimGroup in it, import_model (with `name`, `stream`, `collision`)
 add_object places it; add_resource, clone_resource, import_texture and collision_build make \
 or change other resources; import_file puts an edited export back (strings, logic JSON, \
 graphs, dialogues, Lua), import_sound, import_video and edit_subtitle change sounds, movies and \
-subtitles, logic_connect wires objects. Each call is one operation: undo takes it back, redo \
+subtitles, logic_connect wires objects. What the editor's wizards do: set_tunables (game \
+parameters in every copy), partsdb_add_part and partsdb_allow (clothes), set_material (tints), \
+voice_add (a voice line), import_texture with all_copies. Sound and animation: sbk_edit, \
+sound_add, set_speech_events, set_mix, import_animation, clip_events, set_animation_graph, \
+apx_edit (interface files). move_object, duplicate_object and remove_object take a list of \
+`objects`; `on_ground` puts objects on the collision below them. pack records the edited files \
+of an unpacked folder, revert takes changes out, remove_zone_cell a cell of the world grid, \
+project_pull writes the workspace into the project. cutscene_camera, cutscene_actor and cutscene_command \
+edit the shots of in-engine cut-scenes (camera keys and lens, actors, commands on the time \
+line), edit_subtitle with `line` retimes their subtitles. Each call is one operation: undo takes it back, redo \
 again; every answer has the diff of what changed. project_build builds the mod project into the \
 workspace, mod_build makes a mod file, validate checks the edits. The workspace is written by \
 one program at a time: while the editor has it open, writes are refused with its name.";
 
 /// Added with `--allow-game`.
 const GAME: &str = "\n\nGame (--allow-game): apply writes the workspace into the game files \
-(backups kept; unapply puts them back). play starts the game on an X server of its own (nothing \
+(backups kept; unapply puts them back, restore_originals every file the toolkit changed). play starts the game on an X server of its own (nothing \
 shows on the desktop) with the workspace applied, optionally right in a level stream at a spawn \
 point, and waits for the level; screenshot returns a frame; teleport, send_message and lua act \
 in the running game; move_live_object, live_object_enable and live_object_undo edit its world \
 (placed objects moved, turned, hidden); set_time, set_money, set_variable, stream_load and stream_unload change \
-its world and state for checks without playing through (streams one at a time); stop ends it \
+its world and state for checks without playing through (streams one at a time); pause, \
+resume (`step` for one frame) and breakpoints (on a message, printed text, a Lua error) stop \
+the game and let it go — a stopped game answers reads, takes writes only when it stands in a \
+frame, and goes on by itself after the hold limit; camera draws the game from any point (free \
+camera), push_textures sends edited textures into it without a restart; stop ends it \
 and takes back what play wrote. mods_manage installs, switches and applies mods of the \
 mod manager. Ask the user before acting in their game.";
 
@@ -78,18 +102,63 @@ pub struct Server {
     tool_router: ToolRouter<Self>,
 }
 
+/// The flag of the server a tool needs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Gate {
+    /// Offered always.
+    Read,
+    /// Only with `--allow-edits`.
+    Edits,
+    /// Only with `--allow-game`.
+    Game,
+}
+
 impl Server {
+    /// Every tool the server has, with the flag that turns it on: the
+    /// routers [`Server::new`] puts together by the flags of a game.
+    pub fn catalog() -> Vec<(String, Gate)> {
+        let read = Self::tool_router()
+            + Self::live_router()
+            + Self::editor_router()
+            + Self::export_router()
+            + Self::mods_router()
+            + Self::authoring_read_router()
+            + Self::cutscene_read_router()
+            + Self::debug_read_router();
+        let edits = Self::edit_router()
+            + Self::create_router()
+            + Self::import_router()
+            + Self::authoring_edit_router()
+            + Self::cutscene_edit_router();
+        let game = Self::game_router() + Self::authoring_game_router() + Self::debug_game_router();
+        let mut out = Vec::new();
+        for (router, gate) in [(read, Gate::Read), (edits, Gate::Edits), (game, Gate::Game)] {
+            out.extend(
+                router
+                    .list_all()
+                    .into_iter()
+                    .map(|tool| (tool.name.into_owned(), gate)),
+            );
+        }
+        out
+    }
+
     pub fn new(kit: Arc<Toolkit>) -> Self {
         let mut tool_router = Self::tool_router()
             + Self::live_router()
             + Self::editor_router()
             + Self::export_router()
-            + Self::mods_router();
+            + Self::mods_router()
+            + Self::authoring_read_router()
+            + Self::cutscene_read_router()
+            + Self::debug_read_router();
         if kit.allow_edits {
             tool_router += Self::edit_router() + Self::create_router() + Self::import_router();
+            tool_router += Self::authoring_edit_router() + Self::cutscene_edit_router();
         }
         if kit.allow_game {
-            tool_router += Self::game_router();
+            tool_router +=
+                Self::game_router() + Self::authoring_game_router() + Self::debug_game_router();
         }
         Self { kit, tool_router }
     }
@@ -275,7 +344,7 @@ impl Server {
                        `message` — where a message name comes from (engine: named by the \
                        executable; game: used by the game files; custom: new; unknown hash), who \
                        sends and hears it over the whole game by class and attribute, what else \
-                       names it, its data (unknown so far) and whether a new name collides with a \
+                       names it, its data word and the senders outside the SimGroups (engine code, Lua, cut-scenes, score) and whether a new name collides with a \
                        game message; `search` — messages by a part of the name; `class` — what \
                        the attributes of a SimGroup class mean (MsgIn, MsgOut, Ref<Class>, \
                        Res<type>, Enum<list>, Seconds, Money, Bool). Without parameters: the \
@@ -1028,9 +1097,11 @@ impl Server {
     }
 
     #[tool(
-        description = "Make a mod file (format 2: replaced and added resources, new streams) of \
-                       the workspace's changes — the project's, the ones named, or all — in the \
-                       folder `mods/` of the workspace. Players install it with the mod manager.",
+        description = "Make a mod file (replaced and added resources, new streams, files of \
+                       the archives; with `native` also executable code, format 5) of the \
+                       workspace's changes — the project's, the ones named, or all — in the \
+                       folder `mods/` of the workspace. Players install it with the mod \
+                       manager, which asks them before it installs executable code.",
         annotations(
             read_only_hint = false,
             destructive_hint = false,
@@ -1139,10 +1210,16 @@ impl Server {
 #[tool_router(router = mods_router)]
 impl Server {
     #[tool(
-        description = "The mod manager of the game: installed mods in load order (`list`), what \
-                       the game has of them (`status`), resources changed by several mods \
-                       (`conflicts`), whether the enabled mods fit this game (`check`). Only \
-                       reads.",
+        description = "The mod manager of the game: installed mods in load order with the state \
+                       of their executable code and the saved sets (`list`), what the game has \
+                       of them (`status`), resources changed by several mods (`conflicts`), \
+                       whether the enabled mods fit this game (`check`), what a mod file holds \
+                       before it is installed (`info` with `file`; on a server with --allow-edits or \
+                       --allow-game), executable code of mods — \
+                       its state, the player's answer, what a mod would put into the game \
+                       (`native`, with `id` one mod), the saved sets of mods (`sets`). Only \
+                       reads: the consent to executable code is the player's and is given in \
+                       the mod manager, never here.",
         annotations(
             read_only_hint = true,
             destructive_hint = false,
@@ -1458,8 +1535,11 @@ impl Server {
 
     #[tool(
         description = "Change the subtitles of a speech file of the archives by language \
-                       (`{\"en\": \"text\"}`); media with kind sounds shows them. One undoable \
-                       operation.",
+                       (`{\"en\": \"text\"}`); media with kind sounds shows them. Or, with \
+                       `line`, retime a subtitle of a cut-scene's sound track (`start_ms`, \
+                       `duration_ms`; cutscenes lists the tracks and lines): the times are in \
+                       the header of the sound file, so the whole file becomes the change and \
+                       a mod with it carries the whole sound. One undoable operation.",
         annotations(
             read_only_hint = false,
             destructive_hint = false,
@@ -1503,12 +1583,17 @@ impl Server {
 #[tool_router(router = game_router)]
 impl Server {
     #[tool(
-        description = "Change the mod manager: install mod files, uninstall, enable, disable, \
-                       move in the load order (later mods win), `sort` the order by the \
-                       mods' dependencies and load rules, `apply` the enabled mods to the \
-                       game files (originals backed up; refused while the game runs) or \
-                       `unapply` them. Mods reach a game started by play with `mods: true` \
-                       without apply. Ask the user before changing their mods.",
+        description = "Change the mod manager: install mod files, `install_workspace` (the \
+                       workspace's changes as a mod), uninstall, enable, disable, move in the \
+                       load order (later mods win), `sort` the order by the mods' dependencies \
+                       and load rules, `apply` the enabled mods to the game files (originals \
+                       backed up; refused while the game runs) or `unapply` them, `export` an \
+                       installed mod as a file, `import_old` (take over a game patched by the \
+                       old toolkit), `save_set` / `use_set` / `delete_set` (named sets: order \
+                       and enabled mods). Mods reach a game started by play with `mods: true` \
+                       without apply. Executable code of a mod is installed only after the \
+                       player agreed in the mod manager; no action here gives that answer. \
+                       Ask the user before changing their mods.",
         annotations(
             read_only_hint = false,
             destructive_hint = true,

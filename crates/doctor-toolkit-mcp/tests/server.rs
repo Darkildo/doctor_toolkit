@@ -16,7 +16,7 @@ use doctor_toolkit::project::{self, CreateOptions};
 use doctor_toolkit::testing::{self, LEVEL, SIMGROUP, TEXT};
 use doctor_toolkit::workspace::Workspace;
 
-const TOOLS: [&str; 31] = [
+const TOOLS: [&str; 47] = [
     "game_info",
     "list_streams",
     "search",
@@ -48,6 +48,23 @@ const TOOLS: [&str; 31] = [
     "editor_selection",
     "editor_open",
     "editor_show_object",
+    // Stage 104 (packages B, D, E, G).
+    "tunables",
+    "logic_run",
+    "script_run",
+    "save_info",
+    "unpack",
+    "project_new",
+    "zone_cells",
+    "speech",
+    "mix",
+    "animation_graph",
+    "ground",
+    "walk_route",
+    "cutscenes",
+    "game_log",
+    "crash_reports",
+    "detect_games",
 ];
 
 struct Fixture {
@@ -132,8 +149,16 @@ async fn the_handshake_lists_read_only_tools_and_resources() {
     for t in &tools {
         // Showing something in the editor changes only what it shows; the
         // export tools write files into the output folder.
-        let shows = ["editor_open", "editor_show_object", "export", "media"]
-            .contains(&t["name"].as_str().unwrap());
+        let shows = [
+            "editor_open",
+            "editor_show_object",
+            "export",
+            "media",
+            "unpack",
+            "project_new",
+            "animation_graph",
+        ]
+        .contains(&t["name"].as_str().unwrap());
         assert_eq!(t["annotations"]["readOnlyHint"], !shows, "{t}");
         assert_eq!(t["annotations"]["destructiveHint"], false, "{t}");
         assert_eq!(t["inputSchema"]["type"], "object", "{t}");
@@ -153,6 +178,7 @@ async fn the_handshake_lists_read_only_tools_and_resources() {
         "doctor-toolkit://docs/formats/simgroup.md",
         "doctor-toolkit://docs/formats/README.md",
         "doctor-toolkit://docs/logic-graph.md",
+        "doctor-toolkit://docs/scripts.md",
         "doctor-toolkit://kb/index.md",
         "doctor-toolkit://kb/README.md",
         "doctor-toolkit://kb/classes/index.md",
@@ -272,7 +298,11 @@ async fn every_tool_answers_and_nothing_is_written() {
 
     // game_types: lists, messages and attribute meanings built into the server
     let overview = c.json("game_types", json!({})).await;
-    assert_eq!(overview["enums"].as_array().unwrap().len(), 8, "{overview}");
+    assert_eq!(
+        overview["enums"].as_array().unwrap().len(),
+        10,
+        "{overview}"
+    );
     assert!(overview["messages"]["catalog"].as_u64().unwrap() > 40_000);
     let family = c.json("game_types", json!({ "enum": "family" })).await;
     assert_eq!(family["enum"]["values"].as_array().unwrap().len(), 28);
@@ -284,7 +314,7 @@ async fn every_tool_answers_and_nothing_is_written() {
         .await;
     assert_eq!(typed["message"]["kind"], "game");
     assert_eq!(typed["message"]["usage"], "heard_never_sent");
-    assert_eq!(typed["message"]["data"], "unknown");
+    assert_eq!(typed["message"]["data"], "none");
     assert!(typed["messages"].as_array().unwrap().len() <= 5);
     let attrs = typed["class"]["attrs"].as_array().unwrap();
     assert!(

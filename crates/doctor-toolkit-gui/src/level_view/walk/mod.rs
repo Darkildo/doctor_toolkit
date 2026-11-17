@@ -10,8 +10,12 @@
 //! [`Walk::update`] instead of the fly camera while walking, [`Walk::lines`]
 //! and [`Walk::hud`] over the scene. See `docs/levels.md` §11.
 
-pub mod build;
-pub mod physics;
+#[cfg(test)]
+mod build_tests;
+
+// The collision world and the player are the library's (the MCP server
+// uses them too).
+pub use doctor_toolkit::level::walk::{build, physics};
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;

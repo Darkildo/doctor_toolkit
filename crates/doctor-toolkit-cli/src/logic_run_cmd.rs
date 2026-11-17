@@ -3,14 +3,11 @@
 use std::io::Write as _;
 use std::path::PathBuf;
 
-use anyhow::{Context as _, Result, bail};
+use anyhow::{Context as _, Result};
 use clap::Args;
 
 use doctor_toolkit::game::GameInstance;
-use doctor_toolkit::logic_graph::ScopeSpec;
-use doctor_toolkit::logic_graph::run::{
-    self, Breakpoint, ManualReaction, Run, RunOptions, Stop, Until, What,
-};
+use doctor_toolkit::logic_graph::run::{self, ManualReaction, RunSpec, What};
 use doctor_toolkit::workspace::Workspace;
 
 macro_rules! out {
@@ -83,23 +80,28 @@ pub fn run(args: &RunArgs) -> Result<()> {
     let ws = (!args.original && Workspace::exists(&dir))
         .then(|| Workspace::open(&dir))
         .transpose()?;
-    let spec = ScopeSpec::parse(&game, &args.scope)?;
-    let (input, errors) = run::load(&game, &index, ws.as_ref(), &spec)?;
-    for (l, e) in &errors {
-        eprintln!(
-            "warning: {} #{}: {e}",
-            game.streams()[l.stream].stream_name(),
-            l.resource
-        );
+    let reactions: Vec<ManualReaction> = match &args.reactions {
+        Some(path) => {
+            let text = std::fs::read_to_string(path).with_context(|| path.display().to_string())?;
+            serde_json::from_str(&text)?
+        }
+        None => Vec::new(),
+    };
+    let spec = RunSpec {
+        scope: args.scope.clone(),
+        events: args.events.clone(),
+        until: args.until,
+        steps: Some(args.steps),
+        break_message: args.break_message.clone(),
+        break_object: args.break_object.clone(),
+        reactions,
+        seed: Some(args.seed),
+        no_lua: args.no_lua,
+    };
+    let (mut r, warnings) = spec.prepare(&game, &index, ws.as_ref())?;
+    for warning in &warnings {
+        eprintln!("warning: {warning}");
     }
-    let mut r = Run::new(
-        input,
-        RunOptions {
-            seed: args.seed,
-            lua: !args.no_lua,
-            ..RunOptions::default()
-        },
-    );
     if args.actors {
         for (i, a) in r.actors().iter().enumerate() {
             out!(
@@ -116,37 +118,7 @@ pub fn run(args: &RunArgs) -> Result<()> {
         }
         return Ok(());
     }
-    if let Some(path) = &args.reactions {
-        let text = std::fs::read_to_string(path).with_context(|| path.display().to_string())?;
-        let list: Vec<ManualReaction> = serde_json::from_str(&text)?;
-        for m in &list {
-            if r.add_reaction(m).is_empty() {
-                eprintln!("warning: reaction for {:?}: no such object", m.object);
-            }
-        }
-    }
-    for m in &args.break_message {
-        r.toggle_breakpoint(Breakpoint::Message(doctor_toolkit::hash::string_id(m)));
-    }
-    for o in &args.break_object {
-        let found = r.find(o);
-        if found.is_empty() {
-            bail!("--break-object {o:?}: no such object");
-        }
-        for i in found {
-            r.toggle_breakpoint(Breakpoint::Object(i));
-        }
-    }
-    let events = if args.events.is_empty() {
-        vec!["load".to_owned()]
-    } else {
-        args.events.clone()
-    };
-    for (t, i) in run::parse_inputs(&events)? {
-        r.schedule(t, i);
-    }
-    let until = args.until.map_or(Until::Idle, Until::Time);
-    let stop = r.run(until, args.steps);
+    let stop = spec.run(&mut r);
     let journal = r.journal();
     if let Some(path) = &args.out {
         std::fs::write(path, serde_json::to_string_pretty(journal)?)?;
@@ -175,7 +147,7 @@ pub fn run(args: &RunArgs) -> Result<()> {
             r.steps(),
             sends,
             r.time(),
-            stop_text(&stop)
+            stop.text()
         );
         for (t, what) in r.pending().iter().take(10) {
             out!("  queued at {t:.3}: {what}");
@@ -226,15 +198,4 @@ pub fn run(args: &RunArgs) -> Result<()> {
         }
     }
     Ok(())
-}
-
-fn stop_text(s: &Stop) -> String {
-    match s {
-        Stop::Steps => "step count".into(),
-        Stop::Message => "message".into(),
-        Stop::Time => "time reached".into(),
-        Stop::Idle => "nothing left to do".into(),
-        Stop::Breakpoint(what) => format!("breakpoint: {what}"),
-        Stop::Limit => "step limit".into(),
-    }
 }

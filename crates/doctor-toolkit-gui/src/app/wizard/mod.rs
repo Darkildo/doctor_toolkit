@@ -23,6 +23,7 @@
 //! - `texts`: string tables;
 //! - `place`: a new object in a level;
 //! - `voice`: a new voice line made from a recording;
+//! - `zone`: a new zone (a stream, a SimGroup and a cell of the world grid);
 //! - `package`: a mod package from the workspace.
 
 mod model;
@@ -35,6 +36,9 @@ mod retexture;
 mod tests;
 mod texts;
 mod voice;
+mod zone;
+#[cfg(test)]
+mod zone_tests;
 
 use std::collections::HashMap;
 
@@ -57,11 +61,12 @@ pub enum Kind {
     Texts,
     PlaceObject,
     VoiceLine,
+    NewZone,
     PackageMod,
 }
 
 impl Kind {
-    pub const ALL: [Kind; 8] = [
+    pub const ALL: [Kind; 9] = [
         Kind::Retexture,
         Kind::ReplaceModel,
         Kind::Outfit,
@@ -69,10 +74,11 @@ impl Kind {
         Kind::Texts,
         Kind::PlaceObject,
         Kind::VoiceLine,
+        Kind::NewZone,
         Kind::PackageMod,
     ];
 
-    fn slug(self) -> &'static str {
+    pub(crate) fn slug(self) -> &'static str {
         match self {
             Self::Retexture => "retexture",
             Self::ReplaceModel => "model",
@@ -81,6 +87,7 @@ impl Kind {
             Self::Texts => "texts",
             Self::PlaceObject => "place",
             Self::VoiceLine => "voice",
+            Self::NewZone => "zone",
             Self::PackageMod => "package",
         }
     }
@@ -98,6 +105,7 @@ impl Kind {
             Self::Texts => "wizard.texts.title",
             Self::PlaceObject => "wizard.place.title",
             Self::VoiceLine => "wizard.voice.title",
+            Self::NewZone => "wizard.zone.title",
             Self::PackageMod => "wizard.package.title",
         })
     }
@@ -111,6 +119,7 @@ impl Kind {
             Self::Texts => "wizard.texts.blurb",
             Self::PlaceObject => "wizard.place.blurb",
             Self::VoiceLine => "wizard.voice.blurb",
+            Self::NewZone => "wizard.zone.blurb",
             Self::PackageMod => "wizard.package.blurb",
         })
     }
@@ -125,6 +134,7 @@ impl Kind {
             Self::Texts => Command::WizardTexts,
             Self::PlaceObject => Command::WizardPlace,
             Self::VoiceLine => Command::WizardVoice,
+            Self::NewZone => Command::WizardZone,
             Self::PackageMod => Command::WizardPackage,
         }
     }
@@ -190,6 +200,7 @@ pub(super) enum State {
     Texts(Box<texts::Texts>),
     Place(Box<place::Place>),
     Voice(Box<voice::Voice>),
+    Zone(Box<zone::NewZone>),
     Package(Box<package::Package>),
 }
 
@@ -203,6 +214,7 @@ impl State {
             Self::Texts(t) => t.as_mut(),
             Self::Place(t) => t.as_mut(),
             Self::Voice(t) => t.as_mut(),
+            Self::Zone(t) => t.as_mut(),
             Self::Package(t) => t.as_mut(),
         }
     }
@@ -216,6 +228,7 @@ impl State {
             Self::Texts(t) => t.as_ref(),
             Self::Place(t) => t.as_ref(),
             Self::Voice(t) => t.as_ref(),
+            Self::Zone(t) => t.as_ref(),
             Self::Package(t) => t.as_ref(),
         }
     }
@@ -301,6 +314,7 @@ impl BrowserApp {
             Kind::Texts => State::Texts(Box::new(texts::Texts::new(self, start))),
             Kind::PlaceObject => State::Place(Box::new(place::Place::new(self, start))),
             Kind::VoiceLine => State::Voice(Box::new(voice::Voice::new(self, start))),
+            Kind::NewZone => State::Zone(Box::new(zone::NewZone::new(self, start))),
             Kind::PackageMod => State::Package(Box::new(package::Package::new(self, start))),
         };
         Wizard {
@@ -566,6 +580,10 @@ impl BrowserApp {
             p.done_ui(ui, self);
             ui.add_space(8.0);
         }
+        if let State::Zone(z) = &mut w.state {
+            z.done_ui(ui, self);
+            ui.add_space(8.0);
+        }
         ui.horizontal_wrapped(|ui| {
             if ui
                 .add_enabled(
@@ -636,7 +654,14 @@ impl BrowserApp {
             self.wizards.preset_used = true;
             return;
         };
-        let mut items = spec.split(',').map(str::trim);
+        self.run_wizard_preset(&spec);
+    }
+
+    /// Runs the preset `spec` (see [`Self::wizard_preset`]); waits (does
+    /// nothing yet) while `select` has no selection to start from.
+    pub(super) fn run_wizard_preset(&mut self, spec: &str) {
+        let items = split_preset(spec);
+        let mut items = items.iter().map(String::as_str);
         let name = items.next().unwrap_or_default();
         if name == "tasks" {
             self.wizards.preset_used = true;
@@ -645,14 +670,15 @@ impl BrowserApp {
         }
         let Some(kind) = Kind::from_slug(name) else {
             self.wizards.preset_used = true;
-            eprintln!("DOCTOR_TOOLKIT_GUI_WIZARD: unknown task {name}");
+            self.preset_failed(&format!("DOCTOR_TOOLKIT_GUI_WIZARD: unknown task {name}"));
             return;
         };
         let mut start = Start::default();
         let mut steps = 0;
         let mut options = Vec::new();
         for item in items {
-            let (key, value) = item.split_once('=').unwrap_or((item, ""));
+            let (key, value) = preset_item(item);
+            let (key, value) = (key.as_str(), value.as_str());
             match key {
                 "select" => {
                     // Waits for the selection of the screenshot mode.
@@ -677,24 +703,95 @@ impl BrowserApp {
                 State::Texts(t) => t.preset(key, value, self),
                 State::Place(t) => t.preset(key, value, self),
                 State::Voice(t) => t.preset(key, value, self),
+                State::Zone(t) => t.preset(key, value, self),
                 State::Package(t) => t.preset(key, value, self),
             }
         }
         for _ in 0..steps {
-            if wizard.step == wizard.summary_step() {
+            let last = wizard.step == wizard.summary_step();
+            if last {
                 self.wizard_record(&mut wizard);
-                break;
+            } else {
+                self.wizard_next(&mut wizard);
             }
-            self.wizard_next(&mut wizard);
             if let Some(error) = &wizard.error {
-                eprintln!("DOCTOR_TOOLKIT_GUI_WIZARD: {error}");
+                // The first step that fails stops the run: nothing after it
+                // is made, and the screenshot mode exits with an error.
+                let step = wizard.step + 1;
+                self.preset_failed(&format!(
+                    "DOCTOR_TOOLKIT_GUI_WIZARD: {name}, step {step}: {error}"
+                ));
                 break;
             }
+            if last {
+                break;
+            }
+        }
+        // The New zone wizard driven hands-free must not leave a script
+        // going on without its zone.
+        if kind == Kind::NewZone
+            && let Some(error) = &wizard.error
+        {
+            eprintln!("DOCTOR_TOOLKIT_GUI_WIZARD: {error}");
+            std::process::exit(2);
         }
         self.wizards.tabs.insert(id, wizard);
         self.dock_ops.push(DockOp::Open(Pane::Wizard { id, kind }));
         self.dock_ops.push(DockOp::Maximize(Some(id)));
     }
+}
+
+/// The wizard that packages a mod, for the tests of other modules.
+#[cfg(test)]
+pub(crate) fn package_for_tests(app: &mut BrowserApp) -> package::Package {
+    package::Package::new(app, &Start::default())
+}
+
+/// Splits a preset `item,item,…` at commas. A comma of a value is written
+/// `\,`; a value in double quotes is a JSON string (`key="a, b"`), kept
+/// whole for [`preset_item`]. Nothing else is special, so the presets
+/// written before (Windows paths with `\` among them) read as they did.
+pub(crate) fn split_preset(spec: &str) -> Vec<String> {
+    let mut items = Vec::new();
+    let mut item = String::new();
+    let mut chars = spec.chars().peekable();
+    // Inside the quotes of a JSON value.
+    let mut quoted = false;
+    while let Some(c) = chars.next() {
+        match c {
+            '\\' if quoted => {
+                item.push(c);
+                item.extend(chars.next());
+            }
+            '\\' if chars.peek() == Some(&',') => {
+                chars.next();
+                item.push(',');
+            }
+            '"' if quoted => {
+                quoted = false;
+                item.push(c);
+            }
+            '"' if item.trim_start().ends_with('=') => {
+                quoted = true;
+                item.push(c);
+            }
+            ',' if !quoted => items.push(std::mem::take(&mut item).trim().to_owned()),
+            _ => item.push(c),
+        }
+    }
+    items.push(item.trim().to_owned());
+    items
+}
+
+/// `key=value` of a preset item; a value in double quotes is read as a
+/// JSON string (see [`split_preset`]).
+pub(crate) fn preset_item(item: &str) -> (String, String) {
+    let (key, value) = item.split_once('=').unwrap_or((item, ""));
+    let value = match serde_json::from_str::<String>(value) {
+        Ok(text) if value.starts_with('"') => text,
+        _ => value.to_owned(),
+    };
+    (key.to_owned(), value)
 }
 
 /// A folder for the working files of a wizard, below the system's

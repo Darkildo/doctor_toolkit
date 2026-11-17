@@ -714,35 +714,33 @@ impl ImportPlan {
                 .into(),
         ));
         }
-        let before = match game.find_stream(&into) {
+        // A new stream is checked first: once applied (or staged,
+        // `Workspace::stage`) its file is among the game's streams as well.
+        let before = if workspace.new_stream(&into).is_some() {
+            // A new stream holds its resources in the order they were added:
+            // textures, materials, meshes, collision, then models.
+            let rank = |t: u32| match t {
+                TYPE_TG4H | TYPE_TG4D => 0,
+                TYPE_MATERIAL => 1,
+                TYPE_MESH | TYPE_MESH_VOLATILE => 2,
+                TYPE_METAMODEL => 4,
+                _ => 3,
+            };
+            self.additions.sort_by_key(|e| rank(e.header.type_id));
+            None
+        } else if let Some(index) = game.find_stream(&into) {
             // Before the first SimGroup of the original stream: targets first.
-            Some(index) => {
-                let path = game.original_path(&game.streams()[index]);
-                let data = std::fs::read(&path).map_err(|e| Error::io(&path, e))?;
-                StreamLayout::parse(&data)?
-                    .resources
-                    .iter()
-                    .find(|r| r.header.type_id == crate::level::TYPE_SIMGROUP)
-                    .map(|r| ResourceKey::new(&into, &r.header))
-            }
-            None if workspace.new_stream(&into).is_some() => {
-                // A new stream holds its resources in the order they were added:
-                // textures, materials, meshes, collision, then models.
-                let rank = |t: u32| match t {
-                    TYPE_TG4H | TYPE_TG4D => 0,
-                    TYPE_MATERIAL => 1,
-                    TYPE_MESH | TYPE_MESH_VOLATILE => 2,
-                    TYPE_METAMODEL => 4,
-                    _ => 3,
-                };
-                self.additions.sort_by_key(|e| rank(e.header.type_id));
-                None
-            }
-            None => {
-                return Err(Error::InvalidArgument(format!(
-                    "stream {into} is neither in the game nor new"
-                )));
-            }
+            let path = game.original_path(&game.streams()[index]);
+            let data = std::fs::read(&path).map_err(|e| Error::io(&path, e))?;
+            StreamLayout::parse(&data)?
+                .resources
+                .iter()
+                .find(|r| r.header.type_id == crate::level::TYPE_SIMGROUP)
+                .map(|r| ResourceKey::new(&into, &r.header))
+        } else {
+            return Err(Error::InvalidArgument(format!(
+                "stream {into} is neither in the game nor new"
+            )));
         };
         for e in self.additions.iter_mut() {
             e.stream = into.clone();

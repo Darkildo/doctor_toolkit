@@ -308,7 +308,7 @@ impl BrowserApp {
                         level.place_camera([*a, *b, *c], [*d, *e, *f]);
                     }
                 }
-                _ => eprintln!("DOCTOR_TOOLKIT_GUI_CINE: unknown item {name}"),
+                _ => self.preset_failed(&format!("DOCTOR_TOOLKIT_GUI_CINE: unknown item {name}")),
             }
         }
     }

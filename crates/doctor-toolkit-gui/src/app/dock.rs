@@ -105,6 +105,12 @@ pub enum Pane {
     Timeline,
     /// The picture of the shot camera of that cut-scene (stage 62).
     CutscenePreview,
+    /// What "Check edits" and "Check references" found (stage 103).
+    Findings,
+    /// A name under every hash function, the names of a hash (stage 103).
+    Hashes,
+    /// The knowledge base and the data types of the game (stage 103).
+    Knowledge,
     /// Where the documents go in a layout; never shown.
     Documents,
 }
@@ -651,8 +657,8 @@ impl BrowserApp {
 
     fn apply_dock_op(&mut self, tree: &mut Tree<Pane>, op: DockOp) {
         match op {
-            // The script editor and Movies are one tab each.
-            DockOp::Open(pane @ (Pane::Script | Pane::Movies))
+            // The script editor, Movies and the knowledge base are one tab each.
+            DockOp::Open(pane @ (Pane::Script | Pane::Movies | Pane::Knowledge))
                 if find(tree, |p| *p == pane).is_some() =>
             {
                 if let Some(screen) = Screen::of(&pane) {
@@ -886,6 +892,12 @@ impl BrowserApp {
                 format!("{}{mark}", tr("script.title"))
             }
             Pane::Movies => tr("movies.title").to_owned(),
+            Pane::Findings => match self.findings.errors() {
+                0 => tr("pane.findings").to_owned(),
+                n => format!("{} ({n})", tr("pane.findings")),
+            },
+            Pane::Hashes => tr("pane.hashes").to_owned(),
+            Pane::Knowledge => tr("pane.knowledge").to_owned(),
 
             Pane::DetailsCopy { id } => {
                 let mut copies: Vec<u64> = self.inspectors.copies.keys().copied().collect();

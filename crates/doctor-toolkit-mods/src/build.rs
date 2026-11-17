@@ -25,6 +25,11 @@ pub struct RelationsForm {
     pub editions: String,
     /// Empty: this program's version or newer; `none`: no condition.
     pub requires_manager: String,
+    /// Executable code (format version 5): one DLL per line, a path or
+    /// `name.asi=path`.
+    pub native: String,
+    /// The mod makes no sense without its code.
+    pub native_required: bool,
 }
 
 /// `id condition` lines.
@@ -85,7 +90,28 @@ impl RelationsForm {
             editions,
             requires_manager,
             made_on: Default::default(),
+            native: self.native(),
         }
+    }
+
+    /// The modules typed, read from the disk. A file that cannot be read
+    /// becomes an empty module, which building the mod refuses by its name.
+    fn native(&self) -> Option<mods::NativeBuild> {
+        let modules: Vec<(String, Vec<u8>)> = self
+            .native
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty())
+            .map(|line| {
+                let (name, path) = mods::native::module_spec(line);
+                (name, std::fs::read(path).unwrap_or_default())
+            })
+            .collect();
+        (!modules.is_empty()).then_some(mods::NativeBuild {
+            modules,
+            platform_abi: Some(mods::native::PLATFORM_ABI),
+            required: self.native_required,
+        })
     }
 
     /// Adds to the dependencies the mods written into `game` that the
@@ -177,6 +203,13 @@ impl RelationsForm {
                     egui::TextEdit::singleline(&mut self.requires_manager)
                         .hint_text(mods::default_requires_manager()),
                 );
+                ui.end_row();
+                ui.label(tr("mods.field_native"))
+                    .on_hover_text(tr("mods.field_native_hint"));
+                ui.vertical(|ui| {
+                    lines(ui, &mut self.native, "target/…/my_mod.dll");
+                    ui.checkbox(&mut self.native_required, tr("mods.field_native_required"));
+                });
                 ui.end_row();
             });
     }
@@ -380,7 +413,7 @@ impl ModsPanel {
         let preview = self.load_preview()?;
         let report = mods::build_from_workspace(ws, &info, None, preview.as_ref(), out)
             .map_err(|e| trf("mods.cannot_build", &[("error", &e)]))?;
-        Ok(trf(
+        let mut message = trf(
             "mods.built",
             &[
                 ("file", &out.display()),
@@ -395,7 +428,14 @@ impl ModsPanel {
                 ),
                 ("kib", &(report.file_size / 1024)),
             ],
-        ))
+        );
+        // What the author should know about the mod's size (a whole sound
+        // for a retimed subtitle): the library's text, as its errors are.
+        for note in &report.notes {
+            message.push('\n');
+            message.push_str(note);
+        }
+        Ok(message)
     }
 
     fn load_preview(&self) -> Result<Option<Preview>, String> {
@@ -465,6 +505,7 @@ mod tests {
             load_before: String::new(),
             editions: "1.0.789.0, 1.0.764.0".into(),
             requires_manager: "none".into(),
+            ..RelationsForm::default()
         };
         let r = form.relations();
         assert_eq!(r.depends["new-new-york"], ">=1.1 <2");

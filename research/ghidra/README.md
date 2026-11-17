@@ -21,6 +21,10 @@ run Callers.java callers 0x408240 0x408980 0x4089b0
 python3 research/logic_schema.py <simgroup dump dir> readers.json > data/gf2/logic_schema.toml
 ```
 
+Every place that names, subscribes to or sends a message is listed by
+`research/bus_sites.py` (reads the executable with capstone, no Ghidra) in
+`data/gf2/bus_sites.tsv`; see `docs/analysis/message-bus.md`.
+
 Functions of the message bus (see `docs/logic-graph.md` §2):
 
 | Address | What |
@@ -32,4 +36,24 @@ Functions of the message bus (see `docs/logic-graph.md` §2):
 | 0x473EC0 | the same with a typed payload (`"BasePtrMsgData*"`) |
 | 0x408240 | engine code: handle from a literal name |
 | 0x408A00 | send: call every subscriber of the message |
+| 0x408BF0 | deliver to one listener `(message, listener, force)`; wrappers 0x408B80, 0x408BB0 |
+| 0x440590 | the delayed queue `(variable, listener or 0, seconds, data, flags)`; wrapper 0x4760D0 |
+| 0x408900, 0x408680 | subscribe a listener to a variable that has its hash |
 | 0x4833A0 | class registration: hash, name, factory, size (called from 0x688AF0) |
+
+## Without the Ghidra window (stage 77)
+
+`DecompAt.java OUT addr…` and `DecompRange.java OUT start end…` (every
+function Ghidra has in a range, one file per range) run headless on a copy of
+the project, also while nobody has it open:
+
+```sh
+cp -r gf-reverse.gpr gf-reverse.rep /tmp/proj/ && rm -f /tmp/proj/*.lock*
+analyzeHeadless /tmp/proj gf-reverse -process -noanalysis -readOnly \
+    -scriptPath research/ghidra -postScript DecompRange.java /tmp/out 0x8fbe00 0x8fd200
+```
+
+Without Ghidra at all: `research/exe_xrefs.py` (references to an address,
+disassembly, strings; needs `capstone`) and `research/class_handlers.py`
+(the attribute reader and the message handler of a SimGroup class from its
+name: the method tables, docs/analysis/story.md §2).

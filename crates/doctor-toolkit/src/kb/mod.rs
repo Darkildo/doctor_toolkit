@@ -8,11 +8,14 @@
 //!   orphans, questions without a next step, names of closed files;
 //! * [`generate`] writes the notes of classes, resource types and messages
 //!   from `data/gf2/*` and keeps the hand-written sections between markers;
-//! * [`search`] finds notes by words.
+//! * [`search`] finds notes by words;
+//! * [`symbols`] makes the table of named addresses of the executable
+//!   (`data/gf2/exe_symbols.tsv`) from the notes of `exe/`.
 
 pub mod generate;
 pub mod lint;
 pub mod search;
+pub mod symbols;
 
 use std::path::{Path, PathBuf};
 

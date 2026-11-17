@@ -815,10 +815,11 @@ dependencies = [
 
 [[package]]
 name = "doctor-toolkit"
-version = "0.0.7"
+version = "0.0.8"
 dependencies = [
  "binrw",
  "doctor-toolkit-live",
+ "doctor-toolkit-sdk",
  "flate2",
  "gltf",
  "jpeg-decoder",
@@ -827,8 +828,10 @@ dependencies = [
  "notify",
  "png",
  "proptest",
+ "rapier3d",
  "rayon",
  "refpack",
+ "schemars",
  "semver",
  "serde",
  "serde_json",
@@ -842,7 +845,7 @@ dependencies = [
 
 [[package]]
 name = "doctor-toolkit-cli"
-version = "0.0.7"
+version = "0.0.8"
 dependencies = [
  "anyhow",
  "clap",
@@ -856,7 +859,7 @@ dependencies = [
 
 [[package]]
 name = "doctor-toolkit-gui"
-version = "0.0.7"
+version = "0.0.8"
 dependencies = [
  "bytemuck",
  "cpal",
@@ -881,11 +884,11 @@ dependencies = [
 
 [[package]]
 name = "doctor-toolkit-live"
-version = "0.0.7"
+version = "0.0.8"
 
 [[package]]
 name = "doctor-toolkit-mcp"
-version = "0.0.7"
+version = "0.0.8"
 dependencies = [
  "doctor-toolkit",
  "png",
@@ -902,7 +905,7 @@ dependencies = [
 
 [[package]]
 name = "doctor-toolkit-mods"
-version = "0.0.7"
+version = "0.0.8"
 dependencies = [
  "doctor-toolkit",
  "eframe",
@@ -915,7 +918,7 @@ dependencies = [
 
 [[package]]
 name = "doctor-toolkit-py"
-version = "0.0.7"
+version = "0.0.8"
 dependencies = [
  "doctor-toolkit",
  "pyo3",
@@ -924,6 +927,10 @@ dependencies = [
  "serde",
  "serde_json",
 ]
+
+[[package]]
+name = "doctor-toolkit-sdk"
+version = "0.0.8"
 
 [[package]]
 name = "document-features"

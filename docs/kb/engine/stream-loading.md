@@ -3,8 +3,8 @@ type: engine
 status: partial
 confidence: exe
 editions: ["1.0.789.0"]
-stages: [72, 5, 24, 32, 39, 45, 46, 48, 84]
-sources: ["docs/formats/stream.md §6", "docs/formats/toc.md §3", "docs/analysis/new-resources.md §1", "docs/analysis/new-resources.md §3", "docs/analysis/gf2-pc-verification.md §2", "docs/analysis/live-link.md §4", "docs/analysis/live-link.md §13.3", "docs/analysis/live-link.md §14", "docs/analysis/queens.md §3", "docs/analysis/queens.md §8", "docs/analysis/live-link.md §12.3", "docs/analysis/performance.md §4", "godfather2.exe 0x00401F40, 0x004A82B0", "docs/formats/wgi.md §4", "docs/analysis/game-bench.md §33", "docs/formats/simgroup.md §1.1"]
+stages: [72, 5, 24, 32, 39, 45, 46, 48, 84, 100]
+sources: ["docs/formats/stream.md §6", "docs/formats/toc.md §3", "docs/analysis/new-resources.md §1", "docs/analysis/new-resources.md §3", "docs/analysis/gf2-pc-verification.md §2", "docs/analysis/live-link.md §4", "docs/analysis/live-link.md §13.3", "docs/analysis/live-link.md §14", "docs/analysis/queens.md §3", "docs/analysis/queens.md §8", "docs/analysis/live-link.md §12.3", "docs/analysis/performance.md §4", "godfather2.exe 0x00401F40, 0x004A82B0", "docs/formats/wgi.md §4", "docs/analysis/game-bench.md §33", "docs/formats/simgroup.md §1.1", "docs/analysis/resources-in-memory.md §2", "docs/analysis/resources-in-memory.md §3", "docs/analysis/game-bench.md §42"]
 tags: [stream, toc, loading, guid, redirect]
 updated: 2026-11-16
 ---
@@ -28,14 +28,16 @@ updated: 2026-11-16
 - Выгрузка `0x00404C40` → `0x004048C0`: счётчики ссылок (`+0x54`, бит `0x20` в `+0x50` — «загружен явно»), рекурсивно зависимости, сообщения `iMsgStreamBeginUnload/Unloading/UnloadComplete`. Классы `LoadStream`/`UnloadStream` (`0x008139D0`, `0x00813BC0`) в SimGroup игры не используются.
 - Чтение — на отдельном потоке кусками по 128 КБ (`ReadFile` из `0x00ABEC29`), открытие — `CreateFileW` из `0x00AC0BDF` (см. [файлы](file-system.md)). На старте `-stream gf2 cuba` через 5 с загружен 61 поток.
 - Два запроса подряд роняют игру (этап 32): [модуль связи](live-module.md) держит очередь из одного запроса. Для незнакомого имени игра заводит запись «запрошен» навсегда.
+- Чтение потока идёт через [файловое устройство игры](../exe/file-device.md): чтение, переход, размер и закрытие — по одному месту вызова `KERNEL32` на каждое; игра читает файл потока целиком, от начала до конца.
 - Подмена файлов: модуль меняет открытие файла (`redirect=ПУТЬ|ЦЕЛЬ` в `doctor_live.cfg`) — игра читает пересобранный поток из папки тулкита, её папка не меняется.
+- Подмена ресурсов в памяти (этап 100, выключена по умолчанию): для потока с заплаткой ресурсов (`resources=ПОТОК|ЗАПЛАТКА`) модуль при открытии читает заголовки блоков файла игры, раскладывает поток заново с заменёнными и добавленными ресурсами (сырыми блоками `SDAT`) и отвечает на чтение игры из этой раскладки; неизменённые блоки берутся из файла игры как есть. Собранный поток — тот же, что пишет `apply` (на всём корпусе — побайтно при сырых заменах). См. [опыт](../experiments/resources-in-memory.md).
 
 ## Что неизвестно
 
 - Смысл `u16 3` в заголовке потока.
 - Откуда берутся GUID кадров роликов `igc*_s*`, банков `dlg\…` и корней уровней (вероятно, Trinity или код по имени).
 - Биты TOC `0x2`, `0x8`, `0x10`, `0x20` на диске в GF2 не встречаются и не проверены.
-- Подмена ресурса по GUID в памяти при загрузке (без копии потока) не сделана.
+- Подмена ресурса у уже загруженного потока (без его перезагрузки): образ большинства типов после загрузки освобождён или изменён — см. [образ ресурса после загрузки](resource-images.md).
 
 ## Подробнее
 
@@ -44,4 +46,5 @@ updated: 2026-11-16
 - [Новые ресурсы и потоки](../../analysis/new-resources.md) §1–§4
 - [Сверка форматов с файлами](../../analysis/gf2-pc-verification.md) §2–§5
 - [Живая связь](../../analysis/live-link.md) §4, §12.3, §13.3, §14
+- [Подмена ресурсов в памяти](../../analysis/resources-in-memory.md)
 - [Нью-Йорк](../../analysis/queens.md) §3, §8

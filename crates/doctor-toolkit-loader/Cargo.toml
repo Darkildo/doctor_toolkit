@@ -1,0 +1,29 @@
+[package]
+name = "doctor-toolkit-loader"
+description = "ASI loader of doctor_toolkit for The Godfather II (PC): a dinput8.dll that passes DirectInput8Create on to the system's DLL and loads the .asi modules of the game folder, scripts and plugins"
+version = "0.0.8"
+edition = "2024"
+license = "GPL-3.0-only"
+publish = false
+
+# A Windows DLL for 32-bit x86, outside the workspace (the workspace builds
+# for the host). Build: tools/build-loader.sh, or
+#   cargo build --release --target i686-pc-windows-gnu \
+#       --manifest-path crates/doctor-toolkit-loader/Cargo.toml
+[workspace]
+
+[lib]
+name = "doctor_loader"
+crate-type = ["cdylib"]
+path = "src/lib.rs"
+
+# No dependencies: the whole loader is this crate.
+[dependencies]
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
+debug = false

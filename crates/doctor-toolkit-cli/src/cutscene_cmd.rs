@@ -1,6 +1,8 @@
 //! In-engine cut-scenes (`trinity_seq_master` shots, `docs/formats/cutscenes.md`):
-//! list, show the time line, export and import JSON, move commands, swap
-//! clips, retime subtitles, export to glTF.
+//! list, show the time line, export and import JSON, key the camera and the
+//! actors, move and edit commands, swap clips, retime subtitles, export to
+//! glTF. The edits are the operations of `doctor_toolkit::cutscene::ops`,
+//! the same the MCP server records.
 
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
@@ -11,11 +13,11 @@ use clap::{Args, Subcommand};
 
 use doctor_toolkit::cutscene::cast::Cast;
 use doctor_toolkit::cutscene::gltf::{ExportOptions, export};
-use doctor_toolkit::cutscene::{Cutscene, Source, command_span, list_shots, sequences_in};
+use doctor_toolkit::cutscene::ops::{self, ActorEdit, CameraEdit, CommandEdit, SubtitleEdit};
+use doctor_toolkit::cutscene::{Cutscene, Source};
 use doctor_toolkit::game::{GameAssets, GameInstance};
-use doctor_toolkit::resource::tob::Tob;
-use doctor_toolkit::resource::trinity::{Command, FixedText, SeqMaster};
-use doctor_toolkit::workspace::{FILES, FileKey, Workspace};
+use doctor_toolkit::resource::trinity::SeqMaster;
+use doctor_toolkit::workspace::{FILES, Workspace};
 
 use crate::workspace_cmd::{self, EditMode};
 
@@ -64,6 +66,10 @@ pub enum CutsceneCommand {
         /// Print it as JSON
         #[arg(long)]
         json: bool,
+        /// With `--shot`: where the camera and the actors are at this time
+        /// (seconds from the start of the shot)
+        #[arg(long)]
+        time: Option<f32>,
     },
     /// Write one shot as editable JSON (the form `cutscene import` reads)
     Export {
@@ -91,6 +97,82 @@ pub enum CutsceneCommand {
         command: usize,
         #[arg(long)]
         time: f32,
+        #[command(flatten)]
+        mode: EditMode,
+    },
+    /// Key the camera of a shot at a time, or move its whole path and change its lens
+    Camera {
+        #[command(flatten)]
+        target: Target,
+        /// Seconds from the start of the shot: the key to set (changed, or
+        /// added on the path); without it `--offset`, `--turn` and the lens
+        /// change every key of the shot
+        #[arg(long)]
+        time: Option<f32>,
+        /// Position `x,y,z` of the key
+        #[arg(long, value_parser = triple, allow_hyphen_values = true)]
+        position: Option<[f32; 3]>,
+        /// Angles about `x,y,z` in degrees of the key
+        #[arg(long, value_parser = triple, allow_hyphen_values = true)]
+        rotation: Option<[f32; 3]>,
+        /// The lens: focal length in millimetres (70, 50, 35 …)
+        #[arg(long, conflicts_with = "fov")]
+        focal: Option<f32>,
+        /// The lens as the vertical field of view of the 16:9 picture, degrees
+        #[arg(long)]
+        fov: Option<f32>,
+        /// `x,y,z` added to the position (of the key, or of every key)
+        #[arg(long, value_parser = triple, allow_hyphen_values = true)]
+        offset: Option<[f32; 3]>,
+        /// Degrees `x,y,z` added to the angles (of the key, or of every key)
+        #[arg(long, value_parser = triple, allow_hyphen_values = true)]
+        turn: Option<[f32; 3]>,
+        /// Remove the camera keys at `--time`
+        #[arg(long, requires = "time")]
+        delete_key: bool,
+        #[command(flatten)]
+        mode: EditMode,
+    },
+    /// Key an actor of a shot at a time, or move it for the whole shot
+    Actor {
+        #[command(flatten)]
+        target: Target,
+        /// Actor name (`igc01_dominic`) or GUID
+        #[arg(long)]
+        actor: String,
+        /// Seconds from the start of the shot: the key to set; without it
+        /// `--offset` moves the actor for the whole shot
+        #[arg(long)]
+        time: Option<f32>,
+        /// Position `x,y,z` of the key
+        #[arg(long, value_parser = triple, allow_hyphen_values = true)]
+        position: Option<[f32; 3]>,
+        /// Angles about `x,y,z` in degrees of the key
+        #[arg(long, value_parser = triple, allow_hyphen_values = true)]
+        rotation: Option<[f32; 3]>,
+        /// `x,y,z` added to the position (of the key, or for the whole shot)
+        #[arg(long, value_parser = triple, allow_hyphen_values = true)]
+        offset: Option<[f32; 3]>,
+        /// Remove the actor's keys at `--time`
+        #[arg(long, requires = "time")]
+        delete_key: bool,
+        #[command(flatten)]
+        mode: EditMode,
+    },
+    /// Change fields of a command of a shot (and move it)
+    Command {
+        #[command(flatten)]
+        target: Target,
+        /// Command index (see `cutscene show`)
+        #[arg(long)]
+        command: usize,
+        /// A field of the command's JSON form and its new value
+        /// (`text=start_igc_17`, `seconds=2.5`, `color=[0,0,0,1]`), repeatable
+        #[arg(long = "set", value_name = "FIELD=VALUE", required = true)]
+        fields: Vec<String>,
+        /// Move it to this time too (seconds from the shot start)
+        #[arg(long)]
+        time: Option<f32>,
         #[command(flatten)]
         mode: EditMode,
     },
@@ -190,9 +272,12 @@ pub enum CutsceneCommand {
 pub fn run(command: CutsceneCommand) -> Result<()> {
     match command {
         CutsceneCommand::List { game_dir } => list(&game_dir),
-        CutsceneCommand::Show { target, read, json } => {
-            show(&target.reading(read.workspace_dir), json)
-        }
+        CutsceneCommand::Show {
+            target,
+            read,
+            json,
+            time,
+        } => show(&target.reading(read.workspace_dir), json, time),
         CutsceneCommand::Export {
             target,
             read,
@@ -208,22 +293,89 @@ pub fn run(command: CutsceneCommand) -> Result<()> {
             command,
             time,
             mode,
-        } => edit_shot(&target.editing(&mode), &mode, |seq| {
-            let block = seq.block_mut().context("the shot has no block")?;
-            let label = block
-                .commands
-                .get(command)
-                .map(Command::label)
-                .with_context(|| format!("no command {command}"))?;
-            block.move_command(command, time)?;
-            Ok(format!("Move `{label}` to {time:.3} s"))
+        } => edit_shot(&target.editing(&mode), &mode, |game, ws, stream, shot| {
+            let p = CommandEdit {
+                command,
+                time: Some(time),
+                fields: None,
+            };
+            Ok(ops::command(game, ws, stream, shot, &p)?)
         }),
+        CutsceneCommand::Camera {
+            target,
+            time,
+            position,
+            rotation,
+            focal,
+            fov,
+            offset,
+            turn,
+            delete_key,
+            mode,
+        } => edit_shot(&target.editing(&mode), &mode, |game, ws, stream, shot| {
+            let p = CameraEdit {
+                time,
+                position,
+                rotation,
+                focal_length: focal,
+                vertical_fov: fov,
+                offset,
+                turn,
+                delete_key,
+            };
+            Ok(ops::camera(game, ws, stream, shot, &p)?)
+        }),
+        CutsceneCommand::Actor {
+            target,
+            actor,
+            time,
+            position,
+            rotation,
+            offset,
+            delete_key,
+            mode,
+        } => edit_shot(&target.editing(&mode), &mode, |game, ws, stream, shot| {
+            let p = ActorEdit {
+                actor,
+                time,
+                position,
+                rotation,
+                offset,
+                delete_key,
+                ..Default::default()
+            };
+            Ok(ops::actor(game, ws, stream, shot, &p)?)
+        }),
+        CutsceneCommand::Command {
+            target,
+            command,
+            fields,
+            time,
+            mode,
+        } => {
+            let fields = parse_fields(&fields)?;
+            edit_shot(&target.editing(&mode), &mode, |game, ws, stream, shot| {
+                let p = CommandEdit {
+                    command,
+                    time,
+                    fields: Some(fields),
+                };
+                Ok(ops::command(game, ws, stream, shot, &p)?)
+            })
+        }
         CutsceneCommand::Clip {
             target,
             actor,
             clip,
             mode,
-        } => swap_clip(&target.editing(&mode), &actor, &clip, &mode),
+        } => edit_shot(&target.editing(&mode), &mode, |game, ws, stream, shot| {
+            let p = ActorEdit {
+                actor,
+                clip: Some(clip),
+                ..Default::default()
+            };
+            Ok(ops::actor(game, ws, stream, shot, &p)?)
+        }),
         CutsceneCommand::Subtitle {
             target,
             line,
@@ -365,55 +517,61 @@ fn workspace(game: &GameInstance, dir: Option<&Path>) -> Result<Option<Workspace
 
 /// Stream index and shot resource index of a target.
 fn locate(game: &GameInstance, target: &Target) -> Result<(usize, Option<usize>)> {
-    let stream = game
-        .find_stream(&target.stream)
-        .with_context(|| format!("stream `{}` not found", target.stream))?;
-    let Some(shot) = &target.shot else {
-        return Ok((stream, None));
-    };
-    if let Ok(index) = shot.parse::<usize>() {
-        return Ok((stream, Some(index)));
+    Ok(ops::locate(game, &target.stream, target.shot.as_deref())?)
+}
+
+/// `x,y,z`.
+fn triple(text: &str) -> std::result::Result<[f32; 3], String> {
+    let parts: Vec<f32> = text
+        .split(',')
+        .map(|p| p.trim().parse::<f32>())
+        .collect::<std::result::Result<_, _>>()
+        .map_err(|e| format!("`{text}`: {e}"))?;
+    parts
+        .try_into()
+        .map_err(|_| format!("`{text}`: three numbers `x,y,z` expected"))
+}
+
+/// `field=value` pairs as a JSON object: a value that is not JSON is text.
+fn parse_fields(pairs: &[String]) -> Result<serde_json::Value> {
+    let mut fields = serde_json::Map::new();
+    for pair in pairs {
+        let (name, value) = pair
+            .split_once('=')
+            .with_context(|| format!("`{pair}`: FIELD=VALUE expected"))?;
+        let value = serde_json::from_str(value)
+            .unwrap_or_else(|_| serde_json::Value::String(value.to_owned()));
+        fields.insert(name.trim().to_owned(), value);
     }
-    let file = game.open_stream(stream)?;
-    for (index, r) in file.layout().resources.iter().enumerate() {
-        if r.header.type_id == doctor_toolkit::resource::trinity::TYPE_TRINITY_SEQ_MASTER {
-            let seq = SeqMaster::parse(&file.resource_data(index)?)?;
-            if seq.source_name().eq_ignore_ascii_case(shot) {
-                return Ok((stream, Some(index)));
-            }
-        }
-    }
-    bail!("no shot `{shot}` in {}", target.stream)
+    Ok(serde_json::Value::Object(fields))
 }
 
 fn list(game_dir: &Path) -> Result<()> {
     let game = GameInstance::open(game_dir)?;
-    let shots = list_shots(&game)?;
-    let mut streams: Vec<usize> = shots.iter().map(|s| s.stream).collect();
-    streams.dedup();
-    let source = Source::new(&game, None);
-    for stream in streams {
-        let here: Vec<_> = shots.iter().filter(|s| s.stream == stream).collect();
-        let total: f32 = here.iter().map(|s| s.duration).sum();
+    let streams = ops::overview(&Source::new(&game, None))?;
+    let mut total = 0;
+    for stream in &streams {
         out!(
-            "{}  ({} shots, {total:.1} s)",
-            here[0].stream_name,
-            here.len()
+            "{}  ({} shots, {:.1} s)",
+            stream.stream,
+            stream.shots.len(),
+            stream.seconds
         );
-        for seq in sequences_in(&source, stream)? {
+        for seq in &stream.sequences {
             out!(
                 "  sequence {}: starts on `{}`, ends with `{}`, {} shots",
                 seq.guid,
                 seq.start_message.as_deref().unwrap_or("-"),
                 seq.end_message.as_deref().unwrap_or("-"),
-                seq.shots.len()
+                seq.shots
             );
         }
-        for s in here {
-            out!("    {:5}  {:<28} {:6.2} s", s.resource, s.name, s.duration);
+        for s in &stream.shots {
+            out!("    {:5}  {:<28} {:6.2} s", s.resource, s.name, s.seconds);
         }
+        total += stream.shots.len();
     }
-    out!("{} shot(s)", shots.len());
+    out!("{total} shot(s)");
     Ok(())
 }
 
@@ -425,9 +583,20 @@ fn load(target: &Target) -> Result<(GameInstance, Option<Workspace>, Cutscene)> 
     Ok((game, ws, cutscene))
 }
 
-fn show(target: &Target, json: bool) -> Result<()> {
-    let (_, _, cutscene) = load(target)?;
+fn show(target: &Target, json: bool, time: Option<f32>) -> Result<()> {
+    let (game, _, mut cutscene) = load(target)?;
+    // With `--shot`: that shot alone, not the sequence that plays it.
+    let only = match &target.shot {
+        Some(_) => locate(&game, target)?.1,
+        None => None,
+    };
+    if time.is_some() && only.is_none() {
+        bail!("--time needs --shot: it is seconds from the start of a shot");
+    }
     if json {
+        if let Some(resource) = only {
+            cutscene.shots.retain(|s| s.resource == resource);
+        }
         out!("{}", serde_json::to_string_pretty(&cutscene)?);
         return Ok(());
     }
@@ -447,19 +616,19 @@ fn show(target: &Target, json: bool) -> Result<()> {
         );
     }
     for (i, shot) in cutscene.shots.iter().enumerate() {
+        if only.is_some_and(|r| r != shot.resource) {
+            continue;
+        }
+        let view = ops::shot_view(&cutscene, i);
         out!(
             "\nshot {i}: {} (resource {}), {:.2}–{:.2} s, stream {}",
-            shot.seq.source_name(),
-            shot.resource,
-            shot.start,
-            shot.end(),
-            if shot.stream.is_some() {
-                shot.stream_name.as_str()
-            } else {
-                "(none)"
-            }
+            view.name,
+            view.resource,
+            view.start,
+            view.end,
+            view.stream.as_deref().unwrap_or("(none)")
         );
-        for a in &shot.actors {
+        for a in &view.actors {
             out!(
                 "  actor {} {}: {}{}{}",
                 a.guid,
@@ -475,20 +644,62 @@ fn show(target: &Target, json: bool) -> Result<()> {
                     .unwrap_or_default()
             );
         }
-        let block = shot.block();
-        for (k, (c, t)) in block.commands.iter().zip(block.times()).enumerate() {
-            if matches!(c, Command::Wait { .. }) {
-                continue;
-            }
-            let (_, length) = command_span(shot, k, t);
-            let missing = match c {
-                Command::ActorAnim { clip, .. } if shot.clip(&clip.text).is_none() => {
-                    "  (clip not found)"
-                }
-                _ => "",
+        for c in &view.commands {
+            let missing = if c.clip_missing {
+                "  (clip not found)"
+            } else {
+                ""
             };
-            out!("  {k:4}  {t:7.3} s  +{length:6.3}  {}{missing}", c.label());
+            out!(
+                "  {:4}  {:7.3} s  +{:6.3}  {}{missing}",
+                c.index,
+                c.time,
+                c.length,
+                c.label
+            );
         }
+        if only.is_some() {
+            let keys: Vec<String> = view.camera_keys.iter().map(|k| format!("{k:.3}")).collect();
+            out!("  camera keys at: {}", keys.join(" "));
+        }
+        if let Some(t) = time {
+            let m = ops::moment(shot, t);
+            out!("  at {t:.3} s:");
+            match &m.camera {
+                Some(c) => out!(
+                    "    camera at ({:.3}; {:.3}; {:.3}), angles ({:.2}; {:.2}; {:.2}), lens {:.1} mm ({:.1} deg){}",
+                    c.position[0],
+                    c.position[1],
+                    c.position[2],
+                    c.rotation[0],
+                    c.rotation[1],
+                    c.rotation[2],
+                    c.focal_length,
+                    c.vertical_fov,
+                    if c.on_key { ", on a key" } else { "" }
+                ),
+                None => out!("    no camera yet"),
+            }
+            for a in &m.actors {
+                out!(
+                    "    {} at ({:.3}; {:.3}; {:.3}){}",
+                    a.name,
+                    a.position[0],
+                    a.position[1],
+                    a.position[2],
+                    a.clip
+                        .as_deref()
+                        .map(|c| format!(", plays {c}"))
+                        .unwrap_or_default()
+                );
+            }
+        }
+    }
+    if only.is_some() {
+        if !cutscene.audio.is_empty() {
+            out!("\nsound and subtitles belong to the whole cut-scene: run without --shot");
+        }
+        return Ok(());
     }
     for track in &cutscene.audio {
         let p = &track.placement;
@@ -545,90 +756,41 @@ fn export_json(target: &Target, output: &Path) -> Result<()> {
     Ok(())
 }
 
-fn record(
-    game: &GameInstance,
-    stream: usize,
-    shot: usize,
-    data: Vec<u8>,
-    label: &str,
-    mode: &EditMode,
-) -> Result<()> {
-    let mut ws = workspace_cmd::open_for_edit(game, mode)?;
-    if !ws.set_resource(game, stream, shot, data, label)? {
-        out!("nothing changed");
-        return Ok(());
-    }
-    out!("{label}");
-    workspace_cmd::finish_edit(
-        game,
-        &mut ws,
-        mode,
-        vec![game.streams()[stream].stream_name()],
-    )
-}
-
 fn import_json(target: &Target, input: &Path, mode: &EditMode) -> Result<()> {
-    let (game, stream, shot) = one_shot(target)?;
     let text = std::fs::read_to_string(input)
         .with_context(|| format!("cannot read {}", input.display()))?;
-    let seq: SeqMaster = serde_json::from_str(&text)?;
-    let label = format!("Import cut-scene shot {}", seq.source_name());
-    record(&game, stream, shot, seq.to_bytes()?, &label, mode)
+    edit_shot(target, mode, |game, ws, stream, shot| {
+        Ok(ops::import_json(game, ws, stream, shot, &text)?)
+    })
 }
 
+/// Runs an operation on the one shot of `target` and tells what it recorded.
 fn edit_shot(
     target: &Target,
     mode: &EditMode,
-    edit: impl FnOnce(&mut SeqMaster) -> Result<String>,
+    edit: impl FnOnce(&GameInstance, &mut Workspace, &str, &str) -> Result<ops::ShotEdit>,
 ) -> Result<()> {
-    let (game, stream, shot) = one_shot(target)?;
-    let ws = workspace_cmd::open_for_edit(&game, mode)?;
-    let mut seq = SeqMaster::parse(&ws.current_data(&game, stream, shot)?)?;
-    drop(ws);
-    let label = edit(&mut seq)?;
-    record(&game, stream, shot, seq.to_bytes()?, &label, mode)
-}
-
-fn swap_clip(target: &Target, actor: &str, clip: &str, mode: &EditMode) -> Result<()> {
-    let (game, _, cutscene) = load(target)?;
-    let (_, resource) = locate(&game, target)?;
-    let resource = resource.context("give the shot with --shot")?;
-    let shot = cutscene
-        .shots
-        .iter()
-        .find(|s| s.resource == resource)
-        .context("the shot is not in its sequence")?;
-    if shot.clip(clip).is_none() {
-        let names: Vec<String> = shot.clips.iter().filter_map(|c| c.name.clone()).collect();
-        bail!(
-            "no clip `{clip}` in {} (clips: {})",
-            shot.stream_name,
-            names.join(", ")
-        );
+    let game = GameInstance::open(&target.game_dir)?;
+    let shot = target
+        .shot
+        .as_deref()
+        .context("give the shot with --shot")?;
+    let mut ws = workspace_cmd::open_for_edit(&game, mode)?;
+    let done = edit(&game, &mut ws, &target.stream, shot)?;
+    if !done.changed {
+        out!("nothing changed");
+        return Ok(());
     }
-    let wanted = actor.to_owned();
-    let new_clip = clip.to_owned();
-    edit_shot(target, mode, move |seq| {
-        let block = seq.block_mut().context("the shot has no block")?;
-        let guid = block.commands.iter().find_map(|c| match c {
-            Command::ActorCreate { actor, name, .. } if name.text.eq_ignore_ascii_case(&wanted) => {
-                Some(*actor)
-            }
-            _ => None,
-        });
-        let index: Option<usize> = wanted.parse().ok();
-        let mut changed = None;
-        for (k, c) in block.commands.iter_mut().enumerate() {
-            if let Command::ActorAnim { actor, clip, .. } = c
-                && (Some(*actor) == guid || Some(k) == index)
-            {
-                changed = Some(std::mem::replace(clip, FixedText::new(new_clip.clone())).text);
-                break;
-            }
-        }
-        let old = changed.with_context(|| format!("no animation of actor `{wanted}`"))?;
-        Ok(format!("Swap clip {old} for {new_clip}"))
-    })
+    out!("{}", done.label);
+    for line in &done.done {
+        out!("  {line}");
+    }
+    workspace_cmd::finish_edit(
+        &game,
+        &mut ws,
+        mode,
+        vec![game.streams()[done.stream].stream_name()],
+    )
 }
 
 fn retime_subtitle(
@@ -639,46 +801,28 @@ fn retime_subtitle(
     track: Option<&str>,
     mode: &EditMode,
 ) -> Result<()> {
-    let (game, _, cutscene) = load(target)?;
-    let audio = match track {
-        Some(name) => cutscene
-            .audio
-            .iter()
-            .find(|a| a.entry.eq_ignore_ascii_case(name))
-            .with_context(|| format!("no sound track `{name}`"))?,
-        None => cutscene
-            .audio
-            .iter()
-            .find(|a| a.tob.is_some())
-            .context("the cut-scene's sound has no subtitles")?,
-    };
-    let sub = audio
-        .subtitles
-        .get(line)
-        .with_context(|| format!("no line {line}"))?;
-    let mut tob: Tob = audio.tob.clone().context("no subtitle table")?;
-    let entry = &mut tob.groups[sub.group_index].entries[sub.entry];
-    if let Some(s) = start {
-        entry.start_ms = s;
-    }
-    if let Some(d) = duration {
-        entry.duration_ms = d;
-    }
-    let (s, d) = (entry.start_ms, entry.duration_ms);
-    let group = &mut tob.groups[sub.group_index];
-    group.entries.sort_by_key(|e| e.start_ms);
-    let key = FileKey::archive_entry(&audio.entry);
+    let game = GameInstance::open(&target.game_dir)?;
     let mut ws = workspace_cmd::open_for_edit(&game, mode)?;
-    let snu = ws.current_file(&game, &key)?;
-    let data = tob.replace_in_snu(&snu)?;
-    let label = format!(
-        "Subtitle {line} of {} at {:.3} s for {:.3} s",
-        cutscene.name,
-        s as f32 / 1000.0,
-        d as f32 / 1000.0
+    let p = SubtitleEdit {
+        line,
+        start_ms: start,
+        duration_ms: duration,
+    };
+    let done = ops::subtitle(
+        &game,
+        &mut ws,
+        &target.stream,
+        target.shot.as_deref(),
+        track,
+        &p,
+    )?;
+    out!("{}", done.label);
+    out!(
+        "  {} ({:.1} MB) is the change: {}",
+        done.entry,
+        done.file_bytes as f64 / 1e6,
+        done.note
     );
-    ws.set_file(&game, &key, data, &label)?;
-    out!("{label}");
     workspace_cmd::finish_edit(&game, &mut ws, mode, vec![FILES.to_owned()])
 }
 

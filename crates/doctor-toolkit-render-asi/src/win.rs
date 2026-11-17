@@ -20,6 +20,7 @@ pub const MEM_COMMIT: u32 = 0x1000;
 pub const MEM_RESERVE: u32 = 0x2000;
 pub const MEM_FREE: u32 = 0x1_0000;
 pub const PAGE_NOACCESS: u32 = 0x01;
+pub const PAGE_READWRITE: u32 = 0x04;
 pub const PAGE_EXECUTE_READWRITE: u32 = 0x40;
 pub const DLL_PROCESS_ATTACH: u32 = 1;
 
@@ -49,6 +50,22 @@ unsafe extern "system" {
     pub fn VirtualProtect(address: *mut c_void, size: usize, new: u32, old: *mut u32) -> i32;
     pub fn FlushInstructionCache(process: Handle, address: *const c_void, size: usize) -> i32;
     pub fn GetCurrentProcess() -> Handle;
+    pub fn GetCurrentThread() -> Handle;
+    pub fn GetCurrentThreadId() -> u32;
+    pub fn GetThreadTimes(
+        thread: Handle,
+        created: *mut u64,
+        exited: *mut u64,
+        kernel: *mut u64,
+        user: *mut u64,
+    ) -> i32;
+    pub fn GetProcessTimes(
+        process: Handle,
+        created: *mut u64,
+        exited: *mut u64,
+        kernel: *mut u64,
+        user: *mut u64,
+    ) -> i32;
     pub fn DisableThreadLibraryCalls(module: Handle) -> i32;
     pub fn GetModuleFileNameW(module: Handle, name: *mut u16, size: u32) -> u32;
     pub fn CreateThread(

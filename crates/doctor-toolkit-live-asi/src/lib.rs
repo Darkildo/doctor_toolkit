@@ -18,6 +18,11 @@
 //! game opens those files of its folder from the toolkit's folder instead
 //! — a mod or a workspace without writing into the game.
 //!
+//! Stage 100 ([`resources`]): with `resources=` lines the module composes
+//! those streams in memory from the game's own file and a resource patch
+//! of the toolkit, and answers the reads of the game's file device from
+//! the composed stream — no rebuilt stream on disk.
+//!
 //! Stage 48 ([`state`]) reads and writes the world and the state of the
 //! game: time of day, weather, streams one at a time, money, family,
 //! missions, variables of the story.
@@ -40,6 +45,7 @@ mod files;
 mod game;
 mod journal;
 mod profile;
+mod resources;
 mod server;
 mod state;
 mod win;
@@ -415,6 +421,9 @@ unsafe extern "system" fn start(_: *mut c_void) -> u32 {
                 let list: Vec<String> = failed.iter().map(|a| format!("{a:#010x}")).collect();
                 log(&format!("files: could not patch {}", list.join(", ")));
             }
+        }
+        if let Some(line) = resources::summary() {
+            log(&line);
         }
         if let Some(failed) = PROFILE.get() {
             log(&profile::summary());

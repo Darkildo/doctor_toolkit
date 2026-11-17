@@ -58,6 +58,18 @@
 //! threads, the textures, the address space and the clock of the game,
 //! and a sampler of where its threads stand ([`crate::profile`]).
 //!
+//! Version 8 (stage 78) adds no request: a client that asks for
+//! [`crate::journal::mask::MESSAGE_SENDER`] gets message events with their
+//! origin ([`crate::journal::MessageFrom`]: the place of the call, the
+//! object whose handler sent it, the object in the data) and the deliveries
+//! to one listener, which pass the broadcast of the bus by.
+//!
+//! Version 9 (stage 100) adds [`Request::Resources`] — the streams the
+//! module composes in memory from the game's file and a resource patch
+//! ([`crate::resources`]) and their use — and [`Request::Resource`]: the
+//! record of a loaded resource in the game's table of resources, by its
+//! GUID (where its data lie in memory, for comparing them).
+//!
 //! Writes into the game ([`Request::Teleport`], [`Request::Send`],
 //! [`Request::Lua`]) are separate requests: the editor asks before it sends
 //! them, and the module refuses them when its configuration says
@@ -69,11 +81,12 @@ use std::io::{Read, Write};
 pub use crate::debug::{BreakOn, BreakRule, Control, DebugState, Stop, StopPlace, StopReason};
 pub use crate::edit::{EditJournal, EditKind, EditValue, Matrix, ObjectEdit, ObjectState};
 pub use crate::files::{FileUse, Files};
-pub use crate::journal::{Event, EventBatch, EventBody, MessageOrigin, OutputSource};
+pub use crate::journal::{Event, EventBatch, EventBody, MessageFrom, MessageOrigin, OutputSource};
 pub use crate::profile::{
     Clock, CpuTime, FormatUse, MemoryMap, Profile, SiteIo, SlowRead, Stats, TextureUse, ThreadIo,
     ThreadSamples,
 };
+pub use crate::resources::{Loaded, Resources, StreamUse};
 pub use crate::state::{
     Checkpoint, CrewSlot, Family, FamilyInfo, Mission, Money, MoneyChange, Rain, StreamAction,
     StreamQueue, StreamRequest, TimeChange, TimeOfDay, Variable, Weather,
@@ -84,7 +97,7 @@ pub use crate::world::{World, WorldFilter, WorldObject};
 /// Magic of every frame.
 pub const MAGIC: [u8; 4] = *b"DTLV";
 /// Version of this protocol: what a client sends first.
-pub const PROTOCOL_VERSION: u16 = 7;
+pub const PROTOCOL_VERSION: u16 = 9;
 /// Oldest version a module still answers.
 pub const OLDEST_PROTOCOL_VERSION: u16 = 1;
 
@@ -387,6 +400,12 @@ pub enum Request {
         memory: bool,
         sample_ms: u32,
     },
+    /// Version 9: the streams the module composes from the game's file and
+    /// a resource patch, and their use ([`crate::resources`]).
+    Resources,
+    /// Version 9: the record of the loaded resource with these four ids in
+    /// the game's table of resources (`*0x012053AC`). Reads only.
+    Resource { ids: [u32; 4] },
 }
 
 /// Kinds of requests.
@@ -428,6 +447,8 @@ pub mod kind {
     pub const OBJECT_EDITS: u16 = 35;
     pub const OBJECT_FORGET: u16 = 36;
     pub const PROFILE: u16 = 37;
+    pub const RESOURCES: u16 = 38;
+    pub const RESOURCE: u16 = 39;
 }
 
 impl Request {
@@ -470,6 +491,8 @@ impl Request {
             Self::ObjectEdits => kind::OBJECT_EDITS,
             Self::ObjectForget { .. } => kind::OBJECT_FORGET,
             Self::Profile { .. } => kind::PROFILE,
+            Self::Resources => kind::RESOURCES,
+            Self::Resource { .. } => kind::RESOURCE,
         }
     }
 
@@ -502,6 +525,7 @@ impl Request {
             | Self::ObjectEdits
             | Self::ObjectForget { .. } => 6,
             Self::Profile { .. } => 7,
+            Self::Resources | Self::Resource { .. } => 9,
             _ => 1,
         }
     }
@@ -623,7 +647,13 @@ impl Request {
             | Self::Family
             | Self::Mission
             | Self::Files
+            | Self::Resources
             | Self::ObjectEdits => {}
+            Self::Resource { ids } => {
+                for id in ids {
+                    w.u32(*id);
+                }
+            }
             Self::Object { guid } => w.bytes(guid),
             Self::ObjectTransform { guid, matrix } => {
                 w.bytes(guid);
@@ -781,6 +811,10 @@ impl Request {
                 value: r.u32()? as i32,
             },
             kind::FILES => Self::Files,
+            kind::RESOURCES => Self::Resources,
+            kind::RESOURCE => Self::Resource {
+                ids: [r.u32()?, r.u32()?, r.u32()?, r.u32()?],
+            },
             kind::OBJECT => Self::Object { guid: r.guid()? },
             kind::OBJECT_TRANSFORM => Self::ObjectTransform {
                 guid: r.guid()?,
@@ -1037,6 +1071,11 @@ pub enum Response {
     ObjectEdits(Vec<ObjectEdit>),
     /// Version 7: answer to [`Request::Profile`].
     Profile(Box<Profile>),
+    /// Version 9: answer to [`Request::Resources`].
+    Resources(Resources),
+    /// Version 9: answer to [`Request::Resource`]; `None` when no loaded
+    /// resource has those ids.
+    Resource(Option<Loaded>),
     Error(Failure),
 }
 
@@ -1162,6 +1201,8 @@ impl Response {
             Self::ObjectEdit(e) => crate::edit::put_edit(&mut w, e),
             Self::ObjectEdits(list) => crate::edit::put_edits(&mut w, list),
             Self::Profile(p) => crate::profile::put_profile(&mut w, p),
+            Self::Resources(r) => crate::resources::put_resources(&mut w, r),
+            Self::Resource(l) => crate::resources::put_loaded(&mut w, l),
             Self::Error(e) => {
                 w.u16(e.code as u16);
                 w.str(&e.message);
@@ -1281,6 +1322,8 @@ impl Response {
                 }
                 kind::OBJECT_EDITS => Self::ObjectEdits(crate::edit::get_edits(&mut r)?),
                 kind::PROFILE => Self::Profile(Box::new(crate::profile::get_profile(&mut r)?)),
+                kind::RESOURCES => Self::Resources(crate::resources::get_resources(&mut r)?),
+                kind::RESOURCE => Self::Resource(crate::resources::get_loaded(&mut r)?),
                 other => return Err(DecodeError::UnknownKind(other | REPLY)),
             }
         };
@@ -1345,8 +1388,11 @@ fn put_events(w: &mut Writer, b: &EventBatch) {
                 listeners,
                 receivers,
                 origin,
+                from,
             } => {
-                w.u8(3);
+                // 3 is the event of protocol 2; 5 (protocol 8) carries the
+                // origin after the same fields.
+                w.u8(if from.is_some() { 5 } else { 3 });
                 w.u32(*hash);
                 w.u32(*data);
                 w.bool(*forced);
@@ -1356,6 +1402,19 @@ fn put_events(w: &mut Writer, b: &EventBatch) {
                     w.bytes(g);
                 }
                 w.u8(*origin as u8);
+                if let Some(f) = from {
+                    w.u32(f.site);
+                    w.u32(f.cause);
+                    w.u8(u8::from(f.sender.is_some())
+                        | u8::from(f.data_object.is_some()) << 1
+                        | u8::from(f.direct) << 2);
+                    if let Some(g) = &f.sender {
+                        w.bytes(g);
+                    }
+                    if let Some(g) = &f.data_object {
+                        w.bytes(g);
+                    }
+                }
             }
             EventBody::MessageCounts { window_ms, counts } => {
                 w.u8(4);
@@ -1401,7 +1460,7 @@ fn get_events(r: &mut Reader<'_>) -> Result<EventBatch, DecodeError> {
                     lines
                 },
             },
-            3 => EventBody::Message {
+            kind @ (3 | 5) => EventBody::Message {
                 hash: r.u32()?,
                 data: r.u32()?,
                 forced: r.bool()?,
@@ -1418,6 +1477,31 @@ fn get_events(r: &mut Reader<'_>) -> Result<EventBatch, DecodeError> {
                     0 => MessageOrigin::Game,
                     1 => MessageOrigin::Link,
                     _ => return Err(DecodeError::BadValue("message origin")),
+                },
+                from: if kind == 5 {
+                    let site = r.u32()?;
+                    let cause = r.u32()?;
+                    let flags = r.u8()?;
+                    if flags > 7 {
+                        return Err(DecodeError::BadValue("message origin flags"));
+                    }
+                    Some(MessageFrom {
+                        site,
+                        cause,
+                        sender: if flags & 1 != 0 {
+                            Some(r.guid()?)
+                        } else {
+                            None
+                        },
+                        data_object: if flags & 2 != 0 {
+                            Some(r.guid()?)
+                        } else {
+                            None
+                        },
+                        direct: flags & 4 != 0,
+                    })
+                } else {
+                    None
                 },
             },
             4 => EventBody::MessageCounts {

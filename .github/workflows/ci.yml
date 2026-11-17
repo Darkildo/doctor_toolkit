@@ -67,6 +67,11 @@ jobs:
         run: |
           cargo run -p doctor-toolkit-cli -- kb-lint
           cargo run -p doctor-toolkit-cli -- kb-gen --check
+      # docs/parity.md is written from data/toolkit/capabilities.toml (the
+      # tests above check the same and that the table has every MCP tool,
+      # editor command and command of the command line).
+      - name: Check the table of capabilities
+        run: cargo run -p doctor-toolkit-cli -- parity-gen --check
       - name: Check the release scripts
         run: bash -n tools/release.sh && bash -n tools/package.sh
 

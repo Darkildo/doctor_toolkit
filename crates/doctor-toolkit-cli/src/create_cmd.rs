@@ -1,23 +1,21 @@
 //! Commands that create resources and streams: `add-resource`,
-//! `clone-resource`, `add-stream`, `remove-stream`, `check-refs`,
-//! `world-grid`.
+//! `clone-resource`, `add-stream`, `add-simgroup`, `remove-stream`,
+//! `check-refs`, `world-grid`. What they do is in
+//! [`doctor_toolkit::zone_ops`], shared with the editor.
 
-use std::fs;
 use std::io::Write as _;
 use std::path::PathBuf;
 
 use anyhow::{Context, Result, bail};
 use clap::{Args, Subcommand};
 
-use doctor_toolkit::container::ustream::{ResourceHeader, Storage};
-use doctor_toolkit::create::{self, CloneOptions, IdForm, Remap};
+use doctor_toolkit::create;
 use doctor_toolkit::game::GameInstance;
 use doctor_toolkit::level::world_grid::{self, ZoneCell};
 use doctor_toolkit::resource::names::type_tags;
 use doctor_toolkit::resource::wgi;
-use doctor_toolkit::workspace::{
-    NewResourceEdit, ResourceEdit, ResourceKey, StorageChoice, Workspace,
-};
+use doctor_toolkit::workspace::Workspace;
+use doctor_toolkit::zone_ops;
 
 use crate::workspace_cmd::{self, EditMode};
 
@@ -138,12 +136,21 @@ pub struct CheckRefs {
     streams: Vec<String>,
 }
 
-fn parse_type(text: &str) -> Result<u32> {
-    Ok(create::parse_type(text)?)
-}
-
-fn parse_ids(text: &str) -> Result<[u32; 4]> {
-    Ok(create::parse_ids(text)?)
+#[derive(Args)]
+pub struct CheckEdits {
+    game_dir: PathBuf,
+    /// Only changes whose key contains this text
+    #[arg(long)]
+    filter: Option<String>,
+    /// Mod project whose state is checked too
+    #[arg(long, value_name = "DIR")]
+    project: Option<PathBuf>,
+    /// Workspace directory [default: <GAME_DIR>/_doctor_toolkit/workspace]
+    #[arg(long, value_name = "DIR")]
+    workspace: Option<PathBuf>,
+    /// Print the report as JSON
+    #[arg(long)]
+    json: bool,
 }
 
 fn find_stream(game: &GameInstance, name: &str) -> Result<usize> {
@@ -151,206 +158,143 @@ fn find_stream(game: &GameInstance, name: &str) -> Result<usize> {
         .with_context(|| format!("stream `{name}` not found in {}", game.root().display()))
 }
 
-fn used_ids(game: &GameInstance, ws: &Workspace) -> create::UsedIds {
-    let (index, _) = game.build_index(|_| {});
-    ws.used_ids(&index)
-}
-
 pub fn add_resource(args: AddResource) -> Result<()> {
     let game = GameInstance::open(&args.game_dir)?;
     let mut ws = workspace_cmd::open_for_edit(&game, &args.mode)?;
-    let stream = doctor_toolkit::workspace::key::normalize_stream(&args.stream);
-    let type_id = parse_type(&args.type_tag)?;
-    let data =
-        fs::read(&args.data).with_context(|| format!("cannot read {}", args.data.display()))?;
-    let ids = match &args.ids {
-        Some(text) => parse_ids(text)?,
-        None => {
-            let mut used = used_ids(&game, &ws);
-            let seed = format!("{stream}:{type_id:08x}:{}", args.data.display());
-            used.new_ids(IdForm::for_type(type_id), type_id, &[0; 4], &seed)
-        }
-    };
-    let defaults = create::type_defaults(type_id);
-    let mem_policy = match &args.policy {
-        None => defaults.mem_policy,
-        Some(text) => create::parse_mem_policy(text)?,
-    };
-    let before = match args.before {
-        None => None,
-        Some(index) => {
-            let file = game.open_stream(find_stream(&game, &stream)?)?;
-            let resource = file
-                .layout()
-                .resources
-                .get(index)
-                .with_context(|| format!("{stream} has no resource {index}"))?;
-            Some(ResourceKey::new(&stream, &resource.header))
-        }
-    };
-    let header = ResourceHeader {
-        mem_policy,
-        alignment: args.alignment.unwrap_or(defaults.alignment),
-        type_id,
-        ids,
-        data_size: 0,
-    };
-    let key = ResourceKey {
-        stream: stream.clone(),
-        type_id,
-        ids,
-    };
-    let label = format!("Add {key} from {}", args.data.display());
-    ws.add_resources(
+    // A new stream of the workspace is a stream like the others.
+    let game = ws.stage(&game)?;
+    let (index, _) = game.build_index(|_| {});
+    let key = zone_ops::add_resource(
         &game,
-        &label,
-        &[NewResourceEdit {
-            stream: stream.clone(),
-            header,
-            data,
-            storage: if args.compress {
-                StorageChoice::Refpack
-            } else {
-                StorageChoice::Raw
-            },
-            before,
-        }],
+        &index,
+        &mut ws,
+        &zone_ops::AddResourceParams {
+            stream: args.stream.clone(),
+            type_tag: args.type_tag.clone(),
+            file: args.data.clone(),
+            ids: args.ids.clone(),
+            before: args.before,
+            policy: args.policy.clone(),
+            alignment: args.alignment,
+            compress: args.compress,
+        },
     )?;
     out!("added {key}");
+    let stream = key.stream.clone();
     workspace_cmd::finish_edit(&game, &mut ws, &args.mode, vec![stream])
 }
 
 pub fn clone_resource(args: CloneResource) -> Result<()> {
     let game = GameInstance::open(&args.game_dir)?;
     let mut ws = workspace_cmd::open_for_edit(&game, &args.mode)?;
-    let source_index = find_stream(&game, &args.stream)?;
-    let source = game.streams()[source_index].stream_name();
-    let target = args.to.as_deref().map_or_else(
-        || source.clone(),
-        doctor_toolkit::workspace::key::normalize_stream,
-    );
-    let file = game.open_stream(source_index)?;
-    let mut used = used_ids(&game, &ws);
-    let options = CloneOptions {
-        seed: args.seed.clone().unwrap_or_else(|| target.clone()),
-        rewrite_references: !args.no_rewrite,
-        storage: None,
-    };
-    let (clones, remap) = create::clone_resources(&file, &args.indices, &mut used, &options)?;
-    // In the same stream, the clones follow their sources.
-    let before = if target == source {
-        let last = clones.iter().filter_map(|c| c.source).max().unwrap_or(0);
-        file.layout()
-            .resources
-            .get(last + 1)
-            .map(|r| ResourceKey::new(&source, &r.header))
-    } else {
-        None
-    };
-    let additions: Vec<NewResourceEdit> = clones
-        .iter()
-        .map(|c| NewResourceEdit {
-            stream: target.clone(),
-            header: c.header,
-            data: c.data.clone(),
-            storage: match c.storage {
-                Storage::Raw => StorageChoice::Raw,
-                Storage::RefPack => StorageChoice::Refpack,
-            },
-            before: before.clone(),
-        })
-        .collect();
-    let label = format!(
-        "Clone {} resource(s) of {source} into {target}",
-        additions.len()
-    );
-    ws.add_resources(&game, &label, &additions)?;
-    for clone in &clones {
-        let from = clone
-            .source
-            .map(|i| ResourceKey::new(&source, &file.layout().resources[i].header));
-        let to = ResourceKey::new(&target, &clone.header);
+    let game = ws.stage(&game)?;
+    let (index, _) = game.build_index(|_| {});
+    let done = zone_ops::clone_resources(
+        &game,
+        &index,
+        &mut ws,
+        &zone_ops::CloneParams {
+            stream: args.stream.clone(),
+            indices: args.indices.clone(),
+            to: args.to.clone(),
+            seed: args.seed.clone(),
+            keep_references: args.no_rewrite,
+            retarget: args.retarget.clone(),
+        },
+    )?;
+    for (from, to) in &done.clones {
         match from {
             Some(from) => out!("{from} -> {to}"),
             None => out!("{to}"),
         }
     }
-    for (old, new) in &remap.names {
+    for (old, new) in &done.remap.names {
         out!("name hash {old:08x} -> {new:08x}");
     }
-    let mut streams = vec![target.clone()];
-    if !args.retarget.is_empty() {
-        retarget(&game, &mut ws, source_index, &args.retarget, &remap)?;
-        streams.push(source);
+    for (key, changed) in &done.retargeted {
+        out!("{key}: {changed} reference(s) retargeted");
     }
-    drop(file);
+    let mut streams = vec![done.target.clone()];
+    if !args.retarget.is_empty() {
+        streams.push(done.source.clone());
+    }
     streams.dedup();
     workspace_cmd::finish_edit(&game, &mut ws, &args.mode, streams)
 }
 
-fn retarget(
-    game: &GameInstance,
-    ws: &mut Workspace,
-    stream_index: usize,
-    indices: &[usize],
-    remap: &Remap,
-) -> Result<()> {
-    let file = game.open_stream(stream_index)?;
-    let name = game.streams()[stream_index].stream_name();
-    let mut edits = Vec::new();
-    for &index in indices {
-        let resource = file
-            .layout()
-            .resources
-            .get(index)
-            .with_context(|| format!("{name} has no resource {index}"))?;
-        let key = ResourceKey::new(&name, &resource.header);
-        let mut data = match ws.data(&key)? {
-            Some(data) => data,
-            None => file.resource_data(index)?,
-        };
-        let changed = create::rewrite_references(resource.header.type_id, &mut data, remap)?;
-        out!("{key}: {changed} reference(s) point at the clones");
-        if changed > 0 {
-            edits.push(ResourceEdit {
-                index,
-                data,
-                storage: StorageChoice::Keep,
-            });
+#[derive(Args)]
+pub struct AddSimGroup {
+    game_dir: PathBuf,
+    /// Stream the SimGroup goes into: a stream of the game or one made with `add-stream`
+    stream: String,
+    /// Copy the objects of this SimGroup, `STREAM#INDEX` (new GUIDs; links
+    /// between the copies follow them) [default: an empty SimGroup]
+    #[arg(long, value_name = "STREAM#INDEX")]
+    copy_of: Option<String>,
+    /// With `--copy-of`: only this object (repeatable) [default: every object]
+    #[arg(long = "object", value_name = "INDEX", requires = "copy_of")]
+    objects: Vec<usize>,
+    #[command(flatten)]
+    mode: EditMode,
+}
+
+pub fn add_simgroup(args: AddSimGroup) -> Result<()> {
+    let (game, index) =
+        crate::level_cmd::open_index_with(&args.game_dir, args.mode.workspace_dir.as_deref())?;
+    let mut ws = workspace_cmd::open_for_edit(&game, &args.mode)?;
+    let taken = crate::level_cmd::all_guids(&game, &index);
+    let made = zone_ops::add_simgroup(
+        &game,
+        &index,
+        &mut ws,
+        &zone_ops::NewGroupParams {
+            stream: args.stream.clone(),
+            copy_of: args.copy_of.clone(),
+            objects: (!args.objects.is_empty()).then(|| args.objects.clone()),
+        },
+        &|g| taken.contains(g),
+    )?;
+    out!(
+        "new SimGroup {} with {} object(s){}",
+        made.key,
+        made.objects,
+        if made.rewired > 0 {
+            format!(", {} reference(s) between them rewired", made.rewired)
+        } else {
+            String::new()
         }
+    );
+    // Its index once the stream is staged again: what `level add` takes.
+    let staged = ws.stage(&game)?;
+    if let Some(stream) = staged.find_stream(&made.key.stream)
+        && let Some(resource) = made.key.find_in(staged.open_stream(stream)?.layout())
+        && ws.new_stream(&made.key.stream).is_some()
+    {
+        out!("resource {resource} of {}", made.key.stream);
     }
-    drop(file);
-    if !edits.is_empty() {
-        ws.set_resources(
-            game,
-            &format!("Point {} resource(s) of {name} at clones", edits.len()),
-            stream_index,
-            &edits,
-        )?;
-    }
-    Ok(())
+    let stream = made.key.stream.clone();
+    workspace_cmd::finish_edit(&game, &mut ws, &args.mode, vec![stream])
 }
 
 pub fn add_stream(args: AddStream) -> Result<()> {
     let game = GameInstance::open(&args.game_dir)?;
     let mut ws = workspace_cmd::open_for_edit(&game, &args.mode)?;
-    let mut stream = create::new_stream(
+    let stream = zone_ops::add_stream(
         &game,
-        &ws,
-        &args.name,
-        &args.parent,
-        args.with_parent,
-        &args.tocs,
-        args.guid.as_deref(),
+        &mut ws,
+        &zone_ops::NewStreamParams {
+            name: args.name.clone(),
+            parent: args.parent.clone(),
+            load: match (args.with_parent, args.auto_load) {
+                (true, true) => zone_ops::StreamLoad::AutoLoad,
+                (true, false) => zone_ops::StreamLoad::WithParent,
+                _ => zone_ops::StreamLoad::OnDemand,
+            },
+            tocs: args.tocs.clone(),
+            guid: args.guid.clone(),
+        },
     )?;
-    stream.auto_load = args.auto_load;
-    let (name, guid_text, hash, tocs) = (
-        stream.name.clone(),
-        stream.guid.clone(),
-        stream.hash,
-        stream.tocs.clone(),
-    );
-    ws.add_stream(&game, stream)?;
+    let (name, guid_text, hash, tocs) = (stream.name, stream.guid, stream.hash, stream.tocs);
     out!(
         "new stream {name}: GUID {guid_text}, hash {hash:08x}, listed in {}",
         tocs.join(", ")
@@ -370,7 +314,9 @@ pub fn remove_stream(args: RemoveStream) -> Result<()> {
 }
 
 pub fn check_refs(args: CheckRefs) -> Result<()> {
-    let game = GameInstance::open(&args.game_dir)?;
+    // With the new streams of the workspace, so that a new zone is checked
+    // before it is written into the game.
+    let game = workspace_cmd::staged(GameInstance::open(&args.game_dir)?, None);
     let indices: Vec<usize> = if args.streams.is_empty() {
         (0..game.streams().len()).collect()
     } else {
@@ -395,6 +341,70 @@ pub fn check_refs(args: CheckRefs) -> Result<()> {
         total += problems.len();
     }
     out!("{total} unresolved reference(s)");
+    Ok(())
+}
+
+/// `check-edits`: the check of the workspace's edits (`doctor_toolkit::validate`).
+pub fn check_edits(args: CheckEdits) -> Result<()> {
+    use doctor_toolkit::validate as v;
+    let game = GameInstance::open(&args.game_dir)?;
+    let dir = args
+        .workspace
+        .clone()
+        .unwrap_or_else(|| Workspace::default_dir(game.root()));
+    if !Workspace::exists(&dir) {
+        if args.json {
+            out!(
+                "{}",
+                serde_json::json!({ "ok": true, "note": "there is no workspace: nothing to check" })
+            );
+        } else {
+            out!("there is no workspace: nothing to check");
+        }
+        return Ok(());
+    }
+    let ws = Workspace::open(&dir)?;
+    let (index, _) = game.build_index(|_| {});
+    let params = v::Params {
+        filter: args.filter,
+        project: args.project,
+    };
+    let report = v::validate(&game, &index, &ws, &params)?;
+    if args.json {
+        out!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        let line = |tag: &str, f: &v::Finding| {
+            let place = f.place();
+            if place.is_empty() {
+                out!("{tag}: {}", f.what);
+            } else {
+                out!("{tag}: {place}: {}", f.what);
+            }
+        };
+        for f in &report.errors {
+            line("error", f);
+        }
+        for f in &report.warnings {
+            line("warning", f);
+        }
+        for name in &report.new_messages {
+            out!("new message: {name}");
+        }
+        out!(
+            "{} change(s) checked ({} pending, {} applied): {} error(s), {} warning(s)",
+            report.checked_changes,
+            report.pending,
+            report.applied,
+            report.errors.len(),
+            report.warnings.len()
+        );
+        if report.game_running {
+            out!("the game is running: it does not see edits written now");
+        }
+    }
+    if !report.ok {
+        bail!("the edits have {} error(s)", report.errors.len());
+    }
     Ok(())
 }
 
@@ -483,45 +493,7 @@ fn parse_point(text: &str) -> Result<[f32; 3]> {
     <[f32; 3]>::try_from(parts).map_err(|_| anyhow::anyhow!("`{text}` is not X,Y,Z"))
 }
 
-fn lod_name(mask: u32) -> String {
-    let names = [
-        (wgi::lod::HIGH, "high"),
-        (wgi::lod::MEDIUM, "medium"),
-        (wgi::lod::LOW, "low"),
-        (wgi::lod::MAP, "map"),
-        (wgi::lod::INTERIOR, "interior"),
-    ];
-    let list: Vec<&str> = names
-        .iter()
-        .filter(|(bit, _)| mask & bit != 0)
-        .map(|(_, name)| *name)
-        .collect();
-    if list.is_empty() {
-        "none".to_owned()
-    } else {
-        list.join("+")
-    }
-}
-
-/// Names of the streams of the tables of contents by hash, with the new
-/// streams of the workspace.
-fn stream_names(
-    game: &GameInstance,
-    ws: &Workspace,
-) -> Result<std::collections::HashMap<u32, String>> {
-    let mut names = std::collections::HashMap::new();
-    for index in 0..game.tocs().len() {
-        for name in &game.load_toc(index)?.names {
-            names
-                .entry(name.hash)
-                .or_insert_with(|| name.name_lossy().replace('\\', "/"));
-        }
-    }
-    for stream in ws.new_streams() {
-        names.insert(stream.hash, stream.name.clone());
-    }
-    Ok(names)
-}
+use world_grid::lod_name;
 
 pub fn world_grid(command: WorldGridCommand) -> Result<()> {
     match command {
@@ -552,7 +524,7 @@ fn world_grid_info(args: WorldGridInfo) -> Result<()> {
         out!("{}", serde_json::to_string_pretty(&list)?);
         return Ok(());
     }
-    let names = stream_names(&game, &ws)?;
+    let names = zone_ops::stream_names(&game, &ws)?;
     let name_of = |hash: u32| {
         names
             .get(&hash)
@@ -644,25 +616,7 @@ fn world_grid_add(args: WorldGridAdd) -> Result<()> {
 fn world_grid_remove(args: WorldGridRemove) -> Result<()> {
     let game = GameInstance::open(&args.game_dir)?;
     let mut ws = workspace_cmd::open_for_edit(&game, &args.mode)?;
-    let name = doctor_toolkit::workspace::key::normalize_stream(&args.stream);
-    let hash = match ws.new_stream(&name) {
-        Some(stream) => stream.hash,
-        None => match stream_names(&game, &ws)?
-            .into_iter()
-            .find(|(_, n)| n.eq_ignore_ascii_case(&name))
-        {
-            Some((hash, _)) => hash,
-            None => u32::from_str_radix(&args.stream, 16)
-                .with_context(|| format!("{} is neither a stream nor a hash", args.stream))?,
-        },
-    };
-    if !world_grid::remove_zone_cell(&game, &mut ws, &args.level, hash)? {
-        bail!(
-            "the world grids of {} have no cell of {}",
-            args.level,
-            args.stream
-        );
-    }
+    let hash = zone_ops::remove_zone_cell(&game, &mut ws, &args.level, &args.stream)?;
     out!("removed the cell of {} ({hash:08x})", args.stream);
     let level = doctor_toolkit::workspace::key::normalize_stream(&args.level);
     workspace_cmd::finish_edit(&game, &mut ws, &args.mode, vec![level])

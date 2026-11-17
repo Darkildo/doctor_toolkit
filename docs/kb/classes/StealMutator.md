@@ -1,7 +1,7 @@
 ---
 type: class
 status: partial
-confidence: data
+confidence: exe
 editions: ["1.0.789.0"]
 stages: [72, 73]
 sources: ["data/gf2/sim_classes.txt", "data/gf2/simgroup_schema.txt", "data/gf2/logic_schema.toml", "data/gf2/attr_types.toml"]
@@ -24,7 +24,7 @@ updated: 2026-11-16
 | № | Вид | Роль | Имя | Смысл | Уверенность | Значений |
 |---:|---|---|---|---|---|---:|
 | 0 | guid | ссылка на объект (GUID) | — | [`Ref<StreakMutator>`](StreakMutator.md) | роль: data, смысл: data | 7 |
-| 1 | string | вход (сообщение, которое объект слушает) | — | `MsgIn` | роль: data | 7 |
+| 1 | string | параметр | `score_event` | — | роль: exe, имя: guess | 7 |
 | 2 | int | — | — | — | — | 7 |
 
 ## Подробнее

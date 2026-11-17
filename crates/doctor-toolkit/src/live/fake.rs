@@ -681,6 +681,7 @@ impl FakeWorld {
                 listeners: count,
                 receivers,
                 origin,
+                from: None,
             });
         }
         count
@@ -855,6 +856,7 @@ fn answer(request: Request, config: &Config, version: u16, w: &mut FakeWorld) ->
                     listeners: count,
                     receivers,
                     origin: MessageOrigin::Link,
+                    from: None,
                 });
             }
             Response::Done(Done {
@@ -1089,6 +1091,26 @@ fn answer(request: Request, config: &Config, version: u16, w: &mut FakeWorld) ->
                 .collect(),
             passed: 0,
         }),
+        // The fake game opened every patched stream once; the patch is
+        // not read.
+        Request::Resources => Response::Resources(doctor_toolkit_live::Resources {
+            hooked: !config.resources.is_empty(),
+            total: config.resources.len() as u32,
+            open: 0,
+            streams: config
+                .resources
+                .iter()
+                .take(doctor_toolkit_live::resources::MAX_LISTED)
+                .map(|r| doctor_toolkit_live::StreamUse {
+                    from: r.from.clone(),
+                    to: r.to.clone(),
+                    opens: 1,
+                    ..Default::default()
+                })
+                .collect(),
+        }),
+        // No table of resources in the fake game.
+        Request::Resource { .. } => Response::Resource(None),
         Request::Variables { hashes } => Response::Variables(
             w.variables
                 .iter()

@@ -262,10 +262,27 @@ impl Schema {
         Self { attrs }
     }
 
-    /// The schema of The Godfather II (PC).
+    /// The schema of The Godfather II (PC), with the attributes of the
+    /// classes of native mods named by `DOCTOR_TOOLKIT_CLASSES`
+    /// (`game_types::custom`).
     pub fn gf2() -> &'static Self {
         static SCHEMA: OnceLock<Schema> = OnceLock::new();
-        SCHEMA.get_or_init(|| Self::from_text(GF2_SCHEMA))
+        SCHEMA.get_or_init(|| {
+            let mut schema = Self::from_text(GF2_SCHEMA);
+            for class in crate::game_types::custom::installed() {
+                for a in &class.attrs {
+                    let name: &'static str = Box::leak(a.name.clone().into_boxed_str());
+                    schema.attrs.insert(
+                        (class.hash, a.index),
+                        AttrInfo {
+                            kind: a.kind,
+                            name: Some(name),
+                        },
+                    );
+                }
+            }
+            schema
+        })
     }
 
     pub fn get(&self, class: u32, index: u16) -> Option<AttrInfo> {

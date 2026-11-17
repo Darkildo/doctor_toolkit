@@ -589,13 +589,30 @@ pub fn variables(d: &[u8]) -> Result<Vec<SavedVariable>> {
         .collect()
 }
 
-/// A member of the player's family.
+/// A member of the player's family: his record of honours (exe 0x008BCF90).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Member {
     pub guid: Guid,
-    /// Last number of the record (1, 2 and 4 in known saves); its meaning is
-    /// not known.
-    pub value: u32,
+    /// Twelve counters of honours; the game adds one to a counter at
+    /// 0x008BCE30 and raises the licence when their sum reaches 10, 25, 70.
+    pub honours: [u16; 12],
+    /// Weapon licence, the byte at `+0x28` of the record: 1 Basic, 2
+    /// Advanced, 3 Expert, 4 Master. A new member starts with the level of
+    /// his `SimNpc` (flags bit 3: 2, bit 4: 3; exe 0x00790150).
+    pub licence: u8,
+}
+
+impl Member {
+    /// Name of the licence as the game shows it.
+    pub fn licence_name(&self) -> &'static str {
+        match self.licence {
+            1 => "Basic",
+            2 => "Advanced",
+            3 => "Expert",
+            4 => "Master",
+            _ => "?",
+        }
+    }
 }
 
 /// Chunk `player-family` (exe 0x008BCBC0).
@@ -614,9 +631,16 @@ pub fn player_family(d: &[u8]) -> Result<PlayerFamily> {
     let members = (0..count)
         .map(|i| {
             let at = 0x20 + RECORD * i;
+            let mut honours = [0u16; 12];
+            for (k, slot) in honours.iter_mut().enumerate() {
+                *slot = io::read_u16(d, at + 2 * k, LE)?;
+            }
             Ok(Member {
                 guid: guid_at(d, at + 0x18)?,
-                value: u32_at(d, at + 0x28)?,
+                honours,
+                // The byte after it is 0; the last two bytes of the record
+                // are whatever was on the game's stack.
+                licence: (u32_at(d, at + 0x28)? & 0xFF) as u8,
             })
         })
         .collect::<Result<_>>()?;
@@ -648,20 +672,71 @@ pub struct Family {
     pub buildings_2: Vec<u32>,
     /// Other families and a number for each (`+0x18C`).
     pub relations: Vec<(Hash32, u32)>,
-    /// GUIDs of the members (`+0x1A8`); the rest of a member record is not
-    /// decoded.
+    /// GUIDs of the members (`+0x1A8`).
     pub members: Vec<Guid>,
+    /// The member records in full, in the order of `members`.
+    pub member_records: Vec<FamilyMember>,
     /// Count of the records of the last list (`+0x130`), not decoded.
     pub records: u32,
     /// Books of the player's family: four lists of amounts.
     pub books: Option<[Vec<f32>; 4]>,
 }
 
+/// A member of a family of the strategy game: the 0x50 bytes the game
+/// writes at 0x008C8B50. The player's made men have a place in his family
+/// tree; the others have `place` `None` and no specialties.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct FamilyMember {
+    /// GUID of the `SimNpc` object.
+    pub guid: Guid,
+    /// Bit 0: bit 24 of the SimNpc flags; bit 1: bit 29 of them.
+    pub flags: u32,
+    /// Hash of the text of his name (`NPC.18` of his template).
+    pub name: Hash32,
+    /// Place in the player's family tree, 0–6 (`*0x0112989C`).
+    pub place: Option<u32>,
+    /// Rank: 3 soldier, 4 capo, 5 underboss for the player's men.
+    pub rank: u32,
+    /// Specialties of the place: bits 0x04 demolition, 0x08 arsonist, 0x10
+    /// safe cracker, 0x20 engineer, 0x40 medic, 0x80 bruiser.
+    pub specialties: u32,
+    /// GUID of his weapon (the `Gun` object); `None` for the filler the game
+    /// writes for members without a place.
+    pub weapon: Option<Guid>,
+}
+
+/// The filler of the weapon GUID of a member without a place.
+const NO_WEAPON: [u32; 4] = [0xBADB_ADBA, 0xBEEF_BEEF, 0xEAC1_5A55, 0x9110_0911];
+
+fn family_member(d: &[u8], at: usize) -> Result<FamilyMember> {
+    let place = u32_at(d, at + 0x30)?;
+    let mut filler = true;
+    for (k, word) in NO_WEAPON.iter().enumerate() {
+        filler &= u32_at(d, at + 0x40 + 4 * k)? == *word;
+    }
+    Ok(FamilyMember {
+        guid: guid_at(d, at)?,
+        flags: u32_at(d, at + 0x1C)?,
+        name: Hash32(u32_at(d, at + 0x24)?),
+        place: (place != u32::MAX).then_some(place),
+        rank: u32_at(d, at + 0x34)?,
+        specialties: u32_at(d, at + 0x38)?,
+        weapon: if filler {
+            None
+        } else {
+            Some(guid_at(d, at + 0x40)?)
+        },
+    })
+}
+
 /// Chunk `families` (exe 0x008C72D0, family record 0x008C3CD0).
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Families {
     pub version: u16,
-    /// `u16` at `+0x14` of the player's crew object (`*0x0112989C`).
+    /// How far the player's family tree is open, 0–8: `+0x14` of his crew
+    /// object (`*0x0112989C`). 1–3: that many soldiers, 4: a capo, 5: the
+    /// fourth soldier, 6: the consigliere (no place), 7: the second capo, 8:
+    /// the underboss (exe 0x0090B480; messages `iMsgTreeType…`, 0x0090BA70).
     pub crew_value: u16,
     pub families: Vec<Family>,
 }
@@ -693,6 +768,7 @@ pub fn families(d: &[u8]) -> Result<Families> {
             buildings_2: Vec::new(),
             relations: Vec::new(),
             members: Vec::new(),
+            member_records: Vec::new(),
             records: n_e as u32,
             books: None,
         };
@@ -707,6 +783,7 @@ pub fn families(d: &[u8]) -> Result<Families> {
         }
         for i in 0..n_d {
             family.members.push(guid_at(d, at + 0x50 * i)?);
+            family.member_records.push(family_member(d, at + 0x50 * i)?);
         }
         at = advance(d, at, sized(n_d, 0x50)?.checked_add(sized(extra_d, 4)?))?;
         at = advance(d, at, sized(n_e, 0x10)?.checked_add(sized(extra_e, 0x10)?))?;
@@ -1066,9 +1143,12 @@ mod tests {
         let mut history = words(&[1, 2]);
         history.extend_from_slice(b"first\0second\0");
         let mut family = words(&[4, 1500.5f32.to_bits(), 1, 0, 0, 0, 0, 0]);
-        family.extend_from_slice(&[0; 0x18]);
+        // Two honours counters, the GUID, the licence byte, a zero byte and
+        // two bytes of the game's stack.
+        family.extend_from_slice(&[3, 0, 4, 0]);
+        family.extend_from_slice(&[0; 0x14]);
         family.extend_from_slice(b"\x01\x02\x03A\x05\x06\x07\x08MACHINE1");
-        family.extend_from_slice(&2u32.to_le_bytes());
+        family.extend_from_slice(&0x188A_0002u32.to_le_bytes());
         build(
             "Profile 1",
             "Cuba",
@@ -1086,6 +1166,46 @@ mod tests {
             ],
         )
         .unwrap()
+    }
+
+    #[test]
+    fn family_member_record() {
+        // A capo of the player in place 5 with two specialties and a weapon,
+        // then a member of another family as the game writes him.
+        let guid = b"\x01\x02\x03A\x05\x06\x07\x08MACHINE1";
+        let weapon = b"\x11\x12\x13B\x15\x16\x17\x18MACHINE2";
+        let mut d = guid.to_vec();
+        d.extend(words(&[0, 0, 0, 1, 0, 0x6072_592F, 0x14, 0, 4, 4, 0x48, 0]));
+        d.extend_from_slice(weapon);
+        d.extend_from_slice(guid);
+        d.extend(words(&[
+            0,
+            0,
+            0,
+            0,
+            0,
+            0x1234_5678,
+            0x14,
+            0,
+            u32::MAX,
+            3,
+            0,
+            0,
+        ]));
+        d.extend(words(&NO_WEAPON));
+        assert_eq!(d.len(), 0xA0);
+        let capo = family_member(&d, 0).unwrap();
+        assert_eq!(capo.guid.0, *guid);
+        assert_eq!((capo.flags, capo.name.0), (1, 0x6072_592F));
+        assert_eq!(
+            (capo.place, capo.rank, capo.specialties),
+            (Some(4), 4, 0x48)
+        );
+        assert_eq!(capo.weapon.unwrap().0, *weapon);
+        let other = family_member(&d, 0x50).unwrap();
+        assert_eq!((other.place, other.rank, other.specialties), (None, 3, 0));
+        assert_eq!(other.weapon, None);
+        assert!(family_member(&d, 0x60).is_err());
     }
 
     #[test]
@@ -1144,7 +1264,9 @@ mod tests {
             panic!("player family expected");
         };
         assert_eq!(family.members.len(), 1);
-        assert_eq!(family.members[0].value, 2);
+        assert_eq!(family.members[0].licence, 2);
+        assert_eq!(family.members[0].licence_name(), "Advanced");
+        assert_eq!(family.members[0].honours[..3], [3, 4, 0]);
         // An unknown chunk with a size that is not a multiple of four.
         let unknown = save.chunk_named("12345678").unwrap();
         assert_eq!(unknown.name(), "c12345678");

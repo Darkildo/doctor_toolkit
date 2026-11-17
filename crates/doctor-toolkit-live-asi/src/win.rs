@@ -66,6 +66,16 @@ unsafe extern "system" {
         out: *mut u16,
         out_len: i32,
     ) -> i32;
+    // Stage 100: the game's own stream read through the handle it holds.
+    pub fn ReadFile(
+        file: Handle,
+        buffer: *mut u8,
+        len: u32,
+        read: *mut u32,
+        overlapped: *mut c_void,
+    ) -> i32;
+    pub fn SetFilePointerEx(file: Handle, distance: i64, new: *mut i64, method: u32) -> i32;
+    pub fn GetFileSizeEx(file: Handle, size: *mut i64) -> i32;
     // Stage 58: the profile.
     pub fn QueryPerformanceCounter(count: *mut i64) -> i32;
     pub fn QueryPerformanceFrequency(frequency: *mut i64) -> i32;

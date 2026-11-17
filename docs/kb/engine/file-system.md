@@ -3,8 +3,8 @@ type: engine
 status: known
 confidence: bench
 editions: ["1.0.789.0"]
-stages: [72, 32, 46, 58]
-sources: ["docs/analysis/live-link.md §14.1", "docs/analysis/live-link.md §14.2", "docs/analysis/live-link.md §14.3", "docs/analysis/live-link.md §16.5", "docs/formats/audio.md §9", "docs/analysis/launch-flags.md §2", "docs/analysis/performance.md §4", "docs/analysis/launch-flags.md §3.4", "docs/analysis/gf2-pc-verification.md §6", "godfather2.exe 0x0068BD30"]
+stages: [72, 32, 46, 58, 100]
+sources: ["docs/analysis/live-link.md §14.1", "docs/analysis/live-link.md §14.2", "docs/analysis/live-link.md §14.3", "docs/analysis/live-link.md §16.5", "docs/formats/audio.md §9", "docs/analysis/launch-flags.md §2", "docs/analysis/performance.md §4", "docs/analysis/launch-flags.md §3.4", "docs/analysis/gf2-pc-verification.md §6", "godfather2.exe 0x0068BD30", "docs/analysis/resources-in-memory.md §2", "docs/analysis/game-bench.md §42"]
 tags: [files, createfile, viv, redirect, overlay]
 updated: 2026-11-16
 ---
@@ -18,7 +18,7 @@ updated: 2026-11-16
 - Открытие файловой системы игры — `0x00AC0AD0` (вызов `CreateFileW` в `0x00AC0BDF`): относительный путь получает корень из объекта, UTF-8 → UTF-16, по умолчанию только чтение, `OPEN_EXISTING`, `FILE_SHARE_READ`. На стенде все 77 открытий за запуск — отсюда; `CreateFileA` и `GetFileAttributesA` не вызывались ни разу.
 - Порядок открытий при `-stream gf2 cuba`: `cmd.txt` (см. [флаги запуска](launch-flags.md)), `GODFATH0.VIV` … `GODFATH12.VIV`, `text/localetable.txt`, `gf2\cuba.toc`, `gf2\globals_global.toc`, затем потоки `.str` по мере загрузки. Путь — `<папка игры>/gf2\cuba.str` (смесь `/` и `\`).
 - Архивы `.viv` (BIGF): монтируются номера 0…12, какие есть (цикл с `0x0068BF87` в функции запуска движка `0x0068BD30`, число 13 — `0x00E2F000`; существование — пробным открытием `0x004019A0`). Открытие файла архива (`0x00B90FB0`) берёт первый архив, где имя есть. Замены звука — накладной архив с номером 0, архивы игры сдвигаются на номер выше (см. [звук](audio.md)).
-- Чтение: `ReadFile` (слот `0x00D55268`), `SetFilePointer[Ex]`, `GetFileSize[Ex]`. Потоки `.str` читает отдельный поток синхронными кусками по 128 КБ (`0x00ACEFC0`, вызов `0x00ABEC29`, без `OVERLAPPED`); за запуск в Гавани — 1 253 чтения, 154 МБ; главный поток читает 2 раза (файл профиля, `0x006987C0`, `0x00697ED0`).
+- Чтение: `ReadFile` (слот `0x00D55268`), `SetFilePointer[Ex]`, `GetFileSize[Ex]`. Потоки `.str` читает отдельный поток синхронными кусками по 128 КБ через [файловое устройство](../exe/file-device.md) (`0x00ABEC10`, вызов `ReadFile` в `0x00ABEC29`, без `OVERLAPPED`; переход `0x00ABEC40`, размер `0x00ABECA0`, закрытие `0x00ABEBE0`); за запуск в Гавани — 1 253 чтения, 154 МБ; главный поток читает 2 раза (файл профиля, `0x006987C0`, `0x00697ED0`).
 - Файловая система игры — объект `0x01223378`: открыть `0x004015E0`, размер `0x00401970`, прочитать `0x00401780`. Запись подмена не трогает: игра пишет как раньше (профили, сохранения — вне папки игры).
 - Подмена ([модуль связи](live-module.md)): слоты импорта трогать бесполезно — Ultimate ASI Loader сам ставит в них свои функции и потом возвращает прежние значения. Модуль меняет 13 инструкций в местах вызова (`FF 15 слот` → `E8 rel32 90`, `8B 3D слот` → `BF imm32 90`); подменяется только открытие существующего файла на чтение внутри папки игры, иначе вызывается то, что сейчас лежит в слоте.
 - Список подмен — строки `redirect=ПУТЬ|ЦЕЛЬ` в `doctor_live.cfg` (не больше 65 536). Тулкит собирает зеркало игры из символических ссылок (`<кэш>/doctor-toolkit/overlay-<crc32 пути>`; 3 751 ссылка — 0,5 с), применяет туда рабочее пространство или моды тем же кодом, что пишет в игру; подмены — разница зеркала и игры. Изменённый поток копируется целиком (`gf2/globals_global.str` — 42 МБ).
@@ -27,7 +27,7 @@ updated: 2026-11-16
 
 ## Что неизвестно
 
-- Подмена без копии потока для очень больших потоков не сделана.
+- Подмена без копии потока сделана на этапе 100 (заплатки ресурсов, модуль собирает поток в памяти; выключена по умолчанию) — см. [потоки](stream-loading.md); на Windows не проверена: [вопрос](../questions/resources-in-memory-on-windows.md).
 - Открытие `0x00ACF580` (бит `0x200` → `CREATE_ALWAYS`) на стенде не вызывалось.
 - Формат патчей `.vpat` старого тулкита.
 

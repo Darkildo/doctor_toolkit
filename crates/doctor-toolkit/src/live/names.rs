@@ -270,6 +270,7 @@ pub fn describe(e: &super::proto::Event, names: Option<&LiveNames>) -> String {
             listeners,
             receivers,
             origin,
+            from,
             ..
         } => {
             let name = names
@@ -289,6 +290,14 @@ pub fn describe(e: &super::proto::Event, names: Option<&LiveNames>) -> String {
             }
             if *origin == MessageOrigin::Link {
                 line += " (live link)";
+            }
+            if let Some(g) = from.and_then(|f| f.sender) {
+                let who = match names.and_then(|n| n.object(&g)) {
+                    Some(o) if !o.name.is_empty() => o.name.clone(),
+                    Some(o) => format!("{} {}", o.class, &super::proto::guid_hex(&g)[..8]),
+                    None => super::proto::guid_hex(&g)[..8].to_owned(),
+                };
+                line += &format!(" from {who}");
             }
             line
         }
@@ -384,6 +393,7 @@ mod tests {
             listeners: 2,
             receivers: vec![[0xAB; 16], [0x01; 16]],
             origin: MessageOrigin::Link,
+            from: None,
         });
         assert_eq!(
             describe(&m, Some(&n)),

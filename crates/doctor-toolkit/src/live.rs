@@ -41,6 +41,7 @@ pub mod fake;
 pub mod loader;
 pub mod names;
 pub mod profile;
+pub mod view;
 
 /// The live link in the options of Play (`settings.toml`, `play.live`).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -441,6 +442,30 @@ impl Client {
         }
     }
 
+    /// Whether the module composes streams from resource patches and
+    /// answers [`Request::Resources`] (protocol 9, stage 100).
+    pub fn has_resources(&self) -> bool {
+        self.version >= 9
+    }
+
+    /// The streams the module composes in memory from the game's file and
+    /// a resource patch, and their use (stage 100).
+    pub fn resources(&mut self) -> LinkResult<proto::Resources> {
+        match self.request(&Request::Resources)? {
+            Response::Resources(r) => Ok(r),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    /// The record of the loaded resource with these ids in the game's
+    /// table of resources: where its data lie in memory (stage 100).
+    pub fn loaded_resource(&mut self, ids: [u32; 4]) -> LinkResult<Option<proto::Loaded>> {
+        match self.request(&Request::Resource { ids })? {
+            Response::Resource(l) => Ok(l),
+            other => Err(unexpected(other)),
+        }
+    }
+
     /// The game's clock (`None`: no level).
     pub fn time_of_day(&mut self) -> LinkResult<Option<TimeOfDay>> {
         match self.request(&Request::TimeOfDay)? {
@@ -601,6 +626,12 @@ impl Client {
             Response::Done(d) => Ok(d),
             other => Err(unexpected(other)),
         }
+    }
+
+    /// Whether the module says where a message comes from and lists the
+    /// deliveries to one listener (protocol 8, stage 78).
+    pub fn has_message_sender(&self) -> bool {
+        self.version >= 8
     }
 
     /// Whether the module measures the game (protocol 7, stage 58).
@@ -860,6 +891,19 @@ pub fn redirected_in_log(log: &str) -> usize {
     log.lines()
         .filter(|l| l.contains("] files: ") && l.contains(" -> "))
         .count()
+}
+
+/// How many streams the module composed in memory from a resource patch
+/// and how many it could not compose (the game read its own file, without
+/// the changes), by the module's log (stage 100): `resources: gf2/cuba.str
+/// composed in …`, `resources: gf2/cuba.str is not composed, …`. A stream
+/// opened again with the same file is composed once.
+pub fn composed_in_log(log: &str) -> (usize, usize) {
+    let lines = || log.lines().filter(|l| l.contains("] resources: "));
+    (
+        lines().filter(|l| l.contains(" composed in ")).count(),
+        lines().filter(|l| l.contains(" is not composed")).count(),
+    )
 }
 
 /// A random token for the configuration (from the clock and the process,

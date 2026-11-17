@@ -21,11 +21,12 @@ impl BrowserApp {
     /// script editor, their requests to the link, the confirmation window.
     pub(super) fn live_debug_frame(&mut self, ctx: &egui::Context) {
         self.live_preset(ctx);
+        self.live_do_preset();
         let live_on = self.logics.values().any(|e| e.live.on);
         let script_on = self.script_editor.open;
         let mut extra = 0;
         if live_on {
-            extra |= mask::MESSAGE | mask::MESSAGE_COUNTS;
+            extra |= mask::MESSAGE | mask::MESSAGE_COUNTS | mask::MESSAGE_SENDER;
         }
         if script_on {
             extra |= mask::OUTPUT | mask::LUA_ERROR;

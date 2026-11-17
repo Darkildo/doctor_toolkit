@@ -15,13 +15,12 @@ use doctor_toolkit::level::Location;
 use doctor_toolkit::level::edit::{self as level_edit, GroupAt, ModelChoice};
 use doctor_toolkit::level::navgraph::{GraphRef, save_graph};
 use doctor_toolkit::resource::graph::{Graph, Neighbourhood, TYPE_GRAPH};
-use doctor_toolkit::resource::lh2::StringTable;
 use doctor_toolkit::resource::names::sim_classes;
 use doctor_toolkit::resource::simgroup::{Guid, Kind, SimGroup, Value as SimValue};
 use doctor_toolkit::resource::simgroup_edit::{self, Transform, describe};
 use doctor_toolkit::script::{self, deploy, graph::ScriptGraph};
 use doctor_toolkit::text::{self, NewString, TableRef};
-use doctor_toolkit::workspace::{ResourceEdit, ResourceKey, StorageChoice, Workspace};
+use doctor_toolkit::workspace::{ResourceKey, Workspace};
 
 use super::workspace::detail_lines;
 use super::{Output, hex, parse_hash};
@@ -54,7 +53,22 @@ pub struct SetAttributeParams {
 pub struct MoveObjectParams {
     /// The object: `<stream>#<resource>:<object>` (`<SimGroup key>:<object>`
     /// in a SimGroup the workspace added).
-    pub object: String,
+    #[serde(default)]
+    pub object: Option<String>,
+    /// Or several objects, moved as one undoable operation (with `offset`,
+    /// `rotation`, `scale` or `on_ground`; `position` puts one object).
+    #[serde(default)]
+    pub objects: Vec<String>,
+    /// Put the object on the ground: the lowest point of its collision
+    /// (its origin when it has none) comes onto the collision below it, as
+    /// End does in the level view. After `position` or `offset` when given.
+    #[serde(default)]
+    pub on_ground: Option<bool>,
+    /// With `on_ground`: more zones whose collision counts (streams or
+    /// prefixes); the zone of the object and the terrain of its district
+    /// are taken anyway.
+    #[serde(default)]
+    pub zones: Vec<String>,
     /// New position `[x, y, z]` (Y is up).
     #[serde(default)]
     pub position: Option<[f32; 3]>,
@@ -73,7 +87,11 @@ pub struct MoveObjectParams {
 pub struct DuplicateObjectParams {
     /// The object to copy: `<stream>#<resource>:<object>`. The copy shares
     /// its attribute packets and gets a new GUID.
-    pub object: String,
+    #[serde(default)]
+    pub object: Option<String>,
+    /// Or several objects, copied as one undoable operation.
+    #[serde(default)]
+    pub objects: Vec<String>,
     /// Move the copy by `[dx, dy, dz]`.
     #[serde(default)]
     pub offset: Option<[f32; 3]>,
@@ -85,7 +103,15 @@ pub struct AddObjectParams {
     /// SimGroup the workspace added (`add_simgroup` prints it).
     pub group: String,
     /// The template object (any SimGroup): `<stream>#<resource>:<object>`.
-    pub template: String,
+    /// Needed unless `class` is given.
+    #[serde(default)]
+    pub template: Option<String>,
+    /// Instead of a template: add an object of this class (a name or eight
+    /// hexadecimal digits of its hash) with the empty attributes of the
+    /// schema's layout; set_attribute fills them. Not with `model`,
+    /// `clone_model` or `collision`.
+    #[serde(default)]
+    pub class: Option<String>,
     /// Show this metamodel (hexadecimal id); it must be in the group's
     /// stream or one loaded before it.
     #[serde(default)]
@@ -101,6 +127,15 @@ pub struct AddObjectParams {
     /// Position `[x, y, z]` (Y is up).
     #[serde(default)]
     pub position: Option<[f32; 3]>,
+    /// With `position`: put the object on the ground below (or above) that
+    /// point, as a model dropped into the level view stands.
+    #[serde(default)]
+    pub on_ground: Option<bool>,
+    /// With `on_ground`: more zones whose collision counts (streams or
+    /// prefixes); the zone of the SimGroup and the terrain of its district
+    /// are taken anyway.
+    #[serde(default)]
+    pub zones: Vec<String>,
     /// Add the object even if its class cannot show the model (the game may crash).
     #[serde(default)]
     pub force: Option<bool>,
@@ -109,7 +144,12 @@ pub struct AddObjectParams {
 #[derive(Debug, Default, Deserialize, JsonSchema)]
 pub struct RemoveObjectParams {
     /// The object: `<stream>#<resource>:<object>`. Objects after it move up by one.
-    pub object: String,
+    #[serde(default)]
+    pub object: Option<String>,
+    /// Or several objects, removed as one undoable operation (numbered as
+    /// before the call).
+    #[serde(default)]
+    pub objects: Vec<String>,
 }
 
 #[derive(Debug, Default, Deserialize, JsonSchema)]
@@ -163,8 +203,18 @@ pub struct EditScriptParams {
 
 #[derive(Debug, Default, Deserialize, JsonSchema)]
 pub struct ScriptsParams {
-    /// A level stream.
-    pub stream: String,
+    /// A level stream: the scripts made from graphs in it.
+    #[serde(default)]
+    pub stream: Option<String>,
+    /// Instead: every kind of node a script graph can have, with pins,
+    /// parameters and whether it was checked in the game (what
+    /// `edit_script` graphs are made of). `true` lists them.
+    #[serde(default)]
+    pub node_kinds: Option<bool>,
+    /// With `node_kinds`: only kinds whose name, title or category contains
+    /// this text; at most 25 matches come with pins, parameters and help.
+    #[serde(default)]
+    pub filter: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize, JsonSchema)]
@@ -545,15 +595,26 @@ pub fn set_attribute(kit: &Toolkit, p: SetAttributeParams) -> ToolResult<Output>
 }
 
 pub fn move_object(kit: &Toolkit, p: MoveObjectParams) -> ToolResult<Output> {
+    // Several objects and the ground: `scene`.
+    if !p.objects.is_empty() || p.on_ground == Some(true) {
+        return super::scene::move_objects(kit, p);
+    }
+    let Some(object_name) = p.object.clone() else {
+        return fail("give `object` (one) or `objects` (a list)");
+    };
+    let p = MoveObjectParams {
+        object: Some(object_name.clone()),
+        ..p
+    };
     if p.position.is_none() && p.offset.is_none() && p.rotation.is_none() && p.scale.is_none() {
-        return fail("give `position`, `offset`, `rotation` or `scale`");
+        return fail("give `position`, `offset`, `rotation`, `scale` or `on_ground`");
     }
     if p.position.is_some() && p.offset.is_some() {
         return fail("give `position` or `offset`, not both");
     }
-    let mut access = kit.write_workspace(&format!("move_object: {}", p.object))?;
+    let mut access = kit.write_workspace(&format!("move_object: {object_name}"))?;
     let ws = &mut access.ws;
-    let (at, o) = object(kit, ws, &p.object)?;
+    let (at, o) = object(kit, ws, &object_name)?;
     let g = group(kit, ws, &at)?;
     let object = g
         .objects
@@ -596,7 +657,7 @@ pub fn move_object(kit: &Toolkit, p: MoveObjectParams) -> ToolResult<Output> {
         since,
         &label,
         json!({
-            "object": p.object,
+            "object": object_name,
             "old_position": &current[3][..3],
             "new_position": &m[3][..3],
         }),
@@ -604,10 +665,16 @@ pub fn move_object(kit: &Toolkit, p: MoveObjectParams) -> ToolResult<Output> {
 }
 
 pub fn duplicate_object(kit: &Toolkit, p: DuplicateObjectParams) -> ToolResult<Output> {
+    if !p.objects.is_empty() {
+        return super::scene::duplicate_objects(kit, p);
+    }
+    let Some(object_name) = p.object.clone() else {
+        return fail("give `object` (one) or `objects` (a list)");
+    };
     let taken = kit.object_guids();
-    let mut access = kit.write_workspace(&format!("duplicate_object: {}", p.object))?;
+    let mut access = kit.write_workspace(&format!("duplicate_object: {object_name}"))?;
     let ws = &mut access.ws;
-    let (at, o) = object(kit, ws, &p.object)?;
+    let (at, o) = object(kit, ws, &object_name)?;
     group(kit, ws, &at)?;
     let since = ws.head();
     let (copy, guid) = level_edit::duplicate_at(
@@ -624,14 +691,86 @@ pub fn duplicate_object(kit: &Toolkit, p: DuplicateObjectParams) -> ToolResult<O
         since,
         &label,
         json!({
-            "object": p.object,
+            "object": object_name,
             "copy": object_text(kit, &at, copy),
             "guid": guid.to_string(),
         }),
     )
 }
 
+/// The position of a new object: as given, or on the ground at that point.
+fn position_on_ground(
+    kit: &Toolkit,
+    ws: &Workspace,
+    at: &GroupAt,
+    p: &AddObjectParams,
+) -> ToolResult<Option<[f32; 3]>> {
+    if p.on_ground != Some(true) {
+        return Ok(p.position);
+    }
+    let Some(position) = p.position else {
+        return fail("`on_ground` goes with `position`: the point above (or below) the ground");
+    };
+    let dy = super::scene::drop_new(kit, ws, at, &p.zones, position)?;
+    Ok(Some([position[0], position[1] + dy, position[2]]))
+}
+
+/// `add_object` with `class`: an object with empty attributes, no template.
+fn add_empty_object(kit: &Toolkit, p: &AddObjectParams, class: &str) -> ToolResult<Output> {
+    if p.template.is_some() || p.model.is_some() || p.clone_model.is_some() || p.collision.is_some()
+    {
+        return fail(
+            "`class` adds an empty object: it goes without `template`, `model`, `clone_model` and `collision`",
+        );
+    }
+    let schema = doctor_toolkit::logic_graph::LogicSchema::gf2();
+    let hash = doctor_toolkit::resource::names::sim_classes()
+        .resolve(class)
+        .filter(|&h| schema.layout(h).is_some())
+        .ok_or_else(|| {
+            ToolError(format!(
+                "the schema has no layout of class `{class}`; game_types with `class` shows a \
+                 class (a class of a native mod is known when DOCTOR_TOOLKIT_CLASSES names its file)"
+            ))
+        })?;
+    let taken = kit.object_guids();
+    let mut access =
+        kit.write_workspace(&format!("add_object: an empty {class} in {}", p.group))?;
+    let ws = &mut access.ws;
+    let at = group_ref(kit, ws, &p.group)?;
+    group(kit, ws, &at)?;
+    let position = position_on_ground(kit, ws, &at, p)?;
+    let since = ws.head();
+    let (added, guid) = level_edit::add_empty_at(
+        &kit.game,
+        kit.resources(),
+        ws,
+        &at,
+        hash,
+        position,
+        &|g: &Guid| taken.contains(g),
+    )?;
+    let label = ws.operations()[ws.head() - 1].label.clone();
+    finish(
+        ws,
+        since,
+        &label,
+        json!({
+            "object": object_text(kit, &at, added),
+            "guid": guid.to_string(),
+            "class": schema.class_name(hash).unwrap_or(class),
+            "next": "its attributes are empty: set_attribute fills them, logic_connect wires it",
+        }),
+    )
+}
+
 pub fn add_object(kit: &Toolkit, p: AddObjectParams) -> ToolResult<Output> {
+    if let Some(class) = p.class.clone() {
+        return add_empty_object(kit, &p, &class);
+    }
+    let Some(template_text) = p.template.clone() else {
+        return fail("give `template` (an object to copy) or `class` (an empty object of a class)");
+    };
     let model = match (&p.model, &p.clone_model) {
         (Some(_), Some(_)) => return fail("give `model` or `clone_model`, not both"),
         (Some(id), None) => ModelChoice::Existing(parse_hex(id)?),
@@ -656,13 +795,14 @@ pub fn add_object(kit: &Toolkit, p: AddObjectParams) -> ToolResult<Output> {
     };
     let taken = kit.object_guids();
     let mut access = kit.write_workspace(&format!(
-        "add_object: a copy of {} in {}",
-        p.template, p.group
+        "add_object: a copy of {template_text} in {}",
+        p.group
     ))?;
     let ws = &mut access.ws;
     let at = group_ref(kit, ws, &p.group)?;
-    let (template_group, template) = object(kit, ws, &p.template)?;
+    let (template_group, template) = object(kit, ws, &template_text)?;
     group(kit, ws, &at)?;
+    let position = position_on_ground(kit, ws, &at, &p)?;
     let since = ws.head();
     let added = level_edit::add_at(
         &kit.game,
@@ -671,7 +811,7 @@ pub fn add_object(kit: &Toolkit, p: AddObjectParams) -> ToolResult<Output> {
         &at,
         (&template_group, template),
         model,
-        p.position,
+        position,
         &|g: &Guid| taken.contains(g),
         !p.force.unwrap_or(false),
     )?;
@@ -696,9 +836,15 @@ pub fn add_object(kit: &Toolkit, p: AddObjectParams) -> ToolResult<Output> {
 }
 
 pub fn remove_object(kit: &Toolkit, p: RemoveObjectParams) -> ToolResult<Output> {
-    let mut access = kit.write_workspace(&format!("remove_object: {}", p.object))?;
+    if !p.objects.is_empty() {
+        return super::scene::remove_objects(kit, p);
+    }
+    let Some(object_name) = p.object.clone() else {
+        return fail("give `object` (one) or `objects` (a list)");
+    };
+    let mut access = kit.write_workspace(&format!("remove_object: {object_name}"))?;
     let ws = &mut access.ws;
-    let (at, o) = object(kit, ws, &p.object)?;
+    let (at, o) = object(kit, ws, &object_name)?;
     let g = group(kit, ws, &at)?;
     let class = class_label(&g, o);
     let since = ws.head();
@@ -709,7 +855,7 @@ pub fn remove_object(kit: &Toolkit, p: RemoveObjectParams) -> ToolResult<Output>
         since,
         &label,
         json!({
-            "removed": p.object,
+            "removed": object_name,
             "class": class,
             "dangling_references": dangling,
             "note": if dangling > 0 {
@@ -722,23 +868,6 @@ pub fn remove_object(kit: &Toolkit, p: RemoveObjectParams) -> ToolResult<Output>
 }
 
 // ------------------------------------------------------------ strings
-
-/// Column names of a string table as the game index (and `strings`) name them.
-fn columns(table: &StringTable) -> Vec<String> {
-    if table.languages.is_empty() {
-        (0..table.strings.len())
-            .map(|i| {
-                if i == 0 {
-                    "text".to_owned()
-                } else {
-                    format!("text{i}")
-                }
-            })
-            .collect()
-    } else {
-        table.languages.clone()
-    }
-}
 
 /// An entry hash: `0x…`/eight hex digits, or a name.
 fn entry_hash(text: &str) -> u32 {
@@ -759,84 +888,49 @@ fn table_ref(kit: &Toolkit, text: &str) -> ToolResult<TableRef> {
     })
 }
 
+/// `edit_string`: the walk over the tables is the library's
+/// ([`text::plan_edit`]), shared with the editor.
 pub fn edit_string(kit: &Toolkit, p: EditStringParams) -> ToolResult<Output> {
-    if p.text.contains('\0') {
-        return fail("the text contains a NUL character");
-    }
     let hash = entry_hash(&p.entry);
     let tables = match &p.table {
         Some(t) => vec![table_ref(kit, t)?],
         None => text::all_tables(kit.resources()),
     };
-    let language = p.language.as_deref().map(str::to_ascii_lowercase);
     let mut access =
         kit.write_workspace(&format!("edit_string: entry {} -> {:?}", p.entry, p.text))?;
     let ws = &mut access.ws;
-    let mut by_stream: BTreeMap<usize, Vec<ResourceEdit>> = BTreeMap::new();
-    let mut changes = Vec::new();
-    let mut found = 0;
-    for t in &tables {
-        let mut table = StringTable::parse(&ws.current_data(&kit.game, t.stream, t.resource)?)?;
-        let Some(at) = table.find(hash) else {
-            continue;
-        };
-        found += 1;
-        let names = columns(&table);
-        let mut changed = false;
-        for (c, name) in names.iter().enumerate() {
-            if language
-                .as_deref()
-                .is_some_and(|l| !name.eq_ignore_ascii_case(l))
-            {
-                continue;
-            }
-            if table.strings[c][at] != p.text {
-                changes.push(json!({
-                    "table": format!("{}#{}", stream_name(kit, t.stream), t.resource),
-                    "language": name,
-                    "old": table.strings[c][at],
-                    "new": p.text,
-                }));
-                table.strings[c][at] = p.text.clone();
-                changed = true;
-            }
+    let edit = text::StringEdit {
+        hash,
+        text: p.text.clone(),
+        language: p.language.clone(),
+    };
+    let plan = text::plan_edit(&kit.game, ws, &tables, &edit).map_err(|e| {
+        let text = e.to_string();
+        if text.contains("no string table has the entry") {
+            ToolError(format!(
+                "no string table has the entry {} (`{}`); `strings` finds entries, `add_string` adds one",
+                hex(hash),
+                p.entry
+            ))
+        } else {
+            ToolError(text)
         }
-        if changed {
-            by_stream.entry(t.stream).or_default().push(ResourceEdit {
-                index: t.resource,
-                data: table.to_bytes()?,
-                storage: StorageChoice::Keep,
-            });
-        }
-    }
-    if found == 0 {
-        return fail(format!(
-            "no string table has the entry {} (`{}`); `strings` finds entries, `add_string` adds one",
-            hex(hash),
-            p.entry
-        ));
-    }
-    if changes.is_empty() {
-        let note = if language.is_some() && by_stream.is_empty() {
+    })?;
+    if plan.changes.is_empty() {
+        let note = if p.language.is_some() {
             "no column of that language changed: it has this text already, or the tables name their columns otherwise (see `strings`)"
         } else {
             "the entry already has this text"
         };
         return Ok(Output::Json(json!({ "changed": false, "note": note })));
     }
-    let label = format!(
-        "Edit string {} in {} table(s)",
-        hex(hash),
-        by_stream.values().map(Vec::len).sum::<usize>()
-    );
     let since = ws.head();
-    let edits: Vec<(usize, Vec<ResourceEdit>)> = by_stream.into_iter().collect();
-    ws.change_resources(&kit.game, &label, &edits, &[])?;
+    plan.commit(ws, &kit.game)?;
     finish(
         ws,
         since,
-        &label,
-        json!({ "entry": hex(hash), "changes": changes }),
+        &plan.label,
+        json!({ "entry": hex(hash), "changes": plan.changes }),
     )
 }
 
@@ -956,7 +1050,49 @@ pub fn edit_script(kit: &Toolkit, p: EditScriptParams) -> ToolResult<Output> {
 
 /// The scripts made from graphs in a stream and their graphs (read-only).
 pub fn scripts(kit: &Toolkit, p: ScriptsParams) -> ToolResult<Output> {
-    let stream = level_stream(kit, &p.stream)?;
+    if p.node_kinds.unwrap_or(false) {
+        let filter = p.filter.as_deref().map(str::to_lowercase);
+        let kinds: Vec<Value> = script::trial::node_kinds()
+            .into_iter()
+            .filter(|k| {
+                filter.as_deref().is_none_or(|f| {
+                    ["kind", "title", "category"].iter().any(|key| {
+                        k[*key]
+                            .as_str()
+                            .is_some_and(|t| t.to_lowercase().contains(f))
+                    })
+                })
+            })
+            .collect();
+        let total = kinds.len();
+        // The whole list is long: names only, the pins of those a filter picks.
+        let shown: Vec<Value> = if filter.is_some() && total <= 25 {
+            kinds
+        } else {
+            kinds
+                .iter()
+                .map(|k| {
+                    json!({
+                        "kind": k["kind"],
+                        "title": k["title"],
+                        "category": k["category"],
+                        "verified": k["verified"],
+                    })
+                })
+                .collect()
+        };
+        return Ok(Output::Json(json!({
+            "total": total,
+            "node_kinds": shown,
+            "next": "`filter` (a kind, a title or a category; at most 25 matches) shows pins, \
+                     parameters and help",
+            "format": "doctor-toolkit://docs/scripts.md describes the graph format",
+        })));
+    }
+    let Some(stream_text) = p.stream.as_deref() else {
+        return fail("give `stream` (the scripts of a level stream) or `node_kinds: true`");
+    };
+    let stream = level_stream(kit, stream_text)?;
     let ws = match kit.workspace()? {
         Some(ws) => ws,
         None => Workspace::for_game(&kit.game, Some(&kit.workspace_dir))?,

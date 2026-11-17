@@ -22,6 +22,11 @@
 //! another is checked against the game with that mod applied: a patch on
 //! top of a mod.
 //!
+//! Format version 5 adds executable code ([`native`]): `.asi` modules for
+//! the `scripts` folder of the game, which the mod manager installs only
+//! after the player agreed to that very code, and only into the edition of
+//! the game they are built for.
+//!
 //! ```text
 //! example.zip
 //! ├── mod.json                 manifest: metadata and resources
@@ -45,8 +50,10 @@
 //! together with other mods by installing the workspace as a mod
 //! ([`manager::ModManager::install_workspace`]).
 
+pub mod info;
 pub mod integrity;
 pub mod manager;
+pub mod native;
 pub mod order;
 pub mod package;
 pub mod version;
@@ -65,7 +72,9 @@ use crate::workspace::{
 };
 use crate::{Error, Result};
 
+pub use info::{FileInfo, FileKind, file_info};
 pub use manager::{InstalledMod, ModManager};
+pub use native::{ModNative, NativeModule};
 pub use package::ModArchive;
 
 /// Value of the `format` field of `mod.json`.
@@ -73,14 +82,19 @@ pub const FORMAT: &str = "doctor-toolkit-mod";
 /// Current version of the mod format: 2 added new resources and new
 /// streams, 3 dependencies, editions and rules of the load order, 4 files of
 /// the `.viv` archives (voice lines and other streamed sounds) and child
-/// streams that load with their parent.
-pub const FORMAT_VERSION: u32 = 4;
+/// streams that load with their parent, 5 executable code (`native`).
+pub const FORMAT_VERSION: u32 = 5;
 /// The first format version that can add resources and streams.
 pub const ADDING_VERSION: u32 = 2;
 /// The first format version with relations: dependencies, editions, load order.
 pub const RELATIONS_VERSION: u32 = 3;
 /// The first format version that carries files of the archives.
 pub const FILES_VERSION: u32 = 4;
+/// The first format version that carries executable code. The managers that
+/// read versions 3 and 4 skip fields they do not know: a mod with code in
+/// one of those versions would be installed by them without its code and
+/// without a word, so the code needs a version they refuse.
+pub const NATIVE_VERSION: u32 = 5;
 /// Name of the manifest inside a mod.
 pub const MANIFEST_NAME: &str = "mod.json";
 /// Directory of the payloads inside a mod.
@@ -188,6 +202,10 @@ pub struct ModManifest {
     /// version 4), sorted by key.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub files: Vec<ModFile>,
+    /// Executable code of the mod (format version 5): modules for the
+    /// `scripts` folder of the game.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native: Option<ModNative>,
 }
 
 /// A mod another one does not work with: the versions concerned and why.
@@ -377,6 +395,39 @@ pub struct Relations {
     /// rather than on the game's original: that data becomes the
     /// resource's `original` ([`add_suggested_dependencies`] fills it in).
     pub made_on: BTreeMap<ResourceKey, Blob>,
+    /// Executable code to put into the mod (format version 5).
+    pub native: Option<NativeBuild>,
+}
+
+/// The executable code of a mod being built ([`native`]).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct NativeBuild {
+    /// File name in `scripts/` (`my_mod.asi`) and the DLL.
+    pub modules: Vec<(String, Vec<u8>)>,
+    /// The ABI of the platform module the modules were built with; `None`
+    /// for plain ASI plug-ins.
+    pub platform_abi: Option<u32>,
+    /// The mod makes no sense without its code.
+    pub required: bool,
+}
+
+impl NativeBuild {
+    /// The data of the module with the hash of `blob`.
+    fn payload(&self, blob: &Blob) -> Option<&[u8]> {
+        self.modules
+            .iter()
+            .map(|(_, data)| data.as_slice())
+            .find(|data| data.len() as u64 == blob.size && Blob::of(data) == *blob)
+    }
+}
+
+/// The data of a payload of a mod built from `ws` with `info`: a module of
+/// its code, or a payload of the workspace.
+pub(crate) fn built_payload(ws: &Workspace, info: &ModInfo, blob: &Blob) -> Result<Vec<u8>> {
+    match info.relations.native.as_ref().and_then(|n| n.payload(blob)) {
+        Some(data) => Ok(data.to_vec()),
+        None => ws.store().get(blob),
+    }
 }
 
 impl Relations {
@@ -431,6 +482,7 @@ impl ModManifest {
             load_before: Vec::new(),
             messages: Vec::new(),
             files: Vec::new(),
+            native: None,
         }
     }
 
@@ -439,9 +491,12 @@ impl ModManifest {
     /// when it has relations ([`Self::has_relations`]), 4 when it carries
     /// files of the archives or a child stream that loads with its parent
     /// (`auto_load`: a manager older than that field would install the
-    /// stream disabled without a word).
+    /// stream disabled without a word), 5 when it has executable code (the
+    /// managers of versions 3 and 4 would install it without the code).
     pub fn required_version(&self) -> u32 {
-        if !self.files.is_empty() || self.streams.iter().any(|s| s.auto_load) {
+        if self.native.is_some() {
+            NATIVE_VERSION
+        } else if !self.files.is_empty() || self.streams.iter().any(|s| s.auto_load) {
             FILES_VERSION
         } else if self.has_relations() {
             RELATIONS_VERSION
@@ -515,6 +570,12 @@ impl ModManifest {
 
     /// Parses and validates `mod.json`.
     pub fn parse(json: &[u8]) -> Result<Self> {
+        Self::parse_up_to(json, FORMAT_VERSION)
+    }
+
+    /// [`Self::parse`] by a program that reads format versions up to
+    /// `newest`: what an older mod manager says about a newer mod.
+    pub fn parse_up_to(json: &[u8], newest: u32) -> Result<Self> {
         if json.len() as u64 > MAX_MANIFEST_SIZE {
             return Err(Error::mod_error("mod.json is too large"));
         }
@@ -528,11 +589,11 @@ impl ModManifest {
             ));
         }
         if let Some(version) = head.get("format_version").and_then(|v| v.as_u64())
-            && version > u64::from(FORMAT_VERSION)
+            && version > u64::from(newest)
         {
             return Err(Error::mod_error(format!(
                 "the mod uses format version {version}; this program reads up to \
-                 {FORMAT_VERSION}. Update Open Mod Manager (doctor_toolkit) to install it"
+                 {newest}. Update Open Mod Manager (doctor_toolkit) to install it"
             )));
         }
         let manifest: Self =
@@ -609,6 +670,16 @@ impl ModManifest {
                 self.format_version
             ));
         }
+        if let Some(native) = &self.native {
+            if self.format_version < NATIVE_VERSION {
+                return bad(format!(
+                    "format version {} cannot carry executable code (`native`); version \
+                     {NATIVE_VERSION} is needed",
+                    self.format_version
+                ));
+            }
+            native.validate()?;
+        }
         if self.files.len() > MAX_RESOURCES {
             return bad(format!("more than {MAX_RESOURCES} files"));
         }
@@ -656,7 +727,13 @@ impl ModManifest {
         if self.format_version >= RELATIONS_VERSION {
             self.validate_relations()?;
         }
-        if self.resources.is_empty() && self.streams.is_empty() {
+        // A mod of files alone is a mod too: a replaced sound, a retimed
+        // subtitle of a cut-scene.
+        if self.resources.is_empty()
+            && self.streams.is_empty()
+            && self.native.is_none()
+            && self.files.is_empty()
+        {
             return bad("the mod replaces no resources".into());
         }
         if self.messages.len() > MAX_MESSAGES {
@@ -944,13 +1021,18 @@ impl ModManifest {
         self.streams.iter().find(|s| s.name == name)
     }
 
-    /// Distinct payloads of resources and files, each once.
+    /// Distinct payloads of resources, files and modules of code, each once.
     pub fn payloads(&self) -> Vec<&Blob> {
         let mut seen = HashSet::new();
         self.resources
             .iter()
             .map(|r| &r.payload)
             .chain(self.files.iter().map(|f| &f.payload))
+            .chain(
+                self.native
+                    .iter()
+                    .flat_map(|n| n.modules.iter().map(|m| &m.payload)),
+            )
             .filter(|b| seen.insert(&b.sha256))
             .collect()
     }
@@ -1033,7 +1115,18 @@ pub fn manifest_from_workspace(
             label: c.label.chars().take(MAX_NAME).collect(),
         })
         .collect();
-    if manifest.resources.is_empty() && manifest.streams.is_empty() && manifest.files.is_empty() {
+    if let Some(code) = &info.relations.native {
+        manifest.native = Some(ModNative::of_modules(
+            &code.modules,
+            code.platform_abi,
+            code.required,
+        )?);
+    }
+    if manifest.resources.is_empty()
+        && manifest.streams.is_empty()
+        && manifest.files.is_empty()
+        && manifest.native.is_none()
+    {
         return Err(Error::mod_error(
             "the workspace has no changes to put into a mod",
         ));
@@ -1191,6 +1284,41 @@ pub struct BuildReport {
     pub payload_bytes: u64,
     /// Size of the written file.
     pub file_size: u64,
+    /// Modules of executable code.
+    pub native_modules: usize,
+    /// What the author should know about the mod ([`whole_sound_notes`]).
+    pub notes: Vec<String>,
+}
+
+/// A sound of the archives from this size on is worth a note when a mod
+/// carries it for its subtitles.
+const BIG_SOUND: u64 = 1 << 20;
+
+/// Notes on the streamed sounds a mod carries whole. The times of a
+/// cut-scene's subtitles are in the header of its sound file, and a mod
+/// replaces a file of the archives as one piece: a mod that only retimes a
+/// subtitle still carries the whole sound (megabytes). The format has no
+/// partial file; the note tells the author where the size comes from.
+pub fn whole_sound_notes(ws: &Workspace, manifest: &ModManifest) -> Vec<String> {
+    manifest
+        .files
+        .iter()
+        .filter(|f| matches!(f.key, FileKey::Archive(_)) && f.payload.size >= BIG_SOUND)
+        .filter(|f| {
+            ws.store()
+                .get(&f.payload)
+                .is_ok_and(|data| crate::resource::tob::Tob::from_snu(&data).is_some())
+        })
+        .map(|f| {
+            format!(
+                "{} ({:.1} MB) is in the mod whole: its subtitle table is in the header of the \
+                 sound file and a file of the archives is replaced as one piece, also when \
+                 only the times of subtitles changed",
+                f.key.name(),
+                f.payload.size as f64 / 1e6
+            )
+        })
+        .collect()
 }
 
 /// Builds a mod package from the changes of a workspace (all, or those in
@@ -1207,7 +1335,7 @@ pub fn build_from_workspace(
     manifest.validate()?;
     let file_size =
         package::write_package(out, &manifest, preview.map(|p| p.data.as_slice()), |blob| {
-            ws.store().get(blob)
+            built_payload(ws, info, blob)
         })?;
     Ok(BuildReport {
         format_version: manifest.format_version,
@@ -1216,6 +1344,8 @@ pub fn build_from_workspace(
         new_streams: manifest.streams.len(),
         payload_bytes: manifest.payload_bytes(),
         file_size,
+        native_modules: manifest.native.as_ref().map_or(0, |n| n.modules.len()),
+        notes: whole_sound_notes(ws, &manifest),
     })
 }
 
@@ -1254,7 +1384,7 @@ pub fn id_from_name(name: &str) -> String {
     if id.is_empty() { "mod".to_owned() } else { id }
 }
 
-fn check_text(field: &str, value: &str, max: usize, may_be_empty: bool) -> Result<()> {
+pub(crate) fn check_text(field: &str, value: &str, max: usize, may_be_empty: bool) -> Result<()> {
     if value.len() > max {
         return Err(Error::mod_error(format!(
             "mod.json: `{field}` is longer than {max} bytes"
@@ -1337,7 +1467,7 @@ fn is_toc_path(path: &str) -> bool {
         .is_some_and(|stem| is_stream_name(&stem.to_ascii_lowercase()))
 }
 
-fn is_sha256(text: &str) -> bool {
+pub(crate) fn is_sha256(text: &str) -> bool {
     text.len() == 64
         && text
             .bytes()

@@ -19,8 +19,8 @@
 summary = "The engine sends it to the objects of a SimGroup that has just been loaded; TriggerAuto fires on it once."
 ru = "Движок шлёт его объектам только что загруженной SimGroup; по нему один раз срабатывает TriggerAuto."
 data = "unknown"
-sent_by = ["engine: message variable 0x0110064C, named by 0x00445530"]
-sent_by_ru = ["движок: переменная сообщения 0x0110064C, имя задаёт 0x00445530"]
+sent_by = ["engine: message variable 0x0120E93C, named by 0x004455D0; delivered to each listener (0x00408BF0) from 0x00446470 and 0x00855D40"]
+sent_by_ru = ["движок: переменная сообщения 0x0120E93C, имя задаёт 0x004455D0; доставка каждому слушателю (0x00408BF0) из 0x00446470 и 0x00855D40"]
 conf = "exe"
 source = "docs/logic-graph.md §9.2"
 
@@ -93,3 +93,426 @@ data = "unknown"
 sent_by = []
 conf = "bench"
 source = "docs/analysis/game-bench.md §30"
+
+[message.iMsgLuaGetPlayerVenue]
+summary = "A Lua script asks which venue the player is in (SendMessageEx); the listener appends the answer to the data and the script gets it as the result."
+ru = "Скрипт Lua спрашивает, в каком заведении игрок (SendMessageEx); слушатель дописывает ответ в данные, и скрипт получает его результатом."
+data = "EARS::Framework::Lua::MsgData* (vtable 0x00E365DC): eight {value, type} pairs from +4, count at +0x44; the answer is one string (\"4\" at the airfield gate of Havana, empty on the terrace)"
+sent_by = ["Lua: SendMessageEx (0x004C86D0) of aud_atmosphere_global.lua; the name is set by 0x006B01E0"]
+sent_by_ru = ["Lua: SendMessageEx (0x004C86D0) скрипта aud_atmosphere_global.lua; имя задаёт 0x006B01E0"]
+conf = "bench"
+source = "docs/analysis/lua-api.md §2"
+
+[message.iMsgLuaGetVenueStats]
+summary = "A Lua script asks for the state of a venue (SendMessageEx with the data of the message it handles); five values come back: id, type, status, monopoly, under attack."
+ru = "Скрипт Lua спрашивает состояние заведения (SendMessageEx с данными обрабатываемого сообщения); возвращаются пять значений: номер, тип, состояние, монополия, под атакой."
+data = "EARS::Framework::Lua::MsgData* (vtable 0x00E365DC); the listener appends five values (aud_dons_view_sfx.lua reads sVenueID, sVenueType, sVenueStatus, sCurrentMonopoly, sVenueUnderAttack)"
+sent_by = ["Lua: SendMessageEx (0x004C86D0) of aud_dons_view_sfx.lua; the name is set by 0x006B01E0"]
+sent_by_ru = ["Lua: SendMessageEx (0x004C86D0) скрипта aud_dons_view_sfx.lua; имя задаёт 0x006B01E0"]
+conf = "exe"
+source = "docs/analysis/lua-api.md §2"
+
+# ---------------------------------------------------------------------------
+# The data word of a message (stage 78, docs/analysis/message-bus.md §4).
+#
+# [data_type.<key>] — what the word can be:
+# table   — address of the method table of the data object, when it is one
+#           (the `obj:0x…` of data/gf2/bus_sites.tsv);
+# summary — English (tools); ru — Russian (notes); conf, source as above.
+#
+# The word is 0 or a pointer to an object the sender builds on its stack; the
+# first word of the object is its method table (one method, the destructor).
+# The executable has no names for these classes: the keys are the toolkit's.
+
+[data_type.none]
+summary = "No data: the word is 0."
+ru = "Данных нет: слово равно 0."
+conf = "exe"
+source = "data/gf2/bus_sites.tsv"
+
+[data_type.object]
+table = "0x00E31E2C"
+summary = "Pointer to an object: {table, object + 0x48, next} — a link of the object's list of safe pointers (BasePtrMsgData in the declarations of the attribute readers). Which object, the sender decides: itself, or who entered a trigger."
+ru = "Указатель на объект: {таблица, объект + 0x48, следующий} — звено списка безопасных указателей объекта (BasePtrMsgData в пометках читателей атрибутов). Чей объект, решает отправитель: он сам или тот, кто вошёл в триггер."
+conf = "exe"
+source = "0x0045CA00 (constructor), 0x00476C80 (copy for the delayed queue)"
+
+[data_type.forward]
+summary = "The data word of the message the sender reacted to, passed on unchanged (for the delayed queue an object pointer is copied)."
+ru = "Слово данных сообщения, на которое отправитель сработал, без изменений (для очереди задержки указатель на объект копируется)."
+conf = "exe"
+source = "0x0047A1C0 (MultiManager)"
+
+[data_type.word]
+summary = "A plain word that is not a data object: a stream, a number."
+ru = "Простое слово, не объект данных: поток, число."
+conf = "exe"
+source = "0x004499E0 (iMsgStreamVisible)"
+
+[data_type.building]
+table = "0x00D5DBB0"
+summary = "Building event: {table, building}."
+ru = "Событие здания: {таблица, здание}."
+conf = "exe"
+source = "0x006ADE8F"
+
+[data_type.building_near]
+table = "0x00D5DBB4"
+summary = "A door or window of a building is near: {table, building, argument, f32}."
+ru = "Рядом дверь или окно здания: {таблица, здание, аргумент, f32}."
+conf = "exe"
+source = "0x006AE1E6"
+
+[data_type.building_power]
+table = "0x00D5DBB8"
+summary = "Electricity of a building: {table, pointer, bool on}."
+ru = "Электричество здания: {таблица, указатель, bool включено}."
+conf = "exe"
+source = "0x006AE9CE"
+
+[data_type.stimulus]
+table = "0x00D5DBBC"
+summary = "A stimulus for the AI: {table, word, safe pointer to an object (two words), vec3, bool, f32 time}."
+ru = "Раздражитель для ИИ: {таблица, слово, безопасный указатель на объект (два слова), vec3, bool, f32 время}."
+conf = "exe"
+source = "0x006AE0E7"
+
+[data_type.hear_damage]
+table = "0x00D5DDF0"
+summary = "{table, safe pointer to an object}."
+ru = "{таблица, безопасный указатель на объект}."
+conf = "exe"
+source = "0x006AEC95"
+
+[data_type.building_owner]
+table = "0x00D5E22C"
+summary = "A building changed its owner: {table, building, two words of the building (+0x3C, +0x40)}."
+ru = "Здание сменило владельца: {таблица, здание, два слова здания (+0x3C, +0x40)}."
+conf = "exe"
+source = "0x006B499F"
+
+[data_type.building_exploded]
+table = "0x00D5E230"
+summary = "A building exploded: {table, building, three words}."
+ru = "Здание взорвано: {таблица, здание, три слова}."
+conf = "exe"
+source = "0x006B6831"
+
+[data_type.building_state]
+table = "0x00D5E234"
+summary = "A building changed its state: {table, building, old state, new state}."
+ru = "Здание сменило состояние: {таблица, здание, старое состояние, новое состояние}."
+conf = "exe"
+source = "0x006B4F6A"
+
+[data_type.see_death]
+table = "0x00D62BDC"
+summary = "{table, safe pointer to an object}."
+ru = "{таблица, безопасный указатель на объект}."
+conf = "exe"
+source = "0x00733188"
+
+[data_type.view_pressure]
+table = "0x00D63B44"
+summary = "{table, pointer, vec3, bool, 0}."
+ru = "{таблица, указатель, vec3, bool, 0}."
+conf = "exe"
+source = "0x007422BF"
+
+[data_type.damage]
+table = "0x00D6A7A8"
+summary = "Damage: vectors and values, not read field by field."
+ru = "Урон: векторы и значения, по полям не разобрано."
+conf = "exe"
+source = "0x0099DF8E"
+
+[data_type.explosion]
+table = "0x00D74E6C"
+summary = "{table, safe pointer to an object, vec3, three f32}."
+ru = "{таблица, безопасный указатель на объект, vec3, три f32}."
+conf = "exe"
+source = "0x0084ED77"
+
+[data_type.position]
+table = "0x00D76624"
+summary = "{table, vec3}."
+ru = "{таблица, vec3}."
+conf = "exe"
+source = "0x0087E2B5"
+
+[data_type.avoid_street]
+table = "0x00D76668"
+summary = "{table, safe pointer to an object, vec3}."
+ru = "{таблица, безопасный указатель на объект, vec3}."
+conf = "exe"
+source = "0x0087B61E"
+
+[data_type.vehicle_event]
+table = "0x00D7666C"
+summary = "Entering or leaving a vehicle: {table, safe pointers to objects}."
+ru = "Посадка в машину или выход: {таблица, безопасные указатели на объекты}."
+conf = "exe"
+source = "0x00877E06"
+
+[data_type.hear_hijack]
+table = "0x00D76670"
+summary = "{table, safe pointer to an object}."
+ru = "{таблица, безопасный указатель на объект}."
+conf = "exe"
+source = "0x0087B7E2"
+
+[data_type.score_event]
+table = "0x00D77A04"
+summary = "Scoreboard event (base table 0x00E35C24): the word at +8 is the hash of the event, +0x10 and +0x14 are values."
+ru = "Событие счёта (базовая таблица 0x00E35C24): слово +8 — хэш события, +0x10 и +0x14 — значения."
+conf = "exe"
+source = "0x00895CBA"
+
+[data_type.score_event_base]
+table = "0x00E35C24"
+summary = "Scoreboard event, the base class: the word at +8 is the hash of the event."
+ru = "Событие счёта, базовый класс: слово +8 — хэш события."
+conf = "exe"
+source = "0x008B2618"
+
+# [class_data.<Class>] — what the outputs of a SimGroup class put into the data
+# word (the class as data/gf2/logic_schema.toml spells its packet):
+# data — a key of data_type; who / who_ru — whose object, when data = "object";
+# conf, source as above.
+
+[class_data.MultiManager]
+data = "forward"
+conf = "exe"
+source = "0x0047A1C0"
+
+[class_data.TriggerRandom]
+data = "forward"
+conf = "exe"
+source = "0x0047AFEB"
+
+[class_data.VariableSwitch]
+data = "forward"
+conf = "exe"
+source = "0x00476F02"
+
+[class_data.TestTimeOfDay]
+data = "forward"
+conf = "exe"
+source = "0x0082632E"
+
+[class_data.TriggerBase]
+data = "forward"
+who = "who entered or left: the volume sends itself iMsgTrigger with a pointer to that object and passes its data on"
+who_ru = "кто вошёл или вышел: объём сам себе шлёт iMsgTrigger с указателем на этот объект и передаёт его данные дальше"
+conf = "exe"
+source = "0x004C13CA, 0x004C1FF8"
+
+[class_data.TriggerAuto]
+data = "object"
+who = "the sender itself"
+who_ru = "сам отправитель"
+conf = "exe"
+source = "0x00477F61, 0x00477FAE"
+
+[class_data.AndEventGate]
+data = "object"
+who = "the sender itself"
+who_ru = "сам отправитель"
+conf = "exe"
+source = "0x00479C08, 0x00479C56"
+
+[class_data.OrEventGate]
+data = "object"
+who = "the sender itself"
+who_ru = "сам отправитель"
+conf = "exe"
+source = "0x00479F06, 0x00479FA8"
+
+[class_data.InterestingObject]
+data = "object"
+who = "the character that uses the object: 0x00726E40 / 0x00726EC0 get it from the character behaviour 0x00740AD0 (stage 79)"
+who_ru = "персонаж, который пользуется объектом: 0x00726E40 / 0x00726EC0 получают его от поведения персонажа 0x00740AD0 (этап 79)"
+conf = "exe"
+source = "0x00726E91, 0x00726F21, 0x00740E04"
+
+[class_data.SpawnPoint]
+data = "object"
+who = "the character that appeared at the point (0x006BDA80(point, character), called on iMsgManagedEntityPostSpawn; stage 79)"
+who_ru = "персонаж, появившийся в точке (0x006BDA80(точка, персонаж), зовётся по iMsgManagedEntityPostSpawn; этап 79)"
+conf = "exe"
+source = "0x006BDB1F"
+
+[class_data.FuncSpawn]
+data = "object"
+who = "the object it has just made (stage 79)"
+who_ru = "только что созданный объект (этап 79)"
+conf = "exe"
+source = "0x00810FEC, 0x00810EE9"
+
+[class_data.Checkpoint]
+data = "object"
+who = "not read"
+who_ru = "чей — не прочитано"
+conf = "exe"
+source = "0x008FC0E2, 0x008FC114"
+
+[class_data.GenericCSA]
+data = "object"
+who = "not read"
+who_ru = "чей — не прочитано"
+conf = "exe"
+source = "0x008DB519"
+
+[class_data.TeamCapturableCSA]
+data = "object"
+who = "not read"
+who_ru = "чей — не прочитано"
+conf = "exe"
+source = "0x008DFEA5, 0x008E04F9"
+
+[class_data.ChangeNPCSettings]
+data = "object"
+who = "the character the settings were given to (it sends the message)"
+who_ru = "персонаж, которому отданы настройки (шлёт он)"
+conf = "exe"
+source = "0x007FFF40"
+
+[class_data.ChangeDialog]
+data = "object"
+who = "the character the settings were given to (it sends the message)"
+who_ru = "персонаж, которому отданы настройки (шлёт он)"
+conf = "exe"
+source = "0x007FFF40"
+
+[class_data.Item]
+data = "object"
+who = "the one who took the item (the player, or the owner of the inventory the item went into)"
+who_ru = "тот, кто получил предмет (игрок или владелец инвентаря, куда предмет попал)"
+conf = "bench"
+source = "0x00707ED0 (from 0x007A4520 and 0x007051D0); docs/analysis/game-bench.md §39"
+
+[class_data.Gun]
+data = "object"
+who = "the one who took the weapon"
+who_ru = "тот, кто получил оружие"
+conf = "exe"
+source = "0x00707ED0 (from 0x007051D0)"
+
+[class_data.ThrowableItem]
+data = "object"
+who = "the one who took the item"
+who_ru = "тот, кто получил предмет"
+conf = "exe"
+source = "0x00707ED0"
+
+[class_data.PhoneMessage]
+data = "none"
+conf = "exe"
+source = "0x006AB7B9, 0x006AB9A3"
+
+[class_data.ScriptedSequence]
+data = "none"
+conf = "exe"
+source = "0x007251F8, 0x0072573A"
+
+[class_data.TestBuildingState]
+data = "none"
+conf = "exe"
+source = "0x006BE423"
+
+[class_data.TestUpgrade]
+data = "none"
+conf = "exe"
+source = "0x009B8F07"
+
+[class_data.TriggerDistance]
+data = "none"
+conf = "exe"
+source = "0x0090315E"
+
+[class_data.TriggerFollow]
+data = "none"
+conf = "exe"
+source = "0x00904670"
+
+[class_data.SimpleChatterBox]
+data = "none"
+conf = "exe"
+source = "0x006F1EA7"
+
+[class_data.ChangeBuildingSettings]
+data = "none"
+conf = "exe"
+source = "0x006AE104, 0x006AEC1E, 0x006AE394"
+
+[message.iMsgTreeType1S]
+summary = "Opens the family tree of the player to level 1: the first soldier place (the tree level only grows)."
+ru = "Открывает древо семьи игрока до уровня 1: первое место солдата (уровень только растёт)."
+data = "none"
+sent_by = ["engine: handled by the player's family object, 0x0090BA70 (level +0x14, places opened by 0x0090B480); in the story a MultiManager of c04-r01-rendezvous01 sends it"]
+sent_by_ru = ["движок: обрабатывает объект семьи игрока, 0x0090BA70 (уровень +0x14, места открывает 0x0090B480); в сюжете его шлёт MultiManager потока c04-r01-rendezvous01"]
+conf = "bench"
+source = "docs/analysis/crew.md §3; docs/analysis/game-bench.md §44"
+
+[message.iMsgTreeType2S]
+summary = "Opens the family tree of the player to level 2: the second soldier place."
+ru = "Открывает древо семьи игрока до уровня 2: второе место солдата."
+data = "none"
+sent_by = ["engine: handled by 0x0090BA70; in the story a MultiManager of c08-r02-rendezvous02 sends it"]
+sent_by_ru = ["движок: обрабатывает 0x0090BA70; в сюжете его шлёт MultiManager потока c08-r02-rendezvous02"]
+conf = "exe"
+source = "docs/analysis/crew.md §3"
+
+[message.iMsgTreeType3S]
+summary = "Opens the family tree of the player to level 3: the third soldier place."
+ru = "Открывает древо семьи игрока до уровня 3: третье место солдата."
+data = "none"
+sent_by = ["engine: handled by 0x0090BA70; in the story two MultiManagers of c22-r05-rendezvous05 send it"]
+sent_by_ru = ["движок: обрабатывает 0x0090BA70; в сюжете его шлют два MultiManager потока c22-r05-rendezvous05"]
+conf = "exe"
+source = "docs/analysis/crew.md §3"
+
+[message.iMsgTreeType1C3S]
+summary = "Opens the family tree of the player to level 4: the first capo place (and the three soldier places)."
+ru = "Открывает древо семьи игрока до уровня 4: первое место капо (и три места солдат)."
+data = "none"
+sent_by = ["engine: handled by 0x0090BA70; in the story a MultiManager of c33-rendezvous09 (Miami) sends it"]
+sent_by_ru = ["движок: обрабатывает 0x0090BA70; в сюжете его шлёт MultiManager потока c33-rendezvous09 (Флорида)"]
+conf = "bench"
+source = "docs/analysis/crew.md §3; docs/analysis/game-bench.md §44"
+
+[message.iMsgTreeType1C4S]
+summary = "Opens the family tree of the player to level 5: the fourth soldier place."
+ru = "Открывает древо семьи игрока до уровня 5: четвёртое место солдата."
+data = "none"
+sent_by = ["engine: handled by 0x0090BA70; in the story a MultiManager of c36-rendezvous10 (Miami) sends it"]
+sent_by_ru = ["движок: обрабатывает 0x0090BA70; в сюжете его шлёт MultiManager потока c36-rendezvous10 (Флорида)"]
+conf = "exe"
+source = "docs/analysis/crew.md §3"
+
+[message.iMsgTreeType1Con1C4S]
+summary = "Raises the family tree of the player to level 6, the consigliere: no place is opened, two statistics are counted."
+ru = "Поднимает древо семьи игрока до уровня 6 — консильери: мест не открывает, считает две статистики."
+data = "none"
+sent_by = ["engine: handled by 0x0090BA70 (statistics 0x33 and 0x35); in the story a MultiManager of cp_507-talktotom (mission 5) sends it"]
+sent_by_ru = ["движок: обрабатывает 0x0090BA70 (статистика 0x33 и 0x35); в сюжете его шлёт MultiManager потока cp_507-talktotom (миссия 5)"]
+conf = "exe"
+source = "docs/analysis/crew.md §3"
+
+[message.iMsgTreeType1Con2C4S]
+summary = "Opens the family tree of the player to level 7: the second capo place."
+ru = "Открывает древо семьи игрока до уровня 7: второе место капо."
+data = "none"
+sent_by = ["engine: handled by 0x0090BA70; in the story MultiManagers of c49-rendezvous14 (Miami) and of gf2/globals_global send it"]
+sent_by_ru = ["движок: обрабатывает 0x0090BA70; в сюжете его шлют MultiManager потока c49-rendezvous14 (Флорида) и gf2/globals_global"]
+conf = "exe"
+source = "docs/analysis/crew.md §3"
+
+[message.iMsgTreeType1Con1U2C4S]
+summary = "Opens the family tree of the player to level 8: the underboss place."
+ru = "Открывает древо семьи игрока до уровня 8: место младшего босса."
+data = "none"
+sent_by = ["engine: handled by 0x0090BA70; in the story a MultiManager of c64-r16-rendezvous16 sends it"]
+sent_by_ru = ["движок: обрабатывает 0x0090BA70; в сюжете его шлёт MultiManager потока c64-r16-rendezvous16"]
+conf = "exe"
+source = "docs/analysis/crew.md §3"

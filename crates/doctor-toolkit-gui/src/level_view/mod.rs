@@ -75,12 +75,11 @@ use doctor_toolkit::game::{GameInstance, ResourceIndex};
 use doctor_toolkit::level::edit::ModelChoice;
 use doctor_toolkit::level::{
     Catalog, Coverage, Found, Level, LevelAssets, LevelSource, Location, Lookup, Overrides,
-    RowMatrix, TYPE_MESH, TYPE_MESH_VOLATILE, TYPE_METAMODEL, TYPE_SIMGROUP,
+    RowMatrix, TYPE_METAMODEL, TYPE_SIMGROUP,
 };
-use doctor_toolkit::resource::hkx::TYPE_HKX;
 use doctor_toolkit::resource::logic::TYPE_SIMGROUP as LOGIC_SIMGROUP;
 use doctor_toolkit::resource::simgroup::{Guid, SimGroup};
-use doctor_toolkit::workspace::{ResourceKey, Workspace};
+use doctor_toolkit::workspace::Workspace;
 use doctor_toolkit_mods::i18n::{tr, trf, trn};
 use egui::{Color32, Pos2, Rect, RichText, Sense, Vec2};
 
@@ -124,6 +123,12 @@ pub enum LevelAction {
         template: (Location, usize),
         model: ModelChoice,
         position: [f32; 3],
+    },
+    /// An object of a class (a name or a hexadecimal hash) with empty
+    /// attributes, without a template.
+    AddEmpty {
+        group: Location,
+        class: String,
     },
     /// New data for a SimGroup from the object editor.
     Save {
@@ -198,6 +203,11 @@ pub struct AddObject {
     pub fixed: bool,
     /// Open the section once (the toolbar's "Add an object with a model…").
     pub open: bool,
+    /// The SimGroup the new object goes into when it is not the one of the
+    /// selected object: a loaded SimGroup of another zone (a new zone).
+    pub into: Option<Location>,
+    /// The class of "Add an empty object", as typed.
+    pub class: String,
 }
 
 /// A node of the Outliner's tree: a zone (stream), a class in a zone, or
@@ -281,6 +291,8 @@ struct Preset {
     /// Select this many objects with a model nearest to `look`.
     nearby: usize,
     selected_once: bool,
+    /// The camera and the selection of the preset are in (the level is loaded).
+    applied: bool,
     spin: Option<Vec<f32>>,
     eye: Option<[f32; 3]>,
     look: Option<[f32; 3]>,
@@ -289,6 +301,8 @@ struct Preset {
     /// Edits to make once the level is loaded, one per frame, on the
     /// selected object (for checks without input).
     actions: VecDeque<String>,
+    /// An edit of `actions` that could not be made (the app stops the run).
+    error: Option<String>,
     /// Walk from the camera once the level is loaded.
     walk: bool,
     /// Check the walk from A to B once the level is loaded.
@@ -380,6 +394,9 @@ pub struct LevelView {
     goto: Option<(Location, usize)>,
     /// Camera and selection to restore after a reload.
     keep_view: Option<(FlyCamera, Option<ObjRef>)>,
+    /// Objects to select once a reload is done (an edit that changed the
+    /// layout of a staged stream reloads the level).
+    select_after_load: Vec<(Location, usize)>,
     /// The user moved the camera since the level was loaded.
     camera_moved: bool,
     /// Bounding spheres of the uploaded meshes.
@@ -495,6 +512,7 @@ impl LevelView {
             pending_autoload: false,
             goto: None,
             keep_view: None,
+            select_after_load: Vec::new(),
             camera_moved: false,
             spheres: HashMap::new(),
             hide_tiny: true,
@@ -639,6 +657,10 @@ impl LevelView {
                 let found: Vec<usize> = self.catalog.under(&name).map(|z| z.stream).collect();
                 if found.is_empty() {
                     eprintln!("level: no zone at `{name}`");
+                    if let Some(p) = &mut self.preset {
+                        p.actions.clear();
+                        p.error = Some(format!("level: no zone at `{name}`"));
+                    }
                 }
                 self.chosen.extend(found);
             }
@@ -759,6 +781,10 @@ impl LevelView {
                             self.select(exists);
                         }
                         None => self.frame_all(),
+                    }
+                    let select = std::mem::take(&mut self.select_after_load);
+                    if !select.is_empty() {
+                        self.select_locations(&select);
                     }
                     if let Some(gpu) = &self.gpu {
                         let mut renderer = gpu.lock();
@@ -980,6 +1006,7 @@ impl LevelView {
         let near = nearest.first().map(|(_, r)| *r);
         let select = preset.select.take().or(near);
         preset.selected_once |= select.is_some();
+        preset.applied = true;
         let has_eye = preset.eye.is_some();
         if let Some(r) = select {
             self.set_selection(Some(r), nearest.iter().map(|(_, r)| *r).collect());
@@ -1006,19 +1033,88 @@ impl LevelView {
             .set_projection(camera::Projection::Perspective, 20.0);
     }
 
+    /// Drops the edits of the preset not made yet (one before them failed).
+    pub fn drop_preset_actions(&mut self) {
+        if let Some(p) = &mut self.preset {
+            p.actions.clear();
+        }
+    }
+
+    /// Queues edits of a preset as `act=` does, the level being loaded.
+    #[cfg(test)]
+    pub fn queue_preset_actions(&mut self, actions: &[&str]) {
+        let preset = self.preset.get_or_insert_with(Preset::default);
+        preset.applied = true;
+        preset.actions = actions.iter().map(|a| (*a).to_owned()).collect();
+    }
+
+    /// The edit of the preset that could not be started, once.
+    pub fn take_preset_error(&mut self) -> Option<String> {
+        self.preset.as_mut()?.error.take()
+    }
+
     /// The next edit of the environment preset, once the level is ready:
-    /// `move:<dx>,<dy>,<dz>`, `turn:<degrees>` (about Y), `duplicate`,
-    /// `remove`, `add:<metamodel id>[:clone]`.
+    /// `move:<dx>,<dy>,<dz>`, `turn:<degrees>` (about Y),
+    /// `place:<x>,<y>,<z>[,<yaw degrees>]` (position, turn about Y and scale
+    /// 1, as typed in Details), `duplicate`,
+    /// `remove`, `add:<metamodel id>[:clone][:collision][:into=<zone>]
+    /// [:at=<x>/<y>/<z>]` (the selected object is the template; `into` puts
+    /// the new object into the SimGroup of another loaded zone, a new one),
+    /// `empty:<class>[:into=<zone>]`. An edit that cannot be made stops the
+    /// chain: the rest is dropped and the error is kept for
+    /// [`Self::take_preset_error`] (the screenshot mode then exits with a
+    /// non-zero code).
     fn preset_action(&mut self) -> Option<LevelAction> {
         if self.job.is_some() || !self.pending.is_empty() || self.level.is_none() {
             return None;
         }
-        let r = self.filter.selected?;
-        let text = self.preset.as_mut()?.actions.pop_front()?;
-        let level = self.level.as_ref()?;
-        let group = level.groups.get(r.group)?.location;
-        let transform = level.groups[r.group].objects.get(r.object)?.transform;
-        let (name, value) = text.split_once(':').unwrap_or((&text, ""));
+        let preset = self.preset.as_mut()?;
+        if !preset.applied {
+            // The selection of the preset comes first.
+            return None;
+        }
+        let text = preset.actions.pop_front()?;
+        // Edits of the navigation graph of the selected node (stage 103).
+        if let Some(edit) = text.strip_prefix("nav-") {
+            return match self.nav.preset_edit(edit) {
+                Ok(action) => {
+                    eprintln!("level: action `{text}`");
+                    Some(action)
+                }
+                Err(why) => {
+                    let preset = self.preset.as_mut()?;
+                    preset.actions.clear();
+                    preset.error = Some(format!("level: action `{text}`: {why}"));
+                    None
+                }
+            };
+        }
+        match self.preset_edit(&text) {
+            Ok((action, r)) => {
+                eprintln!("level: action `{text}` on {}:{}", r.group, r.object);
+                Some(action)
+            }
+            Err(why) => {
+                let preset = self.preset.as_mut()?;
+                preset.actions.clear();
+                preset.error = Some(format!("level: action `{text}`: {why}"));
+                None
+            }
+        }
+    }
+
+    /// The edit `text` of the preset on the selected object.
+    fn preset_edit(&self, text: &str) -> Result<(LevelAction, ObjRef), String> {
+        let r = self.filter.selected.ok_or("no object is selected")?;
+        let level = self.level.as_ref().ok_or("no level")?;
+        let object = level
+            .groups
+            .get(r.group)
+            .and_then(|g| g.objects.get(r.object))
+            .ok_or("the selected object is gone")?;
+        let group = level.groups[r.group].location;
+        let transform = object.transform.ok_or("the object has no transform");
+        let (name, value) = text.split_once(':').unwrap_or((text, ""));
         let floats: Vec<f32> = value.split(',').filter_map(|v| v.parse().ok()).collect();
         let action = match name {
             "move" if floats.len() == 3 => {
@@ -1030,6 +1126,20 @@ impl LevelView {
                     group,
                     object: r.object,
                     matrix: m,
+                }
+            }
+            // The Position and Rotation fields of Details: the object stands
+            // at the point, turned about Y, with scale 1.
+            "place" if floats.len() == 3 || floats.len() == 4 => {
+                let placed = doctor_toolkit::resource::simgroup_edit::Transform {
+                    position: [floats[0], floats[1], floats[2]],
+                    rotation: [0.0, floats.get(3).copied().unwrap_or(0.0), 0.0],
+                    scale: [1.0; 3],
+                };
+                LevelAction::SetTransform {
+                    group,
+                    object: r.object,
+                    matrix: placed.to_matrix(),
                 }
             }
             "turn" if floats.len() == 1 => LevelAction::SetTransform {
@@ -1052,28 +1162,88 @@ impl LevelView {
                 object: r.object,
             },
             "add" => {
-                let (id, clone) = value.split_once(':').unwrap_or((value, ""));
-                let id = u32::from_str_radix(id, 16).ok()?;
-                let found = level.source.find(TYPE_METAMODEL, id)?;
+                let mut tokens = value.split(':');
+                let id = tokens.next().unwrap_or_default();
+                let id = u32::from_str_radix(id, 16)
+                    .map_err(|_| format!("`{id}` is not a hexadecimal metamodel id"))?;
+                let (mut clone, mut collision) = (false, false);
+                let mut target = group;
+                let mut at = None;
+                for token in tokens {
+                    if token == "clone" {
+                        clone = true;
+                    } else if token == "collision" {
+                        (clone, collision) = (true, true);
+                    } else if let Some(zone) = token.strip_prefix("into=") {
+                        target = self.preset_group(zone)?;
+                    } else if let Some(point) = token.strip_prefix("at=") {
+                        let p: Vec<f32> = point.split('/').filter_map(|v| v.parse().ok()).collect();
+                        if p.len() != 3 {
+                            return Err("at=<x>/<y>/<z> expected".to_owned());
+                        }
+                        at = Some([p[0], p[1], p[2]]);
+                    } else {
+                        return Err(format!("unknown option `{token}`"));
+                    }
+                }
+                let found = level
+                    .source
+                    .find(TYPE_METAMODEL, id)
+                    .ok_or_else(|| format!("no metamodel {id:08x} in the loaded zones"))?;
                 let model = match (clone, found) {
-                    ("clone", Found::Game(at, _)) => ModelChoice::Clone(at),
+                    (true, Found::Game(at, _)) if collision => ModelChoice::CloneWithCollision(
+                        at,
+                        doctor_toolkit::resource::hkx::collision::CollisionKind::Mesh,
+                        None,
+                    ),
+                    (true, Found::Game(at, _)) => ModelChoice::Clone(at),
                     _ => ModelChoice::Existing(id),
                 };
-                let m = transform?;
+                let position = match at {
+                    Some(p) => p,
+                    None => {
+                        let m = transform?;
+                        [m[3][0] + 3.0, m[3][1], m[3][2]]
+                    }
+                };
                 LevelAction::Add {
-                    group,
+                    group: target,
                     template: (group, r.object),
                     model,
-                    position: [m[3][0] + 3.0, m[3][1], m[3][2]],
+                    position,
                 }
             }
-            _ => {
-                eprintln!("level: unknown action `{text}`");
-                return None;
+            "empty" => {
+                let (class, zone) = match value.split_once(":into=") {
+                    Some((class, zone)) => (class, Some(zone)),
+                    None => (value, None),
+                };
+                LevelAction::AddEmpty {
+                    group: match zone {
+                        Some(z) => self.preset_group(z)?,
+                        None => group,
+                    },
+                    class: class.to_owned(),
+                }
             }
+            _ => return Err("unknown action".to_owned()),
         };
-        eprintln!("level: action `{text}` on {}:{}", r.group, r.object);
-        Some(action)
+        Ok((action, r))
+    }
+
+    /// The first SimGroup of the loaded zone `zone`, for `into=` of a
+    /// preset action; an error when the level has none.
+    fn preset_group(&self, zone: &str) -> Result<Location, String> {
+        let stream = self.input.as_ref().and_then(|i| i.game.find_stream(zone));
+        self.level
+            .as_ref()
+            .and_then(|l| {
+                l.groups
+                    .iter()
+                    .map(|g| g.location)
+                    .find(|at| Some(at.stream) == stream)
+            })
+            .ok_or_else(|| format!("into={zone}: the level has no SimGroup of this zone loaded"))
     }
 
     // ---------------------------------------------------------- after edits
@@ -1237,9 +1407,10 @@ impl LevelView {
             self.index_stale = true;
             return;
         }
+        // Before the index is read again: that forgets the level.
+        let loaded = self.level.as_ref().map(|l| l.streams.clone());
         self.reindex();
         self.walk.forget_cache();
-        let loaded = self.level.as_ref().map(|l| l.streams.clone());
         let camera = self.camera;
         let selected = self.filter.selected;
         // The same zones load again: the objects keep their numbers.
@@ -1252,6 +1423,104 @@ impl LevelView {
             self.keep_view = Some((camera, selected));
             self.filter.hidden = hidden;
             self.locked = locked;
+        }
+    }
+
+    /// The streams the workspace creates were staged again
+    /// (`Workspace::stage`): `game` lists them as they are now. Streams of
+    /// the game folder keep their numbers, so a level without staged streams
+    /// stays as it is; a level that shows one loads again with the same
+    /// camera, since its SimGroups may have moved in the staged file.
+    pub fn restage(
+        &mut self,
+        game: Arc<GameInstance>,
+        index: Arc<ResourceIndex>,
+        ws: Option<&Workspace>,
+    ) {
+        let Some(old) = self.input.as_ref().map(|i| i.game.clone()) else {
+            self.open_game(game, index);
+            return;
+        };
+        let names = |streams: &mut dyn Iterator<Item = usize>| -> Vec<String> {
+            streams
+                .filter_map(|s| old.streams().get(s).map(|f| f.stream_name()))
+                .collect()
+        };
+        let chosen = names(&mut self.chosen.iter().copied());
+        let loaded = self
+            .level
+            .as_ref()
+            .map(|l| names(&mut l.streams.iter().copied()));
+        let staged = |list: &[String]| {
+            list.iter().any(|n| {
+                old.find_stream(n).is_some_and(|s| old.is_staged(s))
+                    || game.find_stream(n).is_some_and(|s| game.is_staged(s))
+            })
+        };
+        let shown = loaded.as_deref().unwrap_or(&chosen);
+        let reload = (self.level.is_some() || self.job.is_some()) && staged(shown);
+        let again = |list: &[String]| -> BTreeSet<usize> {
+            list.iter().filter_map(|n| game.find_stream(n)).collect()
+        };
+        if reload {
+            let camera = self.camera;
+            let selected = self.filter.selected;
+            let hidden = self.filter.hidden.clone();
+            let locked = self.locked.clone();
+            let autoload = self.autoload.take();
+            let shown = again(shown);
+            self.open_game(game, index);
+            self.autoload = autoload;
+            self.walk.forget_cache();
+            self.chosen = shown;
+            let ctx = self.ctx.clone();
+            self.start_load(&ctx, ws);
+            self.keep_view = Some((camera, selected));
+            self.filter.hidden = hidden;
+            self.locked = locked;
+            return;
+        }
+        // In place: what is loaded reads streams whose numbers did not change.
+        let chosen = again(&chosen);
+        self.catalog = Arc::new(Catalog::new(&game, &index));
+        let parents = game.stream_parents().unwrap_or_default();
+        self.input = Some(LoadInput {
+            lookup: Arc::new(Lookup::new(&index)),
+            parents: Arc::new(parents),
+            game,
+            index,
+            overrides: Overrides::default(),
+            texture_limit: TEXTURE_LIMIT,
+        });
+        self.chosen = chosen;
+        self.index_stale = false;
+        self.refresh(ws, None);
+    }
+
+    /// What the status line of the view says.
+    #[cfg(test)]
+    pub fn status_text(&self) -> String {
+        format!("{} / {}", self.status, self.info)
+    }
+
+    /// The names of the zones the view can load.
+    #[cfg(test)]
+    pub fn zone_names(&self) -> Vec<String> {
+        self.catalog.zones.iter().map(|z| z.name.clone()).collect()
+    }
+
+    /// The view was given a game.
+    pub fn has_game(&self) -> bool {
+        self.input.is_some()
+    }
+
+    /// Selects these objects when the level that is loading is ready (now,
+    /// when nothing is loading).
+    pub fn select_when_loaded(&mut self, objects: &[(Location, usize)]) {
+        if self.job.is_some() && self.level.is_none() {
+            self.select_after_load = objects.to_vec();
+        } else {
+            self.select_locations(objects);
         }
     }
 
@@ -2509,34 +2778,5 @@ pub fn parse_hours(value: &str) -> Option<f32> {
 }
 
 pub fn overrides(game: &GameInstance, ws: Option<&Workspace>, groups: &[Location]) -> Overrides {
-    let mut out = Overrides::default();
-    let Some(ws) = ws else { return out };
-    for change in ws.changes() {
-        let t = change.key.type_id;
-        if ![TYPE_METAMODEL, TYPE_MESH, TYPE_MESH_VOLATILE, TYPE_HKX].contains(&t) {
-            continue;
-        }
-        let Some(stream) = game.find_stream(&change.key.stream) else {
-            continue;
-        };
-        if let Ok(Some(data)) = ws.data(&change.key) {
-            out.by_id
-                .insert((t, change.key.ids[3]), (stream, Arc::new(data)));
-        }
-    }
-    let mut streams: HashMap<usize, Option<Arc<doctor_toolkit::game::StreamFile>>> = HashMap::new();
-    for &g in groups {
-        let file = streams
-            .entry(g.stream)
-            .or_insert_with(|| game.open_stream(g.stream).ok().map(Arc::new));
-        let Some(file) = file else { continue };
-        let Some(resource) = file.layout().resources.get(g.resource) else {
-            continue;
-        };
-        let key = ResourceKey::new(&game.streams()[g.stream].stream_name(), &resource.header);
-        if let Ok(Some(data)) = ws.data(&key) {
-            out.groups.insert(g, Arc::new(data));
-        }
-    }
-    out
+    doctor_toolkit::level::walk::overrides(game, ws, groups)
 }

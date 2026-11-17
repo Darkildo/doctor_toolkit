@@ -65,7 +65,7 @@ fn the_message_catalogue_is_the_messages_of_the_game() {
             stats.never_sent,
             stats.never_heard
         ),
-        (41_872, 57_881, 72_633, 32_933, 150, 34, 1_182, 7_573)
+        (42_087, 58_320, 72_241, 33_113, 150, 34, 1_001, 7_789)
     );
     // The groups of the open enum and the usage the catalogue reports.
     let mut kinds: HashMap<&str, usize> = HashMap::new();
@@ -76,8 +76,8 @@ fn the_message_catalogue_is_the_messages_of_the_game() {
         *usage.entry(id.info().usage).or_default() += 1;
     }
     assert_eq!(kinds["engine"], 198);
-    assert_eq!(kinds["game"], 41_674);
-    assert_eq!(game_types::message::engine_messages().len(), 571);
+    assert_eq!(kinds["game"], 41_889);
+    assert_eq!(game_types::message::engine_messages().len(), 645);
     assert_eq!(usage[&Usage::SentAndHeard], stats.connected);
     assert_eq!(usage[&Usage::HeardFromEngine], stats.from_engine);
     assert_eq!(usage[&Usage::SentToEngine], stats.to_engine);
@@ -218,5 +218,131 @@ fn value_lists_and_attribute_types_match_the_game() {
         "{} typed attributes checked against {} SimGroups",
         game_types::attr_types().len(),
         loaded.len()
+    );
+}
+
+/// Stage 78: `data/gf2/bus_sites.tsv` is the executable — every row is a
+/// call of the function its column names, the broadcast of the bus has the
+/// 688 calls the documents quote, and every name the code gives to a message
+/// variable is a string of the executable and a message of the engine list.
+#[test]
+fn the_bus_sites_are_calls_of_the_executable() {
+    let Some(dir) = super::game_dir() else { return };
+    let Ok(exe) = std::fs::read(dir.join("godfather2.exe")) else {
+        return;
+    };
+    // Sections of PC 1.0.789.0 lie in the file at their virtual offset.
+    const BASE: u32 = 0x0040_0000;
+    const TEXT: std::ops::Range<u32> = 0x0040_1000..0x00D5_435A;
+    let call_at = |site: u32| -> Option<u32> {
+        let at = (site - BASE) as usize;
+        (exe.get(at) == Some(&0xE8)).then(|| {
+            let rel = i32::from_le_bytes(exe[at + 1..at + 5].try_into().unwrap());
+            site.wrapping_add(5).wrapping_add(rel as u32)
+        })
+    };
+    let calls_of = |target: u32| -> usize {
+        TEXT.clone()
+            .filter(|&site| call_at(site) == Some(target))
+            .count()
+    };
+    assert_eq!(calls_of(0x0040_8A00), 688);
+    assert_eq!(calls_of(0x0040_8BF0), 93);
+    assert_eq!(calls_of(0x0040_8B80), 11);
+    assert_eq!(calls_of(0x0040_8BB0), 23);
+    assert_eq!(calls_of(0x0044_0590), 62);
+    let text = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../data/gf2/bus_sites.tsv"),
+    )
+    .unwrap();
+    let hex = |s: &str| u32::from_str_radix(s.trim_start_matches("0x"), 16).unwrap();
+    let mut sends = HashSet::new();
+    let mut rows = 0;
+    for line in text.lines().filter(|l| !l.starts_with('#')) {
+        let f: Vec<&str> = line.split('\t').collect();
+        assert_eq!(f.len(), 7, "{line}");
+        let (site, target) = (hex(f[1]), hex(f[3]));
+        assert_eq!(call_at(site), Some(target), "{line}");
+        rows += 1;
+        match f[0] {
+            "send" if target == 0x0040_8A00 => {
+                sends.insert(site);
+            }
+            "name" => {
+                let name = f[4].as_bytes();
+                assert!(
+                    exe.windows(name.len() + 1)
+                        .any(|w| &w[..name.len()] == name && w[name.len()] == 0),
+                    "{line}"
+                );
+                assert!(
+                    matches!(MessageId::from_name(f[4]), MessageId::Engine(_)),
+                    "{line}"
+                );
+            }
+            _ => {}
+        }
+    }
+    // Every broadcast call of the executable has its row.
+    assert_eq!(sends.len(), 688);
+    assert_eq!(rows, 2747);
+}
+
+/// Stage 79, `0x00446BF0`: the loader does not walk the `Base` packet of a
+/// stored object, it reads two bytes of the object record instead — bit 1
+/// of the flag byte says the object has the packet, and the next byte is a
+/// copy of its attribute 0 (the spawn flags; 0 when it is not stored).
+#[test]
+fn the_second_flag_byte_of_an_object_is_its_base_attribute() {
+    let Some(dir) = super::game_dir() else { return };
+    let game = GameInstance::open(&dir).unwrap();
+    let (index, _) = game.build_index(|_| {});
+    let locations = scope::groups(&game, &index, &ScopeSpec::Game).unwrap();
+    let (loaded, errors) = scope::load(&game, None, &locations);
+    assert!(errors.is_empty(), "{:?}", errors.first());
+    let base = string_id("Base");
+    let (mut objects, mut with_base, mut set) = (0u32, 0u32, 0u32);
+    for g in &loaded {
+        for o in &g.group.objects {
+            objects += 1;
+            let has_base = g.group.object_packets(o).any(|p| p.class.0 == base);
+            let value = match g.group.attr(o, base, 0) {
+                Some(Value::Int(v)) => *v as u32,
+                Some(other) => panic!("Base attribute 0 is {other:?}"),
+                None => 0,
+            };
+            assert_eq!(o.flags & 2 != 0, has_base, "{} {}", g.stream, o.guid);
+            assert_eq!(u32::from(o.flags2), value, "{} {}", g.stream, o.guid);
+            with_base += u32::from(has_base);
+            set += u32::from(o.flags2 != 0);
+        }
+    }
+    assert_eq!((objects, with_base, set), (111_518, 108_349, 100_032));
+}
+
+/// Stage 80, `0x0043AFF0`: the engine's iterator of attribute packets has a
+/// second path, for object records that are not packed (bit 0 of the flag
+/// byte clear: a list of tagged entries instead of masks and values). The
+/// files of the game hold no such record, so that path — and the same path
+/// of the platform module's reader — is known by the code only.
+#[test]
+fn every_object_record_of_the_game_is_packed() {
+    let Some(dir) = super::game_dir() else { return };
+    let game = GameInstance::open(&dir).unwrap();
+    let (index, _) = game.build_index(|_| {});
+    let locations = scope::groups(&game, &index, &ScopeSpec::Game).unwrap();
+    let (loaded, errors) = scope::load(&game, None, &locations);
+    assert!(errors.is_empty(), "{:?}", errors.first());
+    let mut by_flags = std::collections::BTreeMap::new();
+    for g in &loaded {
+        for o in &g.group.objects {
+            assert!(o.flags & 1 != 0, "{} {}", g.stream, o.guid);
+            *by_flags.entry(o.flags).or_insert(0u32) += 1;
+        }
+    }
+    // Packed; packed with the packet `Base`; the same with components.
+    assert_eq!(
+        by_flags.into_iter().collect::<Vec<_>>(),
+        [(0x01, 3_169), (0x03, 83_765), (0x0B, 24_584)]
     );
 }

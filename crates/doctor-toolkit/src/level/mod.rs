@@ -18,8 +18,11 @@ pub mod catalog;
 pub mod collision;
 pub mod compat;
 pub mod edit;
+pub mod many;
 pub mod model;
 pub mod navgraph;
+#[cfg(feature = "walk")]
+pub mod walk;
 pub mod world_grid;
 
 use std::collections::{HashMap, HashSet};

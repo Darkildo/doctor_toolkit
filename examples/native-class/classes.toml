@@ -1,0 +1,22 @@
+# Classes of the example native mod (examples/native-class), for the toolkit:
+#   doctor-toolkit class-schema examples/native-class/classes.toml
+#   export DOCTOR_TOOLKIT_CLASSES=examples/native-class/classes.toml
+# The format: docs/analysis/asi-platform.md §6.
+
+[class.DoctorCounter]
+category = "logic"
+summary = "Counts a message and sends another one every limit-th time, with itself as the data"
+attrs = [
+  { i = 0, name = "count_on", pin = "in", kind = "string" },
+  { i = 1, name = "send", pin = "out", kind = "string" },
+  { i = 2, name = "limit", pin = "param", kind = "int" },
+  { i = 3, name = "reset_on", pin = "in", kind = "string" },
+]
+
+[class.DoctorCEcho]
+category = "relay"
+summary = "Sends the message of attribute 1 each time the message of attribute 0 comes (the mod in C)"
+attrs = [
+  { i = 0, name = "on", pin = "in", kind = "string" },
+  { i = 1, name = "send", pin = "out", kind = "string" },
+]

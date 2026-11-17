@@ -44,6 +44,15 @@ SimGroup (`MessageRelay`, `VariableSwitch`, `VariableOperator` отвечают)
   находит (возвращает нулевой указатель). Узел Play sound поэтому дописывает
   `.emx` сам (`dt_emx`).
 
+Этап 74 (`game-bench.md` §35, `docs/analysis/lua-api.md`): функции Lua
+игры вызваны в игре напрямую (`live lua`) и узлами графа `doctor_s74n`:
+данные сообщений (число, посланное скриптом, читается обратно), поток
+`PlayEarsAudioStream` слышен в записи, стоповое сообщение скрипта вызывает
+«On stop» и останавливает таймеры, время и переменные приходят числами,
+узлы групп с ненайденным объектом игру не роняют. Там же найдено, что
+`Base` от строки объектов игры не находит, а `GetPlayerPosition` требует
+номер игрока.
+
 ## 2. Граф
 
 ```json
@@ -132,41 +141,57 @@ JSON пишется детерминированно (узлы по id, пров
 |---|---|---|
 | `var.get` | Get variable | значение переменной графа (`variable`) |
 | `var.set` | Set variable | присвоить; выход `value` — новое значение |
-| `engine.get` | Get game variable | `VariableGet(FindVariable(name))` — переменная игры по имени (`sdbm`); если нет — создаётся со значением 0 |
+| `engine.get` | Get game variable | `Int32ToNumber(VariableGet(FindVariable(name)))` — переменная игры по имени (`sdbm`); если нет — создаётся со значением 0. `VariableGet` отдаёт объект `Int32`, а не число: без приведения сравнение с числом ложно или даёт ошибку (этап 74) |
 | `engine.set` | Set game variable | `VariableSet(FindVariable(name), value)`; переменные, созданные так, — **целые**: дробное отбрасывается, `true`/`false` → 1/0 (иначе игра отказывает: «Could not turn (null) into an Int32») |
 
 ### Игра (запросы)
 
 | Вид | Вызов | Примечание |
 |---|---|---|
-| `game.sim_time` | `GetSimTime()` | в игре миллисекунды; узел делит на 1000 и даёт секунды игрового времени |
-| `game.player_position` | `GetPlayerPosition()` | `nil`, пока игрока нет (загрузка, ролик); `GetPositionValues(nil)` даёт 0, 0, 0 |
+| `game.sim_time` | `Int32ToNumber(GetSimTime()) / 1000` | в игре миллисекунды объектом `UInt32` (деление такого объекта целое, склейка со строкой — ошибка); узел приводит к числу и даёт секунды игрового времени |
+| `game.player_position` | `GetPlayerPosition(0)` | номер игрока обязателен: без него функция всегда даёт `nil` (до этапа 74 узел звал её без аргумента); `nil` и пока игрока нет; `GetPositionValues(nil)` даёт 0, 0, 0 |
 | `game.position_xyz` | `GetPositionValues(p)` | x, y (вверх), z |
 | `game.distance`, `game.distance_to` | — | расстояние между позициями / до точки (прелюдия) |
-| `game.foot_police`, `game.car_police` | `GetFootPoliceIntensity()`, `GetCarPoliceIntensity()` | на террасе — `nil` (нет полиции); не проверено с полицией |
-| `game.vehicle_speed`, `game.vehicle_type` | `GetVehicleSpeed()`, `GetVehicleType()` | не проверено (вне машины) |
+| `game.foot_police`, `game.car_police` | `GetFootPoliceIntensity()`, `GetCarPoliceIntensity()` | по коду обе дают только `nil` или 0 (силы погони не возвращают); без погони — `nil`; с погоней не проверено |
+| `game.vehicle_speed`, `game.vehicle_type` | `GetVehicleSpeed()`, `GetVehicleType()` | пешком 0 (проверено); за рулём не проверено |
+| `game.in_vehicle` | второй результат `GetVehicleSpeed()` | пешком `false` (проверено) |
+| `game.vehicle_speed_delta`, `game.vehicle_acceleration`, `game.vehicle_skid`, `game.vehicle_health` | `GetVehicleSpeedDelta()`, `GetVehicleAcceleration()`, `GetVehicleSkidEnergy()`, `GetVehicleHealth()` | пешком 0 (проверено) |
+| `object.from_guid`, `object.valid`, `object.guid` | `Base(guid)`, `tostring(object) ~= nil`, `tostring(object)` | ссылка на объект по GUID `{xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx}`. В игре разбор GUID сломан (`lua-api.md` §3): объекты игры не находятся, ссылка пустая, `object.valid` — `false` |
 | `game.platform` | `GetPlatform()` | в игре — `"windows"` |
 
-### Группы (не проверено целиком)
+### Группы
 
-`group.find` (`GroupManager:FindGroup`), `group.register` (`RegisterGroup` —
-в игре работает, возвращает userdata), `group.add`/`group.remove`
+`group.find` (`GroupManager:FindGroup`), `group.register`
+(`GroupManager:RegisterGroup`), `group.add`/`group.remove`
 (`AddMember`/`RemoveMember`), `group.clear`, `group.count`
-(`GetMemberCount`), `group.contains` (`IsMember`), `flow.for_each_member`.
-Члены группы — **объекты игры**: `AddMember(5)` даёт ошибку «ToBasePtr:
-Could not turn 5 into a GUID». Откуда скрипту брать объекты игры
-(функция `Base`, данные сообщений) — открытый вопрос.
+(`Int32ToNumber(group:GetMemberCount())`), `group.contains`,
+`flow.for_each_member`.
+
+Этап 74 (`docs/analysis/lua-api.md` §3–§4): члены группы — объекты игры
+(`Base`), а взять объект игры скрипту неоткуда: `Base` от строки в этой
+сборке не находит объектов. Вызов `AddMember`, `RemoveMember` или `IsMember`
+с ненайденным объектом **роняет игру** (чтение по нулю, `0x00469F85`),
+поэтому узлы `group.add` и `group.remove` сначала проверяют ссылку и для
+пустой ничего не делают. `IsMember` и `Clear` в exe — заглушки; узлы
+`group.contains` и `group.clear` сделаны через `ForEachMember`. На стенде
+проверены пустая группа (создание, поиск, счётчик, обход) и то, что узлы с
+ненайденным объектом игру не роняют; группа с настоящим объектом — нет.
 
 ### Сообщения, таймеры, звук, Lua, отладка
 
 | Вид | Узел | Что делает |
 |---|---|---|
 | `action.send_message` | Send message | `SendMessage(message)` — то же сообщение, что шлют триггеры и `MultiManager`. В редакторе у поля сообщения (и у «On message») кнопка `▾`: имена сообщений движка и файлов игры с набранным текстом (этап 73, `docs/logic-graph.md` §2.1); любое другое имя — новое сообщение |
-| `action.send_message_data` | Send message with data | `SendMessage(message, type, data)` (не проверено) |
-| `action.query` | Ask the game | `SendMessageEx(message, data)` → до трёх ответов; `iMsgLuaGetPlayerVenue` на террасе отвечает пустой строкой |
+| `action.send_message_data` | Send message with data | `SendMessage(message, type, data)`: слушатель получает указатель на число, текст или позицию; `type` — любой непустой текст, без него данные не уходят (проверено) |
+| `message.data_number` | Number of message data | число, посланное узлом выше, из выхода `data` события On message (`GetPositionValues(data)`, первое значение; проверено) |
+| `action.query` | Ask the game | `SendMessageEx(message, data)` → до трёх ответов; `iMsgLuaGetPlayerVenue` на террасе отвечает пустой строкой, у ворот аэропорта — строкой `"4"` |
 | `timer.start`, `timer.stop` | Start/Stop timer | управление событием On timer по имени |
 | `audio.play_emx`, `audio.stop_emx`, `audio.emx_volume` | звук-эмиттер `.emx` | `PlayEmx(name .. ".emx", volume)`: игра ищет звук по имени файла с `.emx`, узел дописывает его (этап 45, проверено с записью звука) |
-| `audio.play_stream`, `audio.stop_stream` | поток `.stx` | `PlayEarsAudioStream(name, volume)`; не проверено |
+| `audio.play_stream`, `audio.stop_stream` | поток `.stx` | `PlayEarsAudioStream(name .. ".stx", volume)`, `StopEarsAudioStream(handle)`: игра ищет поток по имени с `.stx`, узел дописывает его (этап 74, проверено с записью звука) |
+| `audio.prime_stream`, `audio.start_stream` | подготовить и запустить | `PrimeEarsAudioStream(name, volume)` загружает поток молча, `PlayEarsAudioStream(handle)` запускает (проверено) |
+| `audio.stream_stop_message` | Message when stream stops | `SetEarsAudioStreamStopMessage(handle, message)`: сообщение приходит после `StopEarsAudioStream` (проверено); при естественном конце потока — не проверено |
+| `audio.handle_valid` | Sound found | найден ли звук или поток: ненайденный — light userdata 0, истинное в Lua значение; узел сравнивает `tostring(handle)` с `userdata: 00000000` |
+| `audio.apply_mix`, `audio.remove_mix` | снимок микшера `.mix` | `ApplyMix(name, true)`, `RemoveMix(name)`; не проверено |
 | `lua.call` | Call game function | любая глобальная функция Lua игры (`function`, `args`, `results`) |
 | `lua.code` | Lua code | свои операторы Lua 5.0; входы — `{имя}`, выходы — `{имя} = …` |
 | `debug.probe` | File probe | `loadfile("doctor_probe_<tag>.lua")` — метка в трассировке файлов |
@@ -253,18 +278,19 @@ Lua 5.0 на Rust в проекте не было. Варианты и выбо�
 `...` как таблица `arg`, `pcall`/`error`, метатаблицы с `__index`, числа
 округляются до `float` после каждой операции, `tostring` — `%.14g` (как в
 игре: `tostring(0.1)` = `0.10000000149012`, проверено пробой), библиотеки
-base, string, table, math (без сопрограмм и полных шаблонов строк).
+base, string, table, math, coroutine (сопрограммы — этап 74; без полных шаблонов строк).
 Сверка с настоящим Lua 5.0.3 (сборка с `float` в рабочей папке проверки;
 у неё `LUA_NUMBER_FMT` = `%.7g`, поэтому ВМ запускалась с
 `script-run --number-digits 7`): тестовые программы дистрибутива из
 подмножества (`bisect`, `cf`, `factorial`, `sort`) дают побайтно тот же
-вывод; остальные используют `io`, `os`, `coroutine`, `setfenv` — вне
-подмножества.
+вывод; остальные используют `io`, `os`, `setfenv` — вне подмножества
+(сопрограммы появились позже, на этапе 74, и сверены с игрой, а не с этой
+сборкой: `docs/analysis/lua-api.md` §10).
 
 Макет игры (`script::sim::Sim`) регистрирует API игры: сообщения и
 получатели (`NewMessageReceiver` с `AddMessage`…), таймеры (`CreateTimer`
 вызывает глобальную функцию по имени, время идёт по `advance`),
-переменные (целые, как в игре), позиции, группы, звук (журнал),
+переменные (целые, как в игре), позиции, объекты (`Base`) и группы, звук (журнал),
 `RegisterFunction`/`CallLuaFunction`, `loadfile` (журнал проб), реле
 сообщений вместо объектов SimGroup. Всё, что скрипт сделал с «игрой»,
 пишется в журнал (`SimEvent`).
@@ -394,15 +420,17 @@ On message `doctor_dbg_ping` → Send message) с отметками в
 
 ## 9. Открыто
 
-- Видимое действие в кадре от сообщения скрипта — проверено на этапе 45
-  (`FadeScreenFx` через `boundary_fade_out`, §1); `SetTimeOfDay` и
-  `UIFanfare` по отдельности в кадре не сверялись.
-- Не проверены в игре: `PlayEarsAudioStream` (потоковый звук), группы с объектами игры
-  (откуда скрипту брать объекты: функция `Base`, данные сообщений), полиция
-  и машины (вне машины и без погони), `SendMessage` с данными и что
-  получатель видит в `data`.
-- Типы и значения данных сообщений игры (`data` — userdata: что внутри и
-  как это читать из Lua).
-- Сопрограммы (`coroutine`) в ВМ тулкита не поддержаны; генератор их не
-  использует.
-- Стоповое сообщение (`shutdown`) в игре не проверялось.
+Этап 74 (`docs/analysis/lua-api.md`, стенд — `game-bench.md` §35) закрыл
+`PlayEarsAudioStream`, данные сообщений, `shutdown` и сопрограммы; осталось:
+
+- `SetTimeOfDay` и `UIFanfare` по отдельности в кадре не сверялись
+  (видимое действие от сообщения скрипта проверено на этапе 45).
+- Объект игры скрипту взять неоткуда (`Base` от строки сломан); группы с
+  настоящим объектом не проверены. Догадка: объект мода с GUID особого вида
+  `Base` найдёт (`lua-api.md` §3).
+- Полиция при погоне и транспорт за рулём не проверены.
+- Что лежит по указателю в данных каждого сообщения игры.
+- Как аргумент громкости потока переводится в громкость; стоповое
+  сообщение при естественном конце потока.
+- Макет API отдаёт время, переменные и число членов группы обычными
+  числами, а игра — объектами `UInt32`/`Int32`.

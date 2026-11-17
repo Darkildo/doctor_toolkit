@@ -196,6 +196,30 @@ RGBA-текстуры.
 идут по таймеру кадров. Нет устройства, поток не открылся или даже паника
 внутри `cpal` — это ошибка с текстом (`audio_out.rs`), а не падение окна.
 
+## 4a. Окно «Звук» и таблицы звука (`app/sound.rs`, `sound_table_view.rs`, этап 103)
+
+Tools → Sound (`Command::Sounds`, `cmd.sounds`) — окно `SoundWindow` с
+пятью страницами: файлы архивов `.viv` (список, прослушивание, экспорт в
+WAV, замена, субтитры речевого файла по языкам), речевые банки `smb`
+(чтение), таблица событий речи `get` (добавить запись, пауза, приоритет,
+флаги, ранг), аудиоконфигурация `auc` (новая категория микшера) и снимки
+микшера `mix` (громкость, время, частота канала, новый канал). Окно ничего
+не разбирает и не пишет само: чтение и каждая правка — функции
+`doctor_toolkit::sound` (`archive_sounds`, `archive_sound_data`,
+`sound_info`, `replace_archive_sound`, `set_subtitles`,
+`speech_event_names`, `set_speech_events`, `audio_configs`,
+`add_mix_category`, `mixes`, `set_mix`), те же, что зовут команды
+`sound-import`, `speech-events`, `audio-config`, `mix` и инструменты
+`media`, `import_sound`, `edit_subtitle`. Кнопки окна отдают
+`SoundAction`, его выполняет `BrowserApp::sound_action`: одна операция
+рабочего пространства на действие, ошибка — `notify(Level::Error)`.
+Прочитанное из игры окно сбрасывает, когда меняется история рабочего
+пространства (правка, отмена, возврат — где угодно).
+
+Вид `sound_table` (`sound_table_view.rs`) — для ресурсов `smb`, `get`,
+`auc`, `mix`: содержимое этого ресурса строками и кнопка «Open in the Sound
+window» (`ViewAction::OpenSound`).
+
 ## 5. Проверка без пользователя
 
 | Переменная | Действие |
@@ -212,6 +236,9 @@ RGBA-текстуры.
 | `DOCTOR_TOOLKIT_GUI_RENDERER=glow` | Принудительно OpenGL и программный просмотр моделей |
 | `DOCTOR_TOOLKIT_GUI_LEVEL=<зона>[;опции]` | Открыть вкладку уровня (в раскладке «Level Editor», `docs/shell.md` §11.4; без запоминания раскладок — развёрнутой на всё окно) и загрузить зоны (`docs/levels.md` §5) |
 | `DOCTOR_TOOLKIT_GUI_MOVIES=<ролик>[:<кадр>][,play][,full]` | Открыть вкладку Movies с роликом и кадром; `play` — играть, `full` — на всё окно (`docs/formats/video.md` §5.1) |
+| `DOCTOR_TOOLKIT_GUI_RESOURCE=<пункт>[,…]` | Действия над выбранным ресурсом (этап 103): файл в ресурс по типу или как есть, коллизия metamodel, параметры материала, строка во всех таблицах, новая строка с переводами, ссылки `$имя` ролика интерфейса; пункты — в `docs/shell.md` §8. Первый отказ останавливает цепочку, код выхода 2 |
+| `DOCTOR_TOOLKIT_GUI_DIALOGUE=select=<узел>,lang=<код>,search=<текст>` / `DOCTOR_TOOLKIT_GUI_LUA=<file.lua>` / `DOCTOR_TOOLKIT_GUI_SAVE=<файл>` | Редактор диалога (реплика, язык, поиск); текст из файла в редакторе скрипта Lua; окно Save file с этим сохранением (`docs/shell.md` §8) |
+| `DOCTOR_TOOLKIT_GUI_SOUND=<пункт>[,…]` | Окно «Звук» (§4a): пункты выполняются по порядку, первый отказ останавливает цепочку (код выхода 2). `page=archives\|banks\|events\|config\|mixes`, `filter=<текст>` (страницы); архивы — `select=<файл архива>`, `export=<file.wav>`, `replace=<звуковой файл>`, `subtitle=<язык>:<текст>` (несколько; записывает следующий `apply`); события — `event=<ИМЯ>[+<ИМЯ>]`, `cooldown=`, `priority=`, `flags=`, `rank=`, `apply`; конфигурация — `category=<ИМЯ>`, `parent=<ИМЯ>`, `apply`; микшер — `mix=<имя>`, `channel=<КАТЕГОРИЯ>`, `volume=`, `time=`, `frequency=`, `apply`. Запятая в значении — `\,` или значение целиком строкой JSON (`subtitle="en:Well, hello."`) |
 | `DOCTOR_TOOLKIT_GUI_LOGIC=<область>[;find=<текст>][;show][;run=<события>][;until=<с>][;live]` | Открыть граф логики (в раскладке Asset Editor рядом с Details; без запоминания раскладок — на всё окно), выделить найденное, `show` — показать его в уровне (`docs/logic-graph.md` §6); `live` — включить слой «Вживую»; `run` — режим «Прогон» с начальными событиями (через `,`) до времени `until` (§9) |
 | `DOCTOR_TOOLKIT_GUI_LIVE=<порт>[:<токен>]` | Подключиться к модулю живой связи при старте; с `DOCTOR_TOOLKIT_GUI_LIVE_FOLLOW=1` вкладки уровня следуют за камерой игры, с `DOCTOR_TOOLKIT_GUI_SCRIPT` редактор скриптов открывает вкладку «Игра» (`docs/shell.md` §9.2) |
 | `DOCTOR_TOOLKIT_GUI_CONTENT=<папка или поток>[;filter=model,texture][;size=96][;list][;search=…][;select=…]` | Место, фильтры, размер плиток, поиск и выбранный ассет новых панелей Content Browser (`docs/shell.md` §11.7; `DOCTOR_TOOLKIT_GUI_SHELL=content` — ещё одна панель в раскладке, `drawer=content` — ящик) |

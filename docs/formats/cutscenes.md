@@ -297,13 +297,27 @@ doctor-toolkit cutscene import "$GAME" $F --shot igc01_s03 s03.json
 doctor-toolkit cutscene move "$GAME" $F --shot igc01_s03 --command 101 --time 2.5
 doctor-toolkit cutscene clip "$GAME" $F --shot igc01_s03 --actor igc01_roth --clip igc01_waiter_igc01_s03_shot03
 doctor-toolkit cutscene subtitle "$GAME" $F --line 0 --start 3000 --duration 5000
+doctor-toolkit cutscene show "$GAME" $F --shot igc01_s03 --time 1.5    # один кадр; камера и актёры в момент
+doctor-toolkit cutscene camera "$GAME" $F --shot igc01_s03 --time 1.5 --position=-12.4,1.7,3 --focal 35
+doctor-toolkit cutscene camera "$GAME" $F --shot igc01_s03 --offset=0,1.5,0 --turn=-8,0,0   # весь путь
+doctor-toolkit cutscene actor "$GAME" $F --shot igc01_s03 --actor igc01_roth --offset=-1.2,0,0
+doctor-toolkit cutscene command "$GAME" $F --shot igc01_s03 --command 101 --set text=start_igc_02
 doctor-toolkit cutscene gltf "$GAME" $F --shot igc01_s03 -o s03.glb [--skeletons]
 doctor-toolkit cutscene render "$GAME" $F --shot igc01_s03 -o s03.vp6 [--mp4 s03.mp4] [--png-dir dir]
 ```
 
 Ключи камеры и актёров на моменте — `doctor_toolkit::cutscene::edit`
 (§9.5; редактор — правка в виде уровня, `docs/guide/16-cutscenes.md`
-§15.3a); видео с миром — `cutscene render` (рендер редактора без окна,
+§15.3a). Операции над кадром как целое действие — `cutscene::ops` (этап
+104): адрес кадра (`locate`: поток и номер ресурса или имя), виды
+(`overview`, `shot_view`, `moment`) и правки одной операцией рабочего
+пространства — `camera` (`CameraEdit`: ключ в момент, сдвиг всего пути,
+объектив на все ключи, удаление ключа), `actor` (`ActorEdit`: ключ, сдвиг
+на весь кадр, клип), `command` (`CommandEdit`: перенос и поля JSON команды
+— `edit::patch_command`, `edit::replace_command`), `import_json`,
+`subtitle`/`retime` (время строки `TOB1`; изменением становится весь
+звуковой файл — `docs/mods.md` §1.5). Их зовут команды CLI, инструменты
+MCP (`docs/mcp.md` §3.2) и редактор (время субтитра и замена команды); видео с миром — `cutscene render` (рендер редактора без окна,
 VP6 своим кодером со звуком ролика, MP4 через ffmpeg).
 
 Правки записываются в рабочее пространство (кадры — как ресурсы потока,

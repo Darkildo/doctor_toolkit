@@ -8,16 +8,11 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use doctor_toolkit::create::{self, Provided, ReferenceChecker, Target};
 use doctor_toolkit::mods::{self, Incompatible, ModInfo, Relations};
-use doctor_toolkit::project::{BuildOptions, EntryState, Project};
-use doctor_toolkit::resource::graph::{Graph, TYPE_GRAPH};
-use doctor_toolkit::resource::lh2::StringTable;
-use doctor_toolkit::resource::metamodel::MetaModel;
-use doctor_toolkit::resource::simgroup::SimGroup;
-use doctor_toolkit::workspace::{ChangeState, ResourceKey, StreamState, Workspace};
+use doctor_toolkit::project::{BuildOptions, Project};
+use doctor_toolkit::workspace::{ResourceKey, Workspace};
 
-use super::{Output, hex};
+use super::Output;
 use crate::state::{ToolError, ToolResult, Toolkit, fail};
 
 #[derive(Debug, Default, Deserialize, JsonSchema)]
@@ -84,6 +79,21 @@ pub struct ModBuildParams {
     /// [default: this program's version or newer].
     #[serde(default)]
     pub requires_manager: Option<String>,
+    /// Executable code of the mod (format version 5): 32-bit DLLs for the
+    /// `scripts` folder of the game, each an absolute path or
+    /// `name.asi=<absolute path>`. Building it into the mod is not consent
+    /// to run it: the mod manager installs code only after the player
+    /// agrees, in its window or with `doctor-toolkit mods native`; no tool
+    /// of this server can give that answer.
+    #[serde(default)]
+    pub native: Vec<String>,
+    /// With `native`: the mod makes no sense without its code — it is not
+    /// written into the game at all while the code is not installed.
+    #[serde(default)]
+    pub native_required: Option<bool>,
+    /// With `native`: plain ASI plug-ins that do not use doctor_platform.asi.
+    #[serde(default)]
+    pub native_plain: Option<bool>,
 }
 
 #[derive(Debug, Default, Deserialize, JsonSchema)]
@@ -169,15 +179,53 @@ fn match_keys(ws: &Workspace, wanted: &[String]) -> ToolResult<Vec<ResourceKey>>
     Ok(out)
 }
 
-pub fn mod_build(kit: &Toolkit, p: ModBuildParams) -> ToolResult<Output> {
-    let Some(ws) = kit.workspace()? else {
-        return fail("there is no workspace: nothing to put in a mod");
+/// A mod about to be made from the workspace: what the fields of
+/// [`ModBuildParams`] and the project say.
+pub(crate) struct PlannedMod {
+    pub info: ModInfo,
+    pub preview: Option<mods::Preview>,
+    /// The changes that go into it; `None` for all.
+    pub keys: Option<Vec<ResourceKey>>,
+    /// Dependencies added because the changes were made on those mods.
+    pub suggested: Vec<String>,
+    pub warnings: Vec<String>,
+}
+
+/// The executable code named by the parameters, read from the disk.
+fn native_build(p: &ModBuildParams) -> ToolResult<(Option<mods::NativeBuild>, Vec<String>)> {
+    if p.native.is_empty() {
+        if p.native_required.is_some() || p.native_plain.is_some() {
+            return fail("`native_required` and `native_plain` need `native`: the modules");
+        }
+        return Ok((None, Vec::new()));
+    }
+    // Only absolute paths of files, as every input of the server.
+    let mut modules = Vec::new();
+    for spec in &p.native {
+        let (name, path) = mods::native::module_spec(spec);
+        let path = super::create::input_file(&path.to_string_lossy())?;
+        modules.push(format!("{name}={}", path.display()));
+    }
+    let spec = mods::native::NativeSpec {
+        modules,
+        required: p.native_required.unwrap_or(false),
+        plain: p.native_plain.unwrap_or(false),
+        platform_abi: None,
     };
+    Ok(spec.read()?)
+}
+
+pub(crate) fn plan_mod(
+    kit: &Toolkit,
+    ws: &Workspace,
+    p: &ModBuildParams,
+) -> ToolResult<PlannedMod> {
     let project = match &kit.project_dir {
         Some(_) => Some(project(kit)?),
         None => None,
     };
     let base = project.as_ref().map(Project::mod_info);
+    let (native, warnings) = native_build(p)?;
     let name = p
         .name
         .clone()
@@ -214,6 +262,7 @@ pub fn mod_build(kit: &Toolkit, p: ModBuildParams) -> ToolResult<Output> {
             .or_else(|| base.as_ref().and_then(|b| b.url.clone())),
         name,
         relations: Relations {
+            native,
             depends: p.depends.clone(),
             recommends: p.recommends.clone(),
             incompatible: p
@@ -247,14 +296,49 @@ pub fn mod_build(kit: &Toolkit, p: ModBuildParams) -> ToolResult<Output> {
         None => None,
     };
     let keys = if !p.changes.is_empty() {
-        Some(match_keys(&ws, &p.changes)?)
+        Some(match_keys(ws, &p.changes)?)
     } else {
-        project.as_ref().map(|pr| pr.changed_keys(&ws))
+        project.as_ref().map(|pr| pr.changed_keys(ws))
     };
     if keys.as_ref().is_some_and(Vec::is_empty) {
         return fail("the workspace has no changes of the project; build it first (project_build)");
     }
-    let suggested = mods::add_suggested_dependencies(&mut info, &kit.game, &ws, keys.as_deref())?;
+    let suggested = mods::add_suggested_dependencies(&mut info, &kit.game, ws, keys.as_deref())?;
+    Ok(PlannedMod {
+        info,
+        preview,
+        keys,
+        suggested,
+        warnings,
+    })
+}
+
+/// What a mod with executable code tells its author, for the answers of
+/// the tools that make one.
+pub(crate) fn code_note(modules: usize) -> Value {
+    if modules == 0 {
+        return Value::Null;
+    }
+    json!({
+        "modules": modules,
+        "note": "the mod carries executable code: the mod manager installs it only after the \
+                 player agrees, in the window of Open Mod Manager or with `doctor-toolkit mods \
+                 native GAME ID --allow`; this server cannot give that answer (`mods` with \
+                 action `native` shows the state)",
+    })
+}
+
+pub fn mod_build(kit: &Toolkit, p: ModBuildParams) -> ToolResult<Output> {
+    let Some(ws) = kit.workspace()? else {
+        return fail("there is no workspace: nothing to put in a mod");
+    };
+    let PlannedMod {
+        info,
+        preview,
+        keys,
+        suggested,
+        warnings,
+    } = plan_mod(kit, &ws, &p)?;
     // The mod goes next to the workspace, never to a path from the client.
     let dir = ws.dir().join("mods");
     std::fs::create_dir_all(&dir)
@@ -275,6 +359,9 @@ pub fn mod_build(kit: &Toolkit, p: ModBuildParams) -> ToolResult<Output> {
         "new_streams": report.new_streams,
         "payload_bytes": report.payload_bytes,
         "file_bytes": report.file_size,
+        "code": code_note(report.native_modules),
+        "warnings": warnings,
+        "notes": report.notes,
         "note": "players install it with the mod manager (Open Mod Manager, `open-mod-manager`, or `doctor-toolkit mods install`)",
     })))
 }
@@ -293,83 +380,6 @@ fn sanitize(text: &str) -> String {
 
 // ------------------------------------------------------------ validate
 
-fn target_text(t: &Target) -> String {
-    match t {
-        Target::Guid(g) => format!("resource {}", g.map(hex).join(".")),
-        Target::Material(h) => format!("material {}", hex(*h)),
-        Target::Texture(h) => format!("texture {}", hex(*h)),
-    }
-}
-
-/// What the data of a changed resource says about itself: it is read by
-/// its parser, and the parsers that know problems tell them.
-fn check_data(
-    kit: &Toolkit,
-    ws: &Workspace,
-    key: &ResourceKey,
-    data: &[u8],
-    original: Option<&[u8]>,
-) -> Vec<String> {
-    use doctor_toolkit::create::{TYPE_METAMODEL, TYPE_SIMGROUP};
-    use doctor_toolkit::text::TYPE_LH2;
-    let tag = doctor_toolkit::resource::names::type_tags().display(key.type_id);
-    let mut problems = Vec::new();
-    let unreadable = |e: &dyn std::fmt::Display| format!("{tag} cannot be read: {e}");
-    match key.type_id {
-        TYPE_SIMGROUP => match SimGroup::parse(data) {
-            Ok(after) => {
-                let before = original.and_then(|o| SimGroup::parse(o).ok());
-                match doctor_toolkit::level::compat::check_edit(
-                    &kit.game,
-                    kit.resources(),
-                    Some(ws),
-                    before.as_ref(),
-                    &after,
-                ) {
-                    Ok(list) => problems.extend(list),
-                    Err(e) => problems.push(format!("models cannot be checked: {e}")),
-                }
-            }
-            Err(e) => problems.push(unreadable(&e)),
-        },
-        TYPE_LH2 => match StringTable::parse(data) {
-            Ok(t) => {
-                if let Some(o) = original.and_then(|o| StringTable::parse(o).ok())
-                    && o.strings.len() != t.strings.len()
-                {
-                    problems.push(format!(
-                        "{} language column(s) instead of {}",
-                        t.strings.len(),
-                        o.strings.len()
-                    ));
-                }
-            }
-            Err(e) => problems.push(unreadable(&e)),
-        },
-        TYPE_GRAPH => match Graph::parse(data) {
-            Ok(g) => problems.extend(g.problems()),
-            Err(e) => problems.push(unreadable(&e)),
-        },
-        TYPE_METAMODEL => {
-            if let Err(e) = MetaModel::parse(data) {
-                problems.push(unreadable(&e));
-            }
-        }
-        t if t == doctor_toolkit::hash::sdbm(b"lua") => {
-            if let Err(e) = doctor_toolkit::resource::lua::Chunk::parse(data) {
-                problems.push(unreadable(&e));
-            }
-        }
-        t if t == doctor_toolkit::hash::sdbm(b"dlg") => {
-            if let Err(e) = doctor_toolkit::resource::dlg::Dialogue::parse(data) {
-                problems.push(unreadable(&e));
-            }
-        }
-        _ => {}
-    }
-    problems
-}
-
 pub fn validate(kit: &Toolkit, p: ValidateParams) -> ToolResult<Output> {
     let Some(ws) = kit.workspace()? else {
         return Ok(Output::Json(json!({
@@ -377,176 +387,10 @@ pub fn validate(kit: &Toolkit, p: ValidateParams) -> ToolResult<Output> {
             "note": "there is no workspace: nothing to check",
         })));
     };
-    let status = ws.status(&kit.game)?;
-    let mut errors: Vec<Value> = Vec::new();
-    let mut warnings: Vec<Value> = Vec::new();
-    if !status.fingerprint_matches {
-        warnings.push(json!({
-            "what": "the workspace was made for another build of the game",
-        }));
-    }
-    for (key, state) in &status.changes {
-        if *state == ChangeState::Conflict {
-            errors.push(json!({
-                "key": key.to_string(),
-                "what": "conflict: the game file changed since the workspace was applied",
-            }));
-        }
-    }
-    for s in &status.streams {
-        if s.state == StreamState::ChangedExternally {
-            warnings.push(json!({
-                "stream": s.stream,
-                "what": "changed outside the workspace: `apply` would need force and lose that change",
-            }));
-        }
-        if s.state == StreamState::Missing {
-            errors.push(json!({ "stream": s.stream, "what": "missing from the game" }));
-        }
-    }
-    let filter = p.filter.as_deref().map(str::to_ascii_lowercase);
-    // What the workspace adds to each stream also resolves references.
-    let mut added: std::collections::HashMap<String, Provided> = Default::default();
-    for c in ws.changes().filter(|c| c.is_added()) {
-        let data = ws.data(&c.key).ok().flatten();
-        let header = c
-            .added
-            .as_ref()
-            .expect("added")
-            .header(&c.key, c.payload.size);
-        added
-            .entry(c.key.stream.clone())
-            .or_default()
-            .add(&header, data.as_deref());
-    }
-    let mut checker = ReferenceChecker::new(&kit.game)?;
-    let game_textures: std::collections::HashSet<u32> = kit
-        .resources()
-        .entries
-        .iter()
-        .filter(|e| e.header.type_id == doctor_toolkit::resource::texture::TYPE_TG4H)
-        .map(|e| e.header.ids[3])
-        .collect();
-    let parents = kit.game.stream_parents().unwrap_or_default();
-    let mut checked = 0usize;
-    for change in ws.changes() {
-        let key = &change.key;
-        if filter
-            .as_deref()
-            .is_some_and(|f| !key.to_string().to_ascii_lowercase().contains(f))
-        {
-            continue;
-        }
-        checked += 1;
-        let data = match ws.data(key) {
-            Ok(Some(d)) => d,
-            Ok(None) => continue,
-            Err(e) => {
-                errors.push(
-                    json!({ "key": key.to_string(), "what": format!("payload unreadable: {e}") }),
-                );
-                continue;
-            }
-        };
-        let original = ws.original_data(key).ok().flatten();
-        for problem in check_data(kit, &ws, key, &data, original.as_deref()) {
-            errors.push(json!({ "key": key.to_string(), "what": problem }));
-        }
-        // References resolve in the stream or a stream loaded before it: a
-        // stream the workspace creates is loaded after its parents.
-        let scope = ws.load_scope(&parents, &key.stream);
-        let game_streams: Vec<usize> = scope
-            .iter()
-            .filter_map(|s| kit.game.find_stream(s))
-            .collect();
-        if game_streams.is_empty() {
-            continue;
-        }
-        let Ok(targets) = create::references(key.type_id, &data) else {
-            continue;
-        };
-        // Only what the edit adds: the game's own SimGroups name resources
-        // of streams loaded apart from theirs, and that works in the game.
-        let had: Vec<Target> = original
-            .as_deref()
-            .filter(|o| !o.is_empty())
-            .and_then(|o| create::references(key.type_id, o).ok())
-            .unwrap_or_default();
-        for t in targets.into_iter().filter(|t| !had.contains(t)) {
-            let by_workspace = scope
-                .iter()
-                .any(|s| added.get(s).is_some_and(|p| p.provides(&t)));
-            let by_game = game_streams
-                .iter()
-                .any(|&s| checker.provides(s, &t).unwrap_or(true));
-            // Textures of no stream are the engine's own: the game has them.
-            let by_engine = matches!(t, Target::Texture(h) if !game_textures.contains(&h));
-            if by_workspace || by_game || by_engine {
-                continue;
-            }
-            errors.push(json!({
-                "key": key.to_string(),
-                "what": format!("unresolved reference: {} is in no stream loaded with it", target_text(&t)),
-            }));
-        }
-    }
-    let mut project_notes = Vec::new();
-    if let Some(dir) = &kit.project_dir
-        && let Ok(project) = Project::open(dir)
-    {
-        let pstatus = project.status_read_only(&ws)?;
-        let to_build = pstatus.to_build();
-        if to_build > 0 {
-            warnings.push(json!({
-                "project": dir,
-                "what": format!("{to_build} entr(y/ies) changed since the last build: project_build records them"),
-            }));
-        }
-        for e in &pstatus.entries {
-            if let EntryState::Missing(file) = &e.state {
-                errors
-                    .push(json!({ "project_entry": e.id, "what": format!("missing file {file}") }));
-            }
-        }
-        project_notes.extend(pstatus.warnings.iter().cloned());
-        project_notes.extend(project.game_warnings(&kit.game));
-    }
-    for w in project_notes {
-        warnings.push(json!({ "project": true, "what": w }));
-    }
-    // Messages of the changed SimGroups: a new name with the hash of a game
-    // message, messages left with one end.
-    let messages = doctor_toolkit::logic_graph::check::check_workspace(&ws);
-    for p in &messages.problems {
-        let item = json!({
-            "message": p.message,
-            "kind": p.kind,
-            "what": p.what,
-            "groups": p.groups,
-        });
-        match p.severity {
-            doctor_toolkit::logic_graph::check::Severity::Error => errors.push(item),
-            doctor_toolkit::logic_graph::check::Severity::Warning => warnings.push(item),
-        }
-    }
-    let running = doctor_toolkit::play::game_processes();
-    Ok(Output::Json(json!({
-        "ok": errors.is_empty(),
-        "new_messages": messages.custom,
-        "checked_changes": checked,
-        "errors": errors,
-        "warnings": warnings,
-        "pending": status.count(ChangeState::Pending),
-        "applied": status.count(ChangeState::Applied),
-        "game_running": !running.is_empty(),
-        "checks": [
-            "every changed resource is read by its parser (SimGroup, string table, navigation graph, metamodel, Lua, dialogue)",
-            "SimGroup objects can show their models (the game crashes otherwise)",
-            "navigation graphs: what the file cannot hold or the game cannot use",
-            "references an edit adds resolve in the stream or the streams loaded before it",
-            "conflicts with the game files, streams changed outside the workspace",
-            "messages of changed SimGroups: a new name with the hash of a game message (error), heard but never sent and sent but never heard (warnings)",
-            "the project: entries to build, missing files",
-        ],
-    })))
+    let params = doctor_toolkit::validate::Params {
+        filter: p.filter,
+        project: kit.project_dir.clone(),
+    };
+    let report = doctor_toolkit::validate::validate(&kit.game, kit.resources(), &ws, &params)?;
+    Ok(Output::Json(serde_json::to_value(report)?))
 }

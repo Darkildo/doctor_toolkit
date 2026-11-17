@@ -200,6 +200,14 @@ pub struct ImportModelParams {
     /// (indices: SimGroup, metamodel) to point at the new model.
     #[serde(default)]
     pub retarget: Vec<usize>,
+    /// Float parameters of the new materials the import makes (it makes one
+    /// for each material of the file with a texture of its own), by
+    /// material name and parameter name: tint colours of new clothes,
+    /// `{"mod_coat": {"g_TintColor0": [0.8, 0.1, 0.1, 1.0]}}`. As many
+    /// numbers as the parameter holds.
+    #[serde(default)]
+    pub material_params:
+        std::collections::BTreeMap<String, std::collections::BTreeMap<String, Vec<f32>>>,
     /// Only say what would be done.
     #[serde(default)]
     pub dry_run: Option<bool>,
@@ -213,6 +221,12 @@ pub struct ImportTextureParams {
     /// The new image (an absolute path): .png or .dds. It is encoded in the
     /// texture's format with mip levels.
     pub file: String,
+    /// Replace every copy of the texture: the `tg4h` with the same name
+    /// hash in every stream of the game (a model's textures are copied into
+    /// the streams that show it), as the Retexture wizard does. One
+    /// operation.
+    #[serde(default)]
+    pub all_copies: Option<bool>,
 }
 
 #[derive(Debug, Default, Deserialize, JsonSchema)]
@@ -296,7 +310,7 @@ fn collision_kind(text: Option<&str>) -> ToolResult<Option<CollisionKind>> {
     .transpose()
 }
 
-fn last_label(ws: &doctor_toolkit::workspace::Workspace) -> String {
+pub(crate) fn last_label(ws: &doctor_toolkit::workspace::Workspace) -> String {
     ws.operations()
         .get(ws.head().wrapping_sub(1))
         .map(|op| op.label.clone())
@@ -720,6 +734,27 @@ pub fn import_model(kit: &Toolkit, p: ImportModelParams) -> ToolResult<Output> {
     if let Some(into) = &into {
         plan.put_into(&kit.game, ws, into)?;
     }
+    for (material, params) in &p.material_params {
+        let new = plan.new_materials();
+        let hash = new
+            .iter()
+            .find(|m| m.name.eq_ignore_ascii_case(material.trim()))
+            .map(|m| m.name_hash)
+            .ok_or_else(|| {
+                let names: Vec<&str> = new.iter().map(|m| m.name.as_str()).collect();
+                ToolError(format!(
+                    "`material_params`: the import makes no material `{material}`; it makes: {}",
+                    if names.is_empty() {
+                        "none (the file's materials are the game's own)".to_owned()
+                    } else {
+                        names.join(", ")
+                    }
+                ))
+            })?;
+        for (param, values) in params {
+            plan.set_material_floats(hash, param, values)?;
+        }
+    }
     let summary = serde_json::to_value(&plan.summary)?;
     // The new metamodel: what add_object takes as `model`.
     let new_model = plan
@@ -771,6 +806,18 @@ pub fn import_texture(kit: &Toolkit, p: ImportTextureParams) -> ToolResult<Outpu
     let mut access = kit.write_workspace(&format!("import_texture: {}", before.name))?;
     let ws = &mut access.ws;
     let since = ws.head();
+    if p.all_copies.unwrap_or(false) {
+        let done = doctor_toolkit::retexture::replace_all_copies(
+            &kit.game,
+            ws,
+            kit.resources(),
+            before.name_hash,
+            &image,
+            is_png,
+        )?;
+        let label = last_label(ws);
+        return finish(ws, since, &label, serde_json::to_value(&done)?);
+    }
     let after = ws.import_texture(&kit.game, at.stream, pair, &image, is_png)?;
     let h = &after.header;
     let label = last_label(ws);

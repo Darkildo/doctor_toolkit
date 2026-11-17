@@ -195,3 +195,78 @@ pub fn remove_zone_cell(
     }
     Ok(false)
 }
+
+/// Stream names by table-of-contents hash: the game's and the workspace's
+/// new streams.
+pub fn stream_names(
+    game: &GameInstance,
+    ws: &Workspace,
+) -> Result<std::collections::HashMap<u32, String>> {
+    let mut names = std::collections::HashMap::new();
+    for index in 0..game.tocs().len() {
+        for name in &game.load_toc(index)?.names {
+            names
+                .entry(name.hash)
+                .or_insert_with(|| name.name_lossy().replace('\\', "/"));
+        }
+    }
+    for stream in ws.new_streams() {
+        names.insert(stream.hash, stream.name.clone());
+    }
+    Ok(names)
+}
+
+/// The levels of detail of a mask, in words: `high`, `medium+low`, `none`.
+pub fn lod_name(mask: u32) -> String {
+    let names = [
+        (wgi::lod::HIGH, "high"),
+        (wgi::lod::MEDIUM, "medium"),
+        (wgi::lod::LOW, "low"),
+        (wgi::lod::MAP, "map"),
+        (wgi::lod::INTERIOR, "interior"),
+    ];
+    let list: Vec<&str> = names
+        .iter()
+        .filter(|(bit, _)| mask & bit != 0)
+        .map(|(_, name)| *name)
+        .collect();
+    if list.is_empty() {
+        "none".to_owned()
+    } else {
+        list.join("+")
+    }
+}
+
+/// The table-of-contents hash of a stream given by name (a new stream of
+/// the workspace or a stream of the game) or as eight hexadecimal digits.
+pub fn stream_hash(game: &GameInstance, ws: &Workspace, stream: &str) -> Result<u32> {
+    let name = crate::workspace::key::normalize_stream(stream);
+    if let Some(new) = ws.new_stream(&name) {
+        return Ok(new.hash);
+    }
+    if let Some((hash, _)) = stream_names(game, ws)?
+        .into_iter()
+        .find(|(_, n)| n.eq_ignore_ascii_case(&name))
+    {
+        return Ok(hash);
+    }
+    u32::from_str_radix(stream.trim(), 16)
+        .map_err(|_| Error::InvalidArgument(format!("{stream} is neither a stream nor a hash")))
+}
+
+/// Takes the cell of `stream` (a name or a hash, see [`stream_hash`]) out
+/// of the world grids of `level`: one undoable operation. Returns the hash.
+pub fn remove_stream_cell(
+    game: &GameInstance,
+    ws: &mut Workspace,
+    level: &str,
+    stream: &str,
+) -> Result<u32> {
+    let hash = stream_hash(game, ws, stream)?;
+    if !remove_zone_cell(game, ws, level, hash)? {
+        return Err(Error::InvalidArgument(format!(
+            "the world grids of {level} have no cell of {stream}"
+        )));
+    }
+    Ok(hash)
+}

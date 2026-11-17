@@ -14,26 +14,32 @@ updated: 2026-11-16
 
 Подсистемы движка EARS, как они известны по коду `godfather2.exe`, файлам игры и опытам.
 
-Заметок: 20 (`known` — 6, `partial` — 14).
+Заметок: 26 (`known` — 8, `partial` — 18).
 
 | Заметка | Статус | Уверенность | Этапы |
 |---|---|---|---|
 | [Анимация: скелеты, клипы, граф](animation.md) | partial | exe | 72, 15, 17, 26, 29, 43, 65 |
+| [ASI-загрузчик: как DLL попадают в процесс игры](asi-loader.md) | partial | bench | 81 |
 | [Звук](audio.md) | partial | exe | 72, 40, 41, 45, 16, 83 |
-| [Файлы: как игра открывает и читает](file-system.md) | known | bench | 72, 32, 46, 58 |
+| [Файлы: как игра открывает и читает](file-system.md) | known | bench | 72, 32, 46, 58, 100 |
 | [Хэши имён и сжатие](hashing.md) | partial | data | 72, 18, 40 |
 | [Ввод: порт контроллера и карты действий](input.md) | partial | bench | 72, 33, 45 |
 | [Флаги запуска и `cmd.txt`](launch-flags.md) | known | bench | 72, 32, 45 |
-| [Модуль в игре `doctor_live` (живая связь)](live-module.md) | known | bench | 72, 34, 35, 45, 46, 47, 48, 49, 58 |
-| [Lua в игре](lua.md) | known | exe | 72, 16, 28, 34, 38, 45, 49 |
+| [Модуль в игре `doctor_live` (живая связь)](live-module.md) | known | bench | 72, 34, 35, 45, 46, 47, 48, 49, 58, 78, 100, 80 |
+| [Lua в игре](lua.md) | known | bench | 72, 16, 28, 34, 38, 45, 49, 74 |
 | [Главный цикл](main-loop.md) | partial | exe | 72, 32, 34, 35, 58, 59 |
 | [Память](memory.md) | partial | bench | 72, 5, 58, 59 |
-| [Шина сообщений](message-bus.md) | partial | exe | 72, 73, 16, 27, 35, 38, 49 |
+| [Шина сообщений](message-bus.md) | partial | exe | 72, 73, 16, 27, 35, 38, 49, 78 |
+| [Данные сообщения](message-data.md) | partial | exe | 78 |
+| [Доставка одному слушателю и очередь задержки](message-delivery.md) | known | exe | 78 |
+| [Как менеджер модов ставит код мода](native-mod-install.md) | known | bench | 81 |
+| [Платформа нативных модов (`doctor_platform.asi`)](native-mods.md) | partial | bench | 80, 81 |
 | [Навигационный граф и укрытия](navigation-graph.md) | partial | data | 72, 39, 40, 42, 45 |
 | [Физика: Havok и коллизии](physics.md) | partial | data | 72, 18, 37, 47, 60 |
-| [Рендер](render.md) | partial | exe | 72, 35, 58, 59, 66, 69, 70 |
+| [Рендер](render.md) | partial | exe | 72, 35, 58, 59, 66, 69, 70, 101 |
+| [Образ ресурса после загрузки: что остаётся в памяти](resource-images.md) | partial | bench | 100 |
 | [Объектная модель: SimGroup, классы, GUID](simgroup-objects.md) | partial | exe | 72, 27, 34, 39, 47, 49, 84 |
-| [Потоки `.str` и их загрузка](stream-loading.md) | partial | exe | 72, 5, 24, 32, 39, 45, 46, 48, 84 |
+| [Потоки `.str` и их загрузка](stream-loading.md) | partial | exe | 72, 5, 24, 32, 39, 45, 46, 48, 84, 100 |
 | [Время суток, свет и погода](time-of-day.md) | partial | bench | 72, 48, 58, 59, 66, 70 |
 | [Интерфейс: APX (Apt), шрифты, строки](ui-apt.md) | partial | data | 72, 18, 40, 58 |
 | [Видео: ролики `.vp6`](video.md) | known | exe | 72, 31 |

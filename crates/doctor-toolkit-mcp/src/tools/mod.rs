@@ -5,10 +5,14 @@
 //! [`build`], [`play`], the writes of [`live`]) behind routers of their own
 //! that the flags of the server turn on.
 
+pub mod assets;
 pub mod build;
 pub mod create;
+pub mod cutscene;
+pub mod debug;
 pub mod edit;
 pub mod export;
+pub mod files;
 pub mod game;
 pub mod import;
 pub mod json;
@@ -18,8 +22,11 @@ pub mod live;
 pub mod logic;
 pub mod mods;
 pub mod play;
+pub mod runs;
+pub mod scene;
 pub mod search;
 pub mod types;
+pub mod wizards;
 pub mod workspace;
 
 use schemars::JsonSchema;
