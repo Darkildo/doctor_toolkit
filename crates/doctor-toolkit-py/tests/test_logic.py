@@ -83,7 +83,7 @@ def test_messages_are_typed_without_a_game():
     fade = dt.message_info("boundary_fade_out")
     assert fade["kind"] == "game" and fade["usage"] == "sent_and_heard"
     assert any(s["class"] == "TriggerBase" for s in fade["senders"])
-    assert fade["data"] == "unknown"
+    assert fade["data"] == "forward"
     assert dt.message_info("0x%08x" % fade["hash"])["name"] == "boundary_fade_out"
     custom = dt.message_info("my_mod_door_opened")
     assert custom["kind"] == "custom" and custom["collides_with"] is None

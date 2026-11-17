@@ -82,7 +82,10 @@ impl Page {
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum SoundAction {
     Select(String),
+    /// The buttons are there only with sound playback built in.
+    #[cfg_attr(not(feature = "audio"), allow(dead_code))]
     Play,
+    #[cfg_attr(not(feature = "audio"), allow(dead_code))]
     Stop,
     /// Write the selected sound as WAV; asks for the file when `None`.
     Export(Option<PathBuf>),

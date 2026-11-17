@@ -114,6 +114,22 @@ pub fn read(bytes: &[u8], base: Option<&Path>) -> Result<Scene> {
         let name = source
             .name()
             .map_or_else(|| format!("image{}", source.index()), str::to_owned);
+        // `Image::source` of the gltf crate panics on an image that has a
+        // buffer view and no MIME type, or neither a view nor a URI.
+        let json = document.as_json().images.get(source.index());
+        let readable = json.is_some_and(|i| match &i.buffer_view {
+            Some(view) => i.mime_type.is_some() && view.value() < document.views().len(),
+            None => i.uri.is_some(),
+        });
+        if !readable {
+            model.warnings.push(
+                invalid(format!(
+                    "image `{name}`: needs a URI, or a buffer view with a MIME type"
+                ))
+                .to_string(),
+            );
+            return None;
+        }
         let loaded = match source.source() {
             gltf::image::Source::View { view, mime_type } => get(view.buffer())
                 .and_then(|b| b.get(view.offset()..view.offset() + view.length()))
@@ -753,6 +769,24 @@ mod tests {
         assert_eq!(base64_decode("aGVsbG8=").unwrap(), b"hello");
         assert_eq!(base64_decode("AAEC").unwrap(), [0, 1, 2]);
         assert_eq!(percent_decode("a%20b.png"), "a b.png");
+    }
+
+    /// Found by the fuzzer: the gltf crate panics on such an image.
+    #[test]
+    fn an_image_without_a_mime_type_is_a_warning() {
+        let text = r#"{"asset":{"version":"2.0"},
+            "buffers":[{"byteLength":4,"uri":"data:application/octet-stream;base64,AAECAw=="}],
+            "bufferViews":[{"buffer":0,"byteLength":4}],
+            "images":[{"bufferView":0}],
+            "textures":[{"source":0}],
+            "materials":[{"pbrMetallicRoughness":{"baseColorTexture":{"index":0}}}]}"#;
+        let scene = read(text.as_bytes(), None).unwrap();
+        assert_eq!(scene.materials.len(), 1);
+        assert!(
+            scene.warnings.iter().any(|w| w.contains("MIME")),
+            "{:?}",
+            scene.warnings
+        );
     }
 
     fn base64(data: &[u8]) -> String {
