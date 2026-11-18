@@ -933,6 +933,23 @@ name = "doctor-toolkit-sdk"
 version = "0.0.8"
 
 [[package]]
+name = "doctor-toolkit-unify"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "eframe",
+ "flate2",
+ "rayon",
+ "rfd",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "document-features"
 version = "0.2.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"

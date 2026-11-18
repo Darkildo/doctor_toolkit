@@ -1,0 +1,44 @@
+[package]
+name = "doctor-toolkit-unify"
+description = "The unified game of The Godfather II (PC): one game folder for everybody, made from a PAL or NTSC disc or installed copy and a pack with what that disc lacks"
+# Released apart from the toolkit (tag `gf2-unify-v<version>`), with a version of its own.
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+# A program of its own, shipped apart from the toolkit: it does not depend on the `doctor-toolkit` crate. The few formats it
+# needs (BIGF archives, cabinets) are in this crate.
+
+[lib]
+name = "doctor_toolkit_unify"
+path = "src/lib.rs"
+
+[[bin]]
+name = "gf2-unify"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+rayon.workspace = true
+thiserror.workspace = true
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+# `zlib-rs`: inflate with a preset dictionary, for the MSZIP blocks of cabinets.
+flate2 = { version = "1", features = ["zlib-rs"] }
+
+# The window (`gf2-unify` started without arguments).
+eframe = { version = "=0.37.0", default-features = false, features = ["default_fonts", "glow", "wayland", "x11"], optional = true }
+rfd = { version = "0.18", optional = true }
+
+[features]
+default = ["gui"]
+# Without it the program is the command line only (a few megabytes smaller,
+# no windowing libraries).
+gui = ["dep:eframe", "dep:rfd"]
+
+[dev-dependencies]
+tempfile = "3"
