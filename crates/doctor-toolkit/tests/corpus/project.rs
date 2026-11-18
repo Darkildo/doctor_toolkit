@@ -360,3 +360,499 @@ fn a_project_builds_only_what_changed_and_as_a_direct_import_would() {
         assert_eq!(&std::fs::read(dir.join(rel)).unwrap(), original, "{rel}");
     }
 }
+
+/// Regular files below `dir` (links are not counted): how many, and their bytes.
+#[cfg(unix)]
+/// The sources of the project in `from` (and the data they are applied to)
+/// in the folder `to`: what version control holds — no workspace, no cache.
+fn checkout(from: &std::path::Path, to: &std::path::Path) -> project::Project {
+    fn copy(from: &std::path::Path, to: &std::path::Path) {
+        std::fs::create_dir_all(to).unwrap();
+        for entry in std::fs::read_dir(from).unwrap() {
+            let entry = entry.unwrap();
+            let name = entry.file_name();
+            let (source, target) = (entry.path(), to.join(&name));
+            if source.is_dir() {
+                if name != "workspace" {
+                    copy(&source, &target);
+                }
+            } else if name != "build.json" {
+                std::fs::copy(&source, &target).unwrap();
+            }
+        }
+    }
+    copy(from, to);
+    project::Project::open(to).unwrap()
+}
+
+/// Stage 112: a workspace with what a mod makes anew on a real level — a
+/// zone (a new stream with a SimGroup), a model of the level imported into
+/// it as a new set, a texture cloned into it, a resource added to a stream
+/// of the game — next to a replaced string: its sources build the same
+/// workspace in an empty one, key for key and byte for byte, and so do the
+/// sources of that one; an edited model and an edited picture are encoded
+/// again into the same resources.
+#[cfg(unix)]
+#[test]
+fn the_sources_of_a_workspace_with_a_new_zone_build_it_again() {
+    use doctor_toolkit::resource::lh2::StringTable;
+    use doctor_toolkit::resource::mesh;
+    use doctor_toolkit::resource::simgroup::Guid;
+    use doctor_toolkit::workspace::{Change, NewStream};
+    use doctor_toolkit::zone_ops;
+    use std::sync::Arc;
+
+    const LEVEL: &str = "mp_rooftops/mp_rooftops";
+    const BUILDING: &str =
+        "mp_rooftops/mp_rooftops/terrain/high/side2/scott_placeholder_building_001";
+    const TEXT: &str = "gf2/text/dd7d7050";
+    const ZONE: &str = "mp_rooftops/mp_rooftops/doctor_zone";
+    let Some(dir) = super::game_dir() else { return };
+    let real = GameInstance::open(&dir).unwrap();
+    let mut files: Vec<String> = [LEVEL, BUILDING, TEXT]
+        .iter()
+        .map(|s| {
+            real.streams()[real.find_stream(s).unwrap()]
+                .rel_path
+                .clone()
+        })
+        .collect();
+    files.extend(real.tocs().iter().map(|t| t.rel_path.clone()));
+    let refs: Vec<&str> = files.iter().map(String::as_str).collect();
+    let shadow = super::shadow_game(&dir, &refs);
+    let game = GameInstance::open(shadow.path()).unwrap();
+    let index = GameIndex::build(&game, &|_, _| {});
+    let resources = game.build_index(|_| {}).0;
+    let out = tempfile::tempdir().unwrap();
+    let root = out.path().join("project");
+    let new = project::NewDocument {
+        name: "New zone".into(),
+        ..Default::default()
+    };
+    let mut p = project::create_document(&game, &root, &new).unwrap();
+    let mut ws = p.workspace(&game).unwrap();
+    let position = |stream: usize, tag: &[u8]| {
+        let type_id = doctor_toolkit::hash::sdbm(tag);
+        game.open_stream(stream)
+            .unwrap()
+            .layout()
+            .resources
+            .iter()
+            .position(|r| r.header.type_id == type_id)
+            .unwrap()
+    };
+
+    // A replaced string.
+    let text = game.find_stream(TEXT).unwrap();
+    let table_at = position(text, b"lh2");
+    let mut table = StringTable::parse(&ws.current_data(&game, text, table_at).unwrap()).unwrap();
+    table.strings[0][0] = "Doctor".into();
+    ws.set_string_table(&game, text, table_at, &table).unwrap();
+    // A zone: a new stream with a SimGroup.
+    let zone = zone_ops::add_stream(
+        &game,
+        &mut ws,
+        &zone_ops::NewStreamParams {
+            name: ZONE.into(),
+            parent: LEVEL.into(),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    zone_ops::add_simgroup(
+        &game,
+        &resources,
+        &mut ws,
+        &zone_ops::NewGroupParams {
+            stream: zone.name.clone(),
+            ..Default::default()
+        },
+        &|_: &Guid| false,
+    )
+    .unwrap();
+    // A texture of a building cloned into it, and into the building itself.
+    let building = game.find_stream(BUILDING).unwrap();
+    let texture_at = position(building, b"tg4h");
+    for to in [Some(zone.name.clone()), None] {
+        zone_ops::clone_resources(
+            &game,
+            &resources,
+            &mut ws,
+            &zone_ops::CloneParams {
+                stream: BUILDING.into(),
+                indices: vec![texture_at],
+                to,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    }
+    // A model of the level, moved up, as a new set in the zone.
+    let level = game.find_stream(LEVEL).unwrap();
+    let mesh_at = position(level, b"mesh");
+    let mut assets = GameAssets::new(Arc::new(game.clone()), &resources);
+    let model = mesh::load(&game.open_stream(level).unwrap(), mesh_at).unwrap();
+    let mut scene_of = scene::game::model_scene(&model, &mut assets).unwrap();
+    for part in &mut scene_of.parts {
+        for v in &mut part.geometry.positions {
+            v[1] += 0.5;
+        }
+    }
+    let glb = scene::to_bytes(&scene_of, ModelFormat::Glb).unwrap();
+    let parsed = doctor_toolkit::import::gltf::read(&glb, None).unwrap();
+    let options = model::ImportOptions {
+        new_name: Some("doctor_prop".into()),
+        ..Default::default()
+    };
+    let mut plan = model::plan(
+        &game,
+        &ws,
+        &resources,
+        &mut assets,
+        level,
+        mesh_at,
+        &parsed,
+        &options,
+    )
+    .unwrap();
+    plan.put_into(&game, &ws, &zone.name).unwrap();
+    plan.commit(&mut ws, &game).unwrap();
+
+    let state = |ws: &Workspace| -> (BTreeMap<String, Change>, Vec<NewStream>) {
+        let changes = ws
+            .changes()
+            .map(|c| {
+                let mut change = c.clone();
+                change.label.clear();
+                (c.key.to_string(), change)
+            })
+            .collect();
+        let streams = ws
+            .new_streams()
+            .map(|s| NewStream {
+                label: String::new(),
+                ..s.clone()
+            })
+            .collect();
+        (changes, streams)
+    };
+    let (changes, streams) = state(&ws);
+    let added = changes.values().filter(|c| c.is_added()).count();
+    assert!(added >= 7, "{:?}", changes.keys().collect::<Vec<_>>());
+
+    // Sources of all of it.
+    let started = Instant::now();
+    let report = p.export_workspace(&game, &ws, Some(&index)).unwrap();
+    let exported = started.elapsed();
+    assert!(report.notes.is_empty(), "{:#?}", report.notes);
+    let covered: BTreeSet<String> = p
+        .entries()
+        .flat_map(|(_, e, _)| e.keys.iter().map(ToString::to_string).collect::<Vec<_>>())
+        .collect();
+    assert_eq!(
+        covered.iter().collect::<Vec<_>>(),
+        changes.keys().collect::<Vec<_>>()
+    );
+    let mut by_kind: BTreeMap<Kind, usize> = BTreeMap::new();
+    for (_, entry, _) in p.entries() {
+        *by_kind.entry(entry.kind).or_default() += 1;
+    }
+    for kind in [Kind::Model, Kind::Texture, Kind::Logic, Kind::Strings] {
+        assert!(by_kind.get(&kind).is_some_and(|&n| n > 0), "{by_kind:?}");
+    }
+    assert_eq!(p.status(&ws).unwrap().to_build(), 0);
+
+    // A checkout of the sources builds the workspace again.
+    let second = checkout(&root, &out.path().join("second"));
+    let mut ws2 = second.workspace(&game).unwrap();
+    let started = Instant::now();
+    let report = second
+        .build(&game, &mut ws2, &BuildOptions::default())
+        .unwrap();
+    let built = started.elapsed();
+    assert!(report.errors.is_empty(), "{:#?}", report.errors);
+    assert_eq!(ws2.head(), 1, "one undoable operation");
+    let (changes2, streams2) = state(&ws2);
+    assert_eq!(streams2, streams);
+    assert_eq!(
+        changes2.keys().collect::<Vec<_>>(),
+        changes.keys().collect::<Vec<_>>()
+    );
+    for (key, change) in &changes {
+        assert_eq!(&changes2[key], change, "{key}");
+    }
+    assert_eq!(second.status(&ws2).unwrap().to_build(), 0);
+
+    // The second round: the sources of the built workspace build it byte
+    // for byte.
+    checkout(&out.path().join("second"), &out.path().join("fresh"));
+    std::fs::remove_dir_all(out.path().join("fresh/src")).unwrap();
+    let mut fresh = project::Project::open(out.path().join("fresh")).unwrap();
+    let report = fresh.export_workspace(&game, &ws2, Some(&index)).unwrap();
+    assert!(report.notes.is_empty(), "{:#?}", report.notes);
+    let third = checkout(&out.path().join("fresh"), &out.path().join("third"));
+    let mut ws3 = third.workspace(&game).unwrap();
+    let report = third
+        .build(&game, &mut ws3, &BuildOptions::default())
+        .unwrap();
+    assert!(report.errors.is_empty(), "{:#?}", report.errors);
+    let (changes3, streams3) = state(&ws3);
+    assert_eq!(streams3, streams2);
+    let differ: Vec<&String> = changes2
+        .iter()
+        .filter(|(key, change)| changes3.get(*key) != Some(change))
+        .map(|(key, _)| key)
+        .collect();
+    assert!(differ.is_empty(), "second round: {differ:?}");
+
+    // The model and a picture are edited: encoded again, into the same
+    // resources and nothing else. (A picture decoded and encoded again is
+    // other data: DXT does not give its own blocks back.)
+    let find = |kind: Kind| {
+        third
+            .entries()
+            .find(|(_, e, d)| e.kind == kind && e.is_added() && d.contains("doctor_zone"))
+            .map(|(id, e, _)| (id, e.clone()))
+            .unwrap()
+    };
+    let (model_id, model_entry) = find(Kind::Model);
+    let mut edited = scene::read_file(&third.root().join(&model_id)).unwrap();
+    for part in &mut edited.parts {
+        for v in &mut part.geometry.positions {
+            v[0] += 1.0;
+        }
+    }
+    std::fs::write(
+        third.root().join(&model_id),
+        scene::to_bytes(&edited, ModelFormat::Glb).unwrap(),
+    )
+    .unwrap();
+    let (texture_id, texture_entry) = find(Kind::Texture);
+    let png = std::fs::read(third.root().join(&texture_id)).unwrap();
+    let (w, h, mut rgba) = pixels::decode_png(&png).unwrap();
+    for px in rgba.chunks_mut(4) {
+        px[1] = 255 - px[1];
+    }
+    std::fs::write(
+        third.root().join(&texture_id),
+        pixels::encode_png(w, h, &rgba).unwrap(),
+    )
+    .unwrap();
+    let report = third
+        .build(&game, &mut ws3, &BuildOptions::default())
+        .unwrap();
+    assert!(report.errors.is_empty(), "{:#?}", report.errors);
+    let (changes4, _) = state(&ws3);
+    assert_eq!(
+        changes4.keys().collect::<Vec<_>>(),
+        changes.keys().collect::<Vec<_>>()
+    );
+    let changed: Vec<&String> = changes4
+        .iter()
+        .filter(|(key, change)| changes3.get(*key) != Some(change))
+        .map(|(key, _)| key)
+        .collect();
+    let mesh_key = model_entry.keys[0].to_string();
+    assert!(changed.contains(&&mesh_key), "{changed:?}");
+    assert!(
+        changed.contains(&&texture_entry.keys[1].to_string()),
+        "{changed:?}"
+    );
+    assert!(
+        changed.iter().all(|key| model_entry
+            .keys
+            .iter()
+            .chain(&texture_entry.keys)
+            .any(|k| k.to_string() == **key)),
+        "{changed:?}"
+    );
+    let moved = mesh::Model::parse(
+        &ws3.data(&model_entry.keys[0]).unwrap().unwrap(),
+        &ws3.data(&model_entry.keys[1]).unwrap().unwrap(),
+    )
+    .unwrap();
+    let was = mesh::Model::parse(
+        &ws2.data(&model_entry.keys[0]).unwrap().unwrap(),
+        &ws2.data(&model_entry.keys[1]).unwrap().unwrap(),
+    )
+    .unwrap();
+    assert_eq!(moved.name, "doctor_prop");
+    assert!((moved.aabb_min[0] - was.aabb_min[0] - 1.0).abs() < 1e-3);
+    assert_eq!(moved.records.len(), was.records.len());
+    eprintln!(
+        "{} change(s), {added} added; {} entries ({by_kind:?}); sources in {:.2} s, build into \
+         an empty workspace in {:.2} s; after the edit of a model and a picture changed: \
+         {changed:?}",
+        changes.len(),
+        p.entries().count(),
+        exported.as_secs_f64(),
+        built.as_secs_f64(),
+    );
+}
+
+fn files_below(dir: &std::path::Path) -> (usize, u64) {
+    let mut out = (0, 0);
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return out;
+    };
+    for entry in entries.flatten() {
+        let Ok(meta) = std::fs::symlink_metadata(entry.path()) else {
+            continue;
+        };
+        if meta.is_dir() {
+            let (files, bytes) = files_below(&entry.path());
+            out = (out.0 + files, out.1 + bytes);
+        } else if meta.is_file() {
+            out = (out.0 + 1, out.1 + meta.len());
+        }
+    }
+    out
+}
+
+/// Stage 107, a measurement: a large project — the largest resource of
+/// every stream below `gf2/cuba/` changed (`DOCTOR_MEASURE_STREAMS` names
+/// another prefix) — goes into the game as a mod. How long the staged copy
+/// of a launch takes with the project as the last mod, against the
+/// workspace alone (the way before stage 107); and how long Install into
+/// Mods takes, the first time and again. The numbers are in
+/// `docs/project.md` §0.
+#[cfg(unix)]
+#[test]
+fn a_large_project_is_installed_as_a_mod() {
+    use doctor_toolkit::game::StreamFile;
+    use doctor_toolkit::mods::ModManager;
+    use doctor_toolkit::play::overlay::{Overlay, Source, Streams};
+    use doctor_toolkit::workspace::{ResourceEdit, StorageChoice};
+
+    let Some(dir) = super::game_dir() else { return };
+    let real = GameInstance::open(&dir).unwrap();
+    let prefix = std::env::var("DOCTOR_MEASURE_STREAMS").unwrap_or_else(|_| "gf2/cuba/".into());
+    let mut files: Vec<String> = real
+        .streams()
+        .iter()
+        .filter(|s| s.stream_name().starts_with(&prefix))
+        .map(|s| s.rel_path.clone())
+        .collect();
+    let stream_bytes: u64 = files
+        .iter()
+        .map(|rel| std::fs::metadata(dir.join(rel)).unwrap().len())
+        .sum();
+    files.extend(real.tocs().iter().map(|t| t.rel_path.clone()));
+    files.push("godfather2.exe".into());
+    let refs: Vec<&str> = files.iter().map(String::as_str).collect();
+    let shadow = super::shadow_game(&dir, &refs);
+    let game = GameInstance::open(shadow.path()).unwrap();
+
+    let out = tempfile::tempdir().unwrap();
+    let root = out.path().join("project");
+    let new = project::NewDocument {
+        name: "Measured".into(),
+        ..Default::default()
+    };
+    let p = project::create_document(&game, &root, &new).unwrap();
+    let edits: Vec<(usize, Vec<ResourceEdit>)> = game
+        .streams()
+        .iter()
+        .enumerate()
+        .filter_map(|(at, file)| {
+            let stream = StreamFile::open(&file.path).ok()?;
+            let (index, _) = stream
+                .layout()
+                .resources
+                .iter()
+                .enumerate()
+                .max_by_key(|(_, r)| r.header.data_size)?;
+            let mut data = stream.resource_data(index).ok()?;
+            *data.first_mut()? ^= 0xff;
+            Some((
+                at,
+                vec![ResourceEdit {
+                    index,
+                    data,
+                    storage: StorageChoice::Keep,
+                }],
+            ))
+        })
+        .collect();
+    let payload: u64 = edits.iter().map(|(_, e)| e[0].data.len() as u64).sum();
+    let mib = |bytes: u64| bytes as f64 / (1 << 20) as f64;
+    eprintln!(
+        "{} stream(s) below {prefix} ({:.1} MiB of stream files), one resource changed in \
+         each: {:.1} MiB of new data",
+        edits.len(),
+        mib(stream_bytes),
+        mib(payload)
+    );
+    let mut ws = p.workspace(&game).unwrap();
+    ws.change_resources(&game, "measured", &edits, &[]).unwrap();
+    // The same changes in a workspace that is nobody's project.
+    let plain = out.path().join("plain");
+    Workspace::for_game(&game, Some(&plain))
+        .unwrap()
+        .change_resources(&game, "measured", &edits, &[])
+        .unwrap();
+    drop(edits);
+
+    let staged = out.path().join("staged");
+    let mut redirects = Vec::new();
+    for (name, source) in [
+        ("the workspace alone", Source::Workspace(plain.clone())),
+        ("the project as a mod", Source::Project(root.clone())),
+    ] {
+        for streams in [Streams::Rebuilt, Streams::Patched] {
+            let mut times = Vec::new();
+            let mut size = (0, 0);
+            for _ in 0..3 {
+                let started = Instant::now();
+                let overlay =
+                    Overlay::build_with(&game, Some(&source), None, &staged, streams).unwrap();
+                times.push(started.elapsed().as_secs_f64());
+                size = files_below(&staged);
+                redirects.push(overlay.redirects().len() + overlay.resources().len());
+                overlay.remove().unwrap();
+            }
+            eprintln!(
+                "staged copy, {name}, {}: {:.2}–{:.2} s; {:.1} MiB in {} file(s)",
+                streams.name(),
+                times.iter().copied().fold(f64::MAX, f64::min),
+                times.iter().copied().fold(0.0, f64::max),
+                mib(size.1),
+                size.0
+            );
+        }
+    }
+    assert!(redirects.windows(2).all(|w| w[0] == w[1]), "{redirects:?}");
+
+    // Install into Mods: the first time, again unchanged, again after one
+    // more edit.
+    let mut mods = ModManager::open(&game).unwrap();
+    let time = |what: &str, ws: &Workspace, mods: &mut ModManager| {
+        let started = Instant::now();
+        let report = p.install_into(&game, mods, ws, Default::default()).unwrap();
+        let (count, bytes) = files_below(&mods.dir().join(&report.id));
+        eprintln!(
+            "install into Mods, {what}: {:.2} s; {} resource(s), {:.1} MiB in {count} file(s)",
+            started.elapsed().as_secs_f64(),
+            report.resources,
+            mib(bytes),
+        );
+    };
+    time("the first time", &ws, &mut mods);
+    time("again, nothing changed", &ws, &mut mods);
+    let file = &game.streams()[0];
+    let stream = StreamFile::open(&file.path).unwrap();
+    let mut data = stream.resource_data(0).unwrap();
+    data.push(0);
+    ws.set_resources(
+        &game,
+        "one more",
+        0,
+        &[ResourceEdit {
+            index: 0,
+            data,
+            storage: StorageChoice::Keep,
+        }],
+    )
+    .unwrap();
+    time("again, one more resource changed", &ws, &mut mods);
+}

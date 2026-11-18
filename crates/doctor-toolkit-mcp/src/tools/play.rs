@@ -481,7 +481,8 @@ pub fn play(kit: &Toolkit, p: PlayParams) -> ToolResult<Output> {
         let source = if mods {
             Some(Source::Mods)
         } else if apply {
-            Some(Source::Workspace(kit.workspace_dir.clone()))
+            // A project's own workspace is staged as the project's mod.
+            Some(Source::of_workspace(kit.workspace_dir.clone()))
         } else {
             None
         };

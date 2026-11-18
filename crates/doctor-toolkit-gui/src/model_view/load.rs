@@ -167,7 +167,9 @@ fn upload(
     srgb: &mut Option<bool>,
     limit: Option<u32>,
 ) -> Option<u64> {
-    let key = hash as u64;
+    // A texture the workspace (or an import) has under the hash of a game
+    // texture is another texture for the renderer.
+    let key = hash as u64 | (assets.texture_version(hash) as u64) << 32;
     if !renderer.has_texture(key) {
         let texture = assets.texture(hash)?;
         let data = match limit {

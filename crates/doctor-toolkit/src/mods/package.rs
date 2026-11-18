@@ -23,9 +23,9 @@ use zip::{CompressionMethod, DateTime};
 
 use super::{
     MANIFEST_NAME, MAX_ENTRIES, MAX_MANIFEST_SIZE, MAX_PAYLOAD_SIZE, MAX_PREVIEW_SIZE, ModManifest,
-    PAYLOAD_DIR,
+    ModResource, PAYLOAD_DIR,
 };
-use crate::workspace::{Blob, store::sha256_hex};
+use crate::workspace::{Blob, ResourceKey, store::sha256_hex};
 use crate::{Error, Result};
 
 /// An opened, validated mod package. Payloads are read on demand.
@@ -224,6 +224,20 @@ impl ModArchive {
         Ok(data)
     }
 
+    /// The resources of the mod that are deltas (format version 6), each
+    /// with the number of its operations.
+    pub fn delta_operations(&mut self) -> Result<Vec<(ResourceKey, usize)>> {
+        let deltas: Vec<ModResource> = self.manifest.deltas().cloned().collect();
+        deltas
+            .iter()
+            .map(|resource| {
+                let data = self.read_payload(&resource.payload)?;
+                let document = super::read_delta(resource, &data)?;
+                Ok((resource.key.clone(), document.len()))
+            })
+            .collect()
+    }
+
     /// Reads and checks every payload.
     pub fn verify(&mut self) -> Result<()> {
         let blobs: Vec<Blob> = self.manifest.payloads().into_iter().cloned().collect();
@@ -234,8 +248,13 @@ impl ModArchive {
             .flat_map(|n| &n.modules)
             .map(|m| (m.payload.sha256.clone(), m.file.clone()))
             .collect();
+        let deltas: Vec<ModResource> = self.manifest.deltas().cloned().collect();
         for blob in &blobs {
             let data = self.read_payload(blob)?;
+            // A delta must be a document of the kind the manifest names.
+            for resource in deltas.iter().filter(|r| r.payload == *blob) {
+                super::read_delta(resource, &data)?;
+            }
             // A module of code must be what the loader of the game loads.
             if let Some((_, file)) = modules.iter().find(|(sha, _)| *sha == blob.sha256) {
                 super::native::check_module(&data)

@@ -300,7 +300,7 @@ pub fn apply_shell_preset(app: &mut BrowserApp, spec: &str) {
             }
             // Stage 103: the checks and the reference panels. The checks
             // wait for the game ([`BrowserApp::checks_preset`]).
-            "check" | "refs" | "hash" | "pull" | "crashes" => {
+            "check" | "refs" | "hash" | "pull" | "sources" | "crashes" => {
                 app.checks_preset.push((name.to_owned(), value.to_owned()));
             }
             "findings" => app.dock_ops.push(DockOp::ShowPanel(Pane::Findings)),
@@ -408,6 +408,10 @@ impl BrowserApp {
             // The Project tab's Pull (`DOCTOR_TOOLKIT_GUI_PROJECT=<folder>`).
             "pull" => {
                 self.project_pull();
+            }
+            // The Project tab's Write sources (stage 112).
+            "sources" => {
+                self.project_sources();
             }
             // Tools → Crash reports, and a report (1 is the newest).
             "crashes" => {
@@ -546,6 +550,15 @@ impl BrowserApp {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.spacing_mut().item_spacing.x = 4.0;
                 self.edition_label(ui);
+                // The open project: whose edits these are.
+                if let Some(document) = &self.document {
+                    ui.add(egui::Label::new(RichText::new(&document.name).strong()).truncate())
+                        .on_hover_text(trf(
+                            "document.status_hint",
+                            &[("folder", &document.root.display())],
+                        ));
+                    ui.separator();
+                }
                 self.undo_button(ui);
                 self.external_status(ui);
                 if let Some(status) = &self.nav.status {
@@ -708,6 +721,7 @@ impl BrowserApp {
 
     pub(super) fn welcome_ui(&mut self, ui: &mut egui::Ui) {
         let mut open = None;
+        let mut open_project = None;
         egui::ScrollArea::vertical()
             .id_salt("welcome")
             .auto_shrink(false)
@@ -803,11 +817,46 @@ impl BrowserApp {
                         if let Some(i) = forget {
                             self.settings.recent_games.remove(i);
                         }
+                        // Projects opened as the document.
+                        ui.add_space(12.0);
+                        ui.heading(tr("document.recent"));
+                        if self.settings.recent_projects.is_empty() {
+                            ui.label(RichText::new(tr("document.no_recent")).weak());
+                        }
+                        let mut forget = None;
+                        for (i, dir) in self.settings.recent_projects.iter().enumerate() {
+                            ui.horizontal(|ui| {
+                                let name = dir.file_name().map_or_else(
+                                    || dir.display().to_string(),
+                                    |n| n.to_string_lossy().into_owned(),
+                                );
+                                let response = ui
+                                    .add_enabled(dir.is_dir(), egui::Link::new(name))
+                                    .on_hover_text(dir.display().to_string())
+                                    .on_disabled_hover_text(tr("welcome.missing"));
+                                if response.clicked() {
+                                    open_project = Some(dir.clone());
+                                }
+                                if ui
+                                    .small_button("×")
+                                    .on_hover_text(tr("welcome.forget"))
+                                    .clicked()
+                                {
+                                    forget = Some(i);
+                                }
+                            });
+                        }
+                        if let Some(i) = forget {
+                            self.settings.recent_projects.remove(i);
+                        }
                     });
                 });
             });
         if let Some(dir) = open {
             self.open_game(dir, ui.ctx());
+        }
+        if let Some(dir) = open_project {
+            self.open_document(dir, ui.ctx());
         }
     }
 

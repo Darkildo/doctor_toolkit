@@ -94,14 +94,14 @@ documentation of this tool only.
 2. Unpack it and start the editor with the folder of your game:
 
    ```sh
-   tar xzf doctor_toolkit-0.0.8-linux-x86_64.tar.gz && cd doctor_toolkit-0.0.8-linux-x86_64
+   tar xzf doctor_toolkit-1.0.0-linux-x86_64.tar.gz && cd doctor_toolkit-1.0.0-linux-x86_64
    ./doctor-toolkit-gui "/path/to/The Godfather II"
    ```
 
 3. Read the [user guide](docs/guide/README.md) (Russian) — installation,
    browsing, editing, mods, Play, dialogues, logic, cut-scenes and more.
 
-This is a **beta**: back up your game folder before writing into it.
+Back up your game folder before writing into it.
 
 ## What works
 
@@ -298,7 +298,7 @@ Download `doctor_toolkit-<version>-linux-x86_64.tar.gz` from the releases,
 unpack it anywhere and run the programs from that folder:
 
 ```sh
-tar xzf doctor_toolkit-0.0.8-linux-x86_64.tar.gz && cd doctor_toolkit-0.0.8-linux-x86_64
+tar xzf doctor_toolkit-1.0.0-linux-x86_64.tar.gz && cd doctor_toolkit-1.0.0-linux-x86_64
 ./doctor-toolkit-gui "/path/to/The Godfather II"     # the editor
 ./open-mod-manager "/path/to/The Godfather II"       # Open Mod Manager, for players
 ./doctor-toolkit --help                              # the command line

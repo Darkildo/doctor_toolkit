@@ -120,7 +120,7 @@ false`, `idempotentHint: true`, `openWorldHint: false`; у записи
 | `level_objects` | `stream` (поток или префикс), `filter`, `near` `[x, y, z]`, `radius` (30), `offset`, `limit` (100, ≤ 500), `original` | объекты SimGroup: id, класс, имя (`CMD_SetName`), GUID, положение (перенос `CMD_LoadMatrix`, Y вверх), id metamodel, расстояние; не больше 400 потоков за раз |
 | `workspace_status` | `offset`, `limit` (100, ≤ 500) | изменения с состоянием (`pending`, `applied`, `conflict`), новые потоки, файлы, потоки и их состояние, 20 последних операций, что отменит undo и вернёт redo |
 | `workspace_diff` | `filter`, `offset`, `limit` (20, ≤ 100) | по изменению: размеры и смысловое сравнение (строки, значения SimGroup и metamodel, текстуры, блоки `apx`), до 40 строк на изменение |
-| `project_status` | `all`, `offset`, `limit` (100, ≤ 500) | записи проекта и их состояние (`unchanged`, `built`, `modified`, `out of sync`, `missing`), неизвестные файлы, предупреждения |
+| `project_status` | `all`, `offset`, `limit` (100, ≤ 500) | записи проекта и их состояние (`unchanged`, `built`, `modified`, `out of sync`, `missing`, `removed`), потоки, которые проект создаёт (`new_streams`: создан ли в рабочем пространстве) и убирает (`removed_streams`), неизвестные файлы, предупреждения |
 | `check_refs` | `streams` (имена или префиксы, ≤ 400 потоков), `limit` (100, ≤ 1000) | ссылки ресурсов игры, которые не находятся в потоке и загружаемых до него (`check-refs`); правки и новые потоки проверяет `validate` |
 | `export` | `resource` (ключ, `<поток>#<номер>` или запрос; ключ ресурса, добавленного рабочим пространством, тоже), `format`, `name`, `original` | файлы в папке вывода (§3.4) |
 | `media` | `kind` (`movies` или `sounds`), `name`, `filter`, `wav`, `frames`, `key_frames`, `original`, `offset`, `limit` | ролики `.vp6` и потоковые звуки и речь архивов `.viv`: список; с `name` — сведения (кадры, частота, звук; субтитры речи) и выгрузка звука в WAV и кадров в PNG (§3.4) |
@@ -419,7 +419,7 @@ unchanged`. Ошибка ничего не записывает.
 | `script_run` | `graph`, `lua` (+`name`) или `file`; `steps`; страницы | `script-run`: скрипт на макете игры (`script::trial::run`) — что он отправил, поставил, вызвал, напечатал |
 | `save_info` | `path` (файл или папка), `chunks`, `all` | `save`: сводка и разобранные куски сохранения; файл только читается |
 | `unpack` | `streams` (1–40), `types`, `name`, `dds`, `wav`, `no_raw`, `no_views`, `geometry_only`, `model_format` | `unpack` в папку внутри `--output-dir`; ответ — папка, манифест, числа |
-| `project_new` | `folder`, `name`, `id`, `author`, `streams` или `from_workspace`, `types`, `dds`, `model_format`, `no_shared` | `project new` в папку внутри `--output-dir` (`project::create_from`) |
+| `project_new` | `folder`, `name`, `id`, `author`, `streams` или `from_workspace`, `types`, `dds`, `model_format`, `no_shared` | `project new` в папку внутри `--output-dir` (`project::create_from`). `from_workspace` берёт и добавленные ресурсы, и новые потоки (этап 112). Без `streams` и `from_workspace` — пустой проект со своим рабочим пространством (`project::create_document`): ответ называет `workspace`; править его — сервером, запущенным с `--project` |
 | `zone_cells` | `level`, `cells`, `filter`, `original`, страницы | `world-grid info`: сетки уровня и их ячейки |
 | `speech` | `show` (`events`, `banks`, `speakers`), `events`, `filter`, страницы | `speech-events`, `speech-bank`, `voice-add --speakers` |
 | `mix` | `name` | `audio-config` (категории, пулы, приглушения, список снимков) и `mix NAME` (каналы снимка) |
@@ -444,8 +444,9 @@ unchanged`. Ошибка ничего не записывает.
 | `partsdb_allow` | `database`, `variant`, `slot`, `sets`, `only` | `partsdb allow` (`outfit::record_allow`) |
 | `set_material` | `material`, `params` (`{"g_TintColor0": [r, g, b, a]}`) | числовые параметры материала игры или добавленного рабочим пространством (`retexture::set_material_params` над `resource::material::apply_params` — общей записью параметров с редактором материала и командой `material`; параметр меняется во всех проходах шейдера, где он перечислен) |
 | `pack` | `folder`, `dry_run` | `pack`: изменённые файлы распакованной папки одной операцией |
-| `project_pull` | `only` | `project pull` в проект сервера (`--project`) |
+| `project_pull` | `only`, `sources` | `project pull` в проект сервера (`--project`); с `sources` — `project sources`: исходники всего, что держит собственное рабочее пространство проекта (новые записи для добавленных ресурсов и новых потоков, модели; `Project::export_workspace`), ответ — `added`, `pulled`, `removed`, `streams`, `notes` |
 | `revert` | `keys` или `all` | `workspace revert`: убрать изменения по ключу или части ключа (`Workspace::revert_matching`) |
+| `rebase` | `check`, `only`, `keep`, `take_base` | `workspace rebase` / `project rebase` (этап 111, `docs/project.md` §0.3): правки, сделанные на прежних данных модов под ними, переносятся на то, что игра даёт сейчас (`Workspace::rebase_given`; у проекта — `Project::rebase`, без мода самого проекта). `check` — только список (`stale`, `count`), ничего не пишется. В ответе по каждой правке: `rebased` с `applied`, `left_out`, `over_another_value`; `kept`; `taken from the game`; `needs a decision` с причиной — такую правку решают `keep` или `take_base`. Одна операция |
 | `remove_zone_cell` | `level`, `stream` | `world-grid remove` |
 | `sbk_edit` | `bank`, `emitter`, громкость, высота, спад, приоритет, флаги, … | `sbk-edit` (`sound_edit::edit_bank`) |
 | `sound_add` | `bank`, `files`, `emitter` либо `new` (+`like`), `rate`, `channels` | `sound-add` (`sound_edit::add_sounds`) |
@@ -611,7 +612,7 @@ MCP). Протокол — строка JSON на запрос и строка �
 | `{"op":"open","key":…}` | вкладка потока с ресурсом |
 | `{"op":"show_object","object":…}` | вкладка уровня, объект выделен (`open_level_for`) |
 | `{"op":"show_logic","object":…}` | вкладка графа логики, объект выделен |
-| `{"op":"lend","client":…,"summary":…}` | окно «ИИ-клиент просит изменить рабочее пространство» с описанием правки; «Разрешить» — редактор отпускает блокировку и отвечает `ok`, «Отмена» — ошибка |
+| `{"op":"lend","client":…,"summary":…,"workspace":…}` | окно «ИИ-клиент просит изменить рабочее пространство» с описанием правки; «Разрешить» — редактор отпускает блокировку и отвечает `ok`, «Отмена» — ошибка. `workspace` (этап 105, необязательное) — каталог, который пишет клиент: редактор, работающий с другим каталогом, отказывает сразу, не спрашивая пользователя |
 | `{"op":"return"}` | редактор снова берёт блокировку, перечитывает рабочее пространство, обновляет вкладки; в строке состояния — «Записано ИИ-клиентом: …» |
 
 **Запись через редактор.** Когда вызов записи находит блокировку у

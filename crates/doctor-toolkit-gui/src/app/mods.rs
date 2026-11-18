@@ -31,6 +31,8 @@ impl BrowserApp {
             self.mods.check_integrity(ctx);
         }
         self.mods_preset(ctx);
+        // The bar of the project's base asked for the mods to be brought to it.
+        self.bring_queued_base(ctx);
         let mut open = self.mods_open;
         let mut event = None;
         egui::Window::new(tr("window.mods"))
@@ -41,12 +43,19 @@ impl BrowserApp {
                 event = self.mods.show(ui, self.workspace.as_ref());
             });
         self.mods_open = open;
+        if !open {
+            // Closed before it began: not done behind a closed window later.
+            self.base.bring_queued = false;
+        }
         match event {
             // Release the memory-mapped streams before their files are replaced.
             Some(PanelEvent::WillWrite) => self.release_files(),
             Some(PanelEvent::GameChanged) => {
                 self.refresh_status();
                 self.files_changed();
+                // The mods of the game are others now: the base of the
+                // open project is compared with them again.
+                self.check_base();
             }
             Some(PanelEvent::PlayWithMods) | None => {}
         }

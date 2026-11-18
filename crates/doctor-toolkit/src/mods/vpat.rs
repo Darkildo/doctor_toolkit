@@ -418,6 +418,7 @@ impl VpatPatch {
             ),
             url: None,
             relations: Default::default(),
+            whole_resources: true,
         };
         let mut manifest = ModManifest::new(
             &info,
@@ -475,6 +476,7 @@ impl VpatPatch {
                             storage: StorageChoice::Keep,
                             label: String::new(),
                             added: Some(added_like(layout, resource.type_id, order)),
+                            delta: None,
                             key: key.clone(),
                         }
                     }
@@ -498,6 +500,7 @@ impl VpatPatch {
                             storage: StorageChoice::Keep,
                             label: String::new(),
                             added: None,
+                            delta: None,
                             key: key.clone(),
                         }
                     }

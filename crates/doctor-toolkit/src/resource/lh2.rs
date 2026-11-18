@@ -211,6 +211,17 @@ impl StringTable {
         Ok(at)
     }
 
+    /// Names of the language columns for addressing a text: the language
+    /// codes, or the column numbers `0`, `1`, … when the table does not name
+    /// its languages.
+    pub fn column_names(&self) -> Vec<String> {
+        if self.languages.len() == self.strings.len() && !self.languages.is_empty() {
+            self.languages.clone()
+        } else {
+            (0..self.strings.len()).map(|i| i.to_string()).collect()
+        }
+    }
+
     /// Text of entry `hash` in every language column.
     pub fn texts(&self, hash: u32) -> Option<Vec<&str>> {
         let at = self.find(hash)?;

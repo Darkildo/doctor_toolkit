@@ -233,3 +233,10 @@ path = "fuzz_targets/sbk.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "delta"
+path = "fuzz_targets/delta.rs"
+test = false
+doc = false
+bench = false

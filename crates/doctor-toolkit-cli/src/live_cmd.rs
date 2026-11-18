@@ -1012,7 +1012,7 @@ pub fn run(command: LiveCommand) -> Result<()> {
                 let source = if mods {
                     Some(Source::Mods)
                 } else if apply {
-                    Some(Source::Workspace(workspace_dir.unwrap_or_else(|| {
+                    Some(Source::of_workspace(workspace_dir.unwrap_or_else(|| {
                         doctor_toolkit::workspace::Workspace::default_dir(&game_dir)
                     })))
                 } else {

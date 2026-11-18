@@ -1,7 +1,10 @@
 //! The project browser (stage 36, `docs/project.md`): the entries of a
 //! project folder by folder and type with their state (unchanged, modified,
 //! built, out of sync), search, a texture preview, "Open in external
-//! editor", "Build" into the workspace and "Build mod".
+//! editor", "Build" into the workspace and "Build mod". "Write sources"
+//! (stage 112) gives a project with its own workspace source files for
+//! everything that workspace holds, the resources it adds and the streams
+//! it creates too.
 
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
@@ -12,7 +15,7 @@ use doctor_toolkit::project::config::BuildSettings;
 use doctor_toolkit::project::{
     self, BuildOptions, CreateOptions, EntryState, EntryStatus, Kind, Project, ProjectStatus,
 };
-use doctor_toolkit::workspace::{ResourceKey, Workspace};
+use doctor_toolkit::workspace::ResourceKey;
 use doctor_toolkit_mods::i18n::{tr, trf, trn};
 use egui::{Color32, RichText};
 
@@ -62,6 +65,7 @@ fn state_color(state: &EntryState) -> Color32 {
         EntryState::Modified => Color32::from_rgb(220, 160, 40),
         EntryState::OutOfSync => Color32::from_rgb(90, 140, 230),
         EntryState::Missing(_) | EntryState::ViewChanged => Color32::from_rgb(220, 70, 70),
+        EntryState::Removed => Color32::from_rgb(220, 120, 40),
     }
 }
 
@@ -73,6 +77,7 @@ fn state_text(state: &EntryState) -> &'static str {
         EntryState::OutOfSync => tr("project.state_out_of_sync"),
         EntryState::Missing(_) => tr("project.state_missing"),
         EntryState::ViewChanged => tr("project.state_view_changed"),
+        EntryState::Removed => tr("project.state_removed"),
     }
 }
 
@@ -97,12 +102,12 @@ impl BrowserApp {
         let fresh;
         let ws = match &self.workspace {
             Some(ws) => ws,
-            None => match self.game.as_ref().map(|g| Workspace::for_game(g, None)) {
-                Some(Ok(ws)) => {
+            None => match self.workspace_for_reading() {
+                Ok(ws) => {
                     fresh = ws;
                     &fresh
                 }
-                _ => return,
+                Err(_) => return,
             },
         };
         match project.status(ws) {
@@ -118,11 +123,17 @@ impl BrowserApp {
         self.project.checked = Some((Instant::now(), mark));
     }
 
+    /// The folder of the project the Project tab shows.
+    #[cfg(test)]
+    pub(super) fn project_tab_root_for_test(&self) -> Option<PathBuf> {
+        self.project.project.as_ref().map(|p| p.root().to_owned())
+    }
+
     pub(super) fn project_open(&mut self, dir: PathBuf) {
         match Project::open(&dir) {
             Ok(project) => {
                 if let Some(game) = &self.game {
-                    let same = project.config.game.path.as_ref().is_some_and(|p| {
+                    let same = project.game_path().is_some_and(|p| {
                         std::fs::canonicalize(p).ok() == std::fs::canonicalize(game.root()).ok()
                     });
                     if !same {
@@ -149,10 +160,10 @@ impl BrowserApp {
         };
         let ws = match self.workspace.take() {
             Some(ws) => ws,
-            None => match Workspace::for_game(&game, None) {
+            None => match self.workspace_for_reading() {
                 Ok(ws) => ws,
                 Err(error) => {
-                    self.notify(Level::Error, error.to_string());
+                    self.notify(Level::Error, error);
                     return;
                 }
             },
@@ -170,16 +181,27 @@ impl BrowserApp {
         } else {
             unpack::select(&game, &streams, &[])
         };
+        // What the workspace adds: all of it with the streams it creates,
+        // or what it adds to the chosen streams.
+        let mut additions = project::workspace_additions(&ws);
+        if !self.project.new_from_workspace {
+            let chosen: Vec<String> = streams
+                .iter()
+                .map(|s| doctor_toolkit::workspace::key::normalize_stream(s))
+                .collect();
+            additions.resources.retain(|k| chosen.contains(&k.stream));
+            additions.streams.clear();
+        }
         let name = dir
             .file_name()
             .map_or_else(|| "Project".into(), |n| n.to_string_lossy().into_owned());
         let result = selection.and_then(|selection| {
-            if selection.is_empty() {
+            if selection.is_empty() && additions.is_empty() {
                 return Err(doctor_toolkit::Error::InvalidArgument(
                     tr("project.nothing").to_owned(),
                 ));
             }
-            project::create(
+            project::create_with(
                 &game,
                 &ws,
                 self.nav.index.as_deref(),
@@ -191,6 +213,7 @@ impl BrowserApp {
                     selection,
                     settings: BuildSettings::default(),
                 },
+                &additions,
                 &|_, _| {},
                 &AtomicBool::new(false),
             )
@@ -221,7 +244,33 @@ impl BrowserApp {
         }
     }
 
-    fn project_build(&mut self, force: bool) {
+    /// Reads the manifests of the open project again: entries and folders
+    /// written or removed by hand since it was opened. Returns whether the
+    /// project could be read (the error is shown otherwise).
+    fn project_reload(&mut self) -> bool {
+        let Some(root) = self.project.dir() else {
+            return false;
+        };
+        match Project::open(&root) {
+            Ok(project) => {
+                self.project.project = Some(project);
+                self.project.checked = None;
+                true
+            }
+            Err(error) => {
+                self.notify(
+                    Level::Error,
+                    trf("project.cannot_read", &[("error", &error)]),
+                );
+                false
+            }
+        }
+    }
+
+    pub(super) fn project_build(&mut self, force: bool) {
+        if !self.project_reload() {
+            return;
+        }
         let (Some(game), Some(project)) = (self.game.clone(), self.project.project.clone()) else {
             return;
         };
@@ -269,6 +318,11 @@ impl BrowserApp {
                     line.clone(),
                 );
                 self.project.last_build = Some(line);
+                // A build takes the entries whose files are gone out of
+                // the manifests: the project is read again.
+                if let Ok(fresh) = Project::open(project.root()) {
+                    self.project.project = Some(fresh);
+                }
                 self.after_edit(None);
             }
             Err(error) => self.notify(
@@ -277,6 +331,60 @@ impl BrowserApp {
             ),
         }
         self.project.checked = None;
+    }
+
+    /// Write sources (stage 112): source files for everything the own
+    /// workspace of the project holds — new entries for the changes that
+    /// have none yet (resources replaced and added, the streams the
+    /// workspace creates), the workspace's version of the entries that are
+    /// out of sync, nothing left of what the workspace no longer adds
+    /// (`Project::export_workspace`, as `project sources`). Returns how
+    /// many entries were written, taken from the workspace or removed.
+    pub(super) fn project_sources(&mut self) -> Option<usize> {
+        let (Some(game), Some(mut project)) = (self.game.clone(), self.project.project.clone())
+        else {
+            self.notify(Level::Error, tr("project.sources_no_project").to_owned());
+            return None;
+        };
+        let index = self.nav.index.clone();
+        let result = self.workspace_mut().and_then(|ws| {
+            project
+                .export_workspace(&game, ws, index.as_deref())
+                .map_err(|e| e.to_string())
+        });
+        self.project.checked = None;
+        match result {
+            Ok(report) => {
+                let count = report.added.len() + report.pulled.len() + report.removed.len();
+                let line = if count == 0 && report.streams.is_empty() {
+                    tr("project.sources_nothing").to_owned()
+                } else {
+                    trf(
+                        "project.sources_written",
+                        &[
+                            ("added", &report.added.len()),
+                            ("pulled", &report.pulled.len()),
+                            ("removed", &report.removed.len()),
+                            ("streams", &report.streams.len()),
+                        ],
+                    )
+                };
+                self.notify(Level::Info, line.clone());
+                for note in report.notes.iter().take(20) {
+                    self.notify(Level::Warning, note.clone());
+                }
+                self.project.last_build = Some(line);
+                self.project.project = Some(project);
+                Some(count)
+            }
+            Err(error) => {
+                self.notify(
+                    Level::Error,
+                    trf("project.cannot_sources", &[("error", &error)]),
+                );
+                None
+            }
+        }
     }
 
     /// Pull (stage 103): writes the workspace's version of the entries that
@@ -334,14 +442,30 @@ impl BrowserApp {
             self.notify(Level::Warning, tr("project.build_first").to_owned());
             return;
         };
-        match project.build_mod(ws, &out, None) {
-            Ok(report) => self.notify(
-                Level::Info,
-                trf(
+        // With the game at hand the mod is as it is installed: the mods of
+        // the project's base are its dependencies, their data its originals.
+        let built = match self.disk_game() {
+            Some(game) => project.build_mod_on(&game, ws, &out, None),
+            None => project.build_mod(ws, &out, None),
+        };
+        match built {
+            Ok(report) => {
+                let mut text = trf(
                     "project.mod_written",
                     &[("path", &out.display()), ("resources", &report.resources)],
-                ),
-            ),
+                );
+                // What the author should know about the mod, in the
+                // library's words; a mod of stale edits is a warning.
+                for note in &report.notes {
+                    text.push('\n');
+                    text.push_str(note);
+                }
+                let level = match report.stale.is_empty() {
+                    true => Level::Info,
+                    false => Level::Warning,
+                };
+                self.notify(level, text);
+            }
             Err(error) => self.notify(
                 Level::Error,
                 trf("project.cannot_mod", &[("error", &error)]),
@@ -421,6 +545,18 @@ impl BrowserApp {
             {
                 self.project_pull();
             }
+            let own = self
+                .project
+                .project
+                .as_ref()
+                .is_some_and(Project::has_own_workspace);
+            if ui
+                .add_enabled(has && game && own, egui::Button::new(tr("project.sources")))
+                .on_hover_text(tr("project.sources_hint"))
+                .clicked()
+            {
+                self.project_sources();
+            }
             if ui
                 .add_enabled(has, egui::Button::new(tr("project.mod")))
                 .on_hover_text(tr("project.mod_hint"))
@@ -432,7 +568,7 @@ impl BrowserApp {
                 .add_enabled(has, egui::Button::new(tr("project.refresh")))
                 .clicked()
             {
-                self.project.checked = None;
+                self.project_reload();
             }
             if has
                 && ui.button(tr("project.show_folder")).clicked()
@@ -471,7 +607,11 @@ impl BrowserApp {
                 EntryState::Modified,
                 EntryState::Built,
                 EntryState::OutOfSync,
+                EntryState::Removed,
             ] {
+                if state == EntryState::Removed && status.count(&state) == 0 {
+                    continue;
+                }
                 ui.label(
                     RichText::new(format!("{} {}", status.count(&state), state_text(&state)))
                         .color(state_color(&state)),
@@ -481,6 +621,23 @@ impl BrowserApp {
                 ui.label(RichText::new(line).weak());
             }
         });
+        // The streams the project creates that the workspace does not have
+        // as described yet, and those whose folder is gone.
+        for stream in status.new_streams.iter().filter(|s| !s.built) {
+            ui.label(
+                RichText::new(trf(
+                    "project.stream_to_build",
+                    &[("stream", &stream.stream)],
+                ))
+                .color(state_color(&EntryState::Modified)),
+            );
+        }
+        for (_, stream) in &status.removed_streams {
+            ui.label(
+                RichText::new(trf("project.stream_removed", &[("stream", stream)]))
+                    .color(state_color(&EntryState::Removed)),
+            );
+        }
         for warning in &status.warnings {
             ui.label(RichText::new(warning).color(Color32::from_rgb(220, 160, 40)));
         }

@@ -25,6 +25,13 @@ pub trait AssetSource {
     fn material(&mut self, hash: u32) -> Option<Material>;
     /// The texture whose name hash is `hash`.
     fn texture(&mut self, hash: u32) -> Option<Texture>;
+    /// Tells versions of texture `hash` apart: 0 for the texture of the
+    /// game files, another number for one a workspace or an import plan
+    /// has under the same name hash (a viewer keeps textures by hash and
+    /// version).
+    fn texture_version(&mut self, _hash: u32) -> u32 {
+        0
+    }
     /// A skeleton matching a mesh bone table `(bone name hash, skeleton index)`.
     fn skeleton(&mut self, _bones: &[(u32, u32)]) -> Option<Skeleton> {
         None

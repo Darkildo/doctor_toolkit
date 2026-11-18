@@ -224,9 +224,22 @@ impl LogicEditor {
         }
     }
 
-    pub fn open_game(&mut self, game: Arc<GameInstance>, index: Arc<ResourceIndex>) {
+    /// `workspace_dir` is the folder of the editor's workspace
+    /// (`BrowserApp::workspace_dir`): graph layouts and recorded runs are
+    /// kept in it, and the index of messages reads it.
+    #[cfg(test)]
+    pub fn workspace_dir(&self) -> Option<&std::path::Path> {
+        self.workspace_dir.as_deref()
+    }
+
+    pub fn open_game(
+        &mut self,
+        game: Arc<GameInstance>,
+        index: Arc<ResourceIndex>,
+        workspace_dir: PathBuf,
+    ) {
         self.missions = scope::missions(&game);
-        self.workspace_dir = Some(Workspace::default_dir(game.root()));
+        self.workspace_dir = Some(workspace_dir);
         self.game = Some(game);
         self.index = Some(index);
         self.messages = None;

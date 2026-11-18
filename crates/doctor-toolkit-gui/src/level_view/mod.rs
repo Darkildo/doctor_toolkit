@@ -5,6 +5,9 @@
 //! - **Zones** ([`zones`], the shell's Zones panel): zones of every level
 //!   (streams with SimGroups) with check boxes — the chosen ones load
 //!   together with their ancestors as scope — and what the view shows.
+//!   Presets computed from the game (a level at near detail, a district,
+//!   missions) and sets saved by the user choose them at a click
+//!   ([`presets`], stage 113); the tab opens with what was loaded last.
 //! - **Scene** (the tab): one instance per mesh of every placed object, on
 //!   the shared [`crate::render::SceneRenderer`] with frustum culling and
 //!   LODs by distance; markers for objects without a mesh, trees and AI
@@ -28,7 +31,12 @@
 //! the app, which then calls [`LevelView::refresh`].
 //!
 //! `DOCTOR_TOOLKIT_GUI_LEVEL=<zone>[+<zone>…][;option…]` opens the view and
-//! loads the zones once the game is indexed; options: `select=<group>:<object>`,
+//! loads the zones once the game is indexed. A zone is a stream or a folder
+//! of zones, `preset:<id>` (`preset:miami`, `preset:miami/bonita`,
+//! `preset:miami:missions`, `preset:queens:checkpoints`; see
+//! `doctor_toolkit::level::presets`) or `set:<name>` (a saved set); `last`
+//! alone is what was loaded last. Options:
+//! `select=<group>:<object>`,
 //! `near` (select the object with a model nearest to `look`),
 //! `rotate`, `finest`, `points`, `eye=<x>,<y>,<z>`, `look=<x>,<y>,<z>`,
 //! `yaw=<rad>`, `pitch=<rad>`, `act=<edit>` (see [`LevelView::preset_action`]),
@@ -58,6 +66,9 @@ pub use live::{LiveEdit, ObjectAction};
 pub mod loader;
 mod marks;
 pub mod nav;
+pub mod place_file;
+mod presets;
+pub use presets::{SavedSets, ZoneRequest};
 mod preview;
 pub mod scene;
 mod viewbar;
@@ -75,8 +86,9 @@ use doctor_toolkit::game::{GameInstance, ResourceIndex};
 use doctor_toolkit::level::edit::ModelChoice;
 use doctor_toolkit::level::{
     Catalog, Coverage, Found, Level, LevelAssets, LevelSource, Location, Lookup, Overrides,
-    RowMatrix, TYPE_METAMODEL, TYPE_SIMGROUP,
+    Presets, RowMatrix, TYPE_METAMODEL, TYPE_SIMGROUP,
 };
+use doctor_toolkit::project::EditorCamera;
 use doctor_toolkit::resource::logic::TYPE_SIMGROUP as LOGIC_SIMGROUP;
 use doctor_toolkit::resource::simgroup::{Guid, SimGroup};
 use doctor_toolkit::workspace::Workspace;
@@ -123,6 +135,18 @@ pub enum LevelAction {
         template: (Location, usize),
         model: ModelChoice,
         position: [f32; 3],
+    },
+    /// A model file placed at `position` (dropped into the view or chosen
+    /// with "Place a model from a file…"): the app imports it as a new
+    /// model set and adds an object that shows it. With `options` nobody is
+    /// asked (a preset).
+    PlaceFile {
+        path: std::path::PathBuf,
+        position: [f32; 3],
+        /// The point is on the collision of the level (else 10 m along the
+        /// ray: nothing was under the pointer).
+        on_ground: bool,
+        options: Option<place_file::PlaceOptions>,
     },
     /// An object of a class (a name or a hexadecimal hash) with empty
     /// attributes, without a template.
@@ -316,6 +340,23 @@ pub struct LevelView {
     gpu: Option<Gpu>,
     input: Option<LoadInput>,
     catalog: Arc<Catalog>,
+    /// What to load to see a level, computed with the catalog (stage 113).
+    presets: Arc<Presets>,
+    /// The Presets section of the Zones panel.
+    preset_ui: presets::PresetUi,
+    /// The sets of zones the user saved, given by the app.
+    saved: Arc<SavedSets>,
+    /// What the Zones panel asks the app to do with the saved sets and the
+    /// choice loaded last.
+    zone_requests: Vec<ZoneRequest>,
+    /// The saved choice to load once the game is ready — what was loaded
+    /// last — and where the camera stood.
+    restore: Option<(Vec<String>, Option<EditorCamera>)>,
+    /// The camera of [`Self::restore`], for the level being loaded.
+    restore_camera: Option<EditorCamera>,
+    /// `DOCTOR_TOOLKIT_GUI_LEVEL=last`: this view opens with what was loaded
+    /// last, whichever level tab the layout has.
+    wants_last: bool,
     zone_filter: String,
     chosen: BTreeSet<usize>,
     job: Option<LoadJob>,
@@ -422,6 +463,8 @@ pub struct LevelView {
     nav_action: Option<LevelAction>,
     /// Edits for the next frames (one is returned per frame).
     queue: VecDeque<LevelAction>,
+    /// A model file that waits for its place in the view.
+    file_drop: Option<place_file::FileDrop>,
     /// Walking the level (stage 37).
     walk: walk::Walk,
     /// The camera follows the game's (stage 35).
@@ -458,6 +501,13 @@ impl LevelView {
             gpu,
             input: None,
             catalog: Arc::default(),
+            presets: Arc::default(),
+            preset_ui: presets::PresetUi::default(),
+            saved: Arc::default(),
+            zone_requests: Vec::new(),
+            restore: None,
+            restore_camera: None,
+            wants_last: false,
             zone_filter: String::new(),
             chosen: BTreeSet::new(),
             job: None,
@@ -523,6 +573,7 @@ impl LevelView {
             nav: nav::NavLayer::default(),
             nav_action: None,
             queue: VecDeque::new(),
+            file_drop: None,
             walk: walk::Walk::default(),
             live_follow: false,
             live_edit: LiveEdit::default(),
@@ -543,13 +594,19 @@ impl LevelView {
 
     /// Whether the environment asks for the level view at start.
     pub fn wants_focus(&self) -> bool {
-        self.autoload.is_some()
+        self.autoload.is_some() || self.wants_last
+    }
+
+    /// Whether the environment asks this view for what was loaded last.
+    pub fn wants_last(&self) -> bool {
+        self.wants_last
     }
 
     /// Drops the preset of `DOCTOR_TOOLKIT_GUI_LEVEL`: only the first level
     /// tab takes it.
     pub fn forget_preset(&mut self) {
         self.autoload = None;
+        self.wants_last = false;
         self.preset = None;
     }
 
@@ -567,7 +624,12 @@ impl LevelView {
     fn apply_preset(&mut self, spec: &str) {
         let mut parts = spec.split(';');
         let zones = parts.next().unwrap_or_default();
-        self.autoload = Some(zones.split('+').map(str::to_owned).collect());
+        if zones == "last" {
+            // The app says what that was once the game is open.
+            self.wants_last = true;
+        } else {
+            self.autoload = Some(zones.split('+').map(str::to_owned).collect());
+        }
         let mut preset = Preset::default();
         for item in parts {
             let (name, value) = item.split_once('=').unwrap_or((item, ""));
@@ -642,6 +704,7 @@ impl LevelView {
         self.scene.instances.clear();
         self.clear_selection();
         self.catalog = Arc::new(Catalog::new(&game, &index));
+        self.presets = Arc::new(Presets::of_game(&game, &self.catalog));
         let parents = game.stream_parents().unwrap_or_default();
         self.input = Some(LoadInput {
             lookup: Arc::new(Lookup::new(&index)),
@@ -652,20 +715,27 @@ impl LevelView {
             texture_limit: TEXTURE_LIMIT,
         });
         if let Some(zones) = self.autoload.take() {
-            self.chosen.clear();
-            for name in zones {
-                let found: Vec<usize> = self.catalog.under(&name).map(|z| z.stream).collect();
-                if found.is_empty() {
-                    eprintln!("level: no zone at `{name}`");
-                    if let Some(p) = &mut self.preset {
-                        p.actions.clear();
-                        p.error = Some(format!("level: no zone at `{name}`"));
-                    }
+            let found = doctor_toolkit::level::presets::resolve(
+                zones.iter().map(String::as_str),
+                &self.catalog,
+                &self.presets,
+                &self.saved.sets,
+            );
+            for name in &found.unknown {
+                eprintln!("level: no zone at `{name}`");
+                if let Some(p) = &mut self.preset {
+                    p.actions.clear();
+                    p.error = Some(format!("level: no zone at `{name}`"));
                 }
-                self.chosen.extend(found);
             }
-            self.autoload = None;
+            for name in &found.gone {
+                eprintln!("level: a saved set names `{name}`, which the game does not have");
+            }
+            self.chosen = found.streams;
+            self.restore = None;
             self.pending_autoload = true;
+        } else {
+            self.restore_choice();
         }
     }
 
@@ -768,6 +838,7 @@ impl LevelView {
                     self.walk.level_changed();
                     self.assets = Some(assets);
                     self.rebuild_items();
+                    let restored = self.restore_camera.take();
                     match self.keep_view.take() {
                         Some((camera, selected)) => {
                             self.camera = camera;
@@ -780,7 +851,17 @@ impl LevelView {
                             });
                             self.select(exists);
                         }
-                        None => self.frame_all(),
+                        None => {
+                            self.frame_all();
+                            // Where it stood over these zones last time
+                            // (the speed and the far plane are the level's).
+                            if let Some(camera) = restored {
+                                self.camera.eye = camera.eye;
+                                self.camera.yaw = camera.yaw;
+                                self.camera.pitch = camera.pitch;
+                                self.camera_moved = true;
+                            }
+                        }
                     }
                     let select = std::mem::take(&mut self.select_after_load);
                     if !select.is_empty() {
@@ -1065,7 +1146,11 @@ impl LevelView {
     /// [`Self::take_preset_error`] (the screenshot mode then exits with a
     /// non-zero code).
     fn preset_action(&mut self) -> Option<LevelAction> {
-        if self.job.is_some() || !self.pending.is_empty() || self.level.is_none() {
+        if self.job.is_some()
+            || !self.pending.is_empty()
+            || self.level.is_none()
+            || self.file_drop.is_some()
+        {
             return None;
         }
         let preset = self.preset.as_mut()?;
@@ -1074,6 +1159,19 @@ impl LevelView {
             return None;
         }
         let text = preset.actions.pop_front()?;
+        // A model file placed without the window; the edit comes from
+        // `file_drop_ui` once the place is known.
+        if let Some(value) = text.strip_prefix("file:") {
+            match self.preset_place_file(value) {
+                Ok(()) => eprintln!("level: action `{text}`"),
+                Err(why) => {
+                    let preset = self.preset.as_mut()?;
+                    preset.actions.clear();
+                    preset.error = Some(format!("level: action `{text}`: {why}"));
+                }
+            }
+            return None;
+        }
         // Edits of the navigation graph of the selected node (stage 103).
         if let Some(edit) = text.strip_prefix("nav-") {
             return match self.nav.preset_edit(edit) {
@@ -1483,6 +1581,7 @@ impl LevelView {
         // In place: what is loaded reads streams whose numbers did not change.
         let chosen = again(&chosen);
         self.catalog = Arc::new(Catalog::new(&game, &index));
+        self.presets = Arc::new(Presets::of_game(&game, &self.catalog));
         let parents = game.stream_parents().unwrap_or_default();
         self.input = Some(LoadInput {
             lookup: Arc::new(Lookup::new(&index)),
@@ -1542,6 +1641,7 @@ impl LevelView {
     /// Zones (catalog paths or streams) to load when the game is opened.
     pub fn load_on_open(&mut self, zones: Vec<String>) {
         self.autoload = Some(zones);
+        self.restore = None;
     }
 
     /// Loads these zones (streams) instead of the chosen ones: the zones of
@@ -2667,6 +2767,9 @@ impl LevelView {
         }
         self.hud(ui, rect);
         if let Some(a) = self.drop_ui(ui, &response, rect, &view) {
+            action = Some(a);
+        }
+        if let Some(a) = self.file_drop_ui(ui, &response, rect, &view) {
             action = Some(a);
         }
         self.bar_ui(ui, rect);

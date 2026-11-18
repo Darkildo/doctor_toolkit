@@ -174,16 +174,7 @@ pub fn remove_zone_cell(
         grid.grid.remove_cell(cell)?;
         // Drop pool words nothing points at any more (a word added for the
         // cell is the last one).
-        while let Some(last) = grid.grid.pool.len().checked_sub(1) {
-            let used =
-                |l: &Option<wgi::PoolList>| l.is_some_and(|l| (l.start + l.count) as usize > last);
-            if grid.grid.streams.iter().any(|s| used(&s.needs))
-                || grid.grid.cells.iter().any(|c| used(&c.needs))
-            {
-                break;
-            }
-            grid.grid.pool.pop();
-        }
+        grid.grid.trim_pool();
         ws.set_resource(
             game,
             stream_index,

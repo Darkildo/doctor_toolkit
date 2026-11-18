@@ -145,9 +145,15 @@ impl LiveNames {
     /// Opens the game at `root` and its workspace (unless `original`) and
     /// builds the index.
     pub fn open(root: &Path, original: bool) -> Result<Self> {
+        Self::open_with(root, original, None)
+    }
+
+    /// [`Self::open`] with the workspace in `workspace` instead of the
+    /// game's own folder (a project's workspace, say).
+    pub fn open_with(root: &Path, original: bool, workspace: Option<&Path>) -> Result<Self> {
         let game = GameInstance::open(root)?;
         let (index, _) = game.build_index(|_| {});
-        let dir = Workspace::default_dir(game.root());
+        let dir = workspace.map_or_else(|| Workspace::default_dir(game.root()), Path::to_owned);
         let ws = (!original && Workspace::exists(&dir))
             .then(|| Workspace::open(&dir))
             .transpose()?;

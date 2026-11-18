@@ -19,10 +19,16 @@ use doctor_toolkit::toc::Toc;
 
 #[path = "corpus/crew.rs"]
 mod crew;
+#[path = "corpus/delta.rs"]
+mod delta;
 #[path = "corpus/lua_api.rs"]
 mod lua_api;
+#[path = "corpus/mod_deltas.rs"]
+mod mod_deltas;
 #[path = "corpus/project.rs"]
 mod project;
+#[path = "corpus/rebase.rs"]
+mod rebase;
 #[path = "corpus/resources_in_memory.rs"]
 mod resources_in_memory;
 #[path = "corpus/story.rs"]
@@ -986,6 +992,276 @@ fn model_import_records_replacements_and_new_sets_on_copies() {
     drop(stream);
 
     // Undo all three, unapply: the original files again.
+    ws.undo().unwrap().unwrap();
+    ws.undo().unwrap().unwrap();
+    ws.undo().unwrap().unwrap();
+    ws.apply(&game, ApplyOptions::default()).unwrap();
+    ws.unapply(&game, false).unwrap();
+    assert!(
+        snapshot() == originals,
+        "files differ after undo and unapply"
+    );
+}
+
+/// A model imported in place with a new texture, and imported again (stage
+/// of a modder's work: look, change the file, import once more): the clone
+/// of the material and its texture go before every mesh of the metamodel;
+/// the workspace gives them to a viewer before `apply`; the second import
+/// keeps them under their ids with the new pixels instead of adding one more
+/// clone, applied or not; undo gives the original files back.
+#[test]
+fn model_imported_again_keeps_its_material_and_textures() {
+    use doctor_toolkit::create::{self, TYPE_MATERIAL, TYPE_METAMODEL};
+    use doctor_toolkit::export::gltf::{self as export, AssetSource};
+    use doctor_toolkit::game::GameAssets;
+    use doctor_toolkit::import::{gltf as import, model};
+    use doctor_toolkit::resource::material::TextureRole;
+    use doctor_toolkit::resource::mesh::{self, TYPE_MESH};
+    use doctor_toolkit::resource::metamodel::MetaModel;
+    use doctor_toolkit::workspace::{ApplyOptions, EditedAssets, Workspace};
+
+    let Some(dir) = game_dir() else { return };
+    let real = GameInstance::open(&dir).unwrap();
+    let source_name = "mp_rooftops/mp_rooftops".to_owned();
+    let mut files = vec![
+        real.streams()[real.find_stream(&source_name).unwrap()]
+            .rel_path
+            .clone(),
+    ];
+    for ancestor in real.stream_ancestors(&source_name).unwrap() {
+        if let Some(i) = real.find_stream(&ancestor) {
+            files.push(real.streams()[i].rel_path.clone());
+        }
+    }
+    for toc in real.tocs() {
+        files.push(toc.rel_path.clone());
+    }
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    for rel in &files {
+        std::fs::create_dir_all(root.join(rel).parent().unwrap()).unwrap();
+        std::fs::copy(dir.join(rel), root.join(rel)).unwrap();
+    }
+    let snapshot = || -> Vec<Vec<u8>> {
+        files
+            .iter()
+            .map(|rel| std::fs::read(root.join(rel)).unwrap())
+            .collect()
+    };
+    let originals = snapshot();
+    let game = std::sync::Arc::new(GameInstance::open(root).unwrap());
+    let s = game.find_stream(&source_name).unwrap();
+    let (index, _) = game.build_index(|_| {});
+    let mut assets = GameAssets::new(game.clone(), &index);
+    let mut ws = Workspace::for_game(&game, None).unwrap();
+    let baseline: std::collections::BTreeSet<_> = create::check_references(&game, s)
+        .unwrap()
+        .into_iter()
+        .map(|u| u.target)
+        .collect();
+
+    // A metamodel with meshes in the stream; its ids and theirs stay, the
+    // indices do not.
+    let stream = game.open_stream(s).unwrap();
+    let layout = stream.layout();
+    let count = |type_id: u32, stream: &StreamFile| {
+        stream
+            .layout()
+            .resources
+            .iter()
+            .filter(|r| r.header.type_id == type_id)
+            .count()
+    };
+    let (meta, mesh_ids) = (0..layout.resources.len())
+        .filter(|&i| layout.resources[i].header.type_id == TYPE_METAMODEL)
+        .find_map(|i| {
+            let m = MetaModel::parse(&stream.resource_data(i).unwrap()).ok()?;
+            let ids: Vec<[u32; 4]> = m
+                .resources
+                .iter()
+                .filter(|r| r.type_id.0 == TYPE_MESH)
+                .map(|r| r.ids.map(|h| h.0))
+                .filter(|ids| {
+                    layout
+                        .resources
+                        .iter()
+                        .any(|x| x.header.type_id == TYPE_MESH && x.header.ids == *ids)
+                })
+                .collect();
+            (!ids.is_empty()).then_some((i, ids))
+        })
+        .unwrap();
+    let meta_ids = layout.resources[meta].header.ids;
+    let position = |stream: &StreamFile, type_id: u32, ids: [u32; 4]| {
+        stream
+            .layout()
+            .resources
+            .iter()
+            .position(|r| r.header.type_id == type_id && r.header.ids == ids)
+            .unwrap()
+    };
+    let first_mesh = position(&stream, TYPE_MESH, mesh_ids[0]);
+    let original = mesh::load(&stream, first_mesh).unwrap();
+    let materials_before = count(TYPE_MATERIAL, &stream);
+    let resources_before = layout.resources.len();
+    let glb = export::model_to_glb(&original, &mut assets).unwrap();
+    drop(stream);
+    let gltf = import::read(&glb, None).unwrap();
+    let coloured = |rgb: [u8; 3]| {
+        let mut model = gltf.clone();
+        let pixels: Vec<u8> = (0..64 * 64)
+            .flat_map(|_| [rgb[0], rgb[1], rgb[2], 255])
+            .collect();
+        let material = model
+            .parts
+            .first()
+            .and_then(|p| p.material)
+            .expect("the export has materials");
+        model.materials[material].base_color = Some(import::GltfImage {
+            name: "colour".into(),
+            mime_type: "image/png".into(),
+            bytes: doctor_toolkit::resource::pixels::encode_png(64, 64, &pixels).unwrap(),
+        });
+        model
+    };
+    let options = model::ImportOptions::default();
+
+    // 1. Red, recorded only.
+    let plan = model::plan(
+        &game,
+        &ws,
+        &index,
+        &mut assets,
+        s,
+        meta,
+        &coloured([200, 20, 20]),
+        &options,
+    )
+    .unwrap();
+    assert_eq!(plan.summary.materials_new, 1, "{:?}", plan.summary);
+    let old: Vec<u32> = original.records.iter().map(|r| r.material_hash).collect();
+    let clone = plan
+        .preview()
+        .unwrap()
+        .records
+        .iter()
+        .map(|r| r.material_hash)
+        .find(|h| !old.contains(h))
+        .expect("a record with the new material");
+    plan.commit(&mut ws, &game).unwrap().unwrap();
+    // The game files do not have the clone; the workspace gives it.
+    assert!(AssetSource::material(&mut assets, clone).is_none());
+    let colour = |ws: &Workspace, assets: &mut GameAssets| -> [u8; 3] {
+        let mut edited = EditedAssets::new(ws, assets);
+        let material = edited
+            .material(clone)
+            .expect("the material of the workspace");
+        let texture = material.texture(TextureRole::Diffuse).unwrap();
+        assert_ne!(edited.texture_version(texture), 0);
+        let (w, h, rgba) = edited.texture(texture).unwrap().rgba(0).unwrap();
+        assert_eq!((w, h), (64, 64));
+        [rgba[0], rgba[1], rgba[2]]
+    };
+    let [r, _, b] = colour(&ws, &mut assets);
+    assert!(r > 150 && b < 80, "red expected, got {r} .. {b}");
+
+    // 2. Blue over it, still not applied: the same material and texture.
+    let plan = model::plan(
+        &game,
+        &ws,
+        &index,
+        &mut assets,
+        s,
+        meta,
+        &coloured([20, 20, 200]),
+        &options,
+    )
+    .unwrap();
+    let summary = plan.summary.clone();
+    assert_eq!(summary.materials_new, 0, "{summary:?}");
+    assert_eq!(summary.materials_updated, 1, "{summary:?}");
+    assert!(summary.added.is_empty(), "{summary:?}");
+    assert!(
+        plan.preview()
+            .unwrap()
+            .records
+            .iter()
+            .any(|r| r.material_hash == clone),
+        "the records keep the material"
+    );
+    // A preview of the plan draws with the kept material and the new pixels.
+    {
+        let mut preview = plan.assets(&mut assets);
+        let material = preview.material(clone).expect("the material in the plan");
+        let texture = material.texture(TextureRole::Diffuse).unwrap();
+        assert_ne!(preview.texture_version(texture), 0);
+        let (_, _, rgba) = preview.texture(texture).unwrap().rgba(0).unwrap();
+        assert!(
+            rgba[2] > 150 && rgba[0] < 80,
+            "blue expected in the preview"
+        );
+    }
+    plan.commit(&mut ws, &game).unwrap().unwrap();
+    let [r, _, b] = colour(&ws, &mut assets);
+    assert!(b > 150 && r < 80, "blue expected, got {r} .. {b}");
+
+    // Applied: one more material, before every mesh of the metamodel.
+    ws.apply(&game, ApplyOptions::default()).unwrap();
+    let stream = game.open_stream(s).unwrap();
+    assert_eq!(count(TYPE_MATERIAL, &stream), materials_before + 1);
+    assert_eq!(stream.layout().resources.len(), resources_before + 3);
+    let material_at = stream
+        .layout()
+        .resources
+        .iter()
+        .enumerate()
+        .position(|(i, r)| {
+            r.header.type_id == TYPE_MATERIAL
+                && stream
+                    .resource_data(i)
+                    .is_ok_and(|d| d.get(8..12) == Some(&clone.to_le_bytes()[..]))
+        })
+        .expect("the clone in the stream");
+    for ids in &mesh_ids {
+        assert!(
+            material_at < position(&stream, TYPE_MESH, *ids),
+            "the material loads before mesh {ids:08x?}"
+        );
+    }
+    let meta = position(&stream, TYPE_METAMODEL, meta_ids);
+    drop(stream);
+    let after: std::collections::BTreeSet<_> = create::check_references(&game, s)
+        .unwrap()
+        .into_iter()
+        .map(|u| u.target)
+        .collect();
+    assert!(
+        after.is_subset(&baseline),
+        "new unresolved: {:?}",
+        after.difference(&baseline)
+    );
+
+    // 3. Green over the applied one: again nothing new.
+    let plan = model::plan(
+        &game,
+        &ws,
+        &index,
+        &mut assets,
+        s,
+        meta,
+        &coloured([20, 200, 20]),
+        &options,
+    )
+    .unwrap();
+    assert_eq!(plan.summary.materials_updated, 1, "{:?}", plan.summary);
+    assert!(plan.summary.added.is_empty(), "{:?}", plan.summary);
+    plan.commit(&mut ws, &game).unwrap().unwrap();
+    ws.apply(&game, ApplyOptions::default()).unwrap();
+    let stream = game.open_stream(s).unwrap();
+    assert_eq!(count(TYPE_MATERIAL, &stream), materials_before + 1);
+    assert_eq!(stream.layout().resources.len(), resources_before + 3);
+    drop(stream);
+
     ws.undo().unwrap().unwrap();
     ws.undo().unwrap().unwrap();
     ws.undo().unwrap().unwrap();

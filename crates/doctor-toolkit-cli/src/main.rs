@@ -1762,6 +1762,19 @@ fn export_models(
     };
     let filter = name_filter.map(str::to_ascii_lowercase);
     fs::create_dir_all(output)?;
+    // Models whose name repeats in the stream (`model`, `lodmodel`) get
+    // their id in the file name, as `textures` names repeated textures:
+    // one file each instead of the last one over the others.
+    let mut names: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    for (i, resource) in stream.layout().resources.iter().enumerate() {
+        if resource.header.type_id == TYPE_MESH
+            && let Ok(model) = mesh::load(&stream, i)
+        {
+            *names
+                .entry(sanitize(&model.name).to_ascii_lowercase())
+                .or_default() += 1;
+        }
+    }
     let mut written = 0;
     for (i, resource) in stream.layout().resources.iter().enumerate() {
         if resource.header.type_id == TYPE_TREE {
@@ -1805,7 +1818,16 @@ fn export_models(
                 "note: OBJ keeps no skeleton or bone weights; skinned models are written in bind pose"
             );
         }
-        let path = output.join(format!("{}.{}", sanitize(&model.name), format.extension()));
+        let mut file_name = sanitize(&model.name);
+        if names
+            .get(&file_name.to_ascii_lowercase())
+            .copied()
+            .unwrap_or(0)
+            > 1
+        {
+            file_name = format!("{file_name}_{:08x}", resource.header.ids[3]);
+        }
+        let path = output.join(format!("{file_name}.{}", format.extension()));
         scene::write_file(&built, &path, Some(format)).with_context(|| model.name.clone())?;
         out!("{} ({} part(s))", path.display(), model.records.len());
         written += 1;

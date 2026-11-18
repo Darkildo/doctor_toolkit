@@ -1124,6 +1124,7 @@ mod tests {
             description: String::new(),
             url: None,
             relations: Relations::default(),
+            whole_resources: false,
         };
         let out = dir.path().join("late-line.zip");
         let report = build_from_workspace(&ws, &info, None, None, &out).unwrap();

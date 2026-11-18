@@ -20,6 +20,9 @@ impl BrowserApp {
                         if spec.command == Command::OpenStream {
                             self.recent_menu(ui);
                         }
+                        if spec.command == Command::ProjectOpen {
+                            self.recent_projects_menu(ui);
+                        }
                         if spec.command == Command::ResetLayout {
                             self.layouts_menu(ui);
                         }
@@ -62,6 +65,28 @@ impl BrowserApp {
         if ui.add_enabled(self.enabled(command), button).clicked() {
             self.pending.push(command);
         }
+    }
+
+    /// File → Recent projects.
+    fn recent_projects_menu(&mut self, ui: &mut egui::Ui) {
+        let enabled = !self.settings.recent_projects.is_empty() && self.job.is_none();
+        ui.add_enabled_ui(enabled, |ui| {
+            ui.menu_button(tr("document.recent"), |ui| {
+                let mut open = None;
+                for dir in &self.settings.recent_projects {
+                    if ui.button(dir.display().to_string()).clicked() {
+                        open = Some(dir.clone());
+                    }
+                }
+                ui.separator();
+                if ui.button(tr("menu.clear_recent")).clicked() {
+                    self.settings.recent_projects.clear();
+                }
+                if let Some(dir) = open {
+                    self.open_document(dir, ui.ctx());
+                }
+            });
+        });
     }
 
     /// File → Recent games.

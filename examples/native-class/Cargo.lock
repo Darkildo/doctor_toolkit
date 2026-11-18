@@ -4,11 +4,11 @@ version = 4
 
 [[package]]
 name = "doctor-example-class"
-version = "0.0.8"
+version = "1.0.0"
 dependencies = [
  "doctor-toolkit-sdk",
 ]
 
 [[package]]
 name = "doctor-toolkit-sdk"
-version = "0.0.8"
+version = "1.0.0"

@@ -1,0 +1,88 @@
+{
+  "format": "doctor-toolkit-mod",
+  "format_version": 6,
+  "id": "fuzz-seed-6",
+  "name": "Fuzz seed of format 6",
+  "version": "2.0.0",
+  "author": "fuzz",
+  "description": "Resources stored as deltas, which the mod manager folds",
+  "game": {
+    "profile": "The Godfather II (PC)"
+  },
+  "requires_manager": ">=1.0.0",
+  "depends": {
+    "base": "^1.2"
+  },
+  "resources": [
+    {
+      "key": "gf2/cuba/zone_01:simgroup:00000000",
+      "payload": {
+        "sha256": "2c26b46b68ffc68ff99b453c1d30413413422d706483bfa0f98a5e886266e7ae",
+        "size": 812
+      },
+      "original": {
+        "sha256": "5fa303d0c7487254f0382018cc70326c73b1bd5765336f040befefa47831e424",
+        "size": 10468
+      },
+      "label": "Add a crate",
+      "delta": {
+        "kind": "simgroup",
+        "format": 1
+      }
+    },
+    {
+      "key": "gf2/cuba:0x3b004eb9:00000077",
+      "payload": {
+        "sha256": "fcde2b2edba56bf408601fb721fe9b5c338d10ee429ea04fae5511b68fbf8fb9",
+        "size": 301
+      },
+      "storage": "raw",
+      "delta": {
+        "kind": "wgi",
+        "format": 1
+      }
+    },
+    {
+      "key": "gf2/text/dd7d7050:lh2:00000002",
+      "payload": {
+        "sha256": "baa5a0964d3320fbc0c6a922140453c8513ea24ab8fd0577034804a967248096",
+        "size": 96
+      },
+      "original": {
+        "sha256": "1136e8cf83c904fc13a46e912fd92f662f54ade417080d502088065da68c5750",
+        "size": 4096
+      },
+      "delta": {
+        "kind": "lh2",
+        "format": 1
+      }
+    },
+    {
+      "key": "gf2/chars:partsdb:00000006",
+      "payload": {
+        "sha256": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
+        "size": 180
+      },
+      "original": {
+        "sha256": "60303ae22b998861bce3b28f33eec1be758a213c86c93c076dbe9f558c11c752",
+        "size": 20480
+      },
+      "delta": {
+        "kind": "partsdb",
+        "format": 1
+      }
+    },
+    {
+      "key": "gf2/cuba:mesh:00003333",
+      "payload": {
+        "sha256": "fd61a03af4f77d870fc21e05e7e80678095c92d808cfb3b5c279ee04c74aca13",
+        "size": 300
+      },
+      "original": {
+        "sha256": "b3a8e0e1f9ab1bfe3a36f231f676f78bb30a519d2b21e6c530c0eee8ebb4a5d0",
+        "size": 300
+      },
+      "label": "A whole resource next to the deltas"
+    }
+  ]
+}

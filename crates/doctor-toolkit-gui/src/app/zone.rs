@@ -790,9 +790,9 @@ impl BrowserApp {
             (Some(game), Some(ws)) => {
                 zone_ops::zone_cells(game, ws, &level).map_err(|e| e.to_string())
             }
-            (Some(game), None) => doctor_toolkit::workspace::Workspace::for_game(game, None)
-                .and_then(|ws| zone_ops::zone_cells(game, &ws, &level))
-                .map_err(|e| e.to_string()),
+            (Some(game), None) => self
+                .workspace_for_reading()
+                .and_then(|ws| zone_ops::zone_cells(game, &ws, &level).map_err(|e| e.to_string())),
             _ => Err(tr("edits.no_game").to_owned()),
         };
         self.zone.cells = Some((level, cells));

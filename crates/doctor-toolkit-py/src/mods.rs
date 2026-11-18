@@ -113,8 +113,9 @@ impl ModManager {
     }
 
     /// Installs the changes of a workspace (all, or those matching `keys`) as
-    /// a mod, enabled and last in the load order.
-    #[pyo3(signature = (workspace, name, *, id = None, version = "1.0", author = "", description = "", url = None, keys = None))]
+    /// a mod, enabled and last in the load order. `deltas` as in
+    /// `Workspace.build_mod`.
+    #[pyo3(signature = (workspace, name, *, id = None, version = "1.0", author = "", description = "", url = None, keys = None, deltas = true))]
     #[allow(clippy::too_many_arguments)]
     fn install_workspace<'py>(
         &mut self,
@@ -127,8 +128,9 @@ impl ModManager {
         description: &str,
         url: Option<String>,
         keys: Option<Vec<String>>,
+        deltas: bool,
     ) -> PyResult<Bound<'py, PyDict>> {
-        let info = mod_info(name, id, version, author, description, url);
+        let info = mod_info(name, id, version, author, description, url, deltas);
         let keys: Option<Vec<ResourceKey>> = match_keys(workspace.inner(), keys)?;
         let game = &self.game;
         let manager = &mut self.manager;
@@ -169,22 +171,27 @@ impl ModManager {
         self.manager.dependents(id)
     }
 
-    /// Resources replaced by more than one mod, as dicts: `key`, `mods` (load
-    /// order, the last one wins), `same_data`.
+    /// Resources more than one mod changes so that one of them loses, as
+    /// dicts: `key`, `mods` (load order, the last one wins), `same_data`,
+    /// `elements` — empty when the last mod replaces the resource whole;
+    /// else the mods merge (deltas) and these are the values both set.
     #[pyo3(signature = (enabled_only = true))]
     fn conflicts<'py>(
         &self,
         py: Python<'py>,
         enabled_only: bool,
     ) -> PyResult<Vec<Bound<'py, PyDict>>> {
-        self.manager
-            .conflicts(enabled_only)
+        let game = &self.game;
+        let manager = &self.manager;
+        py.detach(|| manager.conflicts(game, enabled_only))
+            .py()?
             .into_iter()
             .map(|c| {
                 let dict = PyDict::new(py);
                 dict.set_item("key", c.key.to_string())?;
                 dict.set_item("mods", &c.mods)?;
                 dict.set_item("same_data", c.same_data)?;
+                dict.set_item("elements", &c.elements)?;
                 Ok(dict)
             })
             .collect()

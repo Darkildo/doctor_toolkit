@@ -29,12 +29,14 @@
 //! number of the last operation in effect, so a crash between writing the log
 //! and the manifest is repaired when the workspace is opened again.
 
+pub mod assets;
 pub mod deploy;
 pub mod diff;
 pub mod files;
 pub mod key;
 pub mod lock;
 mod matching;
+pub mod rebase;
 pub mod stage;
 pub mod store;
 
@@ -50,6 +52,7 @@ use crate::resource::lh2::StringTable;
 use crate::resource::texture::{self, Texture, TexturePair};
 use crate::{Error, Result};
 
+pub use assets::EditedAssets;
 pub use deploy::{AppliedStream, DeployStatus, Deployment, SyncProgress};
 pub use diff::{
     ApxDiff, BlockChange, ByteDiff, LogicDiff, SemanticDiff, StringChange, StringTableDiff,
@@ -59,6 +62,7 @@ pub use files::{FileChange, FileEdit, FileKey};
 pub use key::ResourceKey;
 pub use lock::{LockHolder, WorkspaceLock};
 pub use matching::Reverted;
+pub use rebase::{Given, RebaseOutcome, RebaseReport, RebaseRequest, Rebased, Stale};
 pub use store::{Blob, FileStamp, PayloadStore};
 
 /// Value of the `format` field of `manifest.json`.
@@ -118,11 +122,29 @@ pub struct Change {
     /// Set when the resource is not in the game: the workspace adds it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub added: Option<Added>,
+    /// The data the change was made on (stage 111), when that was not
+    /// [`Self::original`]: what the game gave the resource when it was
+    /// first changed — the game as it was, with the mods the mod manager
+    /// had written into it ([`Workspace::current_data`]). It is kept
+    /// through later edits of the resource, and it is what tells that the
+    /// game gives other data now ([`Workspace::stale`]) and what a rebase
+    /// takes the difference to ([`Workspace::rebase`]). Left out of the
+    /// file when the change was made on the original, so a workspace
+    /// without mods under it is written as before this field existed; a
+    /// change recorded before it existed reads as made on the original.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub made_on: Option<Blob>,
 }
 
 impl Change {
     pub fn is_added(&self) -> bool {
         self.added.is_some()
+    }
+
+    /// The data the change was made on: [`Self::made_on`], else the
+    /// original.
+    pub fn made_on(&self) -> &Blob {
+        self.made_on.as_ref().unwrap_or(&self.original)
     }
 }
 
@@ -274,11 +296,49 @@ impl GameFingerprint {
     }
 }
 
+/// Whose workspace it is: who brings its changes into the game.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Owner {
+    /// The game's own workspace, or one in a folder given to a command: it
+    /// writes its changes into the game files itself ([`Workspace::apply`]).
+    #[default]
+    Game,
+    /// The own workspace of a project (stage 107). It is never written
+    /// into the game files by itself: the files of the game have one owner
+    /// besides the game's own workspace, the mod manager, and a project
+    /// reaches the game as a mod (installed, or staged for one launch by
+    /// [`crate::play::overlay`]). So two projects never fight over the game
+    /// files, and nothing has to be put back when another one is opened.
+    Project,
+}
+
+impl Owner {
+    pub fn is_default(&self) -> bool {
+        *self == Self::Game
+    }
+
+    /// The owner of a workspace by where it is: a project's when a project
+    /// in the folder above names the folder as its workspace.
+    fn of_folder(dir: &Path) -> Self {
+        match crate::project::project_of_workspace(dir) {
+            Some(_) => Self::Project,
+            None => Self::Game,
+        }
+    }
+}
+
 /// `manifest.json`: the current result of all edits.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Manifest {
     pub format: String,
     pub version: u32,
+    /// Left out for the game's own workspace. A program older than stage
+    /// 107 does not know the field and drops it when it saves; it comes
+    /// back when the workspace is opened in the folder a project names
+    /// ([`crate::project::project_of_workspace`]) or through its project.
+    #[serde(default, skip_serializing_if = "Owner::is_default")]
+    pub owner: Owner,
     pub game: GameFingerprint,
     /// Incremented on every save; detects a second program editing the same workspace.
     pub revision: u64,
@@ -339,6 +399,15 @@ pub struct NewResourceEdit {
     pub storage: StorageChoice,
     /// Place it before this resource of the original stream; at the end when `None`.
     pub before: Option<ResourceKey>,
+}
+
+/// A resource the workspace adds with the order it has among the resources
+/// added at the same place, for [`Workspace::put_added_resources`].
+#[derive(Debug, Clone)]
+pub struct AddedResourceEdit {
+    pub resource: NewResourceEdit,
+    /// [`Added::order`]: lower first.
+    pub order: u64,
 }
 
 /// New data for one resource of a stream, for [`Workspace::set_resources`].
@@ -541,6 +610,7 @@ impl Workspace {
             manifest: Manifest {
                 format: FORMAT.to_owned(),
                 version: VERSION,
+                owner: Owner::of_folder(&dir),
                 game: GameFingerprint::of(game)?,
                 revision: 0,
                 log_seq: 0,
@@ -639,6 +709,11 @@ impl Workspace {
             .collect();
         // Older versions are read as they are and saved in the current version.
         manifest.version = VERSION;
+        // A project's workspace written before stage 107, or by a program
+        // that dropped the mark.
+        if manifest.owner.is_default() {
+            manifest.owner = Owner::of_folder(&dir);
+        }
         let workspace = Self {
             store: PayloadStore::new(dir.join(PAYLOAD_DIR)),
             dir,
@@ -674,6 +749,45 @@ impl Workspace {
         } else {
             Self::unsaved(dir, game)
         }
+    }
+
+    /// [`Self::for_game`] for the own workspace of a project in `dir`: a new
+    /// one is a project's ([`Owner::Project`]), and one that is there
+    /// becomes it (in memory; the next recorded operation writes the mark).
+    pub fn for_project(game: &GameInstance, dir: &Path) -> Result<Self> {
+        let mut workspace = Self::for_game(game, Some(dir))?;
+        workspace.manifest.owner = Owner::Project;
+        Ok(workspace)
+    }
+
+    /// Whose workspace it is.
+    pub fn owner(&self) -> Owner {
+        self.manifest.owner
+    }
+
+    /// Makes the workspace a project's own ([`Owner::Project`]) and writes
+    /// that down when the workspace is on disk (also when it was known to
+    /// be one by its folder only). The caller holds its lock.
+    pub fn make_project_owned(&mut self) -> Result<()> {
+        self.manifest.owner = Owner::Project;
+        if self.saved { self.save() } else { Ok(()) }
+    }
+
+    /// Why this workspace is not written into the game files, when it is
+    /// not: it is a project's own.
+    fn refuse_project_write(&self) -> Result<()> {
+        if self.manifest.owner != Owner::Project {
+            return Ok(());
+        }
+        Err(Error::InvalidArgument(format!(
+            "the workspace in {} is a project's own and is not written into the game files by \
+             itself: install the project as a mod (`doctor-toolkit project install PROJECT`, \
+             File → Install project into Mods in the editor) and write the mods \
+             (`doctor-toolkit mods apply GAME`), or play it without writing (Play in the \
+             editor, `doctor-toolkit play GAME --workspace-dir …`; on the edition the live \
+             module knows)",
+            self.dir.display()
+        )))
     }
 
     /// Makes the manifest agree with the log after an interrupted save. The
@@ -873,7 +987,9 @@ impl Workspace {
     // ------------------------------------------------------------- recording
 
     /// Records new data for resources of stream `stream_index` as one
-    /// undoable operation. Data equal to the original removes the change.
+    /// undoable operation. Data equal to what the game gives without the
+    /// change — the original, or the data of the mods in the game the
+    /// change was made on ([`Change::made_on`]) — removes the change.
     /// Returns the sequence number of the operation, or `None` when nothing changed.
     pub fn set_resources(
         &mut self,
@@ -997,6 +1113,11 @@ impl Workspace {
         } else {
             Some(StreamFile::open(&original_path)?)
         };
+        // The file of the game holds other data than the original only
+        // when there is an original apart from it, and it is what an edit
+        // starts from only when this workspace did not write it
+        // ([`Self::current_data`]).
+        let as_it_is = original.is_some() && !self.wrote_stream(&name);
         let original = original.as_ref().unwrap_or(&current);
 
         let mut planned = Vec::new();
@@ -1010,33 +1131,49 @@ impl Workspace {
                 return Err(Error::InvalidArgument(format!("{key} is edited twice")));
             }
             let before = self.state.get(&key).cloned();
-            let original_blob = match &before {
-                Some(change) => change.original.clone(),
+            let (original_blob, made_on) = match &before {
+                Some(change) => (change.original.clone(), change.made_on.clone()),
                 None => {
                     let index = key.find_in(original.layout()).ok_or_else(|| {
                         Error::InvalidArgument(format!("{key} is not in the original stream"))
                     })?;
-                    self.store.put(&original.resource_data(index)?)?
+                    let original_blob = self.store.put(&original.resource_data(index)?)?;
+                    // What the first change of a resource is made on, when
+                    // that is not the original: the data of the mods in
+                    // the game.
+                    let made_on = match as_it_is {
+                        true => {
+                            let data = current.resource_data(edit.index)?;
+                            match Blob::of(&data) == original_blob {
+                                true => None,
+                                false => Some(self.store.put(&data)?),
+                            }
+                        }
+                        false => None,
+                    };
+                    (original_blob, made_on)
                 }
             };
             let payload = Blob::of(&edit.data);
             let added = before.as_ref().and_then(|c| c.added.clone());
-            let after = if added.is_none()
-                && payload == original_blob
-                && edit.storage == StorageChoice::Keep
-            {
-                None
-            } else {
-                self.store.put(&edit.data)?;
-                Some(Change {
-                    key: key.clone(),
-                    payload,
-                    original: original_blob,
-                    storage: edit.storage,
-                    label: label.to_owned(),
-                    added,
-                })
-            };
+            // Data the game gives without the change is no change: the
+            // original, or what the change was made on.
+            let given = made_on.as_ref().unwrap_or(&original_blob);
+            let after =
+                if added.is_none() && payload == *given && edit.storage == StorageChoice::Keep {
+                    None
+                } else {
+                    self.store.put(&edit.data)?;
+                    Some(Change {
+                        key: key.clone(),
+                        payload,
+                        original: original_blob,
+                        storage: edit.storage,
+                        label: label.to_owned(),
+                        added,
+                        made_on,
+                    })
+                };
             let unchanged = match (&before, &after) {
                 (None, None) => true,
                 (Some(b), Some(a)) => b.payload == a.payload && b.storage == a.storage,
@@ -1088,41 +1225,7 @@ impl Workspace {
                     "{key} is already in the workspace"
                 )));
             }
-            if !layouts.contains_key(&stream) {
-                let layout = if self.new_streams.contains_key(&stream) {
-                    None
-                } else {
-                    let index = game.find_stream(&stream).ok_or_else(|| {
-                        Error::InvalidArgument(format!(
-                            "stream {stream} is neither in the game nor new"
-                        ))
-                    })?;
-                    let path = game.original_path(&game.streams()[index]);
-                    let data = fs::read(&path).map_err(|e| Error::io(&path, e))?;
-                    Some(StreamLayout::parse(&data)?)
-                };
-                layouts.insert(stream.clone(), layout);
-            }
-            if let Some(layout) = &layouts[&stream] {
-                if key.find_in(layout).is_some() {
-                    return Err(Error::InvalidArgument(format!(
-                        "{key} is already in the stream"
-                    )));
-                }
-                if let Some(before) = &resource.before
-                    && (before.stream != stream || before.find_in(layout).is_none())
-                {
-                    return Err(Error::InvalidArgument(format!(
-                        "{before} is not a resource of the original {stream}"
-                    )));
-                }
-            } else if resource.before.is_some() {
-                return Err(Error::InvalidArgument(format!(
-                    "{stream} is new: its resources are written in the order they were added \
-                     (SimGroups last), so a place before a resource cannot be asked for; add it \
-                     without a place"
-                )));
-            }
+            self.check_addition(game, &mut layouts, &key, resource.before.as_ref())?;
             let payload = self.store.put(&resource.data)?;
             planned.push(Edit {
                 key: key.clone(),
@@ -1139,6 +1242,7 @@ impl Workspace {
                         before: resource.before.clone(),
                         order: base_order + i as u64,
                     }),
+                    made_on: None,
                 }),
             });
         }
@@ -1148,9 +1252,173 @@ impl Workspace {
         Ok(planned)
     }
 
+    /// Whether a resource with key `key` can be added to its stream, before
+    /// `before` when given: the stream is the game's or new, the original
+    /// stream does not have the key, and the place is a resource of the
+    /// original stream (a new stream has no places). `layouts` keeps the
+    /// original layouts read so far (`None`: a new stream).
+    fn check_addition(
+        &self,
+        game: &GameInstance,
+        layouts: &mut BTreeMap<String, Option<StreamLayout>>,
+        key: &ResourceKey,
+        before: Option<&ResourceKey>,
+    ) -> Result<()> {
+        let stream = &key.stream;
+        if !layouts.contains_key(stream) {
+            let layout = if self.new_streams.contains_key(stream) {
+                None
+            } else {
+                let index = game.find_stream(stream).ok_or_else(|| {
+                    Error::InvalidArgument(format!(
+                        "stream {stream} is neither in the game nor new"
+                    ))
+                })?;
+                let path = game.original_path(&game.streams()[index]);
+                let data = fs::read(&path).map_err(|e| Error::io(&path, e))?;
+                Some(StreamLayout::parse(&data)?)
+            };
+            layouts.insert(stream.clone(), layout);
+        }
+        if let Some(layout) = &layouts[stream] {
+            if key.find_in(layout).is_some() {
+                return Err(Error::InvalidArgument(format!(
+                    "{key} is already in the stream"
+                )));
+            }
+            if let Some(before) = before
+                && (before.stream != *stream || before.find_in(layout).is_none())
+            {
+                return Err(Error::InvalidArgument(format!(
+                    "{before} is not a resource of the original {stream}"
+                )));
+            }
+        } else if before.is_some() {
+            return Err(Error::InvalidArgument(format!(
+                "{stream} is new: its resources are written in the order they were added \
+                 (SimGroups last), so a place before a resource cannot be asked for; add it \
+                 without a place"
+            )));
+        }
+        Ok(())
+    }
+
+    /// Records resources the workspace adds as they are described: each is
+    /// added, or — when the workspace added a resource of that key before —
+    /// gets the data, the storage, the memory policy, the alignment, the
+    /// place and the order given here. One undoable operation; `None` when
+    /// the workspace has all of them like this already.
+    ///
+    /// This is how the sources of a project are built
+    /// ([`crate::project`]): the same description gives the same change
+    /// whatever the workspace held, so the order is given, not counted from
+    /// the history as [`Self::add_resources`] does.
+    pub fn put_added_resources(
+        &mut self,
+        game: &GameInstance,
+        label: &str,
+        resources: &[AddedResourceEdit],
+    ) -> Result<Option<u64>> {
+        let mut planned = Vec::new();
+        let mut seen = HashSet::new();
+        let mut layouts: BTreeMap<String, Option<StreamLayout>> = BTreeMap::new();
+        for AddedResourceEdit { resource, order } in resources {
+            let key = ResourceKey {
+                stream: key::normalize_stream(&resource.stream),
+                type_id: resource.header.type_id,
+                ids: resource.header.ids,
+            };
+            if !seen.insert(key.clone()) {
+                return Err(Error::InvalidArgument(format!("{key} is edited twice")));
+            }
+            let before = self.state.get(&key).cloned();
+            if before.as_ref().is_some_and(|c| !c.is_added()) {
+                return Err(Error::InvalidArgument(format!(
+                    "{key} is a resource of the game the workspace replaces, not one it adds"
+                )));
+            }
+            self.check_addition(game, &mut layouts, &key, resource.before.as_ref())?;
+            let after = Change {
+                key: key.clone(),
+                payload: self.store.put(&resource.data)?,
+                original: Blob::of(&[]),
+                storage: resource.storage,
+                label: label.to_owned(),
+                added: Some(Added {
+                    mem_policy: resource.header.mem_policy,
+                    alignment: resource.header.alignment,
+                    before: resource.before.clone(),
+                    order: *order,
+                }),
+                made_on: None,
+            };
+            if before.as_ref().is_some_and(|b| {
+                b.payload == after.payload && b.storage == after.storage && b.added == after.added
+            }) {
+                continue;
+            }
+            planned.push(Edit {
+                key,
+                before,
+                after: Some(after),
+            });
+        }
+        if planned.is_empty() {
+            return Ok(None);
+        }
+        self.commit(label, planned, Vec::new()).map(Some)
+    }
+
+    /// Records a new stream as [`Self::add_stream`] does, or gives a stream
+    /// the workspace created the description `stream` (its resources stay).
+    /// `None` when the workspace has the stream like this already (the
+    /// label aside).
+    pub fn put_stream(&mut self, game: &GameInstance, stream: NewStream) -> Result<Option<u64>> {
+        let name = key::normalize_stream(&stream.name);
+        let Some(current) = self.new_streams.get(&name).cloned() else {
+            return self.add_stream(game, stream).map(Some);
+        };
+        let stream = self.checked_stream(game, stream, Some(&current))?;
+        let same = NewStream {
+            label: current.label.clone(),
+            ..stream.clone()
+        } == current;
+        if same {
+            return Ok(None);
+        }
+        let label = stream.label.clone();
+        let edit = StreamEdit {
+            name,
+            before: Some(current),
+            after: Some(stream),
+        };
+        self.commit(&label, Vec::new(), vec![edit]).map(Some)
+    }
+
     /// Records a new stream as one undoable operation; [`Self::apply`]
     /// creates the file and adds it to the tables of contents `stream.tocs`.
     pub fn add_stream(&mut self, game: &GameInstance, stream: NewStream) -> Result<u64> {
+        let stream = self.checked_stream(game, stream, None)?;
+        let label = stream.label.clone();
+        let edit = StreamEdit {
+            name: stream.name.clone(),
+            before: None,
+            after: Some(stream),
+        };
+        self.commit(&label, Vec::new(), vec![edit])
+    }
+
+    /// `stream` with its names normalised and a label, after the checks of
+    /// a new stream: a name no stream has, a hash no stream of its tables
+    /// of contents has, tables that list its parents. `replaces` is the
+    /// stream of that name the workspace created, when its description is
+    /// only changed: its own name and hash are not taken then.
+    fn checked_stream(
+        &self,
+        game: &GameInstance,
+        stream: NewStream,
+        replaces: Option<&NewStream>,
+    ) -> Result<NewStream> {
         let mut stream = stream;
         stream.name = key::normalize_stream(&stream.name);
         stream.parent = key::normalize_stream(&stream.parent);
@@ -1167,9 +1435,10 @@ impl Workspace {
                 stream.name
             )));
         }
-        if game.find_stream(&stream.name).is_some()
-            || game.root().join(stream.rel_path()).exists()
-            || self.new_streams.contains_key(&stream.name)
+        if replaces.is_none()
+            && (game.find_stream(&stream.name).is_some()
+                || game.root().join(stream.rel_path()).exists()
+                || self.new_streams.contains_key(&stream.name))
         {
             return Err(Error::InvalidArgument(format!(
                 "stream {} already exists",
@@ -1200,7 +1469,10 @@ impl Workspace {
                     "{rel} does not list {parent}"
                 )));
             }
-            if table.names.iter().any(|n| n.hash == stream.hash) {
+            // Its own entry is there once the workspace was applied.
+            if replaces.is_none_or(|r| r.hash != stream.hash)
+                && table.names.iter().any(|n| n.hash == stream.hash)
+            {
                 return Err(Error::InvalidArgument(format!(
                     "{rel} already has a stream with hash {:08x}",
                     stream.hash
@@ -1210,13 +1482,7 @@ impl Workspace {
         if stream.label.is_empty() {
             stream.label = format!("Add stream {}", stream.name);
         }
-        let label = stream.label.clone();
-        let edit = StreamEdit {
-            name: stream.name.clone(),
-            before: None,
-            after: Some(stream),
-        };
-        self.commit(&label, Vec::new(), vec![edit])
+        Ok(stream)
     }
 
     /// Removes a new stream and every resource added to it, as one undoable operation.
@@ -1298,8 +1564,19 @@ impl Workspace {
     }
 
     /// Data of resource `index` of stream `stream_index` as the workspace
-    /// has it: the recorded change, or the original data of the game. Edits
-    /// should start from this so they build on earlier edits.
+    /// has it: the recorded change, or the data of the game without this
+    /// workspace's changes. Edits should start from this so they build on
+    /// earlier edits.
+    ///
+    /// The game without this workspace's changes is the game **as it is**,
+    /// with the mods the mod manager has written into it: an edit is made on
+    /// what the editor shows, so a mod made on top of another one adds to
+    /// its objects and strings instead of putting the unmodified ones back
+    /// (the mods it is made on become its dependencies, `mods::made_on`).
+    /// Only a stream this workspace itself wrote is read from its original:
+    /// its file may still hold a change that was removed since. The mods
+    /// are not in the game then — a workspace and the mod manager do not
+    /// hold the game files together.
     pub fn current_data(
         &self,
         game: &GameInstance,
@@ -1315,12 +1592,25 @@ impl Workspace {
         if let Some(data) = self.data(&key)? {
             return Ok(data);
         }
-        // Not the game file: it may still hold a change that was removed.
+        if !self.wrote_stream(&key.stream) {
+            return stream.resource_data(index);
+        }
         let original = StreamFile::open(game.original_path(file))?;
         let index = key.find_in(original.layout()).ok_or_else(|| {
             Error::InvalidArgument(format!("{key} is not in the original stream"))
         })?;
         original.resource_data(index)
+    }
+
+    /// Whether the file of stream `name` in the game is one this workspace
+    /// wrote (or was writing): its data is then not what the game gives
+    /// without the workspace, which is read from the original.
+    pub(crate) fn wrote_stream(&self, name: &str) -> bool {
+        self.applied.streams.get(name).is_some_and(|record| {
+            !record.resources.is_empty()
+                || record.in_flight.is_some()
+                || record.new_stream.is_some()
+        })
     }
 
     /// Records new data for one resource as one undoable operation labelled
@@ -1513,7 +1803,10 @@ impl Workspace {
         let same_change = |a: &Option<Change>, b: &Option<Change>| match (a, b) {
             (None, None) => true,
             (Some(a), Some(b)) => {
-                a.payload == b.payload && a.storage == b.storage && a.added == b.added
+                a.payload == b.payload
+                    && a.storage == b.storage
+                    && a.added == b.added
+                    && a.made_on == b.made_on
             }
             _ => false,
         };
@@ -1663,6 +1956,9 @@ impl Workspace {
         for change in self.state.values().chain(logged) {
             keep.insert(&change.payload.sha256);
             keep.insert(&change.original.sha256);
+            if let Some(made_on) = &change.made_on {
+                keep.insert(&made_on.sha256);
+            }
         }
         let file_edits = self.log.operations.iter().flat_map(|op| &op.file_edits);
         let logged_files = file_edits.flat_map(|edit| edit.before.iter().chain(&edit.after));
@@ -1958,8 +2254,10 @@ impl Workspace {
     ///
     /// Streams changed outside the workspace are refused unless `options.force`.
     /// While the mod manager has mods in the game, the workspace does not write
-    /// into it at all (see [`crate::mods`]).
+    /// into it at all (see [`crate::mods`]). The own workspace of a project
+    /// ([`Owner::Project`]) is always refused: it goes into the game as a mod.
     pub fn apply(&mut self, game: &GameInstance, options: ApplyOptions) -> Result<ApplyReport> {
+        self.refuse_project_write()?;
         if !self.saved {
             // Nothing recorded and nothing in the game.
             return Ok(ApplyReport::default());

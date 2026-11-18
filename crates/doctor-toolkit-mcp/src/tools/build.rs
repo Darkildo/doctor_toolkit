@@ -94,6 +94,12 @@ pub struct ModBuildParams {
     /// With `native`: plain ASI plug-ins that do not use doctor_platform.asi.
     #[serde(default)]
     pub native_plain: Option<bool>,
+    /// `false` keeps every resource whole. By default a changed SimGroup,
+    /// string table, parts database or world grid goes into the mod as a
+    /// delta — the operations that make the change — which the mod manager
+    /// merges with what other mods do to the same resource; such a mod is
+    /// of format version 6, which older mod managers refuse.
+    pub deltas: Option<bool>,
 }
 
 #[derive(Debug, Default, Deserialize, JsonSchema)]
@@ -283,6 +289,12 @@ pub(crate) fn plan_mod(
             editions: p.editions.clone(),
             requires_manager: p.requires_manager.clone(),
             made_on: BTreeMap::new(),
+            made_on_data: BTreeMap::new(),
+        },
+        // The project's own choice, unless the call says.
+        whole_resources: match p.deltas {
+            Some(deltas) => !deltas,
+            None => base.as_ref().is_some_and(|b| b.whole_resources),
         },
     };
     let mut info = info;
@@ -357,6 +369,12 @@ pub fn mod_build(kit: &Toolkit, p: ModBuildParams) -> ToolResult<Output> {
         "resources": report.resources,
         "added_resources": report.added,
         "new_streams": report.new_streams,
+        "deltas": json!({
+            "resources": report.deltas,
+            "of": report.delta_kinds,
+            "note": "resources stored as operations instead of whole (of those that can be): \
+                     the mod manager merges them with other mods",
+        }),
         "payload_bytes": report.payload_bytes,
         "file_bytes": report.file_size,
         "code": code_note(report.native_modules),

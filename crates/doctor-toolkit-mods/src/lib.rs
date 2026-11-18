@@ -45,6 +45,7 @@ use doctor_toolkit::mods::manager::{
     Clash, CompatIssue, Conflict, ModApplyOptions, RemovedMod, SetEntry,
 };
 use doctor_toolkit::mods::order::{self, Rule, Strength};
+use doctor_toolkit::project::Base;
 use doctor_toolkit::workspace::{ApplyReport, DeployStatus, StreamAction, StreamState, Workspace};
 
 pub const GOOD: Color32 = Color32::from_rgb(0x60, 0xc0, 0x60);
@@ -367,6 +368,38 @@ impl ModsPanel {
         self.message.as_ref().map(|(m, e)| (m.as_str(), *e))
     }
 
+    /// Fills the form of the mod built from the workspace with `info` (the
+    /// open project of the editor): what the window builds and installs is
+    /// then the project's mod, under its id and with its dependencies.
+    /// `dependencies_named`: the project has a base, so its mod depends on
+    /// the mods of `info` and on no others — none is added by a guess.
+    pub fn set_build_info(
+        &mut self,
+        info: &doctor_toolkit::mods::ModInfo,
+        dependencies_named: bool,
+    ) {
+        let form = &mut self.build;
+        form.id = info.id.clone();
+        form.name = info.name.clone();
+        form.version = info.version.clone();
+        form.author = info.author.clone();
+        form.description = info.description.clone();
+        form.url = info.url.clone().unwrap_or_default();
+        form.relations.depends = info
+            .relations
+            .depends
+            .iter()
+            .map(|(id, condition)| format!("{id} {condition}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        form.dependencies_named = dependencies_named;
+    }
+
+    /// The mod the form of the mod built from the workspace describes.
+    pub fn build_info(&self) -> doctor_toolkit::mods::ModInfo {
+        self.build.info()
+    }
+
     /// Selects a mod, e.g. from the command line.
     pub fn select(&mut self, id: &str) {
         self.selected = Some(id.to_owned());
@@ -495,7 +528,10 @@ impl ModsPanel {
         let shared = progress.clone();
         let ctx = ctx.clone();
         std::thread::spawn(move || {
-            let outcome = work(&game, &mut manager, &shared);
+            // Another program (or another part of this one) may have
+            // changed the mods since the window read them.
+            let fresh = manager.reload_if_changed().map_err(|e| e.to_string());
+            let outcome = fresh.and_then(|_| work(&game, &mut manager, &shared));
             let overview = overview(&game, &manager);
             let _ = tx.send(Done {
                 manager,
@@ -758,6 +794,59 @@ impl ModsPanel {
                         text,
                         error: false,
                     }),
+                    ..Outcome::default()
+                })
+            },
+        );
+    }
+
+    /// Brings the mods to the base of the project `project` (the editor's
+    /// open project, stage 108): the arrangement they have is saved as a
+    /// set, the mods of the base are enabled in its order — an exclusive
+    /// base switches the others off — and the mods are written into the
+    /// game, with progress and a result ([`Base::bring`]). The set is the
+    /// way back; [`Self::undo`] also brings the arrangement before back.
+    pub fn bring_to_base(&mut self, ctx: &egui::Context, base: Base, project: &str) {
+        let Some(before) = self.manager.as_ref().map(ModManager::arrangement) else {
+            return;
+        };
+        let options = ModApplyOptions {
+            force: self.force,
+            ignore_compatibility: self.ignore_compatibility,
+        };
+        let project = project.to_owned();
+        self.run_job(
+            ctx,
+            tr("mods.job_base"),
+            true,
+            JobKind::Writing,
+            move |game, manager, progress| {
+                let brought = base
+                    .bring(game, manager, &project, options, &mut |p| {
+                        *progress.lock().unwrap_or_else(|e| e.into_inner()) =
+                            Some((p.done, p.total, p.stream.to_owned()));
+                    })
+                    .map_err(|e| e.to_string())?;
+                let enabled = manager.mods().iter().filter(|m| m.enabled).count();
+                let mut text = trf("mods.base_brought", &[("project", &project)]);
+                text += "\n";
+                text += &written_words(&brought.report, enabled);
+                let undo = brought.set.as_ref().map(|set| {
+                    text += "\n";
+                    text += &trf("mods.base_set", &[("set", set)]);
+                    Undo {
+                        label: trf("mods.undo_base", &[("project", &project)]),
+                        kind: UndoKind::Arrangement(before),
+                    }
+                });
+                Ok(Outcome {
+                    message: trf("mods.base_brought", &[("project", &project)]),
+                    report: Some(Report {
+                        title: tr("mods.base_title").to_owned(),
+                        text,
+                        error: false,
+                    }),
+                    undo,
                     ..Outcome::default()
                 })
             },
@@ -1531,8 +1620,8 @@ fn overview(game: &GameInstance, manager: &ModManager) -> Overview {
     Overview {
         status: manager.status(game).ok(),
         issues: manager.check(game).unwrap_or_default(),
-        conflicts: manager.conflicts(true),
-        all_conflicts: manager.conflicts(false),
+        conflicts: manager.conflicts(game, true).unwrap_or_default(),
+        all_conflicts: manager.conflicts(game, false).unwrap_or_default(),
         clashes: manager.clashes(true),
         all_clashes: manager.clashes(false),
         workspace_held: held(Workspace::default_dir(game.root())),

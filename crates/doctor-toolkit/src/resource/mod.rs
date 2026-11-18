@@ -10,6 +10,7 @@ pub mod audio;
 pub mod audio_encode;
 pub mod chv;
 pub mod dds;
+pub mod delta;
 pub mod dlg;
 pub mod ffn;
 pub mod get;

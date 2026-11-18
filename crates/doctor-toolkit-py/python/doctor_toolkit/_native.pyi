@@ -598,6 +598,15 @@ class Workspace:
     def revert_files(self, keys: Sequence[str]) -> bool: ...
     def revert(self, keys: Sequence[str]) -> bool: ...
     def revert_all(self) -> bool: ...
+    def stale(self) -> list[dict[str, Any]]:
+        """Changes made on other data than the game gives now (a mod under them was updated)."""
+    def rebase(
+        self,
+        only: Optional[Sequence[str]] = None,
+        keep: Optional[Sequence[str]] = None,
+        take_base: Optional[Sequence[str]] = None,
+    ) -> dict[str, Any]:
+        """Moves the stale changes onto the game's data as one operation: merged, kept or given up."""
     def undo(self) -> Optional[str]: ...
     def redo(self) -> Optional[str]: ...
     def reload(self) -> None: ...
@@ -619,7 +628,11 @@ class Workspace:
         url: Optional[str] = None,
         keys: Optional[Sequence[str]] = None,
         preview: Optional[bytes] = None,
-    ) -> dict[str, Any]: ...
+        deltas: bool = True,
+    ) -> dict[str, Any]:
+        """Builds a mod file. With `deltas` a changed SimGroup, string table,
+        parts database or world grid is stored as operations that the mod
+        manager merges with other mods (format version 6)."""
 
 # ----------------------------------------------------------------- project
 
@@ -646,9 +659,12 @@ class Project:
         dds: bool = False,
         model_format: str = "glb",
         shared: bool = True,
+        empty: bool = False,
     ) -> Project:
-        """Makes a project in a new or empty folder from streams of the game or
-        from the resources the workspace changes."""
+        """Makes a project in a new or empty folder from streams of the game
+        (with what the workspace adds to them) or from what the workspace
+        changes (the resources it replaces and adds, the streams it creates).
+        With `empty`: a project with its own workspace and no sources."""
     @property
     def root(self) -> Path: ...
     @property
@@ -659,7 +675,8 @@ class Project:
         """`id`, `kind`, `type`, `name`, `ids`, `files`, `keys` of every entry."""
     def status(self) -> dict[str, Any]:
         """`entries` (`id`, `state`, `kind`, `type`, `name`, `patch`),
-        `unknown_files`, `warnings`, `to_build`."""
+        `unknown_files`, `new_streams` (name, built), `removed_streams`,
+        `warnings`, `to_build`."""
     def build(
         self, *, only: list[str] | None = None, force: bool = False, dry_run: bool = False
     ) -> dict[str, Any]:
@@ -667,6 +684,10 @@ class Project:
         `built`, `up_to_date`, `errors`, `warnings`, `seq`."""
     def pull(self, only: list[str] | None = None) -> list[str]:
         """Writes the workspace's version of out-of-sync entries into their files."""
+    def sources(self, index: Index | None = None) -> dict[str, Any]:
+        """Writes sources for everything the project's own workspace holds
+        (added resources and new streams too): `added`, `pulled`, `removed`,
+        `streams`, `files`, `bytes`, `notes`."""
     def build_mod(self, out: StrPath, preview: StrPath | None = None) -> dict[str, Any]:
         """A mod of the project's changes in the workspace: `resources`, `added`, `file_size`."""
 
@@ -695,6 +716,7 @@ class ModManager:
         description: str = "",
         url: Optional[str] = None,
         keys: Optional[Sequence[str]] = None,
+        deltas: bool = True,
     ) -> dict[str, Any]: ...
     def uninstall(self, id: str) -> None: ...
     def enable(self, id: str, enabled: bool = True) -> None: ...

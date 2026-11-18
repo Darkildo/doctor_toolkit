@@ -402,9 +402,14 @@ pub fn export(
                 None => Vec::new(),
             };
             let model = Model::parse(&data(m)?, &volatile)?;
-            match assets {
-                Some(assets) => crate::export::gltf::model_to_glb(&model, assets),
-                None => crate::export::gltf::model_to_glb(&model, &mut NoAssets),
+            match (assets, ws) {
+                // Materials and textures the workspace adds or changes too.
+                (Some(assets), Some(ws)) => crate::export::gltf::model_to_glb(
+                    &model,
+                    &mut crate::workspace::EditedAssets::new(ws, assets),
+                ),
+                (Some(assets), None) => crate::export::gltf::model_to_glb(&model, assets),
+                (None, _) => crate::export::gltf::model_to_glb(&model, &mut NoAssets),
             }
         }
     }

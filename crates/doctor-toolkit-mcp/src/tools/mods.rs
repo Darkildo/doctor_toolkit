@@ -200,6 +200,8 @@ fn file_info(path: &std::path::Path, resources: bool) -> ToolResult<Value> {
     }
     let mut archive = ModArchive::open(path)?;
     archive.verify()?;
+    let operations: std::collections::BTreeMap<_, _> =
+        archive.delta_operations()?.into_iter().collect();
     let m: &ModManifest = archive.manifest();
     let mut out = json!({
         "kind": "mod (.zip)",
@@ -223,6 +225,8 @@ fn file_info(path: &std::path::Path, resources: bool) -> ToolResult<Value> {
         "messages": m.messages,
         "resources": m.resources.len(),
         "added_resources": m.added().count(),
+        "delta_resources": operations.len(),
+        "delta_operations": operations.values().sum::<usize>(),
         "streams": m.streams(),
         "new_streams": m.streams.iter().map(|s| s.name.as_str()).collect::<Vec<_>>(),
         "payload_bytes": m.payload_bytes(),
@@ -254,6 +258,10 @@ fn file_info(path: &std::path::Path, resources: bool) -> ToolResult<Value> {
                 .map(|r| json!({
                     "key": r.key.to_string(),
                     "added": r.added.is_some(),
+                    "delta": r.delta.map(|d| json!({
+                        "kind": d.kind.name(),
+                        "operations": operations.get(&r.key),
+                    })),
                     "original_bytes": r.original.size,
                     "bytes": r.payload.size,
                     "label": r.label,
@@ -378,12 +386,15 @@ pub fn mods(kit: &Toolkit, p: ModsParams) -> ToolResult<Output> {
             })
         }
         "conflicts" => json!({
-            "conflicts": mods.conflicts(true).iter().map(|c| json!({
+            "conflicts": mods.conflicts(&kit.game, true)?.iter().map(|c| json!({
                 "resource": c.key.to_string(),
                 "mods": c.mods,
                 "winner": c.winner(),
                 "same_data": c.same_data,
                 "patch": c.patch,
+                // Empty: the winner replaces the resource. Else the mods
+                // merge and only these values are set by both.
+                "elements": c.elements,
             })).collect::<Vec<_>>(),
             "clashes": mods.clashes(true).iter().map(|c| json!({
                 "fatal": c.is_fatal(),

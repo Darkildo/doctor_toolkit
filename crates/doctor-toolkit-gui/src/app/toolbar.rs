@@ -333,7 +333,11 @@ impl BrowserApp {
                 chosen = Some(1);
             }
             ui.separator();
-            for command in [Command::WizardPlace, Command::NewLevel] {
+            for command in [
+                Command::LevelPlaceFile,
+                Command::WizardPlace,
+                Command::NewLevel,
+            ] {
                 if ui
                     .add_enabled(self.enabled(command), egui::Button::new(command.label()))
                     .clicked()
@@ -373,8 +377,14 @@ impl BrowserApp {
         let arrow = theme::menu_arrow(ui, Tone::Plain).on_hover_text(tr("toolbar.apply_more"));
         egui::Popup::menu(&arrow).show(|ui| {
             ui.set_min_width(240.0);
-            ui.checkbox(&mut self.direct, tr("edits.direct"))
-                .on_hover_text(tr("edits.direct_hint"));
+            // A project is not written into the game by the editor.
+            let project = self.has_project_workspace();
+            ui.add_enabled(
+                !project,
+                egui::Checkbox::new(&mut self.direct, tr("edits.direct")),
+            )
+            .on_hover_text(tr("edits.direct_hint"))
+            .on_disabled_hover_text(tr("document.not_written"));
             ui.separator();
             for command in [
                 Command::RevertGame,

@@ -53,6 +53,16 @@ impl BrowserApp {
                     }
                 }
             }
+            self.bridge_requests(ctx);
+        }
+        self.bridge_ask_ui(ctx);
+    }
+
+    /// Answers the requests that arrived; a request to lend the workspace
+    /// waits for the user ([`Self::bridge_ask_ui`]).
+    #[cfg(unix)]
+    pub(super) fn bridge_requests(&mut self, ctx: &egui::Context) {
+        {
             let incoming = self
                 .bridge
                 .server
@@ -60,8 +70,25 @@ impl BrowserApp {
                 .map(|s| s.incoming())
                 .unwrap_or_default();
             for i in incoming {
-                if let Request::Lend { client, summary } = i.request {
-                    if self.bridge.ask.is_some() || self.bridge.lent {
+                if let Request::Lend {
+                    client,
+                    summary,
+                    workspace,
+                } = i.request
+                {
+                    // Another folder than the one this window works with
+                    // (a project's workspace, say): lending this one would
+                    // not let the program write its own.
+                    let mine = self.workspace_dir();
+                    if let (Some(theirs), Some(mine)) = (&workspace, &mine)
+                        && !same_folder(theirs, mine)
+                    {
+                        let _ = i.reply.send(Reply::error(format!(
+                            "this window works with the workspace in {}, not in {}",
+                            mine.display(),
+                            theirs.display()
+                        )));
+                    } else if self.bridge.ask.is_some() || self.bridge.lent {
                         let _ = i
                             .reply
                             .send(Reply::error("another write waits for the user"));
@@ -78,7 +105,19 @@ impl BrowserApp {
                 let _ = i.reply.send(reply);
             }
         }
-        self.bridge_ask_ui(ctx);
+    }
+
+    /// Answers on `server` (the editor starts none in tests).
+    #[cfg(all(test, unix))]
+    pub(super) fn serve_bridge_for_test(&mut self, server: doctor_toolkit::bridge::Server) {
+        self.bridge.started = true;
+        self.bridge.server = Some(server);
+    }
+
+    /// Whether a request to lend the workspace waits for the user.
+    #[cfg(all(test, unix))]
+    pub(super) fn bridge_asks_for_test(&self) -> bool {
+        self.bridge.ask.is_some()
     }
 
     #[cfg(unix)]
@@ -249,5 +288,14 @@ impl BrowserApp {
             self.bridge.lent = false;
             self.open_workspace();
         }
+    }
+}
+
+/// Whether two paths name one folder (through links and `..`, when both exist).
+#[cfg(unix)]
+fn same_folder(a: &std::path::Path, b: &std::path::Path) -> bool {
+    match (a.canonicalize(), b.canonicalize()) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => std::path::absolute(a).ok() == std::path::absolute(b).ok(),
     }
 }

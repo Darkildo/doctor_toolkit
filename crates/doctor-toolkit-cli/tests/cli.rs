@@ -548,6 +548,114 @@ fn mods_of_format_3_build_install_order_and_switch() {
 
 /// `dialogue-import --raw` writes the `dlg` resource of a tree without a game:
 /// the data of a dialogue that gets a stream of its own.
+/// Stage 110: `mods build` stores a changed SimGroup as a delta (format 6)
+/// and says so; `--no-deltas` keeps it whole in the older format. Two mods
+/// that set one attribute merge: `mods conflicts` names the object and the
+/// attribute, `mods apply` writes the lower mod's value.
+#[test]
+fn mods_with_deltas_build_merge_and_tell_their_conflicts() {
+    use doctor_toolkit::resource::simgroup::{CLASS_ENTITY, SimGroup, Value};
+    use doctor_toolkit::testing::{self, YARD, YARD_SIMGROUP};
+    use doctor_toolkit::workspace::{ResourceEdit, StorageChoice, Workspace};
+
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("game");
+    let logs = dir.path().join("logs");
+    std::fs::create_dir_all(&root).unwrap();
+    testing::write_game(&root).unwrap();
+    testing::write_town(&root).unwrap();
+    let game = doctor_toolkit::game::GameInstance::open(&root).unwrap();
+    let yard = game.find_stream(YARD).unwrap();
+    let group = || {
+        let stream = game.open_stream(yard).unwrap();
+        SimGroup::parse(&stream.resource_data(YARD_SIMGROUP).unwrap()).unwrap()
+    };
+    let r = root.to_str().unwrap();
+    // Each mod lights the crate of the yard its own way, in its own workspace.
+    let build = |id: &str, value: i32, extra: &[&str]| {
+        let ws_dir = dir.path().join(format!("ws-{id}"));
+        let mut ws = Workspace::create(&ws_dir, &game).unwrap();
+        let mut group = group();
+        group
+            .set_class_attr(0, CLASS_ENTITY, 3, Some(Value::Int(value)))
+            .unwrap();
+        let edit = ResourceEdit {
+            index: YARD_SIMGROUP,
+            data: group.encode(),
+            storage: StorageChoice::Keep,
+        };
+        ws.set_resources(&game, "light", yard, &[edit]).unwrap();
+        let out = dir.path().join(format!("{id}.zip"));
+        let mut args = vec![
+            "mods",
+            "build",
+            r,
+            "-o",
+            out.to_str().unwrap(),
+            "--name",
+            id,
+            "--dir",
+            ws_dir.to_str().unwrap(),
+        ];
+        args.extend_from_slice(extra);
+        let (ok, text) = mods_run(&args, &logs);
+        assert!(ok, "{text}");
+        (out, text)
+    };
+    let (a, text) = build("a", 5, &[]);
+    assert!(
+        text.contains("format 6") && text.contains("1 of 1 resource(s) that have deltas"),
+        "{text}"
+    );
+    let (b, _) = build("b", 7, &[]);
+    let (whole, text) = build("whole", 9, &["--no-deltas"]);
+    assert!(
+        text.contains("format 3") && !text.contains("stored as deltas"),
+        "{text}"
+    );
+    let (ok, text) = mods_run(&["mods", "info", a.to_str().unwrap(), "--resources"], &logs);
+    assert!(
+        ok && text.contains("format   6")
+            && text.contains("1 resource(s) are deltas, 1 operation(s)")
+            && text.contains("simgroup delta (format 1), 1 operation(s)"),
+        "{text}"
+    );
+    let (ok, text) = mods_run(&["mods", "info", whole.to_str().unwrap()], &logs);
+    assert!(ok && !text.contains("deltas"), "{text}");
+
+    let (ok, text) = mods_run(
+        &[
+            "mods",
+            "install",
+            r,
+            a.to_str().unwrap(),
+            b.to_str().unwrap(),
+        ],
+        &logs,
+    );
+    assert!(ok, "{text}");
+    let (ok, text) = mods_run(&["mods", "conflicts", r], &logs);
+    assert!(
+        ok && text.contains("a, b  -> b wins (the mods merge; set by both:)")
+            && text.contains("Entity.CMD_SetInteriorLit: the value was 5"),
+        "{text}"
+    );
+    let (ok, text) = mods_run(&["mods", "check", r], &logs);
+    assert!(
+        ok && text.contains("every enabled mod fits the game"),
+        "{text}"
+    );
+    let (ok, text) = mods_run(&["mods", "apply", r], &logs);
+    assert!(ok, "{text}");
+    let written = group();
+    assert_eq!(
+        written.attr(&written.objects[0], CLASS_ENTITY, 3),
+        Some(&Value::Int(7))
+    );
+    let (ok, text) = mods_run(&["mods", "status", r], &logs);
+    assert!(ok && text.contains("the game is up to date"), "{text}");
+}
+
 #[test]
 fn dialogue_import_raw_writes_the_resource() {
     use doctor_toolkit::resource::dlg::{
@@ -943,6 +1051,18 @@ fn a_new_zone_is_seen_by_the_level_commands_before_apply() {
     assert!(list.contains(mini::YARD), "{list}");
     let empty = run_ok(&["level", "objects", zone]);
     assert!(!empty.contains("Entity"), "{empty}");
+    // The presets (stage 113): the town at near detail is its yard and the
+    // new zone, and a preset is a word of the level commands.
+    let presets = run_ok(&["level", "presets"]);
+    assert!(
+        presets.contains("gf2/town: whole level, near detail"),
+        "{presets}"
+    );
+    let town = run_ok(&["level", "presets", "town", "--streams"]);
+    assert!(town.contains(zone) && town.contains(mini::YARD), "{town}");
+    assert!(!town.contains("gf2/level"), "{town}");
+    let info = run_ok(&["level", "info", "preset:town"]);
+    assert!(info.contains("2 zone(s)"), "{info}");
 
     // The crate of the yard as the template, its model cloned with
     // collision of its own into the new zone.
@@ -1015,6 +1135,612 @@ fn a_new_zone_is_seen_by_the_level_commands_before_apply() {
     let again = add(&group, "44,0,40");
     assert!(again.contains("added object 2"), "{again}");
     run_ok(&["workspace", "apply"]);
+}
+
+/// Stage 107: the own workspace of a project is recorded by the editing
+/// commands as any workspace, but `workspace apply` (and `project build
+/// --apply`) refuse to write it into the game and say how it gets there:
+/// `project install` puts it into the mod manager as the project's mod.
+#[test]
+fn a_projects_workspace_is_installed_as_a_mod_not_applied() {
+    use doctor_toolkit::game::GameInstance;
+    use doctor_toolkit::project::{NewDocument, create_document};
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("game");
+    let logs = dir.path().join("logs");
+    game(&root);
+    let project = dir.path().join("Yard Mod");
+    create_document(
+        &GameInstance::open(&root).unwrap(),
+        &project,
+        &NewDocument {
+            name: "Yard Mod".into(),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let ws = project.join("workspace");
+    let (root_s, project_s, ws_s) = (
+        root.to_str().unwrap(),
+        project.to_str().unwrap(),
+        ws.to_str().unwrap(),
+    );
+
+    // An editing command given the folder records into the project.
+    let out = dir.path().join("text");
+    let (ok, text) = mods_run(&["text-export", root_s, "-o", out.to_str().unwrap()], &logs);
+    assert!(ok, "{text}");
+    let file = json_files(&out).remove(0);
+    let mut document: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+    let entry = document["entries"][0].as_object_mut().unwrap();
+    let column = entry.keys().find(|k| *k != "hash").unwrap().clone();
+    entry.insert(column, "Ciao".into());
+    std::fs::write(&file, document.to_string()).unwrap();
+    let (ok, text) = mods_run(
+        &[
+            "text-import",
+            root_s,
+            file.to_str().unwrap(),
+            "--workspace-dir",
+            ws_s,
+        ],
+        &logs,
+    );
+    assert!(ok, "{text}");
+    assert!(ws.join("manifest.json").is_file());
+    assert!(!root.join("_doctor_toolkit").exists());
+
+    // It is not written into the game by itself.
+    let pristine = std::fs::read(root.join("gf2/zone.str")).unwrap();
+    let (ok, text) = mods_run(&["workspace", "apply", root_s, "--dir", ws_s], &logs);
+    assert!(!ok, "{text}");
+    assert!(
+        text.contains("a project's own") && text.contains("project install"),
+        "{text}"
+    );
+    let (ok, text) = mods_run(&["project", "build", project_s, "--apply"], &logs);
+    assert!(!ok && text.contains("its own workspace"), "{text}");
+    assert_eq!(std::fs::read(root.join("gf2/zone.str")).unwrap(), pristine);
+    assert!(!root.join("_doctor_toolkit").exists());
+    // Its state is still told.
+    let (ok, text) = mods_run(&["workspace", "status", root_s, "--dir", ws_s], &logs);
+    assert!(ok, "{text}");
+
+    // As a mod: the project's id and name, last and enabled; then written.
+    let (ok, text) = mods_run(&["project", "install", project_s], &logs);
+    assert!(
+        ok && text.contains("installed mod yard-mod (Yard Mod)"),
+        "{text}"
+    );
+    let (ok, text) = mods_run(&["mods", "list", root_s], &logs);
+    assert!(ok && text.contains("yard-mod"), "{text}");
+    assert_eq!(std::fs::read(root.join("gf2/zone.str")).unwrap(), pristine);
+    let (ok, text) = mods_run(&["mods", "apply", root_s], &logs);
+    assert!(ok, "{text}");
+    assert_ne!(std::fs::read(root.join("gf2/zone.str")).unwrap(), pristine);
+    // Installed again, it is the same mod.
+    let (ok, text) = mods_run(&["project", "install", project_s], &logs);
+    assert!(ok && text.contains("updated mod yard-mod"), "{text}");
+}
+
+/// Stage 108: `project base` prints the base of a project, takes it from
+/// the mods written into the game, tells what differs in the game (and
+/// fails on it when asked) and brings the mods to the base; the mod of the
+/// project depends on the base.
+#[test]
+fn project_base_records_checks_and_brings_the_mods() {
+    use doctor_toolkit::game::GameInstance;
+    use doctor_toolkit::mods::{ModArchive, ModInfo, ModManager, build_from_workspace};
+    use doctor_toolkit::project::{NewDocument, ProjectConfig, create_document};
+    use doctor_toolkit::resource::lh2::StringTable;
+    use doctor_toolkit::testing::{self, LEVEL, STRINGS, TEXT};
+    use doctor_toolkit::workspace::Workspace;
+
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("game");
+    let logs = dir.path().join("logs");
+    testing::write_game(&root).unwrap();
+    let game = GameInstance::open(&root).unwrap();
+    let set_word = |ws: &mut Workspace, place: (&str, usize), word: &str| {
+        let stream = game.find_stream(place.0).unwrap();
+        let mut table =
+            StringTable::parse(&ws.current_data(&game, stream, place.1).unwrap()).unwrap();
+        table.strings[0][0] = word.into();
+        ws.set_string_table(&game, stream, place.1, &table).unwrap();
+    };
+    let install = |id: &str, version: &str, place: (&str, usize)| {
+        let mut ws =
+            Workspace::for_game(&game, Some(&dir.path().join(format!("ws-{id}")))).unwrap();
+        set_word(&mut ws, place, id);
+        let package = dir.path().join(format!("{id}.zip"));
+        let info = ModInfo {
+            id: id.into(),
+            name: id.into(),
+            version: version.into(),
+            ..Default::default()
+        };
+        build_from_workspace(&ws, &info, None, None, &package).unwrap();
+        ModManager::open(&game)
+            .unwrap()
+            .install_file(&game, &package, true)
+            .unwrap();
+    };
+    let project = dir.path().join("Yard Mod");
+    let new = NewDocument {
+        name: "Yard Mod".into(),
+        ..Default::default()
+    };
+    create_document(&game, &project, &new).unwrap();
+    let (r, p) = (root.to_str().unwrap(), project.to_str().unwrap());
+
+    // No base, no mods.
+    let (ok, text) = mods_run(&["project", "base", p], &logs);
+    assert!(ok && text.contains("yard-mod names no base"), "{text}");
+    let (ok, text) = mods_run(&["project", "base", p, "--apply"], &logs);
+    assert!(!ok && text.contains("--record"), "{text}");
+
+    // Taken from the game: the mods written into it.
+    install("city", "1.1.0", (TEXT, 0));
+    install("lights", "1.0", (LEVEL, STRINGS));
+    let (ok, text) = mods_run(&["mods", "apply", r], &logs);
+    assert!(ok, "{text}");
+    let (ok, text) = mods_run(&["project", "base", p, "--record", "--check"], &logs);
+    assert!(ok, "{text}");
+    assert!(
+        text.contains("recorded the base of yard-mod from the game: 2 mod(s)")
+            && text.contains("city ^1.1.0, made on 1.1.0 (")
+            && text.contains("lights ^1.0, made on 1.0 (")
+            && text.contains("exclusive")
+            && text.contains("the game holds the base"),
+        "{text}"
+    );
+    let config = ProjectConfig::read(&project).unwrap();
+    assert_eq!(config.format, 2);
+    assert_eq!(config.base.as_ref().unwrap().mods.len(), 2);
+
+    // The game with other mods: told, and an error when checked.
+    install("extra", "1.0", (TEXT, 0));
+    let (ok, text) = mods_run(&["mods", "disable", r, "lights"], &logs);
+    assert!(ok, "{text}");
+    let (ok, text) = mods_run(&["mods", "apply", r], &logs);
+    assert!(ok, "{text}");
+    let (ok, text) = mods_run(&["project", "base", p], &logs);
+    assert!(ok, "{text}");
+    assert!(
+        text.contains("differs: the base mod `lights` is switched off")
+            && text.contains("differs: the mod `extra` is in the game but not in the base")
+            && text.contains("--apply"),
+        "{text}"
+    );
+    let (ok, text) = mods_run(&["project", "status", p], &logs);
+    assert!(
+        ok && text.contains("warning: the base mod `lights` is switched off"),
+        "{text}"
+    );
+    let (ok, text) = mods_run(&["project", "base", p, "--check"], &logs);
+    assert!(!ok && text.contains("differ from the base"), "{text}");
+
+    // Brought: the set to go back to is named, and the game holds the base.
+    let (ok, text) = mods_run(&["project", "base", p, "--apply", "--check"], &logs);
+    assert!(ok, "{text}");
+    assert!(
+        text.contains("saved as the set `Before Yard Mod`")
+            && text.contains("the mods are brought to the base")
+            && text.contains("the game holds the base"),
+        "{text}"
+    );
+    let mods = ModManager::open(&game).unwrap();
+    let order: Vec<(&str, bool)> = mods
+        .mods()
+        .iter()
+        .map(|m| (m.id.as_str(), m.enabled))
+        .collect();
+    assert_eq!(order, [("city", true), ("lights", true), ("extra", false)]);
+    assert_eq!(mods.sets().unwrap()[0].name, "Before Yard Mod");
+
+    // The mod of the project depends on the base, with its conditions.
+    let mut ws = Workspace::for_game(&game, Some(&project.join("workspace"))).unwrap();
+    set_word(&mut ws, (TEXT, 0), "Mine");
+    drop(ws);
+    let out = dir.path().join("yard.zip");
+    let (ok, text) = mods_run(&["project", "mod", p, "-o", out.to_str().unwrap()], &logs);
+    assert!(ok, "{text}");
+    let manifest = ModArchive::open(&out).unwrap().manifest().clone();
+    let depends: Vec<(&str, &str)> = manifest
+        .depends
+        .iter()
+        .map(|(id, condition)| (id.as_str(), condition.as_str()))
+        .collect();
+    assert_eq!(depends, [("city", "^1.1.0"), ("lights", "^1.0")]);
+
+    // A mod of the base that is not installed cannot be brought.
+    let (ok, text) = mods_run(&["mods", "uninstall", r, "lights"], &logs);
+    assert!(ok, "{text}");
+    let (ok, text) = mods_run(&["project", "base", p, "--apply"], &logs);
+    assert!(
+        !ok && text.contains("`lights` 1.0 is not installed"),
+        "{text}"
+    );
+}
+
+/// Stage 111: the base mod of a project is updated under its edits.
+/// `project status` and `project mod` warn, `project rebase --check` lists
+/// the stale edits and fails, `project rebase` merges the string table and
+/// leaves the mesh for a decision, `--keep` settles it, and `workspace
+/// rebase` does the same on the folder of the workspace.
+#[test]
+fn project_rebase_moves_stale_edits_onto_the_updated_base() {
+    use doctor_toolkit::game::GameInstance;
+    use doctor_toolkit::mods::{ModInfo, ModManager, build_from_workspace};
+    use doctor_toolkit::project::{NewDocument, create_document};
+    use doctor_toolkit::resource::lh2::StringTable;
+    use doctor_toolkit::testing::{self, LEVEL, MESH, STRINGS};
+    use doctor_toolkit::workspace::Workspace;
+
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("game");
+    let logs = dir.path().join("logs");
+    testing::write_game(&root).unwrap();
+    let game = GameInstance::open(&root).unwrap();
+    let level = game.find_stream(LEVEL).unwrap();
+    let words = |ws: &Workspace| {
+        let data = ws.current_data(&game, level, STRINGS).unwrap();
+        StringTable::parse(&data).unwrap()
+    };
+    // Two builds of the base mod, both made on the unmodified game: the
+    // first word of the table of the level, and its mesh.
+    let package = |version: &str, word: &str, mesh: u8| {
+        let at = dir.path().join(format!("ws-city-{version}"));
+        let mut ws = Workspace::for_game(&game, Some(&at)).unwrap();
+        let mut table = words(&ws);
+        table.strings[0][0] = word.into();
+        ws.set_string_table(&game, level, STRINGS, &table).unwrap();
+        ws.set_resource(&game, level, MESH, vec![mesh; 40], "mesh")
+            .unwrap();
+        let file = dir.path().join(format!("city-{version}.zip"));
+        let info = ModInfo {
+            id: "city".into(),
+            name: "City".into(),
+            version: version.into(),
+            ..Default::default()
+        };
+        build_from_workspace(&ws, &info, None, None, &file).unwrap();
+        file
+    };
+    let (city_1, city_2) = (package("1.0.0", "City", 2), package("1.1.0", "Town", 5));
+    let r = root.to_str().unwrap();
+    let install = |file: &Path| {
+        ModManager::open(&game)
+            .unwrap()
+            .install_file(&game, file, true)
+            .unwrap();
+        let (ok, text) = mods_run(&["mods", "apply", r], &logs);
+        assert!(ok, "{text}");
+    };
+    install(&city_1);
+
+    // The project is made on the game with the base mod and edits both
+    // resources the mod changes: the second word, and the mesh.
+    let project = dir.path().join("Yard Mod");
+    let new = NewDocument {
+        name: "Yard Mod".into(),
+        ..Default::default()
+    };
+    create_document(&game, &project, &new).unwrap();
+    let p = project.to_str().unwrap();
+    let (ok, text) = mods_run(&["project", "base", p, "--record"], &logs);
+    assert!(ok, "{text}");
+    let ws_dir = project.join("workspace");
+    let mut ws = Workspace::for_game(&game, Some(&ws_dir)).unwrap();
+    let mut table = words(&ws);
+    assert_eq!(table.strings[0], ["City", "World"]);
+    table.strings[0][1] = "Mine".into();
+    ws.set_string_table(&game, level, STRINGS, &table).unwrap();
+    ws.set_resource(&game, level, MESH, vec![3; 30], "my mesh")
+        .unwrap();
+    drop(ws);
+    let (ok, text) = mods_run(&["project", "status", p], &logs);
+    assert!(ok && !text.contains("other data"), "{text}");
+    let (ok, text) = mods_run(&["project", "rebase", p], &logs);
+    assert!(ok && text.contains("nothing to rebase"), "{text}");
+
+    // The base mod is updated.
+    install(&city_2);
+    let (ok, text) = mods_run(&["project", "status", p], &logs);
+    assert!(
+        ok && text.contains("warning: 2 edit(s) were made on other data than the game gives now"),
+        "{text}"
+    );
+    let (ok, text) = mods_run(&["project", "rebase", p, "--check"], &logs);
+    assert!(!ok, "{text}");
+    assert!(
+        text.contains("2 change(s) were made on other data than the game gives now")
+            && text.contains("lh2: rebased by its operations")
+            && text.contains("not merged: keep yours (--keep) or take the game's (--take-base)")
+            && text.contains("2 change(s) are stale"),
+        "{text}"
+    );
+    // A mod of the stale edits is built, and says what it does.
+    let stale = dir.path().join("stale.zip");
+    let (ok, text) = mods_run(&["project", "mod", p, "-o", stale.to_str().unwrap()], &logs);
+    assert!(
+        ok && text
+            .contains("warning: 2 change(s) were made on other data than the mod is built on"),
+        "{text}"
+    );
+
+    // Rebased: the table is merged, the mesh waits for a decision.
+    let (ok, text) = mods_run(&["project", "rebase", p], &logs);
+    assert!(!ok, "{text}");
+    assert!(
+        text.contains("rebased, 1 operation(s) applied")
+            && text.contains("it needs your decision")
+            && text.contains("recorded as one operation")
+            && text.contains("1 change(s) need your decision"),
+        "{text}"
+    );
+    let ws = Workspace::open_read_only(&ws_dir).unwrap();
+    assert_eq!(words(&ws).strings[0], ["Town", "Mine"]);
+    drop(ws);
+    let (ok, text) = mods_run(&["project", "rebase", p, "--keep", "mesh"], &logs);
+    assert!(
+        ok && text.contains("kept as it is") && text.contains("--record"),
+        "{text}"
+    );
+    let (ok, text) = mods_run(&["project", "rebase", p, "--check"], &logs);
+    assert!(ok && text.contains("nothing to rebase"), "{text}");
+    let out = dir.path().join("yard.zip");
+    let (ok, text) = mods_run(&["project", "mod", p, "-o", out.to_str().unwrap()], &logs);
+    assert!(ok && !text.contains("warning"), "{text}");
+
+    // The same on the folder of the workspace: the kept mesh is stale again
+    // after an undo, and is given up for the base's.
+    let w = ws_dir.to_str().unwrap();
+    let (ok, text) = mods_run(&["workspace", "undo", r, "--dir", w], &logs);
+    assert!(ok && text.contains("undone: Rebase"), "{text}");
+    let (ok, text) = mods_run(&["workspace", "rebase", r, "--dir", w, "--check"], &logs);
+    assert!(!ok && text.contains("1 change(s) are stale"), "{text}");
+    let (ok, text) = mods_run(
+        &["workspace", "rebase", r, "--dir", w, "--take-base", "mesh"],
+        &logs,
+    );
+    assert!(ok && text.contains("the change is removed"), "{text}");
+    let ws = Workspace::open_read_only(&ws_dir).unwrap();
+    assert_eq!(ws.len(), 1, "the table stays, the mesh is the base's");
+    assert_eq!(ws.current_data(&game, level, MESH).unwrap(), [5; 40]);
+}
+
+/// Stage 112: a project is made empty with its own workspace, or of the
+/// workspace of the game moved into it with its sources; the sources hold
+/// the resources the workspace adds and the stream it creates, so a build
+/// into an empty workspace makes them again; `project sources` writes what
+/// was added since.
+#[test]
+fn the_sources_of_a_project_hold_what_the_workspace_adds() {
+    use doctor_toolkit::game::GameInstance;
+    use doctor_toolkit::project::Project;
+    use doctor_toolkit::testing as mini;
+    use doctor_toolkit::workspace::Workspace;
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("game");
+    let logs = dir.path().join("logs");
+    std::fs::create_dir_all(&root).unwrap();
+    mini::write_game(&root).unwrap();
+    mini::write_town(&root).unwrap();
+    let root_s = root.to_str().unwrap();
+    let zone = "gf2/town/doctor";
+
+    // An empty project: its own workspace, no sources, nothing in the game.
+    let empty = dir.path().join("Empty Mod");
+    let empty_s = empty.to_str().unwrap();
+    let (ok, text) = mods_run(
+        &["project", "new", root_s, empty_s, "--author", "me"],
+        &logs,
+    );
+    assert!(ok && text.contains("an empty project empty-mod"), "{text}");
+    let made = Project::open(&empty).unwrap();
+    assert!(made.has_own_workspace() && made.entries().count() == 0);
+    assert_eq!(made.config.project.author, "me");
+    assert!(!root.join("_doctor_toolkit").exists());
+    let (ok, text) = mods_run(&["project", "status", empty_s], &logs);
+    assert!(ok && text.contains("0 entries"), "{text}");
+    // Types choose among resources; a workspace elsewhere is not its own.
+    let other = dir.path().join("other");
+    let other_s = other.to_str().unwrap();
+    let (ok, text) = mods_run(&["project", "new", root_s, other_s, "--type", "lh2"], &logs);
+    assert!(
+        !ok && text.contains("an empty project takes none"),
+        "{text}"
+    );
+    let (ok, text) = mods_run(
+        &[
+            "project",
+            "new",
+            root_s,
+            other_s,
+            "--workspace-dir",
+            other_s,
+        ],
+        &logs,
+    );
+    assert!(!ok && text.contains("its own workspace"), "{text}");
+    assert!(!other.exists());
+    // Nothing to move yet.
+    let (ok, text) = mods_run(
+        &["project", "new", root_s, other_s, "--move-workspace"],
+        &logs,
+    );
+    assert!(!ok && text.contains("there is no workspace"), "{text}");
+
+    // Work in the workspace of the game: a new stream with a SimGroup, a
+    // resource added to a stream of the game at a place.
+    let raw = dir.path().join("sparks.bin");
+    std::fs::write(&raw, b"sparks").unwrap();
+    for args in [
+        vec!["add-stream", root_s, zone, "--parent", mini::TOWN],
+        vec!["add-simgroup", root_s, zone],
+        vec![
+            "add-resource",
+            root_s,
+            mini::LEVEL,
+            "--type",
+            "vfx",
+            "--data",
+            raw.to_str().unwrap(),
+            "--ids",
+            "00005501",
+            "--before",
+            "3",
+        ],
+    ] {
+        let (ok, text) = mods_run(&args, &logs);
+        assert!(ok, "{args:?}: {text}");
+    }
+    let game_ws = Workspace::default_dir(&root);
+    assert_eq!(Workspace::open(&game_ws).unwrap().changes().count(), 2);
+
+    // Not while its changes are in the files of the game.
+    let project = dir.path().join("Yard Mod");
+    let project_s = project.to_str().unwrap();
+    let (ok, text) = mods_run(&["workspace", "apply", root_s], &logs);
+    assert!(ok, "{text}");
+    let moved = [
+        "project",
+        "new",
+        root_s,
+        project_s,
+        "--move-workspace",
+        "--no-index",
+    ];
+    let (ok, text) = mods_run(&moved, &logs);
+    assert!(!ok && text.contains("workspace revert"), "{text}");
+    assert!(!project.exists() && game_ws.join("manifest.json").is_file());
+    let (ok, text) = mods_run(&["workspace", "revert", root_s, "--game"], &logs);
+    assert!(ok, "{text}");
+
+    // Moved: the project has the edits and their history, and sources of
+    // all of it.
+    let (ok, text) = mods_run(&moved, &logs);
+    assert!(ok, "{text}");
+    assert!(text.contains("2 change(s), 3 operation(s)"), "{text}");
+    assert!(
+        text.contains(&format!("stream {zone}: described")),
+        "{text}"
+    );
+    assert!(text.contains("2 entries written"), "{text}");
+    assert!(!game_ws.exists(), "the workspace of the game is gone");
+    let ws_dir = project.join("workspace");
+    assert!(ws_dir.join("manifest.json").is_file());
+    let manifest =
+        std::fs::read_to_string(project.join("src/gf2/town/doctor.str/stream.toml")).unwrap();
+    assert!(
+        manifest.contains("[new]") && manifest.contains("parent = \"gf2/town\""),
+        "{manifest}"
+    );
+    let level = std::fs::read_to_string(project.join("src/gf2/level.str/stream.toml")).unwrap();
+    assert!(
+        level.contains("key = \"gf2/level:vfx:00005501\"")
+            && level.contains("before = \"gf2/level:mesh:00003333\""),
+        "{level}"
+    );
+    let (ok, text) = mods_run(&["project", "status", project_s], &logs);
+    assert!(
+        ok && text.contains("2 unchanged, 0 built, 0 modified"),
+        "{text}"
+    );
+
+    // A checkout of the sources: no workspace, no build cache. The build
+    // makes the stream and the resources again, under the same keys.
+    let game = GameInstance::open(&root).unwrap();
+    let before: Vec<String> = Workspace::open(&ws_dir)
+        .unwrap()
+        .changes()
+        .map(|c| format!("{} {} {:?}", c.key, c.payload.sha256, c.added))
+        .collect();
+    std::fs::remove_dir_all(&ws_dir).unwrap();
+    std::fs::remove_file(project.join(".doctor/build.json")).unwrap();
+    let (ok, text) = mods_run(&["project", "status", project_s], &logs);
+    assert!(ok && text.contains("`project build` builds 3"), "{text}");
+    assert!(text.contains("stream.toml (gf2/town/doctor)"), "{text}");
+    let (ok, text) = mods_run(&["project", "build", project_s], &logs);
+    assert!(
+        ok && text.contains("3 built, 0 up to date, 0 failed"),
+        "{text}"
+    );
+    let ws = Workspace::open(&ws_dir).unwrap();
+    let after: Vec<String> = ws
+        .changes()
+        .map(|c| format!("{} {} {:?}", c.key, c.payload.sha256, c.added))
+        .collect();
+    assert_eq!(after, before);
+    assert!(ws.new_stream(zone).is_some());
+    assert_eq!(ws.head(), 1, "one undoable operation");
+    drop(ws);
+    let (ok, text) = mods_run(&["project", "build", project_s], &logs);
+    assert!(ok && text.contains("0 built, 2 up to date"), "{text}");
+
+    // More is added to the project's workspace: `project sources` writes
+    // it, and only it.
+    let smoke = dir.path().join("smoke.bin");
+    std::fs::write(&smoke, b"smoke").unwrap();
+    let (ok, text) = mods_run(
+        &[
+            "add-resource",
+            root_s,
+            zone,
+            "--type",
+            "vfx",
+            "--data",
+            smoke.to_str().unwrap(),
+            "--ids",
+            "00005502",
+            "--workspace-dir",
+            ws_dir.to_str().unwrap(),
+        ],
+        &logs,
+    );
+    assert!(ok, "{text}");
+    let (ok, text) = mods_run(&["project", "sources", project_s, "--no-index"], &logs);
+    assert!(ok, "{text}");
+    assert!(
+        text.contains("src/gf2/town/doctor.str/vfx/00005502.bin: written")
+            && text.contains("1 entry written"),
+        "{text}"
+    );
+    assert_eq!(
+        std::fs::read(project.join("src/gf2/town/doctor.str/vfx/00005502.bin")).unwrap(),
+        b"smoke"
+    );
+    let (ok, text) = mods_run(&["project", "sources", project_s, "--no-index"], &logs);
+    assert!(ok && text.contains("0 entries written"), "{text}");
+    // Its file removed: the next build takes the resource out.
+    std::fs::remove_file(project.join("src/gf2/town/doctor.str/vfx/00005502.bin")).unwrap();
+    let (ok, text) = mods_run(&["project", "status", project_s], &logs);
+    assert!(ok && text.contains("removed"), "{text}");
+    let (ok, text) = mods_run(&["project", "build", project_s], &logs);
+    assert!(ok, "{text}");
+    assert_eq!(Workspace::open(&ws_dir).unwrap().changes().count(), 2);
+    // A project that builds into the workspace of the game has no
+    // workspace of its own to write the sources of.
+    let streams = dir.path().join("streams");
+    let streams_s = streams.to_str().unwrap();
+    let (ok, text) = mods_run(
+        &[
+            "project",
+            "new",
+            root_s,
+            streams_s,
+            "--stream",
+            mini::TEXT,
+            "--no-index",
+        ],
+        &logs,
+    );
+    assert!(ok, "{text}");
+    let (ok, text) = mods_run(&["project", "sources", streams_s, "--no-index"], &logs);
+    assert!(!ok && text.contains("its own workspace"), "{text}");
+    drop(game);
 }
 
 /// Writes the miniature game with its town into the folder named by

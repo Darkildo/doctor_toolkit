@@ -41,6 +41,9 @@ mod details;
 pub mod dnd;
 mod dock;
 mod docs;
+mod document;
+#[cfg(test)]
+mod document_tests;
 mod drawer;
 mod edits;
 mod external;
@@ -56,6 +59,8 @@ mod live_state;
 mod resource_tests;
 #[cfg(test)]
 mod view_tests;
+#[cfg(test)]
+mod workspace_dir_tests;
 pub use live::LiveMarks;
 mod logic;
 mod menu;
@@ -63,6 +68,9 @@ mod model_import;
 mod mods;
 mod outliner;
 mod palette;
+mod place_file;
+#[cfg(test)]
+mod place_file_tests;
 mod play;
 mod project;
 mod resource_ops;
@@ -75,6 +83,9 @@ pub mod theme;
 mod toolbar;
 mod wizard;
 mod zone;
+mod zone_sets;
+#[cfg(test)]
+mod zone_sets_tests;
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -245,6 +256,12 @@ pub struct BrowserApp {
     checks_preset: Vec<(String, String)>,
     /// `DOCTOR_TOOLKIT_GUI_LEVEL` went to a level tab already.
     level_preset_used: bool,
+    /// The sets of zones the user saved (stage 113): the open project's,
+    /// else the open game's in the settings ([`zone_sets`]).
+    zone_sets: Arc<crate::level_view::SavedSets>,
+    /// The level tab that shows the zones remembered as loaded last: its
+    /// camera is remembered with them.
+    zones_level: Option<u64>,
     /// `DOCTOR_TOOLKIT_GUI_RESOURCE` (stage 103).
     resource_preset: resource_ops::ResourcePreset,
     /// The first error of a run without input: the edits queued after it
@@ -254,6 +271,19 @@ pub struct BrowserApp {
     assets: Option<doctor_toolkit::game::GameAssets>,
     /// Edits kept on disk; opened with the game, created by the first edit.
     workspace: Option<Workspace>,
+    /// The folder of the workspace when it is not the game's own
+    /// (`<game>/_doctor_toolkit/workspace`): see [`Self::workspace_dir`].
+    workspace_at: Option<PathBuf>,
+    /// `DOCTOR_TOOLKIT_GUI_WORKSPACE`: the folder a game opened without a
+    /// project takes instead of its own.
+    workspace_preset: Option<PathBuf>,
+    /// The project that is open as the document (stage 106).
+    document: Option<document::OpenDocument>,
+    /// The project whose game is being opened: the document once it is.
+    pending_document: Option<doctor_toolkit::project::Project>,
+    /// The base of the open project against the mods of the game (stage
+    /// 108): what the bar at the top of the window tells.
+    base: document::BaseBar,
     /// What the new streams of the workspace were staged from: `game` lists
     /// them as streams of the game (stage 103).
     staging: staging::Staging,
@@ -281,6 +311,7 @@ pub struct BrowserApp {
     /// The integrity check waits for the Mods window to read the mods.
     integrity_queued: bool,
     model_import: model_import::ModelImport,
+    place_file: place_file::PlaceFile,
     /// Tools → New stream…, New SimGroup…, World grid cell… (stage 103).
     zone: zone::ZoneForms,
     script_editor: crate::script_editor::ScriptEditor,
@@ -346,6 +377,11 @@ impl BrowserApp {
         let loaded = layouts::load(&store);
         let mut drawers = drawer::Drawers::default();
         drawers.set(loaded.drawers);
+        // `DOCTOR_TOOLKIT_GUI_WORKSPACE=<folder>`: the workspace in this
+        // folder instead of the game's own.
+        let workspace_preset = std::env::var_os("DOCTOR_TOOLKIT_GUI_WORKSPACE")
+            .filter(|dir| !dir.is_empty())
+            .map(PathBuf::from);
         let mut app = Self {
             tx,
             rx,
@@ -399,10 +435,17 @@ impl BrowserApp {
                 .filter(|v| v.contains('=')),
             checks_preset: Vec::new(),
             level_preset_used: false,
+            zone_sets: Arc::default(),
+            zones_level: None,
             preset_error: None,
             resource_preset: Default::default(),
             assets: None,
             workspace: None,
+            workspace_at: workspace_preset.clone(),
+            workspace_preset,
+            document: None,
+            pending_document: None,
+            base: document::BaseBar::default(),
             staging: staging::Staging::default(),
             ws_lock: None,
             bridge: bridge::BridgeState::default(),
@@ -417,6 +460,7 @@ impl BrowserApp {
             movies: crate::video_view::MoviesWindow::new(),
             integrity_queued: false,
             model_import: Default::default(),
+            place_file: Default::default(),
             zone: zone::ZoneForms::default(),
             script_editor: scripts::editor_from_env(),
             external: external::Links::new(ctx),
@@ -494,10 +538,30 @@ impl BrowserApp {
                 .flatten()
                 .filter(|d| d.is_dir())
         });
-        if let Some(dir) = dir {
+        // `DOCTOR_TOOLKIT_GUI_OPEN_PROJECT=<folder>`: the project as the
+        // document; else the project that was open last, when the editor
+        // opens what it had (and no game was named).
+        let document = std::env::var_os("DOCTOR_TOOLKIT_GUI_OPEN_PROJECT")
+            .map(PathBuf::from)
+            .or_else(|| {
+                restore
+                    .then(|| app.settings.last_project.clone())
+                    .flatten()
+                    .filter(|d| d.join(doctor_toolkit::project::PROJECT_FILE).is_file())
+            });
+        if let Some(dir) = &dir {
             app.restore_selection = app.initial_stream.is_none()
                 && app.settings.reopen_last
                 && app.settings.last_game.as_deref() == Some(dir.as_path());
+        }
+        // A project opens its own game; the game named or opened last is
+        // opened when there is no project (or it does not know its game).
+        if let Some(project) = document {
+            app.open_document(project, ctx);
+        }
+        if app.job.is_none()
+            && let Some(dir) = dir
+        {
             app.open_game(dir, ctx);
         }
         app
@@ -513,6 +577,12 @@ impl BrowserApp {
             self.notify(Level::Warning, tr("status.wait_for_job").to_owned());
             return;
         }
+        // The level tab of the game that is open now shows it no more.
+        self.remember_level_camera();
+        self.zones_level = None;
+        // A game opened by itself is open without a project
+        // (`open_document` names its project after this call).
+        self.pending_document = None;
         self.job = Some(jobs::open_game(dir, ctx, &self.tx));
     }
 
@@ -567,6 +637,7 @@ impl BrowserApp {
                     self.game_opened(game, index, ctx);
                 }
                 JobResult::GameOpened(Err(error)) => {
+                    self.pending_document = None;
                     self.notify(
                         Level::Error,
                         trf("status.cannot_open_game", &[("error", &error)]),
@@ -606,18 +677,14 @@ impl BrowserApp {
     fn game_opened(&mut self, game: GameInstance, index: ResourceIndex, ctx: &egui::Context) {
         self.type_summary = index.type_summary();
         self.settings.add_recent(game.root());
-        ctx.send_viewport_cmd(egui::ViewportCommand::Title(format!(
-            "doctor_toolkit — {} ({})",
-            game.root().file_name().map_or_else(
-                || game.root().display().to_string(),
-                |n| n.to_string_lossy().into_owned()
-            ),
-            game.profile().name
-        )));
         let game = Arc::new(game);
         self.check_opened_game(game.clone());
         self.game = Some(game);
         self.index = Some(Arc::new(index));
+        // The project the game was opened for, before the workspace is
+        // read: it says which folder the workspace is in.
+        self.document_for_opened_game();
+        self.send_title(ctx);
         self.files.clear();
         self.external.clear();
         // The streams the workspace creates are staged before the views get
@@ -635,11 +702,23 @@ impl BrowserApp {
         self.nav.open_game(game.clone());
         self.assets = None;
         crate::cutscene_view::preview::share_game(game.clone(), index.clone());
+        // The sets of zones of this game or of its project, and what was
+        // loaded last: the first level tab opens with it.
+        self.reload_zone_sets();
+        let asked = self.levels.iter().find(|(_, l)| l.wants_last());
+        if let Some(id) = asked
+            .map(|(&id, _)| id)
+            .or_else(|| self.levels.keys().copied().min())
+        {
+            self.restore_level_zones(id);
+        }
         for level in self.levels.values_mut() {
             level.open_game(game.clone(), index.clone());
         }
-        for logic in self.logics.values_mut() {
-            logic.open_game(game.clone(), index.clone());
+        if let Some(dir) = self.workspace_dir() {
+            for logic in self.logics.values_mut() {
+                logic.open_game(game.clone(), index.clone(), dir.clone());
+            }
         }
         self.details = None;
         self.docs.clear();
@@ -1060,6 +1139,9 @@ impl BrowserApp {
                 })
                 .map(|k| k.to_string());
         }
+        if closing {
+            self.remember_level_camera();
+        }
         if closing || self.saved.0.elapsed() > AUTOSAVE {
             self.save_settings();
         }
@@ -1128,6 +1210,8 @@ impl eframe::App for BrowserApp {
             let _profile = crate::profile::scope("ui: cut-scene tick");
             self.cine_tick(&ctx);
         }
+        self.zone_sets_tick();
+        self.base_tick();
         self.update_panel_level();
         self.track_details_open();
         // The views switch the shading too (the level view's lighting menu).
@@ -1144,6 +1228,14 @@ impl eframe::App for BrowserApp {
         egui::Panel::top("toolbar")
             .frame(bar(theme::toolbar_fill(&visuals)).inner_margin(egui::Margin::symmetric(6, 4)))
             .show(ui, |ui| self.toolbar(ui));
+        // The base of the open project is not what the game has (stage 108).
+        if self.base_bar_shown() {
+            egui::Panel::top("base")
+                .frame(
+                    bar(theme::toolbar_fill(&visuals)).inner_margin(egui::Margin::symmetric(8, 4)),
+                )
+                .show(ui, |ui| self.base_bar(ui));
+        }
         egui::Panel::bottom("status")
             .frame(bar(theme::bar_fill(&visuals)))
             .show(ui, |ui| self.status_bar(ui));
@@ -1178,6 +1270,7 @@ impl eframe::App for BrowserApp {
             self.record_file(key, done.data, &done.label);
         }
         self.show_model_import(&ctx);
+        self.show_place_file(&ctx);
         self.show_zone_forms(&ctx);
         self.show_windows(&ctx);
         self.layouts_window(&ctx);

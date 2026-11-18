@@ -20,6 +20,14 @@ pub enum Command {
     // File
     OpenGame,
     OpenStream,
+    ProjectNew,
+    ProjectOpen,
+    ProjectFromWorkspace,
+    ProjectInstall,
+    ProjectBaseRecord,
+    ProjectBaseApply,
+    ProjectRebase,
+    ProjectClose,
     Save,
     Export,
     Unpack,
@@ -64,6 +72,7 @@ pub enum Command {
     GizmoScale,
     GizmoLocal,
     GizmoSnap,
+    LevelPlaceFile,
     CutscenePlay,
     CutsceneKeyFromView,
     // Tools
@@ -225,6 +234,56 @@ pub const COMMANDS: &[Spec] = &[
         "cmd.open_stream",
         Menu::File,
         &[k(CTRL_SHIFT, Key::O)],
+        Global,
+    ),
+    group(spec(
+        C::ProjectNew,
+        "cmd.project_new",
+        Menu::File,
+        &[],
+        Global,
+    )),
+    spec(C::ProjectOpen, "cmd.project_open", Menu::File, &[], Global),
+    spec(
+        C::ProjectFromWorkspace,
+        "cmd.project_from_workspace",
+        Menu::File,
+        &[],
+        Global,
+    ),
+    spec(
+        C::ProjectInstall,
+        "cmd.project_install",
+        Menu::File,
+        &[],
+        Global,
+    ),
+    spec(
+        C::ProjectBaseRecord,
+        "cmd.project_base_record",
+        Menu::File,
+        &[],
+        Global,
+    ),
+    spec(
+        C::ProjectBaseApply,
+        "cmd.project_base_apply",
+        Menu::File,
+        &[],
+        Global,
+    ),
+    spec(
+        C::ProjectRebase,
+        "cmd.project_rebase",
+        Menu::File,
+        &[],
+        Global,
+    ),
+    spec(
+        C::ProjectClose,
+        "cmd.project_close",
+        Menu::File,
+        &[],
         Global,
     ),
     spec(C::Save, "cmd.save", Menu::File, &[], Global),
@@ -430,6 +489,13 @@ pub const COMMANDS: &[Spec] = &[
         Global,
     )),
     spec(C::GizmoSnap, "cmd.gizmo_snap", Menu::Level, &[], Global),
+    group(spec(
+        C::LevelPlaceFile,
+        "cmd.level_place_file",
+        Menu::Level,
+        &[],
+        Global,
+    )),
     group(spec(
         C::CutscenePlay,
         "cmd.cutscene_play",
@@ -686,7 +752,29 @@ impl BrowserApp {
         let game = self.game.is_some();
         let idle = self.job.is_none();
         match command {
-            C::OpenGame => idle,
+            C::OpenGame | C::ProjectOpen => idle,
+            C::ProjectNew => game && idle,
+            // Of the game's own workspace, when it has something to move.
+            C::ProjectFromWorkspace => {
+                game && idle
+                    && self.document.is_none()
+                    && self.workspace_at.is_none()
+                    && self.workspace.as_ref().is_some_and(|ws| ws.is_saved())
+            }
+            // Of a project with its own workspace, when it has edits.
+            C::ProjectInstall => {
+                game && idle
+                    && self.has_project_workspace()
+                    && self.workspace.as_ref().is_some_and(|ws| !ws.is_empty())
+            }
+            // Of an open project: its base is the mods written into the game.
+            C::ProjectBaseRecord => game && idle && self.document.is_some(),
+            // When the mods of the game are not the base, and can be made so.
+            C::ProjectBaseApply => game && idle && self.base.can_bring() && !self.mods.is_busy(),
+            // When edits were made on other data than the game gives now;
+            // of a project, once the game holds its base.
+            C::ProjectRebase => game && idle && self.base.can_rebase(),
+            C::ProjectClose => self.document.is_some() && idle,
             C::OpenStream
             | C::NewContentBrowser
             | C::AllResources
@@ -729,6 +817,11 @@ impl BrowserApp {
             | C::GizmoScale
             | C::GizmoLocal
             | C::GizmoSnap => self.front_level().is_some(),
+            // Where the view looks, on the collision of the loaded zones.
+            C::LevelPlaceFile => self
+                .front_level()
+                .and_then(|id| self.levels.get(&id))
+                .is_some_and(|level| level.loaded()),
             C::Movies | C::CheckEdits | C::Sounds | C::CrashReports => game,
             C::Project => true,
             C::RestoreOriginals => game && idle && self.play.running.is_empty(),
@@ -832,6 +925,14 @@ impl BrowserApp {
                 }
             }
             C::OpenStream => self.palette.open(super::palette::Mode::Streams),
+            C::ProjectNew => self.new_document_dialog(false, ctx),
+            C::ProjectFromWorkspace => self.new_document_dialog(true, ctx),
+            C::ProjectOpen => self.open_document_dialog(ctx),
+            C::ProjectInstall => self.install_document(ctx),
+            C::ProjectBaseRecord => self.record_base(),
+            C::ProjectBaseApply => self.bring_mods_to_base(),
+            C::ProjectRebase => self.rebase(super::document::Rebase::All),
+            C::ProjectClose => self.close_document(ctx),
             C::Export => {
                 if let Some(game) = self.game.clone() {
                     let list: Vec<_> = if self.nav.selected.is_empty() {
@@ -927,6 +1028,7 @@ impl BrowserApp {
                     level.set_snap(snap);
                 }
             }
+            C::LevelPlaceFile => self.place_file_dialog(),
             C::ShowWelcome => self.dock_ops.push(DockOp::ShowPanel(Pane::Welcome)),
             C::ThemeDark | C::ThemeLight | C::ThemeSystem => {
                 self.settings.theme = match command {
@@ -1155,6 +1257,14 @@ mod tests {
         let all = [
             C::OpenGame,
             C::OpenStream,
+            C::ProjectNew,
+            C::ProjectOpen,
+            C::ProjectFromWorkspace,
+            C::ProjectInstall,
+            C::ProjectBaseRecord,
+            C::ProjectBaseApply,
+            C::ProjectRebase,
+            C::ProjectClose,
             C::Save,
             C::ToggleOutliner,
             C::ToggleZones,
@@ -1173,6 +1283,7 @@ mod tests {
             C::GizmoScale,
             C::GizmoLocal,
             C::GizmoSnap,
+            C::LevelPlaceFile,
             C::Export,
             C::Unpack,
             C::Pack,

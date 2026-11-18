@@ -93,6 +93,10 @@ pub struct ImportSummary {
     pub bones_mapped: usize,
     pub materials_reused: usize,
     pub materials_new: usize,
+    /// Materials an earlier import added to the workspace, kept under their
+    /// ids with the textures of this one.
+    #[serde(default)]
+    pub materials_updated: usize,
     pub textures_imported: usize,
     /// Resources added to the workspace.
     pub added: Vec<String>,
@@ -112,6 +116,12 @@ pub struct ImportPlan {
     pub label: String,
     edits: Vec<(usize, Vec<ResourceEdit>)>,
     additions: Vec<NewResourceEdit>,
+    /// New data of resources an earlier import added to the workspace
+    /// (materials and textures of the model imported again).
+    updates: Vec<(ResourceKey, Option<Vec<u8>>)>,
+    /// Materials and textures of the workspace the new mesh uses as they
+    /// are: the game files have them only after `apply`.
+    context: Vec<(ResourceKey, Vec<u8>)>,
     /// The stream of the target.
     stream: String,
 }
@@ -187,7 +197,44 @@ impl ImportPlan {
 
     /// Records the import as one undoable operation. Returns its sequence number.
     pub fn commit(&self, workspace: &mut Workspace, game: &GameInstance) -> Result<Option<u64>> {
-        workspace.change_resources(game, &self.label, &self.edits, &self.additions)
+        workspace.change_resources_and_added(
+            game,
+            &self.label,
+            &self.edits,
+            &self.additions,
+            &self.updates,
+        )
+    }
+
+    /// Data of the resource of type `type_id` with name hash `hash` as the
+    /// plan leaves it: updated, added, or of the workspace.
+    fn planned(&self, type_id: u32, hash: u32) -> Option<&[u8]> {
+        // A texture has its hash in its ids, a material in its data.
+        let is = |kind: u32, ids: &[u32; 4], data: &[u8]| {
+            kind == type_id
+                && if type_id == TYPE_MATERIAL {
+                    data.get(8..12) == Some(&hash.to_le_bytes()[..])
+                } else {
+                    ids[3] == hash
+                }
+        };
+        self.updates
+            .iter()
+            .filter_map(|(k, d)| Some((k, d.as_deref()?)))
+            .find(|(k, d)| is(k.type_id, &k.ids, d))
+            .map(|(_, d)| d)
+            .or_else(|| {
+                self.additions
+                    .iter()
+                    .find(|a| is(a.header.type_id, &a.header.ids, &a.data))
+                    .map(|a| &a.data[..])
+            })
+            .or_else(|| {
+                self.context
+                    .iter()
+                    .find(|(k, d)| is(k.type_id, &k.ids, d))
+                    .map(|(_, d)| &d[..])
+            })
     }
 }
 
@@ -200,27 +247,28 @@ pub struct PlanAssets<'a> {
 impl AssetSource for PlanAssets<'_> {
     fn material(&mut self, hash: u32) -> Option<Material> {
         self.plan
-            .additions
-            .iter()
-            .filter(|a| a.header.type_id == TYPE_MATERIAL)
-            .find(|a| a.data.get(8..12) == Some(&hash.to_le_bytes()[..]))
-            .and_then(|a| Material::parse(&a.data).ok())
+            .planned(TYPE_MATERIAL, hash)
+            .and_then(|d| Material::parse(d).ok())
             .or_else(|| self.game.material(hash))
     }
 
     fn texture(&mut self, hash: u32) -> Option<Texture> {
-        let find = |type_id: u32| {
-            self.plan
-                .additions
-                .iter()
-                .find(|a| a.header.type_id == type_id && a.header.ids[3] == hash)
-        };
-        match (find(TYPE_TG4H), find(TYPE_TG4D)) {
+        match (
+            self.plan.planned(TYPE_TG4H, hash),
+            self.plan.planned(TYPE_TG4D, hash),
+        ) {
             (Some(h), Some(d)) => Some(Texture {
-                header: tg4::Tg4Header::parse(&h.data).ok()?,
-                data: d.data.clone(),
+                header: tg4::Tg4Header::parse(h).ok()?,
+                data: d.to_vec(),
             }),
             _ => self.game.texture(hash),
+        }
+    }
+
+    fn texture_version(&mut self, hash: u32) -> u32 {
+        match self.plan.planned(TYPE_TG4D, hash) {
+            Some(data) => crc32(data).max(1),
+            None => self.game.texture_version(hash),
         }
     }
 
@@ -386,6 +434,7 @@ pub fn plan(
     let template_materials = material_counts(first_template);
     let mut materials: Vec<Option<(u32, bool, String)>> = vec![None; model.materials.len() + 1];
     let mut additions: Vec<NewResource> = Vec::new();
+    let mut updates: Vec<(ResourceKey, Option<Vec<u8>>)> = Vec::new();
     let mut base_of: HashMap<u32, u32> = HashMap::new();
     let mut checker = ReferenceChecker::new(game)?;
     let seed = format!(
@@ -402,6 +451,7 @@ pub fn plan(
         let gltf_material = part.material.and_then(|m| model.materials.get(m));
         let resolved = resolve_material(
             game,
+            workspace,
             assets,
             &mut checker,
             stream,
@@ -410,6 +460,7 @@ pub fn plan(
             &mut used,
             &format!("{seed}:{slot}"),
             &mut additions,
+            &mut updates,
             &mut summary,
         )?;
         base_of.insert(resolved.0, resolved.3);
@@ -465,7 +516,17 @@ pub fn plan(
     }
 
     // Workspace changes.
-    let first_mesh_place = place_from(target.meshes[0].0);
+    // Before the earliest target mesh of the stream (a metamodel may list
+    // its meshes in another order): materials and textures load before
+    // every mesh that uses them.
+    let first_mesh_place = place_from(
+        target
+            .meshes
+            .iter()
+            .map(|m| m.0)
+            .min()
+            .expect("a target has meshes"),
+    );
     let mut new_edits: Vec<NewResourceEdit> = additions
         .iter()
         .map(|r| new_edit(&target.stream_name, r, first_mesh_place.clone()))
@@ -649,6 +710,46 @@ pub fn plan(
             }
         }
     }
+    // The weight of the stream: what the world grid counts against the
+    // budget of its partition (`docs/formats/wgi.md` §4).
+    let weight: u64 = layout
+        .resources
+        .iter()
+        .map(|r| u64::from(r.header.data_size))
+        .sum();
+    let grown: u64 = new_edits.iter().map(|e| e.data.len() as u64).sum::<u64>()
+        + edits
+            .iter()
+            .map(|e| {
+                (e.data.len() as u64)
+                    .saturating_sub(u64::from(layout.resources[e.index].header.data_size))
+            })
+            .sum::<u64>()
+        + updates
+            .iter()
+            .map(|(k, d)| {
+                let old = workspace.data(k).ok().flatten().map_or(0, |d| d.len());
+                (d.as_ref().map_or(0, Vec::len) as u64).saturating_sub(old as u64)
+            })
+            .sum::<u64>();
+    // Workspace materials (and their textures) the records name: a preview
+    // takes them from the plan.
+    let mut context: Vec<(ResourceKey, Vec<u8>)> = Vec::new();
+    for hash in materials.iter().flatten().map(|m| m.0) {
+        let Some((key, material, data)) = added_material(workspace, hash) else {
+            continue;
+        };
+        for (_, texture, _) in material.textures() {
+            if let Some(found) = added_texture(workspace, texture) {
+                context.push((found.header_key, found.texture.header.to_bytes()?));
+                context.push((found.data_key, found.texture.data));
+            }
+        }
+        context.push((key, data));
+    }
+    if let Some(w) = weight_warning(&target.stream_name, weight, grown) {
+        summary.warnings.push(w);
+    }
     // A clone of a mesh with a volatile companion has its volatile right after it.
     summary.added = new_edits
         .iter()
@@ -682,6 +783,8 @@ pub fn plan(
             vec![(stream, edits)]
         },
         additions: new_edits,
+        updates,
+        context,
         stream: target.stream_name,
     })
 }
@@ -746,6 +849,10 @@ impl ImportPlan {
             e.stream = into.clone();
             e.before = before.clone();
         }
+        // The weight was counted for the template's stream.
+        self.summary
+            .warnings
+            .retain(|w| !w.starts_with(WEIGHT_WARNING));
         // A material or texture copied unchanged under its own ids may already
         // be there: an earlier import into the same stream copied it.
         self.additions.retain(|e| {
@@ -789,6 +896,151 @@ impl ImportPlan {
         self.stream = into;
         Ok(())
     }
+}
+
+/// Builds the mesh of a model the workspace made (a new model set, or one
+/// imported over a mesh of the game) again from `model`, over the mesh as
+/// it was (`template`: its data and its volatile data): the geometry of
+/// `model` under the name, the bones and the record kinds of the template.
+/// Returns the data of the mesh and of its volatile companion, and what
+/// was done.
+///
+/// Unlike [`plan`] this adds and changes nothing else: a part takes the
+/// material of the template with the name of its glTF material (else a
+/// material of the workspace or the game with that name, else the
+/// template's most used one), and images of the file are not imported. The
+/// materials and textures of an added set are resources of their own, so
+/// the same file gives the same mesh whatever else was built — which is
+/// what the sources of a project need ([`crate::project`]).
+pub fn rebuild_added(
+    workspace: &Workspace,
+    assets: &mut GameAssets,
+    template: (&[u8], &[u8]),
+    model: &GltfModel,
+) -> Result<(Vec<u8>, Vec<u8>, ImportSummary)> {
+    if model.parts.is_empty() {
+        return Err(Error::InvalidArgument(
+            "the model file has no triangle meshes".into(),
+        ));
+    }
+    let template = MeshImage::parse(template.0, template.1)?;
+    let mut summary = ImportSummary {
+        mode: "rebuild".into(),
+        warnings: model.warnings.clone(),
+        ..Default::default()
+    };
+    let mut parts: Vec<PartGeometry> = model.parts.iter().map(|p| p.geometry.clone()).collect();
+    let mut skeleton_hashes = None;
+    if parts.iter().any(|p| p.skin.is_some()) {
+        let skeleton = resolve_skeleton(assets, &template, model, &mut parts, &mut summary)?;
+        skeleton_hashes = Some(skeleton.bones.iter().map(|b| b.hash).collect::<Vec<u32>>());
+    }
+    let template_materials = material_counts(&template);
+    let mut edited = crate::workspace::EditedAssets::new(workspace, assets);
+    let known: Vec<(u32, String)> = template_materials
+        .iter()
+        .filter_map(|&h| AssetSource::material(&mut edited, h).map(|m| (h, m.name)))
+        .collect();
+    let fallback = template_materials.first().copied().unwrap_or(0);
+    let mut resolved: HashMap<Option<usize>, (u32, String)> = HashMap::new();
+    for (part, geometry) in model.parts.iter().zip(parts.iter_mut()) {
+        let slot = part.material.filter(|&m| m < model.materials.len());
+        let (hash, name) = match resolved.get(&slot) {
+            Some(found) => found.clone(),
+            None => {
+                let wanted = slot.map(|m| model.materials[m].name.as_str());
+                let by_name = wanted.and_then(|name| {
+                    known
+                        .iter()
+                        .find(|(_, n)| n.eq_ignore_ascii_case(name))
+                        .cloned()
+                        // A material the exporter could not name is its hash.
+                        .or_else(|| {
+                            let hash = u32::from_str_radix(name, 16).ok()?;
+                            (name.len() == 8 && template_materials.contains(&hash))
+                                .then(|| (hash, name.to_owned()))
+                        })
+                        .or_else(|| {
+                            let hash = crc32(name.to_ascii_lowercase().as_bytes());
+                            AssetSource::material(&mut edited, hash).map(|m| (hash, m.name))
+                        })
+                });
+                let found = match (by_name, wanted) {
+                    (Some(found), _) => found,
+                    (None, Some(name)) => {
+                        summary.warnings.push(format!(
+                            "material `{name}` is not one of the model's or of the game: its \
+                             parts keep material {fallback:08x}"
+                        ));
+                        (fallback, format!("{fallback:08x}"))
+                    }
+                    (None, None) => (fallback, format!("{fallback:08x}")),
+                };
+                summary.materials_reused += 1;
+                resolved.insert(slot, found.clone());
+                found
+            }
+        };
+        geometry.material_hash = hash;
+        summary.parts.push(PartReport {
+            name: geometry.name.clone(),
+            kind: String::new(),
+            vertices: geometry.positions.len(),
+            triangles: geometry.triangles.len(),
+            material: name,
+            new_material: false,
+        });
+    }
+    let (image, warnings) = mesh_build::build(
+        &parts,
+        &BuildOptions {
+            name: template.name.clone(),
+            skeleton: skeleton_hashes,
+            template: Some(&template),
+            template_materials: HashMap::new(),
+            format: None,
+        },
+    )?;
+    for w in warnings {
+        if !summary.warnings.contains(&w) {
+            summary.warnings.push(w);
+        }
+    }
+    summary.records = image.records.len();
+    for report in &mut summary.parts {
+        report.kind = image
+            .records
+            .iter()
+            .find(|r| r.name == report.name)
+            .map(RecordKind::of)
+            .map_or("?".into(), |k| format!("{k:?}").to_lowercase());
+    }
+    let (mesh, volatile) = image.encode()?;
+    Ok((mesh, volatile, summary))
+}
+
+/// Start of [`weight_warning`]: [`ImportPlan::put_into`] drops the warning
+/// when the new resources go into another stream.
+const WEIGHT_WARNING: &str = "the import makes ";
+
+/// A warning when an import adds `grown` bytes to a stream of `weight`
+/// bytes and that is both more than 1 MiB and more than half of the stream:
+/// zones of the world grid share the budget of their partition (25 MB for
+/// the high detail of a city), and the game stops loading zones at the
+/// first one that does not fit.
+fn weight_warning(stream: &str, weight: u64, grown: u64) -> Option<String> {
+    const MIB: u64 = 1 << 20;
+    if grown <= MIB || grown * 2 <= weight {
+        return None;
+    }
+    let mb = |b: u64| b as f64 / 1e6;
+    Some(format!(
+        "{WEIGHT_WARNING}{stream} {:.1} MB instead of {:.1} MB: zones of the world grid share \
+         a budget (25 MB for the high detail of a city), so the zone may not load or may push \
+         its neighbours out; use smaller textures",
+        mb(weight + grown),
+        mb(weight)
+    ))
 }
 
 fn new_edit(stream: &str, resource: &NewResource, before: Option<ResourceKey>) -> NewResourceEdit {
@@ -985,6 +1237,7 @@ fn resolve_skeleton(
 #[allow(clippy::too_many_arguments)]
 fn resolve_material(
     game: &GameInstance,
+    workspace: &Workspace,
     assets: &mut GameAssets,
     checker: &mut ReferenceChecker<'_>,
     stream: usize,
@@ -993,11 +1246,19 @@ fn resolve_material(
     used: &mut UsedIds,
     seed: &str,
     additions: &mut Vec<NewResource>,
+    updates: &mut Vec<(ResourceKey, Option<Vec<u8>>)>,
     summary: &mut ImportSummary,
 ) -> Result<(u32, bool, String, u32)> {
     let mut known: Vec<(u32, Material)> = Vec::new();
+    // Materials of the target an earlier import added to the workspace:
+    // the game files have them only after `apply`, and the workspace has
+    // their latest data.
+    let mut own: HashMap<u32, (ResourceKey, Vec<u8>)> = HashMap::new();
     for &h in template_materials {
-        if let Some(m) = crate::export::gltf::AssetSource::material(assets, h) {
+        if let Some((key, m, data)) = added_material(workspace, h) {
+            own.insert(h, (key, data));
+            known.push((h, m));
+        } else if let Some(m) = crate::export::gltf::AssetSource::material(assets, h) {
             known.push((h, m));
         }
     }
@@ -1031,6 +1292,11 @@ fn resolve_material(
         summary.materials_reused += 1;
         return Ok((base_hash, false, base.name.clone(), base_hash));
     };
+    // A material of the workspace is the model's own: importing again
+    // gives it the new textures under the same ids instead of leaving it
+    // (and its textures) in the stream beside one more clone.
+    let own = own.remove(&base_hash);
+    let same_kept = named.is_some() || own.is_some();
     // Images that differ from the base material's textures.
     type Rgba = (usize, usize, Vec<u8>);
     let mut replace: Vec<(TextureRole, u32, Rgba)> = Vec::new();
@@ -1047,15 +1313,29 @@ fn resolve_material(
             ));
             continue;
         };
-        let current =
-            crate::export::gltf::AssetSource::texture(assets, texture_hash).and_then(|t| {
+        // A placeholder of the engine (no stream holds it): nothing to
+        // clone a texture from.
+        let in_workspace = added_texture(workspace, texture_hash);
+        if in_workspace.is_none() && assets.texture_location(texture_hash).is_none() {
+            summary.warnings.push(format!(
+                "material `{}` takes its {role:?} texture {texture_hash:08x} from the engine, \
+                 not from a stream: the image `{}` is not used (take a model whose material \
+                 has such a texture of its own as the template)",
+                base.name, image.name
+            ));
+            continue;
+        }
+        let current = in_workspace
+            .map(|t| t.texture)
+            .or_else(|| crate::export::gltf::AssetSource::texture(assets, texture_hash))
+            .and_then(|t| {
                 let (w, h, mut rgba) = t.rgba(0).ok()?;
                 if role == TextureRole::Normal && t.header.format() == tg4::Format::Dxt5Nm {
                     pixels::rebuild_normal_map(&mut rgba);
                 }
                 Some((w, h, rgba))
             });
-        if named.is_some() && current.as_ref() == Some(&decoded) {
+        if same_kept && current.as_ref() == Some(&decoded) {
             continue;
         }
         // Clothes, hair and eyes are exported with their colour baked in
@@ -1064,7 +1344,7 @@ fn resolve_material(
             let shading = crate::resource::shading::Shading::from_material(&base);
             let baked = crate::scene::game::baked_pixels(assets, &shading, texture_hash);
             if baked.as_ref() == Some(&decoded) {
-                if named.is_some() {
+                if same_kept {
                     continue;
                 }
             } else if baked.is_some() {
@@ -1075,11 +1355,68 @@ fn resolve_material(
                 ));
             }
         }
+        if let Some((w, h, _)) = &current
+            // More than four times the side, and more than 1024x1024.
+            && decoded.0 * decoded.1 > 16 * w * h
+            && decoded.0 * decoded.1 > 1024 * 1024
+        {
+            summary.warnings.push(format!(
+                "the image `{}` is {}x{}, the game's texture it stands for is {w}x{h}: the \
+                 new texture takes {} times the memory; scale the image down unless the \
+                 model is seen that close",
+                image.name,
+                decoded.0,
+                decoded.1,
+                decoded.0 * decoded.1 / (w * h).max(1)
+            ));
+        }
         replace.push((role, texture_hash, decoded));
     }
-    if named.is_some() && replace.is_empty() {
+    if same_kept && replace.is_empty() {
         summary.materials_reused += 1;
         return Ok((base_hash, false, base.name.clone(), base_hash));
+    }
+    if let Some((key, mut data)) = own {
+        let mut texture_remap = Remap::default();
+        for (role, texture_hash, (w, h, rgba)) in replace {
+            match added_texture(workspace, texture_hash) {
+                // A texture of the workspace: new pixels under its ids.
+                Some(found) => {
+                    let new = texture::from_rgba(&found.texture.header, w, h, rgba, None)?;
+                    if updates.iter().all(|(k, _)| *k != found.header_key) {
+                        updates.push((found.header_key, Some(new.header.to_bytes()?)));
+                        updates.push((found.data_key, Some(new.data)));
+                    }
+                }
+                // A texture of the game the material still shares.
+                None => {
+                    let names = clone_texture(
+                        game,
+                        assets,
+                        used,
+                        &format!("{seed}:{role:?}"),
+                        texture_hash,
+                        (w, h, rgba),
+                        additions,
+                    )?;
+                    texture_remap.names.extend(names);
+                }
+            }
+            summary.textures_imported += 1;
+        }
+        if !texture_remap.names.is_empty() {
+            create::rewrite_references(TYPE_MATERIAL, &mut data, &texture_remap)?;
+            if updates.iter().all(|(k, _)| *k != key) {
+                updates.push((key, Some(data)));
+            }
+        }
+        summary.materials_updated += 1;
+        return Ok((
+            base_hash,
+            true,
+            format!("{} (kept, new textures)", base.name),
+            base_hash,
+        ));
     }
     // A new material cloned from the base, with new textures.
     let (s, r) = assets.material_location(base_hash).ok_or_else(|| {
@@ -1099,39 +1436,17 @@ fn resolve_material(
     let mut material = clone.remove(0);
     let new_hash = remap.names[&base_hash];
     let mut texture_remap = Remap::default();
-    for (role, texture_hash, (w, h, rgba)) in replace {
-        let (ts, tr) = assets.texture_location(texture_hash).ok_or_else(|| {
-            Error::InvalidArgument(format!("texture {texture_hash:08x} not found in the game"))
-        })?;
-        let tstream = game.open_stream(ts)?;
-        let (pair, tremap) = create::clone_resources(
-            &tstream,
-            &[tr],
+    for (role, texture_hash, rgba) in replace {
+        let names = clone_texture(
+            game,
+            assets,
             used,
-            &CloneOptions {
-                seed: format!("{seed}:{role:?}"),
-                rewrite_references: false,
-                storage: None,
-            },
+            &format!("{seed}:{role:?}"),
+            texture_hash,
+            rgba,
+            additions,
         )?;
-        let header_res = pair
-            .iter()
-            .find(|p| p.header.type_id == TYPE_TG4H)
-            .ok_or_else(|| Error::InvalidArgument("texture header missing".into()))?;
-        let header = tg4::Tg4Header::parse(&header_res.data)?;
-        let new_texture: Texture = texture::from_rgba(&header, w, h, rgba, None)?;
-        for mut res in pair {
-            res.data = if res.header.type_id == TYPE_TG4H {
-                new_texture.header.to_bytes()?
-            } else if res.header.type_id == TYPE_TG4D {
-                new_texture.data.clone()
-            } else {
-                res.data
-            };
-            res.header.data_size = res.data.len() as u32;
-            additions.push(res);
-        }
-        texture_remap.names.extend(tremap.names);
+        texture_remap.names.extend(names);
         summary.textures_imported += 1;
     }
     create::rewrite_references(TYPE_MATERIAL, &mut material.data, &texture_remap)?;
@@ -1149,6 +1464,98 @@ fn resolve_material(
         format!("{} (new, from {})", gm.name, base.name),
         base_hash,
     ))
+}
+
+/// A material the workspace added (a clone made by an import) with name
+/// hash `hash`: its key, the material and its data.
+fn added_material(workspace: &Workspace, hash: u32) -> Option<(ResourceKey, Material, Vec<u8>)> {
+    workspace
+        .changes()
+        .filter(|c| c.is_added() && c.key.type_id == TYPE_MATERIAL)
+        .find_map(|c| {
+            let data = workspace.data(&c.key).ok()??;
+            if data.get(8..12) != Some(&hash.to_le_bytes()[..]) {
+                return None;
+            }
+            let material = Material::parse(&data).ok()?;
+            Some((c.key.clone(), material, data))
+        })
+}
+
+/// [`added_texture`].
+struct AddedTexture {
+    header_key: ResourceKey,
+    data_key: ResourceKey,
+    texture: Texture,
+}
+
+/// A texture the workspace added with name hash `hash`.
+fn added_texture(workspace: &Workspace, hash: u32) -> Option<AddedTexture> {
+    let header = workspace
+        .changes()
+        .find(|c| c.is_added() && c.key.type_id == TYPE_TG4H && c.key.ids[3] == hash)?;
+    let mut ids = header.key.ids;
+    ids[1] = TYPE_TG4D;
+    let data_key = ResourceKey {
+        stream: header.key.stream.clone(),
+        type_id: TYPE_TG4D,
+        ids,
+    };
+    workspace.change(&data_key).filter(|c| c.is_added())?;
+    Some(AddedTexture {
+        texture: Texture {
+            header: tg4::Tg4Header::parse(&workspace.data(&header.key).ok()??).ok()?,
+            data: workspace.data(&data_key).ok()??,
+        },
+        header_key: header.key.clone(),
+        data_key,
+    })
+}
+
+/// Clones texture `texture_hash` of the game under new ids with the pixels
+/// `rgba` (format and mip chain of the original) into `additions`. Returns
+/// the old name hash and the new one.
+fn clone_texture(
+    game: &GameInstance,
+    assets: &mut GameAssets,
+    used: &mut UsedIds,
+    seed: &str,
+    texture_hash: u32,
+    (w, h, rgba): (usize, usize, Vec<u8>),
+    additions: &mut Vec<NewResource>,
+) -> Result<HashMap<u32, u32>> {
+    let (ts, tr) = assets.texture_location(texture_hash).ok_or_else(|| {
+        Error::InvalidArgument(format!("texture {texture_hash:08x} not found in the game"))
+    })?;
+    let tstream = game.open_stream(ts)?;
+    let (pair, tremap) = create::clone_resources(
+        &tstream,
+        &[tr],
+        used,
+        &CloneOptions {
+            seed: seed.to_owned(),
+            rewrite_references: false,
+            storage: None,
+        },
+    )?;
+    let header_res = pair
+        .iter()
+        .find(|p| p.header.type_id == TYPE_TG4H)
+        .ok_or_else(|| Error::InvalidArgument("texture header missing".into()))?;
+    let header = tg4::Tg4Header::parse(&header_res.data)?;
+    let new_texture: Texture = texture::from_rgba(&header, w, h, rgba, None)?;
+    for mut res in pair {
+        res.data = if res.header.type_id == TYPE_TG4H {
+            new_texture.header.to_bytes()?
+        } else if res.header.type_id == TYPE_TG4D {
+            new_texture.data.clone()
+        } else {
+            res.data
+        };
+        res.header.data_size = res.data.len() as u32;
+        additions.push(res);
+    }
+    Ok(tremap.names)
 }
 
 /// Copies a material, unchanged and under its own ids, into the target
@@ -1278,6 +1685,17 @@ mod tests {
     }
 
     #[test]
+    fn a_stream_made_much_heavier_gets_a_warning() {
+        // venue_127 of Havana with a 4096x4096 texture: 4.2 MB -> 15.6 MB.
+        let w = weight_warning("gf2/cuba/local/vic/high/venue_127", 4_158_504, 11_460_999).unwrap();
+        assert!(w.starts_with(WEIGHT_WARNING), "{w}");
+        assert!(w.contains("15.6 MB instead of 4.2 MB"), "{w}");
+        // A small texture, and a big one in a stream that is much bigger still.
+        assert_eq!(weight_warning("s", 4_158_504, 700_000), None);
+        assert_eq!(weight_warning("s", 60_000_000, 11_460_999), None);
+    }
+
+    #[test]
     fn copies_already_in_the_target_stream_are_not_added_twice() {
         use crate::workspace::tests::{fake_game, new_resource, new_stream};
         let (_dir, game) = fake_game();
@@ -1317,6 +1735,8 @@ mod tests {
             label: "Second import".into(),
             edits: Vec::new(),
             additions,
+            updates: Vec::new(),
+            context: Vec::new(),
             stream: template.into(),
         };
         let mut second = plan(vec![same, mesh]);

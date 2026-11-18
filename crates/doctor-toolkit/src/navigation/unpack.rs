@@ -649,8 +649,23 @@ fn string_columns(table: &StringTable) -> Vec<String> {
 }
 
 /// Applies the entries of a JSON document to `table`. Returns the number of
-/// changed strings.
+/// changed strings. An entry whose hash the table does not have is an error.
 pub(crate) fn apply_strings(table: &mut StringTable, document: &Value) -> Result<usize> {
+    Ok(apply_strings_with(table, document, false)?.0)
+}
+
+/// As the import of a `text-export` document, and an entry whose hash the
+/// table does not have is added to it, with a text in every language column.
+/// Returns the numbers of changed strings and of added entries.
+pub fn apply_strings_adding(table: &mut StringTable, document: &Value) -> Result<(usize, usize)> {
+    apply_strings_with(table, document, true)
+}
+
+fn apply_strings_with(
+    table: &mut StringTable,
+    document: &Value,
+    add: bool,
+) -> Result<(usize, usize)> {
     let bad = |why: String| Error::InvalidArgument(why);
     let columns: Vec<&str> = document
         .get("languages")
@@ -673,30 +688,42 @@ pub(crate) fn apply_strings(table: &mut StringTable, document: &Value) -> Result
         .get("entries")
         .and_then(Value::as_array)
         .ok_or_else(|| bad("`entries` must be a list".into()))?;
-    let mut changed = 0;
+    let (mut changed, mut added) = (0, 0);
     for entry in entries {
         let hash = entry
             .get("hash")
             .and_then(Value::as_str)
             .and_then(|h| u32::from_str_radix(h, 16).ok())
             .ok_or_else(|| bad("entry without a valid `hash`".into()))?;
-        let row = table.find(hash).ok_or_else(|| {
-            bad(format!(
-                "hash {hash:08x} is not in the table; adding entries is not supported"
-            ))
-        })?;
-        for (lang, column) in columns.iter().enumerate() {
-            let value = entry
-                .get(*column)
+        let text = |column: &str| {
+            entry
+                .get(column)
                 .and_then(Value::as_str)
-                .ok_or_else(|| bad(format!("entry {hash:08x} has no `{column}`")))?;
+                .ok_or_else(|| bad(format!("entry {hash:08x} has no `{column}`")))
+        };
+        let Some(row) = table.find(hash) else {
+            if !add {
+                return Err(bad(format!(
+                    "hash {hash:08x} is not in the table; adding entries is not supported"
+                )));
+            }
+            let texts = columns
+                .iter()
+                .map(|column| text(column).map(str::to_owned))
+                .collect::<Result<Vec<_>>>()?;
+            table.insert(hash, &texts)?;
+            added += 1;
+            continue;
+        };
+        for (lang, column) in columns.iter().enumerate() {
+            let value = text(column)?;
             if table.strings[lang][row] != value {
                 table.strings[lang][row] = value.to_owned();
                 changed += 1;
             }
         }
     }
-    Ok(changed)
+    Ok((changed, added))
 }
 
 // ------------------------------------------------------------------- pack
@@ -1116,5 +1143,17 @@ mod tests {
         assert_eq!(copy.strings[0][1], "deux");
         document["entries"][1]["hash"] = json!("00000009");
         assert!(apply_strings(&mut copy, &document).is_err());
+        // The same document adds the entry when adding is asked for.
+        let before = copy.clone();
+        assert_eq!(apply_strings_adding(&mut copy, &document).unwrap(), (0, 1));
+        assert_eq!(copy.hashes, [1, 2, 9]);
+        assert_eq!(copy.texts(9).unwrap(), ["deux"]);
+        assert_eq!(copy.texts(2).unwrap(), ["deux"]);
+        assert_eq!(apply_strings_adding(&mut copy, &document).unwrap(), (0, 0));
+        // A new entry needs a text in every column.
+        document["entries"][1] = json!({ "hash": "0000000a" });
+        let mut copy = before.clone();
+        assert!(apply_strings_adding(&mut copy, &document).is_err());
+        assert_eq!(copy, before);
     }
 }

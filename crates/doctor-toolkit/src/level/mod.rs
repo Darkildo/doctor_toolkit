@@ -21,6 +21,8 @@ pub mod edit;
 pub mod many;
 pub mod model;
 pub mod navgraph;
+pub mod place;
+pub mod presets;
 #[cfg(feature = "walk")]
 pub mod walk;
 pub mod world_grid;
@@ -44,6 +46,7 @@ pub use model::{
     IDENTITY, Light, LightKind, LodRange, Marker, ModelDesc, Piece, RowMatrix, TYPE_MESH,
     TYPE_METAMODEL, TYPE_TREE, compose,
 };
+pub use presets::{LevelPresets, Preset, PresetKind, Presets, ZoneSet};
 
 /// Type id of `simgroup`.
 pub const TYPE_SIMGROUP: u32 = crate::hash::sdbm(b"simgroup");

@@ -441,3 +441,541 @@ fn shared_resources_are_written_once() {
         ["gf2/level", "gf2/level2"]
     );
 }
+
+/// A game in a temporary folder and one edited string of its workspace in
+/// `ws_dir` (the game's own when `None`).
+fn game_with_an_edit(dir: &Path, ws_dir: Option<&Path>) -> (GameInstance, Workspace) {
+    let game_dir = dir.join("game");
+    std::fs::create_dir_all(&game_dir).unwrap();
+    testing::write_game(&game_dir).unwrap();
+    let game = GameInstance::open(&game_dir).unwrap();
+    let mut ws = Workspace::for_game(&game, ws_dir).unwrap();
+    let stream = game.find_stream(testing::TEXT).unwrap();
+    let mut table = StringTable::parse(&ws.current_data(&game, stream, 0).unwrap()).unwrap();
+    table.strings[0][0] = "Si".into();
+    ws.set_string_table(&game, stream, 0, &table).unwrap();
+    (game, ws)
+}
+
+/// Stage 113: the sets of zones are the project's (`[[zones]]`), written
+/// without touching what the author wrote in `project.toml`; what the editor
+/// loaded last is this computer's (`.doctor/editor.json`).
+#[test]
+fn zone_sets_and_the_editor_state_of_a_project() {
+    use crate::level::ZoneSet;
+    use crate::project::{EditorCamera, EditorState};
+
+    let dir = tempfile::tempdir().unwrap();
+    let game_dir = dir.path().join("game");
+    std::fs::create_dir_all(&game_dir).unwrap();
+    testing::write_game(&game_dir).unwrap();
+    let game = GameInstance::open(&game_dir).unwrap();
+    let root = dir.path().join("my mod");
+    let new = NewDocument {
+        name: "My Mod".into(),
+        id: None,
+        author: "me".into(),
+    };
+    let mut project = create_document(&game, &root, &new).unwrap();
+    assert!(project.config.zones.is_empty());
+    let file = root.join(PROJECT_FILE);
+    let text = std::fs::read_to_string(&file).unwrap();
+    assert!(!text.contains("zones"), "{text}");
+    // The author's own lines stay where they are.
+    let text = text.replace("[build]", "# where the edits live\n[build]");
+    std::fs::write(&file, &text).unwrap();
+
+    let yard = ZoneSet {
+        name: "the yard".into(),
+        streams: vec!["gf2/town/yard".into(), "gf2/town".into()],
+    };
+    let level = ZoneSet {
+        name: "level one".into(),
+        streams: vec!["gf2/level".into()],
+    };
+    project
+        .set_zone_sets(vec![yard.clone(), level.clone()])
+        .unwrap();
+    let written = std::fs::read_to_string(&file).unwrap();
+    assert!(written.starts_with(text.trim_end()), "{written}");
+    assert!(written.contains("# where the edits live"));
+    assert!(
+        written.contains("[[zones]]\nname = \"the yard\""),
+        "{written}"
+    );
+    assert_eq!(
+        Project::open(&root).unwrap().config.zones,
+        [yard.clone(), level]
+    );
+
+    // Replaced, not added to; a table written by hand between the sets and
+    // after them stays.
+    let by_hand = written.replace(
+        "[[zones]]\nname = \"level",
+        "[extra]\nkey = 1\n\n[[zones]]\nname = \"level",
+    ) + "\n[more]\nkey = [\n  2,\n]\n";
+    std::fs::write(&file, &by_hand).unwrap();
+    project.set_zone_sets(vec![yard.clone()]).unwrap();
+    let written = std::fs::read_to_string(&file).unwrap();
+    assert_eq!(written.matches("[[zones]]").count(), 1, "{written}");
+    assert!(written.contains("[extra]\nkey = 1") && written.contains("[more]\nkey = ["));
+    assert_eq!(Project::open(&root).unwrap().config.zones, [yard]);
+    project.set_zone_sets(Vec::new()).unwrap();
+    let written = std::fs::read_to_string(&file).unwrap();
+    assert!(!written.contains("zones") && written.contains("[more]"));
+    assert!(Project::open(&root).unwrap().config.zones.is_empty());
+
+    // The state of the editor: none at first, kept with the keys of a later
+    // version, and out of version control also in a project whose
+    // `.gitignore` is older than the file.
+    assert_eq!(EditorState::read(&root), EditorState::default());
+    let ignore = root.join(".gitignore");
+    let old = std::fs::read_to_string(&ignore)
+        .unwrap()
+        .replace("/.doctor/editor.json\n", "");
+    std::fs::write(&ignore, &old).unwrap();
+    std::fs::write(
+        root.join(".doctor/editor.json"),
+        r#"{ "zones": ["preset:gf2/town"], "tabs": [1, 2] }"#,
+    )
+    .unwrap();
+    let mut state = EditorState::read(&root);
+    assert_eq!(state.zones, ["preset:gf2/town"]);
+    state.zones = vec!["gf2/town/yard".into()];
+    state.camera = Some(EditorCamera {
+        eye: [1.0, 2.0, 3.0],
+        yaw: 0.5,
+        pitch: -0.25,
+    });
+    state.write(&root).unwrap();
+    let again = EditorState::read(&root);
+    assert_eq!(again, state);
+    assert_eq!(again.other["tabs"], serde_json::json!([1, 2]));
+    let ignored = std::fs::read_to_string(&ignore).unwrap();
+    assert_eq!(
+        ignored.replace("/.doctor/editor.json\n", ""),
+        old,
+        "{ignored}"
+    );
+    assert!(ignored.contains("/.doctor/local.toml\n/.doctor/editor.json\n"));
+    state.write(&root).unwrap();
+    assert_eq!(std::fs::read_to_string(&ignore).unwrap(), ignored);
+}
+
+#[test]
+fn a_document_project_has_its_own_workspace_and_no_sources() {
+    let dir = tempfile::tempdir().unwrap();
+    let game_dir = dir.path().join("game");
+    std::fs::create_dir_all(&game_dir).unwrap();
+    testing::write_game(&game_dir).unwrap();
+    let game = GameInstance::open(&game_dir).unwrap();
+    let root = dir.path().join("my mod");
+    let project = create_document(
+        &game,
+        &root,
+        &NewDocument {
+            name: "My Mod".into(),
+            id: None,
+            author: "me".into(),
+        },
+    )
+    .unwrap();
+    assert_eq!(project.config.project.id, "my-mod");
+    assert!(project.has_own_workspace());
+    assert_eq!(project.workspace_dir(), Some(root.join("workspace")));
+    assert_eq!(project.entries().count(), 0);
+    // The path of the game is this computer's: not in project.toml.
+    let text = std::fs::read_to_string(root.join(PROJECT_FILE)).unwrap();
+    assert!(text.contains("workspace = \"workspace\""), "{text}");
+    assert!(!text.contains("path"), "{text}");
+    assert_eq!(
+        project.game_path(),
+        Some(std::fs::canonicalize(&game_dir).unwrap())
+    );
+    let ignored = std::fs::read_to_string(root.join(".gitignore")).unwrap();
+    assert!(ignored.contains("/.doctor/local.toml") && ignored.contains("/workspace/staged/"));
+    assert!(ignored.contains("/.doctor/editor.json"), "{ignored}");
+
+    // Opened again, it finds its game and an empty workspace that is not
+    // on disk before the first edit.
+    let project = Project::open(&root).unwrap();
+    let game = project.game(None).unwrap();
+    let mut ws = project.workspace(&game).unwrap();
+    assert!(!ws.is_saved() && ws.is_empty());
+    assert!(!root.join("workspace").exists());
+    assert!(
+        project
+            .build_mod(&ws, &dir.path().join("empty.zip"), None)
+            .is_err()
+    );
+
+    // An edit goes into the project's folder, not into the game's, and all
+    // of the workspace is the project's mod.
+    let stream = game.find_stream(testing::TEXT).unwrap();
+    let mut table = StringTable::parse(&ws.current_data(&game, stream, 0).unwrap()).unwrap();
+    table.strings[0][0] = "Si".into();
+    ws.set_string_table(&game, stream, 0, &table).unwrap();
+    assert!(Workspace::exists(&root.join("workspace")));
+    assert!(!Workspace::default_dir(game.root()).exists());
+    assert_eq!(project.changed_keys(&ws).len(), 1);
+    let report = project
+        .build_mod(&ws, &dir.path().join("mod.zip"), None)
+        .unwrap();
+    assert_eq!(report.resources, 1, "{report:?}");
+
+    // A second project in the folder, a folder with files, an empty name.
+    let again = NewDocument {
+        name: "Other".into(),
+        ..Default::default()
+    };
+    assert!(create_document(&game, &root, &again).is_err());
+    assert!(create_document(&game, dir.path(), &again).is_err());
+    assert!(create_document(&game, &dir.path().join("x"), &NewDocument::default()).is_err());
+
+    // The game moved: the project is told where it is now.
+    project.set_game_path(dir.path()).unwrap();
+    assert_eq!(
+        Project::open(&root).unwrap().game_path(),
+        Some(std::fs::canonicalize(dir.path()).unwrap())
+    );
+}
+
+#[test]
+fn the_workspace_of_the_game_moves_into_a_project() {
+    let dir = tempfile::tempdir().unwrap();
+    let (game, mut ws) = game_with_an_edit(dir.path(), None);
+    let from = ws.dir().to_owned();
+    let (changes, operations) = (ws.changes().count(), ws.head());
+    assert_eq!((changes, operations), (1, 1));
+    let project = create_document(
+        &game,
+        &dir.path().join("p"),
+        &NewDocument {
+            name: "Moved".into(),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+
+    // Not while the edit is in the files of the game.
+    ws.apply(&game, Default::default()).unwrap();
+    drop(ws);
+    let error = adopt_workspace(&game, &from, &project)
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("put the originals back"), "{error}");
+    assert!(Workspace::exists(&from) && !project.workspace_dir().unwrap().exists());
+    let mut ws = Workspace::open(&from).unwrap();
+    ws.unapply(&game, false).unwrap();
+    drop(ws);
+
+    let adopted = adopt_workspace(&game, &from, &project).unwrap();
+    assert_eq!((adopted.changes, adopted.operations), (1, 1));
+    assert!(!from.exists(), "the game's workspace is gone");
+    let to = project.workspace_dir().unwrap();
+    assert!(!to.join("applied.json").exists() && !to.join("lock").exists());
+    // It is a project's from the move on: not written into the game by itself.
+    assert!(
+        std::fs::read_to_string(to.join("manifest.json"))
+            .unwrap()
+            .contains("\"owner\": \"project\"")
+    );
+    assert!(
+        Workspace::open(&to)
+            .unwrap()
+            .apply(&game, Default::default())
+            .is_err()
+    );
+    // The edit and its history are the project's: it is undone there.
+    let mut ws = project.workspace(&game).unwrap();
+    assert_eq!(ws.changes().count(), 1);
+    assert!(ws.undo().unwrap().is_some());
+    assert!(ws.is_empty());
+
+    // A project that has edits takes no other workspace.
+    ws.redo().unwrap();
+    drop(ws);
+    let other = dir.path().join("other-ws");
+    let (_, second) = {
+        let game_dir = dir.path().join("game");
+        let game = GameInstance::open(&game_dir).unwrap();
+        let mut ws = Workspace::for_game(&game, Some(&other)).unwrap();
+        let stream = game.find_stream(testing::TEXT).unwrap();
+        let mut table = StringTable::parse(&ws.current_data(&game, stream, 0).unwrap()).unwrap();
+        table.strings[0][0] = "No".into();
+        ws.set_string_table(&game, stream, 0, &table).unwrap();
+        (game, ws)
+    };
+    drop(second);
+    let error = adopt_workspace(&game, &other, &project)
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("already has edits"), "{error}");
+    assert!(Workspace::exists(&other));
+    // A project of stage 36 (sources built into the game's workspace) has
+    // nowhere to take it.
+    let sources = fixture(Default::default());
+    assert!(!sources.project.has_own_workspace());
+    assert!(adopt_workspace(&game, &other, &sources.project).is_err());
+}
+
+#[test]
+fn the_folder_of_a_workspace_is_stored_from_the_project_or_whole() {
+    let root = std::env::current_dir().unwrap().join("p");
+    assert_eq!(
+        create::stored_workspace(&root, &root.join("workspace")),
+        Path::new("workspace")
+    );
+    // Relative to where the command runs: not left as it is.
+    let stored = create::stored_workspace(&root, Path::new("elsewhere/ws"));
+    assert_eq!(
+        stored,
+        std::env::current_dir().unwrap().join("elsewhere/ws")
+    );
+    assert_eq!(
+        create::stored_workspace(Path::new("p"), Path::new("p/ws")),
+        Path::new("ws")
+    );
+}
+
+/// Stage 107: the own workspace of a project is never written into the
+/// game files by itself — whichever program records or opens it, by the
+/// project or by its folder alone. The mark is in its manifest and comes
+/// back from where the folder is. Other workspaces write as before.
+#[test]
+fn the_workspace_of_a_project_is_not_written_into_the_game_by_itself() {
+    use crate::workspace::Owner;
+    let dir = tempfile::tempdir().unwrap();
+    let game_dir = dir.path().join("game");
+    std::fs::create_dir_all(&game_dir).unwrap();
+    testing::write_game(&game_dir).unwrap();
+    let game = GameInstance::open(&game_dir).unwrap();
+    let root = dir.path().join("p");
+    let new = NewDocument {
+        name: "P".into(),
+        ..Default::default()
+    };
+    create_document(&game, &root, &new).unwrap();
+    let ws_dir = root.join("workspace");
+    assert_eq!(project_of_workspace(&ws_dir), Some(root.clone()));
+    assert_eq!(project_of_workspace(&root), None);
+    assert_eq!(
+        project_of_workspace(&Workspace::default_dir(&game_dir)),
+        None
+    );
+    let edit = |ws: &mut Workspace| {
+        let stream = game.find_stream(testing::TEXT).unwrap();
+        let mut table = StringTable::parse(&ws.current_data(&game, stream, 0).unwrap()).unwrap();
+        table.strings[0][0] = "Si".into();
+        ws.set_string_table(&game, stream, 0, &table).unwrap();
+    };
+    let pristine = std::fs::read(game_dir.join("gf2/text/abcd.str")).unwrap();
+    let refused = |ws: &mut Workspace| {
+        let error = ws.apply(&game, Default::default()).unwrap_err().to_string();
+        assert!(
+            error.contains("a project's own") && error.contains("project install"),
+            "{error}"
+        );
+        assert_eq!(
+            std::fs::read(game_dir.join("gf2/text/abcd.str")).unwrap(),
+            pristine
+        );
+        assert!(!game_dir.join("_doctor_toolkit").exists());
+    };
+
+    // Recorded by a program that knows the folder only (`--workspace-dir`).
+    let mut ws = Workspace::for_game(&game, Some(&ws_dir)).unwrap();
+    assert_eq!(ws.owner(), Owner::Project);
+    refused(&mut ws);
+    edit(&mut ws);
+    refused(&mut ws);
+    drop(ws);
+    let manifest = std::fs::read_to_string(ws_dir.join("manifest.json")).unwrap();
+    assert!(manifest.contains("\"owner\": \"project\""), "{manifest}");
+    // Opened again, for writing and for reading.
+    refused(&mut Workspace::open(&ws_dir).unwrap());
+    refused(&mut Workspace::open_read_only(&ws_dir).unwrap());
+    // The originals can still be put back (nothing is in the game here).
+    Workspace::open(&ws_dir)
+        .unwrap()
+        .unapply(&game, false)
+        .unwrap();
+
+    // The mark goes with the folder: a copy elsewhere is still a project's.
+    let copy = dir.path().join("copy");
+    std::fs::create_dir_all(&copy).unwrap();
+    for name in ["manifest.json", "log.json"] {
+        std::fs::copy(ws_dir.join(name), copy.join(name)).unwrap();
+    }
+    assert_eq!(Workspace::open(&copy).unwrap().owner(), Owner::Project);
+
+    // A workspace written before the mark existed (or saved by a program
+    // that does not know it): a project's where the project names it, an
+    // ordinary one elsewhere.
+    let unmarked = manifest.replace("  \"owner\": \"project\",\n", "");
+    assert_ne!(unmarked, manifest);
+    std::fs::write(ws_dir.join("manifest.json"), &unmarked).unwrap();
+    std::fs::write(copy.join("manifest.json"), &unmarked).unwrap();
+    refused(&mut Workspace::open(&ws_dir).unwrap());
+    assert_eq!(Workspace::open(&copy).unwrap().owner(), Owner::Game);
+    // Its next save writes the mark again.
+    let mut ws = Workspace::open(&ws_dir).unwrap();
+    ws.undo().unwrap();
+    let manifest = std::fs::read_to_string(ws_dir.join("manifest.json")).unwrap();
+    assert!(manifest.contains("\"owner\": \"project\""), "{manifest}");
+    ws.redo().unwrap();
+
+    // A project that keeps its workspace elsewhere marks it by opening it.
+    let mut config = ProjectConfig::read(&root).unwrap();
+    let far = dir.path().join("far/ws");
+    config.build.workspace = Some(far.clone());
+    config.write(&root).unwrap();
+    assert_eq!(project_of_workspace(&ws_dir), None);
+    let project = Project::open(&root).unwrap();
+    let mut ws = project.workspace(&game).unwrap();
+    assert_eq!(ws.owner(), Owner::Project);
+    edit(&mut ws);
+    drop(ws);
+    refused(&mut Workspace::open(&far).unwrap());
+
+    // The game's own workspace and one in a folder given to a command
+    // write into the game as before.
+    let other = dir.path().join("other");
+    let mut ws = Workspace::for_game(&game, Some(&other)).unwrap();
+    assert_eq!(ws.owner(), Owner::Game);
+    edit(&mut ws);
+    assert!(
+        !std::fs::read_to_string(other.join("manifest.json"))
+            .unwrap()
+            .contains("owner")
+    );
+    ws.apply(&game, Default::default()).unwrap();
+    assert_ne!(
+        std::fs::read(game_dir.join("gf2/text/abcd.str")).unwrap(),
+        pristine
+    );
+    ws.unapply(&game, false).unwrap();
+    let mut ws = Workspace::for_game(&game, None).unwrap();
+    assert_eq!(ws.owner(), Owner::Game);
+    edit(&mut ws);
+    ws.apply(&game, Default::default()).unwrap();
+}
+
+/// The payload files of the installed mod in `dir`.
+fn installed_payloads(dir: &Path) -> Vec<std::path::PathBuf> {
+    let mut out = Vec::new();
+    for prefix in std::fs::read_dir(dir.join("payloads")).unwrap() {
+        for file in std::fs::read_dir(prefix.unwrap().path()).unwrap() {
+            out.push(file.unwrap().path());
+        }
+    }
+    out
+}
+
+/// Stage 107: a project goes into the game as a mod — its id, name and
+/// version, enabled, last in the load order; installed again, it replaces
+/// its earlier state and stays last.
+#[test]
+fn a_project_is_installed_into_the_mods() {
+    use crate::mods::ModManager;
+    let dir = tempfile::tempdir().unwrap();
+    let game_dir = dir.path().join("game");
+    std::fs::create_dir_all(&game_dir).unwrap();
+    testing::write_game(&game_dir).unwrap();
+    let game = GameInstance::open(&game_dir).unwrap();
+    let root = dir.path().join("Yard Mod");
+    let new = NewDocument {
+        name: "Yard Mod".into(),
+        author: "me".into(),
+        ..Default::default()
+    };
+    let project = create_document(&game, &root, &new).unwrap();
+    let mut mods = ModManager::open(&game).unwrap();
+    // Nothing to install yet.
+    let ws = project.workspace(&game).unwrap();
+    assert!(
+        project
+            .install_into(&game, &mut mods, &ws, Default::default())
+            .is_err()
+    );
+    assert!(mods.mods().is_empty());
+
+    // Another mod is there first.
+    let mut other = Workspace::for_game(&game, Some(&dir.path().join("other"))).unwrap();
+    let level = game.find_stream(testing::LEVEL).unwrap();
+    let mut table =
+        StringTable::parse(&other.current_data(&game, level, testing::STRINGS).unwrap()).unwrap();
+    table.strings[0][0] = "Other".into();
+    other
+        .set_string_table(&game, level, testing::STRINGS, &table)
+        .unwrap();
+    let info = crate::mods::ModInfo {
+        id: "other".into(),
+        name: "Other".into(),
+        version: "1".into(),
+        ..Default::default()
+    };
+    mods.install_workspace(&game, &other, &info, None).unwrap();
+
+    let mut ws = project.workspace(&game).unwrap();
+    let text = game.find_stream(testing::TEXT).unwrap();
+    let mut table = StringTable::parse(&ws.current_data(&game, text, 0).unwrap()).unwrap();
+    table.strings[0][0] = "Si".into();
+    ws.set_string_table(&game, text, 0, &table).unwrap();
+    let report = project
+        .install_into(&game, &mut mods, &ws, Default::default())
+        .unwrap();
+    assert_eq!((report.id.as_str(), report.resources), ("yard-mod", 1));
+    assert_eq!(report.replaced_version, None);
+    let ids =
+        |mods: &ModManager| -> Vec<String> { mods.mods().iter().map(|m| m.id.clone()).collect() };
+    assert_eq!(ids(&mods), ["other", "yard-mod"]);
+    let installed = mods.get("yard-mod").unwrap();
+    assert!(installed.enabled);
+    assert_eq!(installed.manifest.name, "Yard Mod");
+    assert_eq!(installed.manifest.version, "1.0");
+    assert_eq!(installed.manifest.author, "me");
+    // The game is not written until the mods are.
+    assert!(!mods.has_written());
+    mods.apply(&game, Default::default()).unwrap();
+    let game = GameInstance::open(&game_dir).unwrap();
+    let written = crate::game::StreamFile::open(&game.streams()[text].path).unwrap();
+    assert_eq!(
+        StringTable::parse(&written.resource_data(0).unwrap())
+            .unwrap()
+            .strings[0][0],
+        "Si"
+    );
+
+    // Edited and installed again: the same mod, updated, still last.
+    mods.move_mod("yard-mod", 0).unwrap();
+    table.strings[0][1] = "Non".into();
+    ws.set_string_table(&game, text, 0, &table).unwrap();
+    let report = project
+        .install_into(&game, &mut mods, &ws, Default::default())
+        .unwrap();
+    assert_eq!(report.replaced_version.as_deref(), Some("1.0"));
+    assert_eq!(ids(&mods), ["other", "yard-mod"]);
+    // The mod is whole without the project: its data are files of its own.
+    let at = game_dir.join("_doctor_toolkit/mods/yard-mod");
+    let payloads = installed_payloads(&at);
+    assert_eq!(payloads.len(), 1);
+    assert!(std::fs::symlink_metadata(&payloads[0]).unwrap().is_file());
+    // Installed once more without a change: the data it has is kept, not
+    // copied again (the same file under the new folder).
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let before = std::fs::metadata(&payloads[0]).unwrap().ino();
+        project
+            .install_into(&game, &mut mods, &ws, Default::default())
+            .unwrap();
+        assert_eq!(installed_payloads(&at), payloads);
+        assert_eq!(std::fs::metadata(&payloads[0]).unwrap().ino(), before);
+    }
+    // Another manager of the same game sees it.
+    assert_eq!(
+        ids(&ModManager::open(&game).unwrap()),
+        ["other", "yard-mod"]
+    );
+}

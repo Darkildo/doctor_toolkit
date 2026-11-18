@@ -785,8 +785,14 @@ impl Outfit {
         };
         let (edited, variant, _) = self.edited_db(db).ok()?;
         let bytes = edited.encode().ok()?;
-        let mut view =
-            CharacterView::load(&game, at.stream, TYPE_PARTSDB, &bytes, app.gpu.as_ref())?;
+        let mut view = CharacterView::load(
+            &game,
+            at.stream,
+            TYPE_PARTSDB,
+            &bytes,
+            app.gpu.as_ref(),
+            app.workspace_dir().as_deref(),
+        )?;
         let mut meshes = HashMap::new();
         meshes.insert(self.new_mesh()?, plan.preview().ok()?);
         let extra = Extra {

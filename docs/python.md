@@ -68,7 +68,7 @@ id (`"0xcdb9d42b"`) или число.
 | `Font` | `glyphs`, `metrics`, `atlas` (`Texture`), `to_dict()` |
 | `Sound` | `sample_rate`, `channels`, `duration`; `to_wav()`, `pcm()`, `to_snu()` |
 | `Index` | `search(query, limit)`, `count(query)`, `record(key)`, `refs(key)`, `keys(type, stream)`, `lookup(hash)`, `refresh()` |
-| `Workspace` | `changes`, `history`, `read`/`data`/`original_data`, `set_data`, `set_many`, `import_texture`, `import_model`, `export_model`, `import_animation`, `set_clip_events`, `set_animation_graph`, `string_table`, `set_string_table`, `edit_strings`, `revert`, `undo`/`redo`, `status()`, `diff()`, `apply()`, `unapply()`, `build_mod()` |
+| `Workspace` | `changes`, `history`, `read`/`data`/`original_data`, `set_data`, `set_many`, `import_texture`, `import_model`, `export_model`, `import_animation`, `set_clip_events`, `set_animation_graph`, `string_table`, `set_string_table`, `edit_strings`, `revert`, `undo`/`redo`, `status()`, `diff()`, `apply()`, `unapply()`, `build_mod()`, `stale()` и `rebase(only=…, keep=…, take_base=…)` — правки, сделанные на прежних данных модов под ними, и их перенос на нынешние (этап 111, `docs/project.md` §0.3) |
 | `ModManager` | `mods`, `install`, `install_workspace`, `uninstall`, `enable`, `move`, `sort` (порядок по зависимостям и правилам модов, этап 71), `dependents`, `conflicts`, `clashes`, `check`, `status`, `apply`, `unapply`, `export` |
 
 Функции модуля: `sdbm`, `crc32`, `fnv1a` (строка или байты), `hash_all(text)`,
@@ -257,7 +257,7 @@ ws.set_data(key, new_bytes, label="My change")
 ws.status(); ws.diff(); ws.undo(); ws.redo()
 ws.apply()                                     # запись в игру
 ws.unapply()                                   # оригиналы обратно, правки остаются
-ws.build_mod("my-mod.zip", "My mod", author="me")
+ws.build_mod("my-mod.zip", "My mod", author="me")   # deltas=False — целые ресурсы, без формата 6
 mods = game.mods()
 mods.install("my-mod.zip"); mods.apply(); mods.unapply()
 ```
@@ -295,14 +295,31 @@ project.status()            # {"entries": [{"id", "state", ...}], "to_build": 0,
 # … правка файлов в my_mod/src/… …
 report = project.build()    # только изменённое, одной операцией рабочего пространства
 report["errors"]            # ["src/…/x.json: not valid JSON: …"] — остальное собрано
-project.build_mod("my-mod.zip")
+project.build_mod("my-mod.zip")   # зависимости — моды базы проекта (docs/project.md §0.2)
 project = dt.Project("my_mod")                  # открыть; игра — из project.toml
 dt.project_object_guid("my-mod:simgroup:00000004", "lamp")   # GUID нового объекта
 ```
 
-`Project.create(..., from_workspace=True)` берёт ресурсы, которые меняет
-рабочее пространство; `project.pull()` переносит в файлы правки, сделанные
-мимо проекта (состояние `out of sync`).
+`Project.create(..., from_workspace=True)` берёт всё, что меняет рабочее
+пространство: заменённые ресурсы, добавленные ресурсы и новые потоки (этап
+112); потоки `streams` приходят вместе с тем, что рабочее пространство в
+них добавило. `project.pull()` переносит в файлы правки, сделанные мимо
+проекта (состояние `out of sync`).
+
+Проект как документ (`docs/project.md` §0, §7.1):
+
+```python
+project = dt.Project.create(game, "my_zone", empty=True)   # пустой, со своим рабочим пространством
+ws = game.workspace(project.root / "workspace")            # его правки
+ws.set_data(key, data)
+project.sources(index=game.index())   # {"added": [...], "pulled": [], "removed": [], "streams": [], "notes": []}
+```
+
+`empty=True` не сочетается с `streams`, `types`, `from_workspace` и
+`workspace_dir`. `sources()` пишет исходники всего, что держит собственное
+рабочее пространство проекта (`project sources`); `status()` сообщает ещё
+`new_streams` (поток, создан ли он в рабочем пространстве) и
+`removed_streams`, состояние записи может быть `removed`.
 
 ## 5. Тесты
 
@@ -312,7 +329,7 @@ dt.project_object_guid("my-mod:simgroup:00000004", "lamp")   # GUID нового
 |---|---|
 | `test_sample_game.py` | хэши, ключи, потоки, ресурсы, текстура (пиксели), таблица строк, SimGroup, ошибки, индекс и поиск, вызовы из нескольких потоков — на синтетической игре |
 | `test_workspace_mods.py` | запись в рабочее пространство без изменения игры, diff, undo/redo, apply/unapply, отказ при чужом изменении и `force`, импорт PNG, моды (сборка, установка, конфликты, взаимное исключение с рабочим пространством), `unpack`/`pack`, целостность, `refresh` |
-| `test_project.py` | проект на синтетической игре: создание, состояние, сборка только изменённого, мод, ошибка файла с путём, GUID новых объектов |
+| `test_project.py` | проект на синтетической игре: создание, состояние, сборка только изменённого, мод, ошибка файла с путём, GUID новых объектов; пустой проект со своим рабочим пространством и `sources()` |
 | `test_examples.py` | три скрипта `examples/python/` |
 | `test_corpus.py` | только с `EARS_GF2_DIR`: все типы на файлах игры (текстуры, строки, логика, модель в glb с ассетами, риг, шрифт, звук, Lua, архивы `.viv`, индекс 212 544 ресурса) и запись на копиях четырёх файлов во временном каталоге; после теста проверяется, что файлы игры не изменились |
 

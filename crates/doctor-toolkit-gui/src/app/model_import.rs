@@ -51,7 +51,7 @@ impl ModelImport {
 const TYPE_METAMODEL: u32 = doctor_toolkit::hash::sdbm(b"metamodel");
 
 /// A file dialog for every model format the importer reads.
-fn model_file_dialog() -> rfd::FileDialog {
+pub(super) fn model_file_dialog() -> rfd::FileDialog {
     rfd::FileDialog::new()
         .add_filter(tr("import.filter_models"), &ModelFormat::READ_EXTENSIONS)
         .add_filter("glTF", &["glb", "gltf"])
@@ -120,7 +120,15 @@ impl BrowserApp {
                 Some(assets) => assets,
                 None => &mut none,
             };
-            let built = scene::game::model_scene(&model, assets).map_err(|e| e.to_string())?;
+            // With the materials and textures of the workspace, as the mesh.
+            let built = match &self.workspace {
+                Some(ws) => scene::game::model_scene(
+                    &model,
+                    &mut doctor_toolkit::workspace::EditedAssets::new(ws, assets),
+                ),
+                None => scene::game::model_scene(&model, assets),
+            }
+            .map_err(|e| e.to_string())?;
             let Some(path) = rfd::FileDialog::new()
                 .set_title(tr("import.export_title"))
                 .add_filter(format.label(), &[format.extension()])
@@ -438,7 +446,7 @@ impl BrowserApp {
     }
 }
 
-fn summary(ui: &mut egui::Ui, plan: &model::ImportPlan) {
+pub(super) fn summary(ui: &mut egui::Ui, plan: &model::ImportPlan) {
     let s = &plan.summary;
     let mut header = trf(
         "import.summary",

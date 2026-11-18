@@ -7,9 +7,10 @@ use anyhow::{Result, bail};
 use clap::{Args, Subcommand};
 
 use doctor_toolkit::game::GameInstance;
+use doctor_toolkit::project::Project;
 use doctor_toolkit::workspace::{
-    ApplyOptions, ApplyReport, ChangeState, SemanticDiff, StreamAction, StreamState, Workspace,
-    WorkspaceLock,
+    ApplyOptions, ApplyReport, ChangeState, RebaseRequest, SemanticDiff, StreamAction, StreamState,
+    Workspace, WorkspaceLock,
 };
 
 /// Writes a line to stdout and exits quietly when the pipe is closed.
@@ -42,6 +43,23 @@ pub struct EditMode {
     /// Workspace directory [default: <GAME_DIR>/_doctor_toolkit/workspace]
     #[arg(long, value_name = "DIR")]
     pub workspace_dir: Option<PathBuf>,
+}
+
+/// What `workspace rebase` and `project rebase` are asked to do.
+#[derive(Args)]
+pub struct RebaseArgs {
+    /// Only list the changes made on other data than the game gives now; fail when there are any
+    #[arg(long, conflicts_with_all = ["only", "keep", "take_base"])]
+    pub check: bool,
+    /// Rebase only this change: a resource key, or text that matches part of keys (repeatable)
+    #[arg(long, value_name = "KEY")]
+    pub only: Vec<String>,
+    /// Keep this change as it is: it counts as made on what the game gives now (repeatable)
+    #[arg(long, value_name = "KEY")]
+    pub keep: Vec<String>,
+    /// Give this change up: the resource is what the game gives (repeatable)
+    #[arg(long = "take-base", value_name = "KEY")]
+    pub take_base: Vec<String>,
 }
 
 #[derive(Subcommand)]
@@ -90,6 +108,22 @@ pub enum WorkspaceCommand {
         /// With `--game`: also restore files changed outside the workspace
         #[arg(long, requires = "game")]
         force: bool,
+    },
+    /// Move changes made on other data than the game gives now onto that data
+    ///
+    /// An edit starts from the game as it is, with the mods written into
+    /// it. When those mods are updated or arranged otherwise, the change
+    /// still holds what they gave then, and a mod built of it would take
+    /// back what they changed since. The command finds such changes and
+    /// rebases them as one undoable operation: SimGroups, string tables,
+    /// the parts database and the world grid by their operations (what no
+    /// longer applies is listed by object or string); any other resource
+    /// needs `--keep KEY` (yours stays) or `--take-base KEY` (the game's).
+    Rebase {
+        #[command(flatten)]
+        target: Target,
+        #[command(flatten)]
+        rebase: RebaseArgs,
     },
     /// Undo the last operation
     Undo(Target),
@@ -168,6 +202,17 @@ pub fn run(command: WorkspaceCommand) -> Result<()> {
             }
             Ok(())
         }
+        WorkspaceCommand::Rebase {
+            target,
+            rebase: args,
+        } => {
+            let (game, mut ws) = open_for_write(&target)?;
+            // The workspace of a project is compared with the game without
+            // the project's own mod.
+            let project = doctor_toolkit::project::project_of_workspace(ws.dir())
+                .and_then(|root| Project::open(root).ok());
+            rebase(&game, &mut ws, project.as_ref(), &args)
+        }
         WorkspaceCommand::Undo(target) => {
             let (_, mut ws) = open_for_write(&target)?;
             match ws.undo()? {
@@ -207,6 +252,79 @@ pub fn run(command: WorkspaceCommand) -> Result<()> {
             Ok(())
         }
     }
+}
+
+/// `workspace rebase` and `project rebase`: lists the changes of `ws` made
+/// on other data than `game` gives now and rebases them as `args` say —
+/// those of `project` when the workspace is seen through one.
+pub fn rebase(
+    game: &GameInstance,
+    ws: &mut Workspace,
+    project: Option<&Project>,
+    args: &RebaseArgs,
+) -> Result<()> {
+    let stale = match project {
+        Some(project) => project.stale(game, ws)?,
+        None => ws.stale(game)?,
+    };
+    if stale.is_empty() {
+        out!("every change is made on what the game gives now: nothing to rebase");
+        return Ok(());
+    }
+    out!(
+        "{} change(s) were made on other data than the game gives now:",
+        stale.len()
+    );
+    for change in &stale {
+        out!(
+            "  {}  {}",
+            change.key,
+            match change.kind {
+                Some(kind) => format!("{kind}: rebased by its operations"),
+                None => "not merged: keep yours (--keep) or take the game's (--take-base)".into(),
+            }
+        );
+    }
+    if args.check {
+        bail!(
+            "{} change(s) are stale: a mod of them would take back what the mods below \
+             changed since; `rebase` without --check moves them",
+            stale.len()
+        );
+    }
+    let only = match args.only.is_empty() {
+        true => None,
+        false => Some(ws.matching_keys(&args.only)?),
+    };
+    let keep = ws.matching_keys(&args.keep)?;
+    let take_base = ws.matching_keys(&args.take_base)?;
+    let request = RebaseRequest {
+        keys: only.as_deref(),
+        keep: &keep,
+        take_base: &take_base,
+    };
+    let report = match project {
+        Some(project) => project.rebase(game, ws, &request)?,
+        None => ws.rebase_with(game, &request)?,
+    };
+    for line in report.describe() {
+        out!("{line}");
+    }
+    match report.seq {
+        Some(_) => out!(
+            "recorded as one operation of workspace {} (`workspace undo` takes it back)",
+            ws.dir().display()
+        ),
+        None => out!("nothing was recorded"),
+    }
+    let undecided = report.undecided().count();
+    if undecided > 0 {
+        bail!(
+            "{undecided} change(s) need your decision: --keep KEY keeps yours as it is, \
+             --take-base KEY gives it up for the game's data"
+        );
+    }
+    Ok(())
 }
 
 /// Locks of the workspaces this command writes, held until it ends.

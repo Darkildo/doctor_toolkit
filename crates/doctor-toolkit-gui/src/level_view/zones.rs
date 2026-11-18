@@ -1,6 +1,7 @@
 //! The Zones panel of the shell (stage 53): which zones the level view
 //! loads, what it shows, walking and navigation graphs. Up to stage 52 this
-//! was the left side of the level tab.
+//! was the left side of the level tab. The presets and the saved sets above
+//! the tree are in [`super::presets`] (stage 113).
 
 use std::sync::atomic::Ordering;
 
@@ -22,9 +23,19 @@ impl LevelView {
             .show(ui, |ui| self.zones_ui(ui))
             .inner;
         if load {
-            let ctx = ui.ctx().clone();
-            self.start_load(&ctx, ws);
+            self.load_chosen(ws);
         }
+    }
+
+    /// Loads the chosen zones as the Load button does: the app remembers
+    /// them as loaded last.
+    pub fn load_chosen(&mut self, ws: Option<&Workspace>) {
+        if self.chosen.is_empty() || self.job.is_some() {
+            return;
+        }
+        let ctx = self.ctx.clone();
+        self.loaded_by_user();
+        self.start_load(&ctx, ws);
     }
 
     /// Returns whether to load the chosen zones.
@@ -38,7 +49,10 @@ impl LevelView {
             );
             if ui
                 .add_enabled(!self.chosen.is_empty() && !busy, egui::Button::new(text))
-                .on_hover_text(tr("level.load_zones_hint"))
+                .on_hover_text(trf(
+                    "level.load_zones_hint",
+                    &[("mb", &format!("{:.0}", self.chosen_bytes() as f64 / 1e6))],
+                ))
                 .clicked()
             {
                 load = true;
@@ -69,6 +83,7 @@ impl LevelView {
         if self.level.is_some() {
             self.coverage_ui(ui);
         }
+        self.presets_ui(ui);
         ui.add(
             egui::TextEdit::singleline(&mut self.zone_filter)
                 .hint_text(tr("level.filter_zones"))
@@ -162,7 +177,18 @@ impl LevelView {
         }
     }
 
-    /// Zones of every level, by folder, with check boxes.
+    /// Decompressed size of the chosen zones.
+    fn chosen_bytes(&self) -> u64 {
+        self.catalog
+            .zones
+            .iter()
+            .filter(|z| self.chosen.contains(&z.stream))
+            .map(|z| z.bytes)
+            .sum()
+    }
+
+    /// Zones of every level, by folder, with check boxes: of a level, of a
+    /// folder, of a zone.
     fn zone_list(&mut self, ui: &mut egui::Ui) {
         let filter = self.zone_filter.to_ascii_lowercase();
         let catalog = self.catalog.clone();
@@ -189,40 +215,60 @@ impl LevelView {
                             &[("level", &level), ("count", &zones.len()), ("on", &n)],
                         ),
                     };
-                    egui::CollapsingHeader::new(header)
-                        .id_salt(("level", level))
-                        .default_open(!filter.is_empty())
-                        .show(ui, |ui| {
-                            let mut dirs: Vec<&str> = zones.iter().map(|z| z.dir()).collect();
-                            dirs.dedup();
-                            for dir in dirs {
-                                let in_dir: Vec<_> =
-                                    zones.iter().filter(|z| z.dir() == dir).collect();
-                                let all = in_dir.iter().all(|z| self.chosen.contains(&z.stream));
-                                let mut check = all;
-                                let label = format!("{dir}/ ({})", in_dir.len());
-                                ui.horizontal(|ui| {
-                                    if ui.checkbox(&mut check, "").changed() {
-                                        for z in &in_dir {
-                                            if check {
-                                                self.chosen.insert(z.stream);
-                                            } else {
-                                                self.chosen.remove(&z.stream);
-                                            }
-                                        }
-                                    }
-                                    egui::CollapsingHeader::new(label)
-                                        .id_salt(("dir", dir))
-                                        .show(ui, |ui| {
-                                            for z in &in_dir {
-                                                self.zone_check(ui, z);
-                                            }
-                                        });
-                                });
+                    let mut check = chosen == zones.len();
+                    ui.horizontal(|ui| {
+                        // The whole level, as the filter shows it: every
+                        // level of detail and every mission at once.
+                        if ui
+                            .checkbox(&mut check, "")
+                            .on_hover_text(tr("zones.level_check_hint"))
+                            .changed()
+                        {
+                            for z in &zones {
+                                if check {
+                                    self.chosen.insert(z.stream);
+                                } else {
+                                    self.chosen.remove(&z.stream);
+                                }
                             }
-                        });
+                        }
+                        egui::CollapsingHeader::new(header)
+                            .id_salt(("level", level))
+                            .default_open(!filter.is_empty())
+                            .show(ui, |ui| self.level_folders(ui, &zones));
+                    });
                 }
             });
+    }
+
+    /// The folders of one level with their zones.
+    fn level_folders(&mut self, ui: &mut egui::Ui, zones: &[&doctor_toolkit::level::Zone]) {
+        let mut dirs: Vec<&str> = zones.iter().map(|z| z.dir()).collect();
+        dirs.dedup();
+        for dir in dirs {
+            let in_dir: Vec<_> = zones.iter().filter(|z| z.dir() == dir).collect();
+            let all = in_dir.iter().all(|z| self.chosen.contains(&z.stream));
+            let mut check = all;
+            let label = format!("{dir}/ ({})", in_dir.len());
+            ui.horizontal(|ui| {
+                if ui.checkbox(&mut check, "").changed() {
+                    for z in &in_dir {
+                        if check {
+                            self.chosen.insert(z.stream);
+                        } else {
+                            self.chosen.remove(&z.stream);
+                        }
+                    }
+                }
+                egui::CollapsingHeader::new(label)
+                    .id_salt(("dir", dir))
+                    .show(ui, |ui| {
+                        for z in &in_dir {
+                            self.zone_check(ui, z);
+                        }
+                    });
+            });
+        }
     }
 
     fn zone_check(&mut self, ui: &mut egui::Ui, z: &doctor_toolkit::level::Zone) {

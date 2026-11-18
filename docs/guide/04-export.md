@@ -23,7 +23,10 @@ doctor-toolkit models "$GAME" gf2/globalfolder/characters/allcharacters -o model
 ```
 
 Формат — `--format glb` (по умолчанию), `fbx`, `obj`, `usd`, `usda`, `usdc`
-или `usdz` (`docs/model-formats.md`); OBJ не хранит скелет. В редакторе — у
+или `usdz` (`docs/model-formats.md`); OBJ не хранит скелет. Файл называется именем
+модели; если имя в потоке повторяется (`model`, `lodmodel` у объектов
+уровней), к нему добавляется id меша — `model_aa5c8185.glb`, — и этот id
+годится целью для `model-import` (`mesh:aa5c8185`). В редакторе — у
 модели выбор формата и **Export model…**.
 Модель сохраняется как binary glTF (`.glb`) с материалами, текстурами и, для
 персонажей, скелетом и весами костей. Файл открывается в Blender

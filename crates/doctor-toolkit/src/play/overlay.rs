@@ -23,6 +23,16 @@
 //! written. Tables of contents, created streams, archives and the launch
 //! options stay redirects.
 //!
+//! Stage 107 ([`Source::Project`]): a project is staged **as a mod**. The
+//! mod manager of the staged copy — the mods of the game, as they are
+//! installed and enabled — installs the project's workspace as its last mod
+//! and writes the mods into the copy. The game shows "the enabled mods and
+//! the project on top", also when the mods are written in the game files
+//! (the workspace alone would refuse there), and neither the game folder
+//! nor the mod manager of the game changes: the registry, the record of
+//! what is written and the folder of the project's mod are files of the
+//! staged copy.
+//!
 //! The module and its configuration still go into `scripts/` of the game
 //! for the launch (as with `play --live`) and are taken away afterwards.
 
@@ -35,9 +45,10 @@ use doctor_toolkit_live::files::{Redirect, line_safe};
 use doctor_toolkit_live::resources::PatchLine;
 
 use crate::game::GameInstance;
-use crate::mods::ModManager;
-use crate::mods::manager::ModApplyOptions;
-use crate::workspace::{ApplyOptions, ApplyReport, Workspace};
+use crate::mods::manager::{ModApplyOptions, Payloads};
+use crate::mods::{ModManager, RegistryLock};
+use crate::project::Project;
+use crate::workspace::{ApplyOptions, ApplyReport, FileChange, FileKey, Workspace};
 use crate::{Error, Result};
 
 /// Whether "Play" writes into the game or lets the live module redirect the
@@ -109,13 +120,42 @@ pub enum Source {
     Workspace(PathBuf),
     /// The enabled mods of the game's mod manager.
     Mods,
+    /// The enabled mods of the game's mod manager and, as the last mod, the
+    /// project in this folder: its own workspace installed under the
+    /// project's id ([`Project::install_into`]). A mod of that id the
+    /// manager has — an earlier state of the project — is replaced in the
+    /// staged copy.
+    Project(PathBuf),
+}
+
+impl Source {
+    /// What shows the workspace in `dir`: the own workspace of a project
+    /// goes as the project ([`Self::Project`]; it is not written by
+    /// itself, [`crate::workspace::Owner::Project`]), any other as it is.
+    pub fn of_workspace(dir: PathBuf) -> Self {
+        match crate::project::project_of_workspace(&dir) {
+            Some(project) => Self::Project(project),
+            None => Self::Workspace(dir),
+        }
+    }
+
+    /// Whether the mods of the game's mod manager are staged.
+    fn has_mods(&self) -> bool {
+        matches!(self, Self::Mods | Self::Project(_))
+    }
 }
 
 /// Folders of the toolkit in the game folder: mirrored for the workspace
 /// and the mod manager, never redirected (the game does not read them).
 const TOOLKIT_DIRS: &[&str] = &["_doctor_toolkit", "_toolkit"];
-/// The state of the live module's installation: not mirrored.
-const LIVE_STATE: &str = "_doctor_toolkit/live";
+/// What is not mirrored: the state of the live module's installation, and
+/// the lock of the mod manager — the manager of the staged copy locks a
+/// file of its own, not the game's through a link.
+const NOT_MIRRORED: &[&str] = &[
+    "_doctor_toolkit/live",
+    "_doctor_toolkit/mods/lock",
+    "_doctor_toolkit/mods/lock.holder",
+];
 
 /// Why the module cannot redirect the files of this game, if it cannot: it
 /// is not built, the game has no ASI loader, or the executable is not the
@@ -259,6 +299,16 @@ impl Overlay {
             report: ApplyReport::default(),
             removed: false,
         };
+        // The mods are mirrored and read as they are now: no other program
+        // installs, removes or writes one meanwhile.
+        let mods_dir = crate::mods::mods_dir(&root);
+        let _mods = match source {
+            Some(source) if source.has_mods() && mods_dir.is_dir() => Some(RegistryLock::acquire(
+                &mods_dir,
+                &crate::mods::lock::program_name(),
+            )?),
+            _ => None,
+        };
         mirror(&root, &staged_root, "")?;
         if let Some(source) = source {
             let mut staged = GameInstance::open(&staged_root)?;
@@ -286,6 +336,11 @@ impl Overlay {
                 }
                 Source::Mods => {
                     ModManager::open(&staged)?.apply(&staged, ModApplyOptions::default())?
+                }
+                Source::Project(project) => {
+                    let mut mods = ModManager::open(&staged)?;
+                    stage_project(&Project::open(project)?, &staged, &mut mods)?;
+                    mods.apply(&staged, ModApplyOptions::default())?
                 }
             };
         }
@@ -364,6 +419,56 @@ impl Drop for Overlay {
             let _ = remove_dir(&self.dir);
         }
     }
+}
+
+/// Makes `project` the last mod of `mods`, the mod manager of the staged
+/// game: its workspace as it is on disk. A project without changes a mod
+/// holds is no mod — and a mod of its id that is installed (the project as
+/// it was installed into the game earlier) is switched off, so that the
+/// launch shows the project as it is now. Replaced loose files (movies),
+/// which no mod carries, are put into the staged game as they are.
+fn stage_project(project: &Project, staged: &GameInstance, mods: &mut ModManager) -> Result<()> {
+    let dir = project.workspace_dir().ok_or_else(|| {
+        Error::InvalidArgument(format!(
+            "the project in {} has no workspace of its own: it is built into the workspace of \
+             the game, which is played as it is",
+            project.root().display()
+        ))
+    })?;
+    let ws = Workspace::exists(&dir)
+        .then(|| Workspace::open_read_only(&dir))
+        .transpose()?;
+    let loose = |c: &&FileChange| matches!(c.key, FileKey::Loose(_));
+    let for_a_mod = ws.as_ref().is_some_and(|ws| {
+        ws.changes().next().is_some()
+            || ws.new_streams().next().is_some()
+            || ws.file_changes().any(|c| !loose(&c))
+    });
+    match &ws {
+        Some(ws) if for_a_mod => {
+            // Links to the project's payloads: nothing is copied.
+            project.install_into(staged, mods, ws, Payloads::Linked)?;
+        }
+        _ => {
+            let id = &project.config.project.id;
+            if mods.get(id).is_some_and(|m| m.enabled) {
+                mods.set_enabled(id, false)?;
+            }
+        }
+    }
+    for change in ws.iter().flat_map(|ws| ws.file_changes()).filter(loose) {
+        let path = staged.root().join(change.key.name());
+        // A link to the game's file; the write replaces the link.
+        if std::fs::symlink_metadata(&path).is_err() {
+            return Err(Error::InvalidArgument(format!(
+                "{} is not a file of the game",
+                change.key.name()
+            )));
+        }
+        let ws = ws.as_ref().expect("a change is of a workspace");
+        crate::atomic::write(&path, &ws.store().get(&change.payload)?)?;
+    }
+    Ok(())
 }
 
 /// The line of the module's configuration for the staged file of
@@ -476,7 +581,7 @@ fn mirror(from: &Path, to: &Path, rel: &str) -> Result<()> {
         } else {
             format!("{rel}/{name_str}")
         };
-        if rel_path == LIVE_STATE {
+        if NOT_MIRRORED.contains(&rel_path.as_str()) {
             continue;
         }
         let path = entry.path();

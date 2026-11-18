@@ -265,6 +265,11 @@ impl ModsPanel {
         if added > 0 {
             ui.label(trn("mods.adds", added as u64, &[]));
         }
+        let deltas = m.manifest.deltas().count();
+        if deltas > 0 {
+            ui.label(trn("mods.merges", deltas as u64, &[]))
+                .on_hover_text(tr("mods.merges_hint"));
+        }
         for stream in &m.manifest.streams {
             let loaded = if stream.with_parent {
                 trf("mods.loaded_with", &[("parent", &stream.parent)])
@@ -295,7 +300,15 @@ impl ModsPanel {
             .id_salt(("mod-resources", &id))
             .show(ui, |ui| {
                 for resource in m.manifest.resources.iter().take(500) {
-                    let text = if resource.is_added() {
+                    let text = if resource.is_delta() {
+                        trf(
+                            "mods.resource_delta",
+                            &[
+                                ("key", &resource.key),
+                                ("bytes", &trn("count.bytes", resource.payload.size, &[])),
+                            ],
+                        )
+                    } else if resource.is_added() {
                         trf(
                             "mods.resource_added",
                             &[
@@ -365,7 +378,24 @@ impl ModsPanel {
                         if conflict.same_data {
                             ui.weak(tr("mods.same_data"));
                         }
+                        if !conflict.elements.is_empty() {
+                            ui.weak(trn(
+                                "mods.conflict_elements",
+                                conflict.elements.len() as u64,
+                                &[],
+                            ));
+                        }
                     });
+                    // Mods that merge: what exactly both of them set.
+                    for element in conflict.elements.iter().take(8) {
+                        ui.label(RichText::new(format!("    {element}")).small().weak());
+                    }
+                    if conflict.elements.len() > 8 {
+                        ui.weak(trf(
+                            "mods.and_more",
+                            &[("count", &(conflict.elements.len() - 8))],
+                        ));
+                    }
                 }
                 if list.len() > 300 {
                     ui.weak(trf("mods.and_more", &[("count", &(list.len() - 300))]));

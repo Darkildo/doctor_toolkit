@@ -36,6 +36,15 @@ impl BrowserApp {
                 self.live_level_action(action);
                 return;
             }
+            LevelAction::PlaceFile {
+                path,
+                position,
+                on_ground,
+                options,
+            } => {
+                self.place_file_start(tab, path, position, on_ground, options);
+                return;
+            }
             LevelAction::ShowZones => {
                 self.dock_ops.push(DockOp::ShowPanel(Pane::Zones));
                 return;
@@ -197,6 +206,16 @@ impl BrowserApp {
         if let Some(at) = self.zone.open_in_level.iter().position(|(i, _)| *i == id) {
             let (_, zones) = self.zone.open_in_level.swap_remove(at);
             level.load_on_open(zones);
+        }
+        level.set_saved_sets(self.zone_sets.clone());
+        // The first level tab opens with what was loaded last (stage 113),
+        // unless it was told what to load; a tab made before the game is
+        // open gets it when the game is.
+        if self.levels.is_empty() && self.game.is_some() {
+            let (zones, camera) = self.last_zones();
+            if level.restore_on_open(zones, camera) {
+                self.zones_level = Some(id);
+            }
         }
         if let (Some(game), Some(index)) = (&self.game, &self.index) {
             level.open_game(game.clone(), index.clone());
@@ -496,6 +515,7 @@ fn record(
             Ok((String::new(), select))
         }
         LevelAction::StartWizard { .. }
+        | LevelAction::PlaceFile { .. }
         | LevelAction::ShowLogic { .. }
         | LevelAction::PlayHere { .. }
         | LevelAction::LiveTeleport { .. }

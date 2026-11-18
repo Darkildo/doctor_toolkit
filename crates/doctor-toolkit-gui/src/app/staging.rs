@@ -153,8 +153,10 @@ impl BrowserApp {
         for level in self.levels.values_mut() {
             level.restage(game.clone(), index.clone(), self.workspace.as_ref());
         }
-        for logic in self.logics.values_mut() {
-            logic.open_game(game.clone(), index.clone());
+        if let Some(dir) = self.workspace_dir() {
+            for logic in self.logics.values_mut() {
+                logic.open_game(game.clone(), index.clone(), dir.clone());
+            }
         }
         // Stream tabs of staged streams open the new file; a tab of a stream
         // that is gone is left empty.

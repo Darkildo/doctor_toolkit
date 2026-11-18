@@ -441,17 +441,7 @@ impl WorldGrid {
                         "stream {parent:08x} is not in the stream table of the grid"
                     ))
                 })? as u32;
-                let start = match self.pool.iter().position(|&s| s == stream) {
-                    Some(at) => at,
-                    None => {
-                        self.pool.push(stream);
-                        self.pool.len() - 1
-                    }
-                };
-                Some(PoolList {
-                    start: start as u32,
-                    count: 1,
-                })
+                self.intern_list(&[stream])
             }
         };
         let (min, max) = (new.box_min, new.box_max);
@@ -488,7 +478,47 @@ impl WorldGrid {
         Ok(index)
     }
 
-    /// Removes cell `index`, taking it out of its ring. Pool words stay.
+    /// The pool list that holds `streams` (indices into [`Self::streams`]):
+    /// the first place in the pool with these words, or new words at its
+    /// end. `None` for no streams.
+    pub fn intern_list(&mut self, streams: &[u32]) -> Option<PoolList> {
+        if streams.is_empty() {
+            return None;
+        }
+        let start = match self
+            .pool
+            .windows(streams.len())
+            .position(|words| words == streams)
+        {
+            Some(at) => at,
+            None => {
+                self.pool.extend_from_slice(streams);
+                self.pool.len() - streams.len()
+            }
+        };
+        Some(PoolList {
+            start: start as u32,
+            count: streams.len() as u32,
+        })
+    }
+
+    /// Drops the words at the end of the pool that no list covers any more:
+    /// the words a removed cell brought with it.
+    pub fn trim_pool(&mut self) {
+        while let Some(last) = self.pool.len().checked_sub(1) {
+            let used =
+                |l: &Option<PoolList>| l.is_some_and(|l| (l.start + l.count) as usize > last);
+            if self.streams.iter().any(|s| used(&s.needs))
+                || self.cells.iter().any(|c| used(&c.needs))
+            {
+                break;
+            }
+            self.pool.pop();
+        }
+    }
+
+    /// Removes cell `index`, taking it out of its ring. Pool words stay
+    /// (see [`Self::trim_pool`]).
     pub fn remove_cell(&mut self, index: usize) -> Result<Cell> {
         if index >= self.cells.len() {
             return Err(Error::InvalidArgument(format!("no cell {index}")));

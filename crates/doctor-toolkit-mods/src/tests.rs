@@ -49,6 +49,7 @@ fn build(
         description: "A test mod.\n\nMore.".into(),
         url: None,
         relations: Default::default(),
+        whole_resources: false,
     };
     let path = out.join(format!("{id}.zip"));
     build_from_workspace(&ws, &info, None, None, &path).unwrap();
@@ -179,6 +180,7 @@ fn an_update_shows_the_picture_of_the_new_version() {
         description: "A test mod.".into(),
         url: None,
         relations: Default::default(),
+        whole_resources: false,
     };
     let png = doctor_toolkit::resource::pixels::encode_png(2, 1, &[255; 8]).unwrap();
     let preview = doctor_toolkit::mods::Preview::from_image(png).unwrap();
@@ -339,6 +341,67 @@ fn sets_of_mods_switch_and_undo() {
     assert_eq!(panel.sets().0, ["Everything".to_owned()]);
     // The menu of sets draws.
     frame(&ctx, &mut panel, &[]);
+}
+
+/// Stage 108: the mods are brought to the base of a project — the
+/// arrangement before is saved as a set, the base is enabled and written —
+/// and the set (or Undo) is the way back.
+#[test]
+fn the_mods_are_brought_to_the_base_of_a_project() {
+    use doctor_toolkit::project::{Base, BaseMod};
+    let (_dir, game) = game(false);
+    let temp = tempfile::tempdir().unwrap();
+    let ctx = egui::Context::default();
+    let mut panel = panel(&game, &ctx);
+    let files: Vec<PathBuf> = ["a", "b"]
+        .iter()
+        .enumerate()
+        .map(|(i, id)| build(&game, temp.path(), id, LEVEL, MESH, vec![i as u8; 300]))
+        .collect();
+    panel.install_files(&ctx, files);
+    panel.wait();
+    panel.set_enabled(&ctx, "b", false);
+    panel.wait();
+    let base = Base {
+        exclusive: true,
+        mods: vec![BaseMod {
+            id: "b".into(),
+            version: "^1.0".into(),
+            built_on: "1.0".into(),
+            sha256: String::new(),
+        }],
+    };
+    assert!(!panel.up_to_date());
+    panel.bring_to_base(&ctx, base.clone(), "Yard Mod");
+    assert_eq!(frame(&ctx, &mut panel, &[]), Some(PanelEvent::WillWrite));
+    panel.wait();
+    assert_eq!(frame(&ctx, &mut panel, &[]), Some(PanelEvent::GameChanged));
+    assert_eq!(order(&panel), pairs(&[("b", true), ("a", false)]));
+    assert!(panel.up_to_date());
+    assert_eq!(panel.state_of("b"), Some(ModState::Ready));
+    assert_eq!(panel.sets(), (&["Before Yard Mod".to_owned()][..], None));
+    // The result is told in a window, with the name of the set.
+    assert!(panel.has_dialog());
+    let (message, error) = panel.message().unwrap();
+    assert!(!error && message.contains("Yard Mod"), "{message}");
+    assert!(panel.undo_label().unwrap().contains("Yard Mod"));
+
+    // Back by the set.
+    panel.use_set(&ctx, "Before Yard Mod");
+    panel.wait();
+    assert_eq!(order(&panel), pairs(&[("a", true), ("b", false)]));
+    // A mod of the base that is not installed: told, nothing changes.
+    let mut missing = base;
+    missing.mods[0].id = "gone".into();
+    panel.bring_to_base(&ctx, missing, "Yard Mod");
+    panel.wait();
+    let (message, error) = panel.message().unwrap();
+    assert!(
+        error && message.contains("`gone` 1.0 is not installed"),
+        "{message}"
+    );
+    assert_eq!(order(&panel), pairs(&[("a", true), ("b", false)]));
+    assert_eq!(panel.sets().0.len(), 1);
 }
 
 #[test]
@@ -612,6 +675,7 @@ fn build_with_code(game: &GameInstance, out: &Path, id: &str, required: bool) ->
             }),
             ..Relations::none()
         },
+        whole_resources: false,
     };
     let path = out.join(format!("{id}.zip"));
     build_from_workspace(&ws, &info, None, None, &path).unwrap();
@@ -780,4 +844,67 @@ fn a_mod_file_is_described_before_installing_and_saved_as_a_file() {
     let (message, error) = panel.message().unwrap();
     assert!(error, "{message}");
     assert!(!missing.exists());
+}
+
+/// Stage 110: mods of format version 6 merge. Two mods that set one
+/// attribute of one object by deltas are in conflict by that one element,
+/// which the panel names; the lower one wins it. Written, the game has the
+/// winner's value in the group of the game.
+#[test]
+fn mods_that_merge_tell_their_conflict_by_element() {
+    use doctor_toolkit::resource::simgroup::{CLASS_ENTITY, SimGroup, Value};
+    use doctor_toolkit::testing::{YARD, YARD_SIMGROUP};
+    let dir = tempfile::tempdir().unwrap();
+    testing::write_game(dir.path()).unwrap();
+    testing::write_town(dir.path()).unwrap();
+    let game = Arc::new(GameInstance::open(dir.path()).unwrap());
+    let temp = tempfile::tempdir().unwrap();
+    let yard = |game: &GameInstance| {
+        let stream = game.open_stream(game.find_stream(YARD).unwrap()).unwrap();
+        SimGroup::parse(&stream.resource_data(YARD_SIMGROUP).unwrap()).unwrap()
+    };
+    // A mod that lights the crate of the yard: one attribute, a delta.
+    let lit = |id: &str, value: i32| {
+        let mut group = yard(&game);
+        group
+            .set_class_attr(0, CLASS_ENTITY, 3, Some(Value::Int(value)))
+            .unwrap();
+        build(&game, temp.path(), id, YARD, YARD_SIMGROUP, group.encode())
+    };
+    let (a, b) = (lit("a", 5), lit("b", 7));
+    let info = doctor_toolkit::mods::file_info(&a).unwrap();
+    assert_eq!(
+        (info.format_version, info.deltas, info.operations),
+        (6, 1, 1)
+    );
+
+    let ctx = egui::Context::default();
+    let mut panel = panel(&game, &ctx);
+    panel.install_files(&ctx, vec![a, b]);
+    panel.wait();
+    assert_eq!(
+        panel.state_of("a"),
+        Some(ModState::Conflict(vec![state::Rival {
+            name: "Mod b".into(),
+            wins: true,
+            resources: 1
+        }]))
+    );
+    let conflict = &panel.overview.conflicts[0];
+    assert_eq!(conflict.mods, ["a", "b"]);
+    assert_eq!(conflict.elements.len(), 1, "{conflict:?}");
+    assert!(
+        conflict.elements[0].contains("Entity.CMD_SetInteriorLit"),
+        "{conflict:?}"
+    );
+    let manager = panel.manager.as_ref().unwrap();
+    assert_eq!(manager.get("a").unwrap().manifest.deltas().count(), 1);
+    panel.apply(&ctx);
+    panel.wait();
+    assert!(panel.up_to_date());
+    let group = yard(&game);
+    assert_eq!(
+        group.attr(&group.objects[0], CLASS_ENTITY, 3),
+        Some(&Value::Int(7))
+    );
 }

@@ -11,6 +11,7 @@ use clap::Args;
 use doctor_toolkit::game::{GameAssets, GameInstance};
 use doctor_toolkit::import::model;
 use doctor_toolkit::resource::hkx::collision::CollisionKind;
+use doctor_toolkit::resource::logic::TYPE_METAMODEL;
 use doctor_toolkit::resource::mesh::{self, TYPE_MESH};
 use doctor_toolkit::scene;
 
@@ -29,7 +30,9 @@ pub struct ModelImport {
     game_dir: PathBuf,
     /// Stream that holds the model, e.g. `gf2/miami/local/danny/high/building_004`
     stream: String,
-    /// The model to replace: a resource index (mesh or metamodel) or a mesh model name
+    /// The model to replace: a resource index (mesh or metamodel), an id
+    /// (`mesh:aa5c8185`, `metamodel:c06e926c`; it stays the same when the
+    /// stream gets new resources, the index does not) or a mesh model name
     model: String,
     /// The model to import: .glb, .gltf, .fbx, .obj, .usd, .usda, .usdc or .usdz
     file: PathBuf,
@@ -115,9 +118,13 @@ pub fn model_import(args: ModelImport) -> Result<()> {
             out!("  skeleton {skeleton}, {} bone(s) mapped", s.bones_mapped);
         }
         out!(
-            "  materials: {} reused, {} new; {} texture(s) imported",
+            "  materials: {} reused, {} new{}; {} texture(s) imported",
             s.materials_reused,
             s.materials_new,
+            match s.materials_updated {
+                0 => String::new(),
+                n => format!(", {n} kept with new textures"),
+            },
             s.textures_imported
         );
         for m in &s.meshes {
@@ -156,17 +163,58 @@ pub fn model_import(args: ModelImport) -> Result<()> {
     workspace_cmd::finish_edit(&game, &mut ws, &args.mode, streams)
 }
 
-/// A resource index, or the mesh whose model name is `text`.
+/// A resource index, the id of a mesh or metamodel (`aa5c8185`,
+/// `mesh:aa5c8185`, `metamodel:c06e926c`: unlike the index it stays the same
+/// when resources are added to the stream), or the mesh whose model name is
+/// `text`.
 fn find_model(game: &GameInstance, stream: usize, text: &str) -> Result<usize> {
     let file = game.open_stream(stream)?;
-    if let Ok(index) = text.trim_start_matches('#').parse::<usize>() {
-        if index >= file.layout().resources.len() {
-            bail!("the stream has {} resources", file.layout().resources.len());
+    let resources = &file.layout().resources;
+    let (kind, rest) = match text.split_once(':') {
+        Some(("mesh", id)) => (Some(TYPE_MESH), id),
+        Some(("metamodel", id)) => (Some(TYPE_METAMODEL), id),
+        _ => (None, text),
+    };
+    let id = (rest.len() == 8)
+        .then(|| u32::from_str_radix(rest, 16).ok())
+        .flatten();
+    if kind.is_none()
+        && let Ok(index) = text.trim_start_matches('#').parse::<usize>()
+    {
+        if index < resources.len() {
+            return Ok(index);
         }
-        return Ok(index);
+        if id.is_none() {
+            bail!("the stream has {} resources", resources.len());
+        }
+    }
+    if let Some(id) = id {
+        let found: Vec<usize> = resources
+            .iter()
+            .enumerate()
+            .filter(|(_, r)| {
+                r.header.ids[3] == id
+                    && match kind {
+                        Some(kind) => r.header.type_id == kind,
+                        None => matches!(r.header.type_id, TYPE_MESH | TYPE_METAMODEL),
+                    }
+            })
+            .map(|(i, _)| i)
+            .collect();
+        match found.as_slice() {
+            [one] => return Ok(*one),
+            [] if kind.is_some() => bail!("no `{text}` in the stream"),
+            [] => {}
+            many => bail!(
+                "a mesh and a metamodel have the id {id:08x} (resources {many:?}): \
+                 write `mesh:{id:08x}` or `metamodel:{id:08x}`"
+            ),
+        }
+    } else if kind.is_some() {
+        bail!("`{text}`: the id is 8 hexadecimal digits");
     }
     let mut found = Vec::new();
-    for (i, r) in file.layout().resources.iter().enumerate() {
+    for (i, r) in resources.iter().enumerate() {
         if r.header.type_id == TYPE_MESH
             && let Ok(model) = mesh::load(&file, i)
             && model.name.eq_ignore_ascii_case(text)
@@ -176,8 +224,17 @@ fn find_model(game: &GameInstance, stream: usize, text: &str) -> Result<usize> {
     }
     match found.as_slice() {
         [one] => Ok(*one),
-        [] => bail!("no mesh named `{text}` in the stream; give a resource index"),
-        many => bail!("several meshes named `{text}`: resources {many:?}"),
+        [] => bail!(
+            "no mesh named `{text}` in the stream; give a resource index or an id \
+             (`mesh:aa5c8185`, `metamodel:c06e926c`)"
+        ),
+        many => bail!(
+            "several meshes named `{text}`: {}; give one of these ids",
+            many.iter()
+                .map(|&i| format!("mesh:{:08x} (resource {i})", resources[i].header.ids[3]))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
     }
 }
 

@@ -815,7 +815,7 @@ dependencies = [
 
 [[package]]
 name = "doctor-toolkit"
-version = "0.0.8"
+version = "1.0.0"
 dependencies = [
  "binrw",
  "doctor-toolkit-live",
@@ -845,7 +845,7 @@ dependencies = [
 
 [[package]]
 name = "doctor-toolkit-cli"
-version = "0.0.8"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -859,7 +859,7 @@ dependencies = [
 
 [[package]]
 name = "doctor-toolkit-gui"
-version = "0.0.8"
+version = "1.0.0"
 dependencies = [
  "bytemuck",
  "cpal",
@@ -884,11 +884,11 @@ dependencies = [
 
 [[package]]
 name = "doctor-toolkit-live"
-version = "0.0.8"
+version = "1.0.0"
 
 [[package]]
 name = "doctor-toolkit-mcp"
-version = "0.0.8"
+version = "1.0.0"
 dependencies = [
  "doctor-toolkit",
  "png",
@@ -905,7 +905,7 @@ dependencies = [
 
 [[package]]
 name = "doctor-toolkit-mods"
-version = "0.0.8"
+version = "1.0.0"
 dependencies = [
  "doctor-toolkit",
  "eframe",
@@ -918,7 +918,7 @@ dependencies = [
 
 [[package]]
 name = "doctor-toolkit-py"
-version = "0.0.8"
+version = "1.0.0"
 dependencies = [
  "doctor-toolkit",
  "pyo3",
@@ -930,7 +930,7 @@ dependencies = [
 
 [[package]]
 name = "doctor-toolkit-sdk"
-version = "0.0.8"
+version = "1.0.0"
 
 [[package]]
 name = "doctor-toolkit-unify"

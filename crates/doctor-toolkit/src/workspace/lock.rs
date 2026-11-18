@@ -45,13 +45,7 @@ impl std::fmt::Display for LockHolder {
 
 /// The lock of a workspace, held until dropped.
 #[derive(Debug)]
-pub struct WorkspaceLock {
-    file: File,
-    dir: PathBuf,
-    /// The folders this lock made, the workspace's first: taken away on
-    /// drop when no workspace was written in them.
-    made: Vec<PathBuf>,
-}
+pub struct WorkspaceLock(FolderLock);
 
 impl WorkspaceLock {
     /// Takes the lock of the workspace in `dir` (the directory is made when
@@ -59,6 +53,51 @@ impl WorkspaceLock {
     /// holder, when another program — or another handle of this one —
     /// holds it.
     pub fn acquire(dir: &Path, program: &str) -> Result<Self> {
+        FolderLock::acquire(dir, program, super::Workspace::exists, |who| {
+            format!(
+                "the workspace in {} is open for writing in {who}; close it there (or finish its \
+                 command) and try again",
+                dir.display()
+            )
+        })
+        .map(Self)
+    }
+
+    /// The workspace directory.
+    pub fn dir(&self) -> &Path {
+        self.0.dir()
+    }
+
+    /// Who holds the lock of the workspace in `dir`, when someone does.
+    pub fn holder(dir: &Path) -> Option<LockHolder> {
+        FolderLock::holder(dir)
+    }
+}
+
+/// The lock of a folder one program writes at a time: what
+/// [`WorkspaceLock`] and the lock of the mod manager
+/// ([`crate::mods::RegistryLock`]) are made of.
+#[derive(Debug)]
+pub(crate) struct FolderLock {
+    file: File,
+    dir: PathBuf,
+    /// The folders this lock made, the locked one first: taken away on
+    /// drop when nothing was written in them (`in_use`).
+    made: Vec<PathBuf>,
+    /// Whether the folder holds what the lock is for.
+    in_use: fn(&Path) -> bool,
+}
+
+impl FolderLock {
+    /// Takes the lock of `dir` (made when it does not exist yet) for
+    /// `program`. Fails at once when it is held, with the message `busy`
+    /// makes of the holder.
+    pub(crate) fn acquire(
+        dir: &Path,
+        program: &str,
+        in_use: fn(&Path) -> bool,
+        busy: impl FnOnce(&str) -> String,
+    ) -> Result<Self> {
         let made: Vec<PathBuf> = dir
             .ancestors()
             .take_while(|d| !d.as_os_str().is_empty() && !d.exists())
@@ -76,7 +115,9 @@ impl WorkspaceLock {
         match file.try_lock() {
             Ok(()) => {}
             Err(std::fs::TryLockError::WouldBlock) => {
-                return Err(Error::InvalidArgument(busy_message(dir)));
+                let who = read_holder(dir)
+                    .map_or_else(|| "another program".to_owned(), |h| h.to_string());
+                return Err(Error::InvalidArgument(busy(&who)));
             }
             Err(std::fs::TryLockError::Error(e)) => return Err(Error::io(&path, e)),
         }
@@ -88,16 +129,16 @@ impl WorkspaceLock {
             file,
             dir: dir.to_path_buf(),
             made,
+            in_use,
         })
     }
 
-    /// The workspace directory.
-    pub fn dir(&self) -> &Path {
+    pub(crate) fn dir(&self) -> &Path {
         &self.dir
     }
 
-    /// Who holds the lock of the workspace in `dir`, when someone does.
-    pub fn holder(dir: &Path) -> Option<LockHolder> {
+    /// Who holds the lock of `dir`, when someone does.
+    pub(crate) fn holder(dir: &Path) -> Option<LockHolder> {
         let file = OpenOptions::new()
             .read(true)
             .write(true)
@@ -116,12 +157,12 @@ impl WorkspaceLock {
     }
 }
 
-impl Drop for WorkspaceLock {
+impl Drop for FolderLock {
     fn drop(&mut self) {
         // The holder file goes first: once unlocked, the next holder writes its own.
         let _ = fs::remove_file(self.dir.join(HOLDER_FILE));
         let _ = self.file.unlock();
-        if !self.made.is_empty() && !super::Workspace::exists(&self.dir) {
+        if !self.made.is_empty() && !(self.in_use)(&self.dir) {
             let _ = fs::remove_file(self.dir.join(LOCK_FILE));
             // Only empty folders go.
             for d in &self.made {
@@ -139,15 +180,6 @@ fn read_holder(dir: &Path) -> Option<LockHolder> {
     let pid = lines.next()?.trim().parse().ok()?;
     let program = lines.next()?.trim().to_owned();
     Some(LockHolder { program, pid })
-}
-
-fn busy_message(dir: &Path) -> String {
-    let who = read_holder(dir).map_or_else(|| "another program".to_owned(), |h| h.to_string());
-    format!(
-        "the workspace in {} is open for writing in {who}; close it there (or finish its \
-         command) and try again",
-        dir.display()
-    )
 }
 
 #[cfg(test)]

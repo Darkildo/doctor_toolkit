@@ -13,7 +13,7 @@ use doctor_toolkit::game::{GameInstance, ResourceIndex};
 use doctor_toolkit::import::collision;
 use doctor_toolkit::level::edit::{self, ModelChoice};
 use doctor_toolkit::level::{
-    Catalog, Coverage, Level, LevelSource, Location, Lookup, Overrides, Scope,
+    Catalog, Coverage, Level, LevelSource, Location, Lookup, Overrides, Presets, Scope, Zone,
 };
 use doctor_toolkit::resource::hkx::collision::CollisionKind;
 use doctor_toolkit::resource::simgroup::Guid;
@@ -36,11 +36,29 @@ pub enum LevelCommand {
         /// Only zones whose name starts with this path
         prefix: Option<String>,
     },
+    /// List the presets of zones: every level at near detail, its districts, missions, checkpoints
+    ///
+    /// A preset is computed from the world grid of its level (near detail,
+    /// coarser copies, interiors, streams the logic turns on). `level info`
+    /// and `level objects` take one as `preset:<id>`, the editor as a word
+    /// of `DOCTOR_TOOLKIT_GUI_LEVEL`.
+    Presets {
+        game_dir: PathBuf,
+        /// Only the presets of this level (`gf2/miami`, or `miami`)
+        level: Option<String>,
+        /// List the streams of every preset
+        #[arg(long)]
+        streams: bool,
+        /// Print JSON
+        #[arg(long)]
+        json: bool,
+    },
     /// What the 3D level view can show: objects, models, meshes, scope
     ///
-    /// Each argument is a zone or a directory of zones; they are loaded
-    /// together as one level. `--each` reports every zone separately,
-    /// `--levels` every level (`gf2/miami`, `mp_mall/mp_mall`, …) as a whole.
+    /// Each argument is a zone, a directory of zones or a preset
+    /// (`preset:<id>`, see `level presets`); they are loaded together as one
+    /// level. `--each` reports every zone separately, `--levels` every level
+    /// (`gf2/miami`, `mp_mall/mp_mall`, …) as a whole.
     Info {
         game_dir: PathBuf,
         zones: Vec<String>,
@@ -140,6 +158,12 @@ pub struct ObjectArgs {
 pub fn run(command: LevelCommand) -> Result<()> {
     match command {
         LevelCommand::List { game_dir, prefix } => list(&game_dir, prefix.as_deref()),
+        LevelCommand::Presets {
+            game_dir,
+            level,
+            streams,
+            json,
+        } => presets(&game_dir, level.as_deref(), streams, json),
         LevelCommand::Info {
             game_dir,
             zones,
@@ -385,6 +409,79 @@ fn list(game_dir: &std::path::Path, prefix: Option<&str>) -> Result<()> {
     Ok(())
 }
 
+fn presets(
+    game_dir: &std::path::Path,
+    level: Option<&str>,
+    streams: bool,
+    json: bool,
+) -> Result<()> {
+    let (game, index) = open_index(game_dir)?;
+    let catalog = Catalog::new(&game, &index);
+    let all = Presets::of_game(&game, &catalog);
+    let levels: Vec<_> = match level {
+        Some(name) => vec![
+            all.level(name.trim_end_matches('/'))
+                .with_context(|| format!("no level `{name}` (see `level presets`)"))?,
+        ],
+        None => all.levels.iter().collect(),
+    };
+    if json {
+        out!("{}", serde_json::to_string_pretty(&levels)?);
+        return Ok(());
+    }
+    out!("{:>6} {:>10}  preset", "zones", "size");
+    for level in levels {
+        for preset in level.iter() {
+            out!(
+                "{:>6} {:>10}  {:<40}  {}",
+                preset.zones(),
+                format!("{:.1} MB", preset.megabytes()),
+                preset.id,
+                preset.title
+            );
+            if streams {
+                for stream in &preset.streams {
+                    out!("{:>18} {stream}", "");
+                }
+            }
+        }
+        if !level.from_grid {
+            out!(
+                "{:>18} ({} has no world grid: by the names of the folders)",
+                "",
+                level.level
+            );
+        }
+    }
+    Ok(())
+}
+
+/// The zones a word names: a zone, a directory of zones or `preset:<id>`.
+fn zones_of<'a>(game: &GameInstance, catalog: &'a Catalog, word: &'a str) -> Result<Vec<&'a Zone>> {
+    let word = word.trim_end_matches('/');
+    let found: Vec<&Zone> = match word.strip_prefix("preset:") {
+        Some(id) => {
+            let presets = Presets::of_game(game, catalog);
+            let streams: Vec<String> = presets
+                .resolve(id)
+                .with_context(|| format!("no preset `{id}` (see `level presets`)"))?
+                .into_iter()
+                .map(str::to_owned)
+                .collect();
+            catalog
+                .zones
+                .iter()
+                .filter(|z| streams.binary_search(&z.name).is_ok())
+                .collect()
+        }
+        None => catalog.under(word).collect(),
+    };
+    if found.is_empty() {
+        bail!("no zone at `{word}` (see `level list`)");
+    }
+    Ok(found)
+}
+
 fn info(
     game_dir: &std::path::Path,
     zones: &[String],
@@ -413,10 +510,7 @@ fn info(
         }
         let mut all = Vec::new();
         for z in zones {
-            let found: Vec<_> = catalog.under(z.trim_end_matches('/')).collect();
-            if found.is_empty() {
-                bail!("no zone at `{z}` (see `level list`)");
-            }
+            let found = zones_of(&game, &catalog, z)?;
             if each {
                 for zone in found {
                     sets.push((zone.name.clone(), vec![zone.stream]));
@@ -538,14 +632,7 @@ fn objects(
     let catalog = Catalog::new(&game, &index);
     let mut streams = Vec::new();
     for z in zones {
-        let found: Vec<usize> = catalog
-            .under(z.trim_end_matches('/'))
-            .map(|z| z.stream)
-            .collect();
-        if found.is_empty() {
-            bail!("no zone at `{z}` (see `level list`)");
-        }
-        streams.extend(found);
+        streams.extend(zones_of(&game, &catalog, z)?.iter().map(|z| z.stream));
     }
     let parents = game.stream_parents()?;
     let scope = Scope::new(&game, &parents, &streams);

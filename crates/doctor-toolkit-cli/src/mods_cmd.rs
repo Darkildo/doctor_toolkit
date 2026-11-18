@@ -93,6 +93,13 @@ pub struct MetaArgs {
     /// (DOCTOR_ABI_VERSION of doctor_sdk.h) [default: the one of this program]
     #[arg(long = "platform-abi", value_name = "N", requires = "native")]
     platform_abi: Option<u32>,
+    /// Keep every resource whole. Without it a changed SimGroup, string
+    /// table, parts database or world grid goes into the mod as a delta —
+    /// the operations that make the change — which merges with other mods
+    /// and needs format version 6; with it any mod manager installs the
+    /// mod, and it replaces what other mods do to the same resources
+    #[arg(long = "no-deltas")]
+    no_deltas: bool,
 }
 
 /// `ID` or `ID=CONDITION`.
@@ -158,6 +165,7 @@ impl MetaArgs {
             editions,
             requires_manager,
             made_on: Default::default(),
+            made_on_data: Default::default(),
             native: None,
         };
         ModInfo {
@@ -171,6 +179,7 @@ impl MetaArgs {
             description: self.description.replace("\\n", "\n"),
             url: self.url.clone(),
             relations,
+            whole_resources: self.no_deltas,
         }
     }
 
@@ -408,8 +417,21 @@ pub fn run(command: ModsCommand) -> Result<()> {
                     report.native_modules
                 );
             }
-            for note in &report.notes {
-                out!("note: {note}");
+            if report.delta_kinds > 0 && !info.whole_resources {
+                out!(
+                    "{} of {} resource(s) that have deltas are stored as deltas: they merge \
+                     with other mods (`--no-deltas` keeps every resource whole, for older mod \
+                     managers)",
+                    report.deltas,
+                    report.delta_kinds
+                );
+            }
+            // The first note of a mod with stale changes is their warning.
+            for (i, note) in report.notes.iter().enumerate() {
+                match i == 0 && !report.stale.is_empty() {
+                    true => out!("warning: {note}"),
+                    false => out!("note: {note}"),
+                }
             }
             Ok(())
         }
@@ -526,8 +548,8 @@ pub fn run(command: ModsCommand) -> Result<()> {
             hint_apply(&game, &mods)
         }
         ModsCommand::Conflicts { game_dir, all } => {
-            let (_, mods) = open(&game_dir)?;
-            let conflicts = mods.conflicts(!all);
+            let (game, mods) = open(&game_dir)?;
+            let conflicts = mods.conflicts(&game, !all)?;
             let clashes = mods.clashes(!all);
             if conflicts.is_empty() {
                 out!("no resource is changed by more than one mod");
@@ -550,10 +572,15 @@ pub fn run(command: ModsCommand) -> Result<()> {
                         " (same data)"
                     } else if conflict.patch {
                         " (a patch on top of the others)"
+                    } else if !conflict.elements.is_empty() {
+                        " (the mods merge; set by both:)"
                     } else {
                         ""
                     }
                 );
+                for element in &conflict.elements {
+                    out!("    {element}");
+                }
             }
             Ok(())
         }
@@ -957,6 +984,8 @@ fn info(file: &Path, resources: bool) -> Result<()> {
     }
     out!("format   {}", m.format_version);
     relations(&m);
+    let operations: std::collections::BTreeMap<_, _> =
+        archive.delta_operations()?.into_iter().collect();
     out!(
         "{} resource(s){} in {} stream(s), {} byte(s) of data; every payload checked",
         m.resources.len(),
@@ -964,6 +993,14 @@ fn info(file: &Path, resources: bool) -> Result<()> {
         m.streams().len(),
         m.payload_bytes()
     );
+    if !operations.is_empty() {
+        out!(
+            "{} resource(s) are deltas, {} operation(s): they are merged with what other \
+             mods do to the same resources",
+            operations.len(),
+            operations.values().sum::<usize>()
+        );
+    }
     if let Some(code) = &m.native {
         out!(
             "EXECUTABLE CODE for the edition {} of the game{}{}: installed only after the \
@@ -1018,6 +1055,18 @@ fn info(file: &Path, resources: bool) -> Result<()> {
     }
     if resources {
         for r in &m.resources {
+            if let Some(delta) = &r.delta {
+                out!(
+                    "  {}  {} delta (format {}), {} operation(s), {} byte(s)  {}",
+                    r.key,
+                    delta.kind,
+                    delta.format,
+                    operations.get(&r.key).copied().unwrap_or(0),
+                    r.payload.size,
+                    r.label
+                );
+                continue;
+            }
             match &r.added {
                 Some(added) => out!(
                     "  {}  added, {} byte(s){}  {}",

@@ -443,9 +443,66 @@ pub fn physics_mesh(physics: &Physics) -> TriangleMesh {
     mesh
 }
 
+/// Most points a hull is built of. A model of more is represented by its
+/// outermost points in [`HULL_DIRECTIONS`] directions: a collision hull of
+/// thousands of vertices is of no use to the game, and the points of a
+/// detailed model that lie in one plane or close to it (the flat sides of a
+/// prop) make the incremental build below lose track of what is visible —
+/// its list of faces grew without end, and a model of three thousand
+/// vertices took minutes.
+const HULL_POINTS: usize = 256;
+/// Directions the outermost points are taken in: evenly over the sphere.
+const HULL_DIRECTIONS: usize = 252;
+
+/// The points a hull is built of: `points` without repeats, and of more
+/// than [`HULL_POINTS`] — the outermost one in each of the axes, the
+/// diagonals and [`HULL_DIRECTIONS`] more directions (every one of them is
+/// a vertex of the true hull, so the hull of these lies within it and
+/// touches it in every such direction).
+fn hull_points(points: &[Vec3]) -> Vec<Vec3> {
+    let mut seen = std::collections::HashSet::new();
+    let unique: Vec<Vec3> = points
+        .iter()
+        .copied()
+        .filter(|p| seen.insert(p.map(f32::to_bits)))
+        .collect();
+    if unique.len() <= HULL_POINTS {
+        return unique;
+    }
+    let mut directions: Vec<Vec3> = Vec::new();
+    for axis in 0..3 {
+        for sign in [1.0, -1.0] {
+            let mut d = [0.0; 3];
+            d[axis] = sign;
+            directions.push(d);
+        }
+    }
+    for corner in 0..8 {
+        directions.push([0, 1, 2].map(|a| if corner >> a & 1 == 0 { 1.0 } else { -1.0 }));
+    }
+    for i in 0..HULL_DIRECTIONS {
+        // A Fibonacci lattice: the golden angle between neighbours.
+        let z = 1.0 - 2.0 * (i as f32 + 0.5) / HULL_DIRECTIONS as f32;
+        let (r, a) = ((1.0 - z * z).sqrt(), 2.399_963_2 * i as f32);
+        directions.push([r * a.cos(), r * a.sin(), z]);
+    }
+    let mut chosen: Vec<usize> = directions
+        .iter()
+        .filter_map(|d| {
+            (0..unique.len()).max_by(|&a, &b| dot(*d, unique[a]).total_cmp(&dot(*d, unique[b])))
+        })
+        .collect();
+    chosen.sort_unstable();
+    chosen.dedup();
+    chosen.into_iter().map(|i| unique[i]).collect()
+}
+
 /// The convex hull of `points`: vertices and outward planes `n·p + d = 0`.
-/// Returns `None` for fewer than four points not in one plane.
+/// Returns `None` for fewer than four points not in one plane. Of more than
+/// [`HULL_POINTS`] distinct points the hull is that of their outermost
+/// points ([`hull_points`]).
 pub fn convex_hull(points: &[Vec3]) -> Option<(Vec<Vec3>, Vec<[f32; 4]>)> {
+    let points = &hull_points(points)[..];
     let (lo, hi) = TriangleMesh {
         positions: points.to_vec(),
         triangles: Vec::new(),
@@ -511,15 +568,20 @@ pub fn convex_hull(points: &[Vec3]) -> Option<(Vec<Vec3>, Vec<[f32; 4]>)> {
             continue;
         }
         // Horizon: edges of visible faces whose twin belongs to a hidden face.
+        // The edges of the visible faces are put into a set first: looking
+        // every edge up among all faces made a model of a few thousand
+        // vertices take minutes.
+        let seen: std::collections::HashSet<(usize, usize)> = faces
+            .iter()
+            .zip(&visible)
+            .filter(|(_, v)| **v)
+            .flat_map(|(f, _)| (0..3).map(|k| (f[k], f[(k + 1) % 3])))
+            .collect();
         let mut horizon = Vec::new();
         for (f, _) in faces.iter().zip(&visible).filter(|(_, v)| **v) {
             for k in 0..3 {
                 let (a, b) = (f[k], f[(k + 1) % 3]);
-                let shared = faces
-                    .iter()
-                    .zip(&visible)
-                    .any(|(g, v)| *v && (0..3).any(|m| g[m] == b && g[(m + 1) % 3] == a));
-                if !shared {
+                if !seen.contains(&(b, a)) {
                     horizon.push((a, b));
                 }
             }
@@ -534,6 +596,12 @@ pub fn convex_hull(points: &[Vec3]) -> Option<(Vec<Vec3>, Vec<[f32; 4]>)> {
             kept.push([a, b, i]);
         }
         faces = kept;
+        // A hull of n vertices has no more than 2n - 4 faces: more means
+        // the build went wrong on points close to one plane. Rather no hull
+        // than a build that never ends.
+        if faces.len() > 4 * points.len() + 16 {
+            return None;
+        }
     }
     // Vertices used by the hull, and one plane per distinct face normal.
     let mut used: Vec<usize> = faces.iter().flatten().copied().collect();
@@ -560,6 +628,73 @@ pub fn convex_hull(points: &[Vec3]) -> Option<(Vec<Vec3>, Vec<[f32; 4]>)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hull_of_a_few_thousand_points_is_built_at_once() {
+        // Points on a sphere: every one of them is a vertex of the hull,
+        // the worst case for the number of faces.
+        let n = 3000;
+        let points: Vec<Vec3> = (0..n)
+            .map(|i| {
+                let t = (i as f32 + 0.5) / n as f32;
+                let (z, a) = (1.0 - 2.0 * t, 2.399_963 * i as f32);
+                let r = (1.0 - z * z).sqrt();
+                [r * a.cos(), r * a.sin(), z]
+            })
+            .collect();
+        let started = std::time::Instant::now();
+        let (vertices, planes) = convex_hull(&points).unwrap();
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(20),
+            "{:?}",
+            started.elapsed()
+        );
+        // The outermost points in the directions looked at: every one is
+        // a point of the sphere, and the hull reaches close to it everywhere.
+        assert!(
+            vertices.len() > 200 && vertices.len() <= 266,
+            "{}",
+            vertices.len()
+        );
+        assert!(vertices.iter().all(|v| points.contains(v)));
+        for p in &points {
+            for plane in &planes {
+                assert!(dot(xyz(*plane), *p) + plane[3] < 0.06);
+            }
+        }
+    }
+
+    #[test]
+    fn hull_of_a_detailed_box_does_not_lose_its_way() {
+        // A box with its sides covered by a fine grid of points: thousands
+        // of points in six planes, as the flat sides of a detailed model.
+        let mut points: Vec<Vec3> = Vec::new();
+        let n = 24;
+        for i in 0..=n {
+            for j in 0..=n {
+                let (u, v) = (i as f32 / n as f32, j as f32 / n as f32);
+                for side in [0.0, 1.0] {
+                    points.push([u * 2.0, v * 3.0, side * 4.0]);
+                    points.push([u * 2.0, side * 3.0, v * 4.0]);
+                    points.push([side * 2.0, u * 3.0, v * 4.0]);
+                }
+            }
+        }
+        assert!(points.len() > 3000);
+        let started = std::time::Instant::now();
+        let (vertices, planes) = convex_hull(&points).unwrap();
+        assert!(started.elapsed() < std::time::Duration::from_secs(20));
+        assert_eq!(planes.len(), 6, "{planes:?}");
+        // The eight corners are among the vertices.
+        for corner in 0..8 {
+            let c = [
+                if corner & 1 == 0 { 0.0 } else { 2.0 },
+                if corner & 2 == 0 { 0.0 } else { 3.0 },
+                if corner & 4 == 0 { 0.0 } else { 4.0 },
+            ];
+            assert!(vertices.contains(&c), "{c:?}");
+        }
+    }
 
     #[test]
     fn hull_of_a_cube_has_six_planes() {

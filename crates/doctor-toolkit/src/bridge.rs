@@ -46,7 +46,15 @@ pub enum Request {
     ShowLogic { object: String },
     /// Ask the user to let `client` write the workspace once: `summary`
     /// says what it wants to do. Answered when the user decides.
-    Lend { client: String, summary: String },
+    /// `workspace` is the folder the client writes: an editor that has
+    /// another workspace open (a project's, say) refuses at once instead of
+    /// lending the wrong one. A client that does not name it is not checked.
+    Lend {
+        client: String,
+        summary: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        workspace: Option<std::path::PathBuf>,
+    },
     /// The write is done: the editor takes its workspace back.
     Return,
 }

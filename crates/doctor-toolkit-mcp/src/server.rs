@@ -72,7 +72,8 @@ voice_add (a voice line), import_texture with all_copies. Sound and animation: s
 sound_add, set_speech_events, set_mix, import_animation, clip_events, set_animation_graph, \
 apx_edit (interface files). move_object, duplicate_object and remove_object take a list of \
 `objects`; `on_ground` puts objects on the collision below them. pack records the edited files \
-of an unpacked folder, revert takes changes out, remove_zone_cell a cell of the world grid, \
+of an unpacked folder, revert takes changes out, rebase moves changes made on older data of \
+the mods below onto what the game gives now, remove_zone_cell a cell of the world grid, \
 project_pull writes the workspace into the project. cutscene_camera, cutscene_actor and cutscene_command \
 edit the shots of in-engine cut-scenes (camera keys and lens, actors, commands on the time \
 line), edit_subtitle with `line` retimes their subtitles. Each call is one operation: undo takes it back, redo \

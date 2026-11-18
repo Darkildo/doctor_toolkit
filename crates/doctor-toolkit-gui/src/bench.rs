@@ -35,6 +35,21 @@ pub fn run(spec: &str, game_dir: Option<&Path>) -> i32 {
     let mut renderer = SceneRenderer::new(context);
     println!("batching: {:?}", renderer.batching());
     renderer.set_mesh_budget(1024);
+    // The zones of a level may name presets (`level:preset:miami`), so the
+    // rest of the text is theirs.
+    if let Some(zones) = spec.strip_prefix("level:") {
+        let Some(dir) = game_dir else {
+            eprintln!("bench: pass the game directory as the first argument");
+            return 2;
+        };
+        return match level(&mut renderer, dir, zones) {
+            Ok(()) => 0,
+            Err(error) => {
+                eprintln!("bench: {error}");
+                1
+            }
+        };
+    }
     let (scene, bounds) = match spec.split(':').collect::<Vec<_>>().as_slice() {
         ["instances", n] => {
             let Ok(n) = n.parse::<usize>() else {
@@ -56,22 +71,10 @@ pub fn run(spec: &str, game_dir: Option<&Path>) -> i32 {
                 }
             }
         }
-        ["level", zones] => {
-            let Some(dir) = game_dir else {
-                eprintln!("bench: pass the game directory as the first argument");
-                return 2;
-            };
-            return match level(&mut renderer, dir, zones) {
-                Ok(()) => 0,
-                Err(error) => {
-                    eprintln!("bench: {error}");
-                    1
-                }
-            };
-        }
         _ => {
             eprintln!(
-                "bench: expected instances:<n>, model:<stream>:<index> or level:<zone>[+<zone>…]"
+                "bench: expected instances:<n>, model:<stream>:<index> or level:<zone>[+<zone>…] \
+                 (a zone, a folder of zones or preset:<id>)"
             );
             return 2;
         }
@@ -302,21 +305,30 @@ fn level(renderer: &mut SceneRenderer, dir: &Path, zones: &str) -> Result<(), St
     use crate::level_view::camera::FlyCamera;
     use crate::level_view::loader::{self, LoadInput, Msg};
     use crate::level_view::scene::{self, Filter, ItemKind, MARKER_KEY};
-    use doctor_toolkit::level::{Catalog, Lookup, Overrides};
+    use doctor_toolkit::level::{Catalog, Lookup, Overrides, Presets, presets};
 
     let started = Instant::now();
     let game = Arc::new(doctor_toolkit::game::GameInstance::open(dir).map_err(|e| e.to_string())?);
     let (index, _) = game.build_index(|_| {});
     let index = Arc::new(index);
     let catalog = Catalog::new(&game, &index);
-    let mut streams = Vec::new();
-    for zone in zones.split('+') {
-        let found: Vec<usize> = catalog.under(zone).map(|z| z.stream).collect();
-        if found.is_empty() {
-            return Err(format!("no zone at {zone}"));
-        }
-        streams.extend(found);
+    let found = presets::resolve(
+        zones.split('+'),
+        &catalog,
+        &Presets::of_game(&game, &catalog),
+        &[],
+    );
+    if let Some(word) = found.unknown.first() {
+        return Err(format!("no zone at {word}"));
     }
+    let megabytes = catalog
+        .zones
+        .iter()
+        .filter(|z| found.streams.contains(&z.stream))
+        .map(|z| z.bytes)
+        .sum::<u64>() as f64
+        / 1e6;
+    let streams: Vec<usize> = found.streams.into_iter().collect();
     let input = LoadInput {
         lookup: Arc::new(Lookup::new(&index)),
         parents: Arc::new(game.stream_parents().map_err(|e| e.to_string())?),
@@ -358,7 +370,8 @@ fn level(renderer: &mut SceneRenderer, dir: &Path, zones: &str) -> Result<(), St
                 ..
             }) => {
                 println!(
-                    "level {zones}: {} zone(s); index {:.0} ms, level read {:.0} ms, \
+                    "level {zones}: {} zone(s), {megabytes:.0} MB of streams; index {:.0} ms, \
+                     level read {:.0} ms, \
                      meshes and textures {:.1} s (GPU upload {:.0} ms): {meshes} meshes, \
                      {} k triangles, {textures} textures, {:.0} MB of textures, {:.0} MB of mesh buffers",
                     streams.len(),

@@ -541,7 +541,8 @@ pub fn play(args: &PlayArgs) -> Result<()> {
         let source = if args.mods {
             Some(Source::Mods)
         } else if args.apply && Workspace::exists(&ws_dir) {
-            Some(Source::Workspace(ws_dir.clone()))
+            // A project's own workspace is staged as the project's mod.
+            Some(Source::of_workspace(ws_dir.clone()))
         } else {
             if args.apply {
                 out!("no workspace in {}: nothing to apply", ws_dir.display());

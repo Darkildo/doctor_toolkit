@@ -135,6 +135,7 @@ impl Package {
     fn full_info(&self, app: &BrowserApp) -> Result<(ModInfo, Vec<String>), String> {
         let mut info = self.info.clone();
         info.relations = self.relations.relations();
+        info.whole_resources = self.relations.whole_resources;
         let mut added = Vec::new();
         if let (Some(game), Some(ws)) = (&app.disk_game(), &app.workspace) {
             let keys = self.keys();
@@ -196,11 +197,13 @@ impl Package {
                 c.warnings.push(error);
                 let mut info = self.info.clone();
                 info.relations = self.relations.relations();
+                info.whole_resources = self.relations.whole_resources;
                 info
             }
         };
-        match mods::manifest_from_workspace(ws, &info, keys.as_deref()) {
-            Ok(manifest) => {
+        match mods::mod_from_workspace(ws, &info, keys.as_deref()) {
+            Ok(built) => {
+                let manifest = &built.manifest;
                 c.warnings.extend(manifest.warnings());
                 c.notes.push(trf(
                     "wizard.package.contents",
@@ -217,6 +220,19 @@ impl Package {
                         ("bytes", &crate::app::human_size(manifest.payload_bytes())),
                     ],
                 ));
+                // Which resources merge with other mods, and which could not.
+                let deltas = manifest.deltas().count();
+                if deltas > 0 || !built.kept_whole.is_empty() {
+                    c.notes.push(trf(
+                        "wizard.package.deltas",
+                        &[
+                            ("deltas", &deltas),
+                            ("of", &(deltas + built.kept_whole.len())),
+                            ("format", &manifest.format_version),
+                        ],
+                    ));
+                }
+                c.notes.extend(built.delta_notes());
                 if let Ok(status) = ws.status(game) {
                     if !status.fingerprint_matches {
                         c.warnings.push(tr("wizard.package.other_game").to_owned());

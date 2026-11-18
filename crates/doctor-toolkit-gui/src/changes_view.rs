@@ -1,7 +1,14 @@
 //! The Changes panel: workspace changes, their state in the game, diffs and history.
+//!
+//! A change made on other data than the game gives now (stage 111,
+//! `doctor_toolkit::workspace::rebase`) is marked stale, and the panel
+//! offers the three ways with it: rebase it by its operations, keep it as
+//! it is, or give it up for the data of the game — next to the comparison
+//! of what the game changed under it.
 
 use doctor_toolkit::workspace::{
-    ChangeDetail, ChangeState, FileKey, ResourceKey, SemanticDiff, Status, StreamState, Workspace,
+    ChangeDetail, ChangeState, FileKey, ResourceKey, SemanticDiff, Stale, Status, StreamState,
+    Workspace,
 };
 use doctor_toolkit_mods::i18n::{tr, trf, trn};
 use egui::{Color32, RichText, Sense};
@@ -26,12 +33,36 @@ pub enum ChangesAction {
     RevertFiles(Vec<FileKey>),
     /// Show the resource in its stream.
     Open(ResourceKey),
+    /// Rebase stale changes by their operations: these, or all of them.
+    Rebase(Option<Vec<ResourceKey>>),
+    /// Keep these stale changes as they are.
+    KeepMine(Vec<ResourceKey>),
+    /// Give these stale changes up for the data of the game.
+    TakeBase(Vec<ResourceKey>),
+}
+
+/// The comparison of the data a change was made on with the data the game
+/// gives now, made when the panel asks for it.
+pub type BaseDetail<'a> = &'a dyn Fn(&ResourceKey) -> Result<Option<ChangeDetail>, String>;
+
+/// The stale changes of the workspace, for the panel.
+pub struct StaleChanges<'a> {
+    pub stale: &'a [Stale],
+    pub detail: BaseDetail<'a>,
+}
+
+impl StaleChanges<'_> {
+    fn get(&self, key: &ResourceKey) -> Option<&Stale> {
+        self.stale.iter().find(|s| s.key == *key)
+    }
 }
 
 #[derive(Default)]
 pub struct ChangesWindow {
     selected: Option<ResourceKey>,
     detail: Option<(ResourceKey, Result<ChangeDetail, String>)>,
+    /// What the game changed under the selected stale change.
+    base_detail: Option<(ResourceKey, Result<ChangeDetail, String>)>,
     /// A button that needs a second click was clicked once.
     confirm: Option<&'static str>,
 }
@@ -40,6 +71,13 @@ impl ChangesWindow {
     /// Forgets the cached diff, e.g. after the workspace changed.
     pub fn invalidate(&mut self) {
         self.detail = None;
+        self.base_detail = None;
+    }
+
+    /// Shows the change of `key` below the list, as a click on its row does.
+    #[cfg(test)]
+    pub fn select(&mut self, key: ResourceKey) {
+        self.selected = Some(key);
     }
 
     /// The changes as a panel of the main window.
@@ -48,12 +86,13 @@ impl ChangesWindow {
         ui: &mut egui::Ui,
         ws: Option<&Workspace>,
         status: Option<&Status>,
+        stale: &StaleChanges<'_>,
     ) -> Option<ChangesAction> {
         let Some(ws) = ws else {
             ui.label(RichText::new(tr("changes.empty")).weak());
             return None;
         };
-        self.contents(ui, ws, status)
+        self.contents(ui, ws, status, stale)
     }
 
     fn contents(
@@ -61,6 +100,7 @@ impl ChangesWindow {
         ui: &mut egui::Ui,
         ws: &Workspace,
         status: Option<&Status>,
+        stale: &StaleChanges<'_>,
     ) -> Option<ChangesAction> {
         let mut action = None;
         ui.label(RichText::new(ws.dir().display().to_string()).weak());
@@ -109,6 +149,22 @@ impl ChangesWindow {
                 }
                 if !status.fingerprint_matches {
                     ui.colored_label(CONFLICT, tr("changes.other_build"));
+                }
+            });
+        }
+        if !stale.stale.is_empty() {
+            ui.horizontal_wrapped(|ui| {
+                ui.colored_label(
+                    PENDING,
+                    trn("changes.stale_total", stale.stale.len() as u64, &[]),
+                )
+                .on_hover_text(tr("changes.stale_hint"));
+                if ui
+                    .button(tr("changes.rebase_all"))
+                    .on_hover_text(tr("changes.rebase_all_hint"))
+                    .clicked()
+                {
+                    action = Some(ChangesAction::Rebase(None));
                 }
             });
         }
@@ -253,9 +309,22 @@ impl ChangesWindow {
                             Some(ChangeState::Pending) => (tr("changes.state_pending"), PENDING),
                             None => ("?", Color32::GRAY),
                         };
-                        ui.add(
+                        // A stale change says so first: it is what its
+                        // author has to look at.
+                        let (text, color, hint) = match stale.get(key) {
+                            Some(_) => (
+                                tr("changes.state_stale"),
+                                CONFLICT,
+                                Some(tr("changes.stale_hint")),
+                            ),
+                            None => (text, color, None),
+                        };
+                        let label = ui.add(
                             egui::Label::new(RichText::new(text).color(color)).selectable(false),
                         );
+                        if let Some(hint) = hint {
+                            label.on_hover_text(hint);
+                        }
                     });
                     let cells = [
                         key.stream.clone(),
@@ -309,7 +378,7 @@ impl ChangesWindow {
             if ws.change(&key).is_none() {
                 self.selected = None;
             } else {
-                if let Some(a) = self.detail_view(ui, ws, &key) {
+                if let Some(a) = self.detail_view(ui, ws, &key, stale) {
                     action = Some(a);
                 }
                 ui.separator();
@@ -350,8 +419,15 @@ impl ChangesWindow {
         ui: &mut egui::Ui,
         ws: &Workspace,
         key: &ResourceKey,
+        stale: &StaleChanges<'_>,
     ) -> Option<ChangesAction> {
         let mut action = None;
+        if let Some(found) = stale.get(key) {
+            if let Some(a) = self.stale_view(ui, key, found, stale.detail) {
+                action = Some(a);
+            }
+            ui.separator();
+        }
         if self.detail.as_ref().is_none_or(|(k, _)| k != key) {
             let detail = ws
                 .detail(key)
@@ -382,6 +458,99 @@ impl ChangesWindow {
                 return action;
             }
         };
+        detail_body(ui, detail, "change");
+        action
+    }
+
+    /// The part of the detail view of a stale change: why it is stale, the
+    /// three ways with it, and what the game changed under it.
+    fn stale_view(
+        &mut self,
+        ui: &mut egui::Ui,
+        key: &ResourceKey,
+        stale: &Stale,
+        compare: BaseDetail<'_>,
+    ) -> Option<ChangesAction> {
+        let mut action = None;
+        ui.colored_label(CONFLICT, tr("changes.stale_this"));
+        ui.horizontal_wrapped(|ui| {
+            let merged = stale.kind.is_some();
+            let hint = if merged {
+                tr("changes.rebase_this_hint")
+            } else {
+                tr("changes.not_merged")
+            };
+            if ui
+                .add_enabled(merged, egui::Button::new(tr("changes.rebase_this")))
+                .on_hover_text(hint)
+                .on_disabled_hover_text(hint)
+                .clicked()
+            {
+                action = Some(ChangesAction::Rebase(Some(vec![key.clone()])));
+            }
+            if ui
+                .button(tr("changes.keep_mine"))
+                .on_hover_text(tr("changes.keep_mine_hint"))
+                .clicked()
+            {
+                action = Some(ChangesAction::KeepMine(vec![key.clone()]));
+            }
+            if ui
+                .button(tr("changes.take_base"))
+                .on_hover_text(tr("changes.take_base_hint"))
+                .clicked()
+            {
+                action = Some(ChangesAction::TakeBase(vec![key.clone()]));
+            }
+        });
+        if self.base_detail.as_ref().is_none_or(|(k, _)| k != key) {
+            let detail = compare(key).and_then(|d| d.ok_or_else(|| tr("changes.none").to_owned()));
+            self.base_detail = Some((key.clone(), detail));
+        }
+        ui.label(RichText::new(tr("changes.base_changed")).strong());
+        match self.base_detail.as_ref().map(|(_, detail)| detail) {
+            Some(Ok(detail)) => detail_body(ui, detail, "base"),
+            Some(Err(error)) => {
+                ui.colored_label(CONFLICT, error);
+            }
+            None => {}
+        }
+        action
+    }
+
+    /// A button that acts on the second click.
+    fn confirm_button(
+        &mut self,
+        ui: &mut egui::Ui,
+        id: &'static str,
+        label: &str,
+    ) -> ConfirmResponse {
+        let armed = self.confirm == Some(id);
+        let text = if armed { tr("changes.confirm") } else { label };
+        let response = ui.button(text);
+        let mut clicked_twice = false;
+        if response.clicked() {
+            if armed {
+                self.confirm = None;
+                clicked_twice = true;
+            } else {
+                self.confirm = Some(id);
+            }
+        } else if armed && ui.input(|i| i.pointer.any_click()) && !response.hovered() {
+            self.confirm = None;
+        }
+        ConfirmResponse {
+            response,
+            clicked_twice,
+        }
+    }
+}
+
+/// The comparison of two versions of a resource: the bytes that differ and,
+/// for the types the library reads, what differs in them. `salt` tells the
+/// lists of two comparisons in one panel apart.
+fn detail_body(ui: &mut egui::Ui, detail: &ChangeDetail, salt: &str) {
+    {
         let bytes = &detail.bytes;
         ui.label(trf(
             "changes.bytes_diff",
@@ -426,10 +595,10 @@ impl ChangesWindow {
                     ],
                 ));
                 egui::ScrollArea::vertical()
-                    .id_salt("string-diff")
+                    .id_salt(("string-diff", salt))
                     .max_height(180.0)
                     .show(ui, |ui| {
-                        egui::Grid::new("string-diff-grid")
+                        egui::Grid::new(("string-diff-grid", salt))
                             .striped(true)
                             .show(ui, |ui| {
                                 for change in &strings.changed {
@@ -462,10 +631,10 @@ impl ChangesWindow {
                     ui.colored_label(PENDING, line);
                 }
                 egui::ScrollArea::vertical()
-                    .id_salt("logic-diff")
+                    .id_salt(("logic-diff", salt))
                     .max_height(180.0)
                     .show(ui, |ui| {
-                        egui::Grid::new("logic-diff-grid")
+                        egui::Grid::new(("logic-diff-grid", salt))
                             .striped(true)
                             .show(ui, |ui| {
                                 for change in &logic.values {
@@ -517,34 +686,6 @@ impl ChangesWindow {
                     );
                 }
             }
-        }
-        action
-    }
-
-    /// A button that acts on the second click.
-    fn confirm_button(
-        &mut self,
-        ui: &mut egui::Ui,
-        id: &'static str,
-        label: &str,
-    ) -> ConfirmResponse {
-        let armed = self.confirm == Some(id);
-        let text = if armed { tr("changes.confirm") } else { label };
-        let response = ui.button(text);
-        let mut clicked_twice = false;
-        if response.clicked() {
-            if armed {
-                self.confirm = None;
-                clicked_twice = true;
-            } else {
-                self.confirm = Some(id);
-            }
-        } else if armed && ui.input(|i| i.pointer.any_click()) && !response.hovered() {
-            self.confirm = None;
-        }
-        ConfirmResponse {
-            response,
-            clicked_twice,
         }
     }
 }

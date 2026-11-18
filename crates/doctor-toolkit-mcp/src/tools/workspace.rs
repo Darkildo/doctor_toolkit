@@ -4,7 +4,7 @@
 
 use serde_json::{Value, json};
 
-use doctor_toolkit::project::{EntryState, Project};
+use doctor_toolkit::project::{self, EntryState, Project};
 use doctor_toolkit::workspace::{ChangeState, SemanticDiff, StreamState, Workspace};
 
 use super::{Output, ProjectStatusParams, WorkspaceDiffParams, WorkspaceStatusParams, clamp, hex};
@@ -255,6 +255,8 @@ pub fn project_status(kit: &Toolkit, p: ProjectStatusParams) -> ToolResult<Outpu
         None => Workspace::for_game(&kit.game, Some(&kit.workspace_dir))?,
     };
     let status = project.status_read_only(&ws)?;
+    // Edits made on other data than the base gives now (stage 111).
+    let stale = project::stale_warning(&project.stale(&kit.game, &ws)?);
     let all = p.all.unwrap_or(false);
     let offset = p.offset.unwrap_or(0);
     let limit = clamp(p.limit, 100, 500);
@@ -291,11 +293,19 @@ pub fn project_status(kit: &Toolkit, p: ProjectStatusParams) -> ToolResult<Outpu
             "built": status.count(&EntryState::Built),
             "modified": status.count(&EntryState::Modified),
             "out_of_sync": status.count(&EntryState::OutOfSync),
+            "removed": status.count(&EntryState::Removed),
             "to_build": status.to_build(),
         },
         "offset": offset,
         "entries": listed,
+        // Streams the project creates, and those whose folder is gone.
+        "new_streams": status.new_streams.iter().map(|s| json!({
+            "stream": s.stream,
+            "folder": s.dir,
+            "built": s.built,
+        })).collect::<Vec<_>>(),
+        "removed_streams": status.removed_streams.iter().map(|(_, s)| s).collect::<Vec<_>>(),
         "unknown_files": status.unknown_files.iter().take(limit).collect::<Vec<_>>(),
-        "warnings": status.warnings.iter().chain(project.game_warnings(&kit.game).iter()).collect::<Vec<_>>(),
+        "warnings": status.warnings.iter().chain(project.game_warnings(&kit.game).iter()).chain(stale.iter()).collect::<Vec<_>>(),
     })))
 }

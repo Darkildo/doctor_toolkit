@@ -1,0 +1,1 @@
+{"format":1,"kind":"lh2","ops":[{"op":"set","hash":"00000002","language":"cs","old":"Dva","text":"Dvojka"},{"op":"set","hash":"00000009","language":"fr","text":"Neuf"},{"op":"add","hash":"00000007","texts":[{"language":"en","text":"Seven"},{"language":"cs","text":"Sedm"}]}]}

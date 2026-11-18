@@ -617,8 +617,10 @@ impl LiveState {
         self.warned_lua = false;
     }
 
-    /// Starts reading the names of `root` in the background, once per game.
-    fn load_names(&self, root: &Path) {
+    /// Starts reading the names of `root` in the background, once per game:
+    /// of the game and of the workspace in `workspace`
+    /// (`BrowserApp::workspace_dir`).
+    fn load_names(&self, root: &Path, workspace: Option<PathBuf>) {
         let mut state = self.names.lock().unwrap_or_else(|e| e.into_inner());
         let same = match &*state {
             NamesState::Loading(r) | NamesState::Ready(r, _) | NamesState::Failed(r, _) => {
@@ -632,7 +634,7 @@ impl LiveState {
         *state = NamesState::Loading(root.to_path_buf());
         let (names, root) = (self.names.clone(), root.to_path_buf());
         std::thread::spawn(move || {
-            let result = LiveNames::open(&root, false);
+            let result = LiveNames::open_with(&root, false, workspace.as_deref());
             let mut state = names.lock().unwrap_or_else(|e| e.into_inner());
             *state = match result {
                 Ok(n) => NamesState::Ready(root, Arc::new(n)),
@@ -1104,7 +1106,7 @@ impl BrowserApp {
         // Reads.
         let journal_ok = shared(&self.play.live.shared).journal_ok;
         if journal_ok {
-            self.play.live.load_names(game.root());
+            self.play.live.load_names(game.root(), self.workspace_dir());
         }
         ui.horizontal_wrapped(|ui| {
             ui.add_enabled(

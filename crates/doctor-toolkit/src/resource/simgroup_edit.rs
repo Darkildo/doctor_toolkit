@@ -19,6 +19,8 @@
 //!   its source; a copy from another group brings its packets along; a
 //!   removed object takes the packets only it used with it.
 
+use std::collections::HashMap;
+
 use crate::resource::neoguid;
 use crate::resource::simgroup::{
     ATTR_LOAD_MATRIX, ATTR_SET_MODEL, Attr, CLASS_ENTITY, CLASS_SYSTEM_COMMANDS, Guid, Hash32,
@@ -133,51 +135,118 @@ pub struct AttrDiff {
 pub fn compare(old: &SimGroup, new: &SimGroup) -> (Vec<AttrDiff>, Vec<usize>) {
     let mut attrs = Vec::new();
     let mut other = Vec::new();
-    for (i, (a, b)) in old.objects.iter().zip(&new.objects).enumerate() {
-        let classes = |g: &SimGroup, o| -> Vec<u32> {
-            g.object_packets(o).map(|p| p.class.0).collect::<Vec<_>>()
-        };
-        let components = |g: &SimGroup, o: &crate::resource::simgroup::Object| {
-            o.components
-                .map(|c| g.packets[c].attrs.iter().map(|a| a.raw).collect::<Vec<_>>())
-        };
-        if (a.class, a.guid, &a.links) != (b.class, b.guid, &b.links)
-            || classes(old, a) != classes(new, b)
-            || components(old, a) != components(new, b)
+    for i in 0..old.objects.len().min(new.objects.len()) {
+        if old.objects[i].guid != new.objects[i].guid
+            || !compare_objects(old, i, new, i, i, &mut attrs)
         {
             other.push(i);
-            continue;
-        }
-        for (slot, (&pa, &pb)) in a.packets.iter().zip(&b.packets).enumerate() {
-            let (pa, pb) = (&old.packets[pa], &new.packets[pb]);
-            let mut indices: Vec<u16> = pa.attrs.iter().chain(&pb.attrs).map(|a| a.index).collect();
-            indices.sort_unstable();
-            indices.dedup();
-            for index in indices {
-                let find = |attrs: &[Attr]| attrs.iter().find(|a| a.index == index).cloned();
-                let (x, y) = (find(&pa.attrs), find(&pb.attrs));
-                let same = match (&x, &y) {
-                    (Some(x), Some(y)) => same_attr(x, y),
-                    (None, None) => true,
-                    _ => false,
-                };
-                if !same {
-                    attrs.push(AttrDiff {
-                        object: i,
-                        slot,
-                        class: pb.class.0,
-                        index,
-                        name: x.as_ref().or(y.as_ref()).and_then(|a| a.name),
-                        old: x.map(|a| a.value),
-                        new: y.map(|a| a.value),
-                    });
-                }
-            }
         }
     }
     let common = old.objects.len().min(new.objects.len());
     other.extend(common..old.objects.len().max(new.objects.len()));
     (attrs, other)
+}
+
+/// Compares object `a` of `old` with object `b` of `new` and appends the
+/// attributes whose values differ to `attrs`, as attributes of object
+/// `object`. Returns `false`, appending nothing, when the class, the links,
+/// the packet classes or the components of the two differ: their attributes
+/// cannot be told apart then.
+fn compare_objects(
+    old: &SimGroup,
+    a: usize,
+    new: &SimGroup,
+    b: usize,
+    object: usize,
+    attrs: &mut Vec<AttrDiff>,
+) -> bool {
+    let (a, b) = (&old.objects[a], &new.objects[b]);
+    let classes = |g: &SimGroup, o| -> Vec<u32> {
+        g.object_packets(o).map(|p| p.class.0).collect::<Vec<_>>()
+    };
+    let components = |g: &SimGroup, o: &crate::resource::simgroup::Object| {
+        o.components
+            .map(|c| g.packets[c].attrs.iter().map(|a| a.raw).collect::<Vec<_>>())
+    };
+    if (a.class, &a.links) != (b.class, &b.links)
+        || classes(old, a) != classes(new, b)
+        || components(old, a) != components(new, b)
+    {
+        return false;
+    }
+    for (slot, (&pa, &pb)) in a.packets.iter().zip(&b.packets).enumerate() {
+        let (pa, pb) = (&old.packets[pa], &new.packets[pb]);
+        let mut indices: Vec<u16> = pa.attrs.iter().chain(&pb.attrs).map(|a| a.index).collect();
+        indices.sort_unstable();
+        indices.dedup();
+        for index in indices {
+            let find = |attrs: &[Attr]| attrs.iter().find(|a| a.index == index).cloned();
+            let (x, y) = (find(&pa.attrs), find(&pb.attrs));
+            let same = match (&x, &y) {
+                (Some(x), Some(y)) => same_attr(x, y),
+                (None, None) => true,
+                _ => false,
+            };
+            if !same {
+                attrs.push(AttrDiff {
+                    object,
+                    slot,
+                    class: pb.class.0,
+                    index,
+                    name: x.as_ref().or(y.as_ref()).and_then(|a| a.name),
+                    old: x.map(|a| a.value),
+                    new: y.map(|a| a.value),
+                });
+            }
+        }
+    }
+    true
+}
+
+/// Two versions of a group compared with their objects matched by GUID
+/// ([`compare_by_guid`]).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct GuidComparison {
+    /// Objects both versions have: `(index in old, index in new)`, in the
+    /// order of `old`.
+    pub matched: Vec<(usize, usize)>,
+    /// Attributes whose values differ in matched objects;
+    /// [`AttrDiff::object`] is the index in `new`.
+    pub attrs: Vec<AttrDiff>,
+    /// Matched objects whose class, links, packet classes or components
+    /// differ: `(index in old, index in new)`.
+    pub other: Vec<(usize, usize)>,
+    /// Indices in `old` of the objects `new` does not have.
+    pub removed: Vec<usize>,
+    /// Indices in `new` of the objects `old` does not have.
+    pub added: Vec<usize>,
+}
+
+/// Compares two versions of a group with the objects matched by GUID, so an
+/// object added or removed in the middle does not shift the comparison of
+/// the others as it does in [`compare`]. When a GUID occurs several times in
+/// a version, its occurrences are matched in order.
+pub fn compare_by_guid(old: &SimGroup, new: &SimGroup) -> GuidComparison {
+    let mut by_guid: HashMap<Guid, std::collections::VecDeque<usize>> = HashMap::new();
+    for (i, o) in new.objects.iter().enumerate() {
+        by_guid.entry(o.guid).or_default().push_back(i);
+    }
+    let mut out = GuidComparison::default();
+    let mut taken = vec![false; new.objects.len()];
+    for (a, o) in old.objects.iter().enumerate() {
+        match by_guid.get_mut(&o.guid).and_then(|q| q.pop_front()) {
+            Some(b) => {
+                taken[b] = true;
+                out.matched.push((a, b));
+                if !compare_objects(old, a, new, b, b, &mut out.attrs) {
+                    out.other.push((a, b));
+                }
+            }
+            None => out.removed.push(a),
+        }
+    }
+    out.added = (0..new.objects.len()).filter(|&b| !taken[b]).collect();
+    out
 }
 
 /// A value for people: matrices as position, rotation and scale.
@@ -1053,6 +1122,53 @@ mod tests {
         assert!(group.packets.is_empty());
         let empty = parse(&group.encode());
         assert!(empty.objects.is_empty());
+    }
+
+    #[test]
+    fn versions_are_compared_by_guid() {
+        let guid = |n: u8| Guid([n, 0, 0, b'X', 0, 0, 0, 0, 68, 79, 67, 84, 79, 82, 84, 75]);
+        // Three objects: the sample's and two copies.
+        let mut old = parse(&sample());
+        old.duplicate_object(0, guid(1)).unwrap();
+        old.duplicate_object(0, guid(2)).unwrap();
+        let old = parse(&old.encode());
+        // The middle one goes, the last one changes, a new one comes.
+        let mut new = old.clone();
+        new.remove_object(1).unwrap();
+        new.set_attr(1, 0, 2, Some(Value::Int(42))).unwrap();
+        new.duplicate_object(0, guid(3)).unwrap();
+        let new = parse(&new.encode());
+
+        let by_guid = compare_by_guid(&old, &new);
+        assert_eq!(by_guid.matched, [(0, 0), (2, 1)]);
+        assert_eq!(by_guid.removed, [1]);
+        assert_eq!(by_guid.added, [2]);
+        assert!(by_guid.other.is_empty());
+        assert_eq!(by_guid.attrs.len(), 1);
+        let diff = &by_guid.attrs[0];
+        assert_eq!((diff.object, diff.slot, diff.index), (1, 0, 2));
+        assert_eq!(diff.old, Some(Value::Int(-7)));
+        assert_eq!(diff.new, Some(Value::Int(42)));
+        // By position the removal shifts everything after it.
+        let (attrs, other) = compare(&old, &new);
+        assert!(attrs.is_empty());
+        assert_eq!(other, [1, 2]);
+        // The same version: nothing.
+        let same = compare_by_guid(&old, &old);
+        assert_eq!(same.matched, [(0, 0), (1, 1), (2, 2)]);
+        assert!(same.attrs.is_empty() && same.removed.is_empty() && same.added.is_empty());
+
+        // A GUID that occurs twice: its objects are matched in order, and
+        // an object of another class is not compared attribute by attribute.
+        let twice = parse(&two_objects());
+        let mut changed = twice.clone();
+        changed.objects[1].class ^= 1;
+        changed.objects.remove(0);
+        let compared = compare_by_guid(&twice, &changed);
+        assert_eq!(compared.matched, [(0, 0)]);
+        assert_eq!(compared.other, [(0, 0)]);
+        assert_eq!(compared.removed, [1]);
+        assert!(compared.attrs.is_empty() && compared.added.is_empty());
     }
 
     #[test]

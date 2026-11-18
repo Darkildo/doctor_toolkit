@@ -24,6 +24,7 @@ fn info(id: &str) -> ModInfo {
         description: "A test mod.\nSecond line.".to_owned(),
         url: Some("https://example.org/mod".to_owned()),
         relations: Default::default(),
+        whole_resources: false,
     }
 }
 
@@ -275,6 +276,7 @@ fn manifest_for(game: &GameInstance, data: &[u8]) -> ModManifest {
         storage: StorageChoice::Keep,
         label: String::new(),
         added: None,
+        delta: None,
     });
     manifest
 }
@@ -438,7 +440,7 @@ fn installs_applies_orders_and_uninstalls() {
     );
 
     // Both change the mesh; b is later and wins.
-    let conflicts = mods.conflicts(true);
+    let conflicts = mods.conflicts(&game, true).unwrap();
     assert_eq!(conflicts.len(), 1);
     assert_eq!(conflicts[0].key, key(&game, LEVEL, MESH));
     assert_eq!(conflicts[0].mods, ["a", "b"]);
@@ -480,8 +482,8 @@ fn installs_applies_orders_and_uninstalls() {
             .collect::<Vec<_>>(),
         [("b", true), ("a", false)]
     );
-    assert!(mods.conflicts(true).is_empty());
-    assert_eq!(mods.conflicts(false).len(), 1);
+    assert!(mods.conflicts(&game, true).unwrap().is_empty());
+    assert_eq!(mods.conflicts(&game, false).unwrap().len(), 1);
     mods.apply(&game, ModApplyOptions::default()).unwrap();
     assert_eq!(game_data(&game, LEVEL, MESH), mesh(2));
     assert_eq!(
@@ -511,7 +513,9 @@ fn installs_applies_orders_and_uninstalls() {
         .map(|e| e.unwrap().file_name().into_string().unwrap())
         .collect();
     assert!(
-        leftovers.iter().all(|n| n.ends_with(".json")),
+        leftovers
+            .iter()
+            .all(|n| n.ends_with(".json") || n == "lock"),
         "{leftovers:?}"
     );
 }
@@ -641,6 +645,124 @@ fn sets_of_mods_are_saved_and_switched() {
     for bad in ["", "   ", "a\nb", &"x".repeat(65)] {
         assert!(mods.save_set(bad).is_err(), "{bad:?}");
     }
+
+    // A name for a new set that no set has, within the limit of a name.
+    assert_eq!(mods.free_set_name("Before").unwrap(), "Before");
+    assert_eq!(mods.free_set_name(" Light\n").unwrap(), "Light (2)");
+    mods.save_set("Light (2)").unwrap();
+    assert_eq!(mods.free_set_name("Light").unwrap(), "Light (3)");
+    let long = "x".repeat(80);
+    assert_eq!(mods.free_set_name(&long).unwrap(), "x".repeat(64));
+    mods.save_set(&"x".repeat(64)).unwrap();
+    assert_eq!(
+        mods.free_set_name(&long).unwrap(),
+        format!("{} (2)", "x".repeat(60))
+    );
+    assert!(mods.free_set_name(" \n").is_err());
+}
+
+/// Stage 108: which mods the files of the game hold — not the same as which
+/// are enabled — and an arrangement that is written at once or not made.
+#[test]
+fn the_game_tells_which_mods_it_holds() {
+    use super::manager::SetEntry;
+    let (_dir, game) = fake_game();
+    let temp = tempfile::tempdir().unwrap();
+    let mut mods = ModManager::open(&game).unwrap();
+    for (id, index, byte) in [("a", MESH, 1), ("b", TEX_DATA, 2), ("c", MESH, 3)] {
+        let path = build_mod(&game, temp.path(), id, vec![(index, vec![byte; 300])]);
+        mods.install_file(&game, &path, id != "c").unwrap();
+    }
+    let held = |mods: &ModManager| -> Vec<(String, bool)> {
+        let in_game = mods.in_game(&game).unwrap();
+        in_game
+            .mods
+            .iter()
+            .map(|m| (m.id.clone(), m.written))
+            .collect()
+    };
+    assert_eq!(
+        held(&mods),
+        pairs(&[("a", false), ("b", false), ("c", false)])
+    );
+    mods.apply(&game, ModApplyOptions::default()).unwrap();
+    assert_eq!(
+        held(&mods),
+        pairs(&[("a", true), ("b", true), ("c", false)])
+    );
+    let in_game = mods.in_game(&game).unwrap();
+    assert_eq!(in_game.leftover, 0);
+    assert_eq!(in_game.get("a").unwrap().version, "1.0");
+    assert_eq!(
+        in_game.get("a").unwrap().sha256,
+        mods.get("a").unwrap().manifest.sha256()
+    );
+    assert_ne!(
+        in_game.get("a").unwrap().sha256,
+        in_game.get("b").unwrap().sha256
+    );
+    // A mod enabled since waits for a write; the mod whose resource it will
+    // win is in the game until then.
+    mods.set_enabled("c", true).unwrap();
+    assert_eq!(
+        held(&mods),
+        pairs(&[("a", true), ("b", true), ("c", false)])
+    );
+    // Written, the winner is in the game and the mod under it is as
+    // written as it can be.
+    mods.apply(&game, ModApplyOptions::default()).unwrap();
+    assert_eq!(held(&mods), pairs(&[("a", true), ("b", true), ("c", true)]));
+    // The winner switched off: the game holds its data, not the other's.
+    mods.set_enabled("c", false).unwrap();
+    assert_eq!(
+        held(&mods),
+        pairs(&[("a", false), ("b", true), ("c", false)])
+    );
+    assert_eq!(mods.in_game(&game).unwrap().leftover, 0);
+    mods.set_enabled("a", false).unwrap();
+    assert_eq!(mods.in_game(&game).unwrap().leftover, 1);
+    mods.apply(&game, ModApplyOptions::default()).unwrap();
+    assert_eq!(mods.in_game(&game).unwrap().leftover, 0);
+
+    // An arrangement and its write are one change.
+    let entry = |id: &str, enabled| SetEntry {
+        id: id.to_owned(),
+        enabled,
+    };
+    let wanted = [entry("c", true), entry("b", true), entry("gone", true)];
+    let (missing, report) = mods
+        .arrange_and_apply(&game, &wanted, ModApplyOptions::default(), &mut |_| {})
+        .unwrap();
+    assert_eq!(missing, ["gone"]);
+    assert!(!report.written.is_empty());
+    assert_eq!(
+        order(&mods),
+        pairs(&[("c", true), ("b", true), ("a", false)])
+    );
+    assert_eq!(
+        held(&mods),
+        pairs(&[("c", true), ("b", true), ("a", false)])
+    );
+    // A write that is refused (another program changed a stream) leaves the
+    // arrangement as it was.
+    let path = &stream(&game, LEVEL);
+    let path = &game.streams()[*path].path;
+    let mut data = fs::read(path).unwrap();
+    data.extend_from_slice(b"changed by another program");
+    fs::write(path, &data).unwrap();
+    let before = order(&mods);
+    let error = mods
+        .arrange_and_apply(
+            &game,
+            &[entry("a", true), entry("b", true)],
+            ModApplyOptions::default(),
+            &mut |_| {},
+        )
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("changed"), "{error}");
+    assert_eq!(order(&mods), before);
+    assert_eq!(order(&ModManager::open(&game).unwrap()), before);
 }
 
 #[test]
@@ -2672,7 +2794,11 @@ fn a_patch_on_top_of_a_mod_installs_applies_and_restores_byte_for_byte() {
     let mesh_key = key(&game, LEVEL, MESH);
     assert_eq!(
         suggested.made_on[&mesh_key],
-        (Blob::of(&mesh(1)), "base".to_owned())
+        MadeOn {
+            blob: Blob::of(&mesh(1)),
+            mods: vec!["base".to_owned()],
+            data: None,
+        }
     );
     assert_eq!(
         patch_ws.change(&mesh_key).unwrap().original,
@@ -2693,7 +2819,7 @@ fn a_patch_on_top_of_a_mod_installs_applies_and_restores_byte_for_byte() {
     assert!(report.issues.is_empty(), "{:?}", report.issues);
     assert_eq!(ids(&mods), ["base", "patch"]);
     // The patch wins its resources on purpose: no conflict to warn about.
-    let conflicts = mods.conflicts(true);
+    let conflicts = mods.conflicts(&game_now, true).unwrap();
     assert_eq!(conflicts.len(), 2, "{conflicts:?}");
     assert!(conflicts.iter().all(|c| c.patch && c.winner() == "patch"));
     assert!(
@@ -3272,4 +3398,101 @@ fn a_child_stream_that_loads_with_its_parent_needs_format_4() {
     manifest.format_version = RELATIONS_VERSION;
     let error = manifest.validate().unwrap_err().to_string();
     assert!(error.contains("version 4 is needed"), "{error}");
+}
+
+// ---------------------------------------------------------------- the lock
+
+/// Stage 107: two programs keep the mods of one game in memory (Open Mod
+/// Manager and the editor). A change by one is not lost when the other
+/// changes the mods afterwards with the list it read earlier: the other
+/// reads the mods again first. While one makes a change, the other is
+/// refused with the holder named and changes nothing.
+#[test]
+fn two_programs_change_the_mods_without_losing_each_others_changes() {
+    let (dir, game) = fake_game();
+    let root = dir.path();
+    let temp = tempfile::tempdir().unwrap();
+    let a = build_mod(&game, temp.path(), "a", vec![(MESH, mesh(1))]);
+    let b = build_mod(
+        &game,
+        temp.path(),
+        "b",
+        vec![(STRINGS, strings(["B", "b"]))],
+    );
+    let ids =
+        |mods: &ModManager| -> Vec<String> { mods.mods().iter().map(|m| m.id.clone()).collect() };
+
+    let mut window = ModManager::open(&game).unwrap();
+    let mut editor = ModManager::open(&game).unwrap();
+    window.install_file(&game, &a, true).unwrap();
+    // The editor's manager was read before: its installation keeps `a`.
+    assert!(ids(&editor).is_empty());
+    editor.install_file(&game, &b, true).unwrap();
+    assert_eq!(ids(&editor), ["a", "b"]);
+    assert_eq!(ids(&ModManager::open(&game).unwrap()), ["a", "b"]);
+
+    // The window sees it when it looks again, and at its next change.
+    assert_eq!(ids(&window), ["a"]);
+    assert!(window.reload_if_changed().unwrap());
+    assert!(!window.reload_if_changed().unwrap());
+    assert_eq!(ids(&window), ["a", "b"]);
+    editor.set_enabled("a", false).unwrap();
+    window.move_mod("b", 0).unwrap();
+    assert_eq!(ids(&window), ["b", "a"]);
+    assert!(
+        !window.get("a").unwrap().enabled,
+        "the editor's change is kept"
+    );
+
+    // What one wrote into the game the other knows before it writes.
+    window.apply(&game, ModApplyOptions::default()).unwrap();
+    assert!(!editor.has_written());
+    editor.set_enabled("a", true).unwrap();
+    assert!(editor.has_written());
+    let report = editor.apply(&game, ModApplyOptions::default()).unwrap();
+    assert_eq!(
+        report.streams,
+        [(LEVEL.to_owned(), StreamAction::Rebuilt(2))]
+    );
+    assert_eq!(game_data(&game, LEVEL, MESH), mesh(1));
+    assert_eq!(game_data(&game, LEVEL, STRINGS), strings(["B", "b"]));
+    assert!(window.unapply(&game, false).is_ok());
+    assert!(editor.reload_if_changed().unwrap() && !editor.has_written());
+
+    // While another program holds the lock nothing is changed here.
+    let before = snapshot(root);
+    let registry = fs::read(mods_dir(root).join("registry.json")).unwrap();
+    let held = RegistryLock::acquire(&mods_dir(root), "open-mod-manager").unwrap();
+    let busy = |result: Result<()>| {
+        let error = result.unwrap_err().to_string();
+        assert!(
+            error.contains("are being changed by open-mod-manager (process"),
+            "{error}"
+        );
+    };
+    busy(editor.set_enabled("a", false));
+    busy(editor.uninstall("b"));
+    busy(editor.install_file(&game, &a, true).map(drop));
+    busy(editor.apply(&game, ModApplyOptions::default()).map(drop));
+    busy(editor.move_mod("a", 0).map(drop));
+    busy(editor.save_set("mine"));
+    // Looking is not a change.
+    assert!(editor.sort(true).is_ok());
+    assert_eq!(snapshot(root), before);
+    assert_eq!(
+        fs::read(mods_dir(root).join("registry.json")).unwrap(),
+        registry
+    );
+    assert!(editor.get("a").unwrap().enabled);
+    drop(held);
+    editor.set_enabled("a", false).unwrap();
+    assert!(editor.sets().unwrap().is_empty());
+    editor.save_set("mine").unwrap();
+    assert_eq!(RegistryLock::holder(&mods_dir(root)), None);
+
+    // A game without mods gets no folder from a change that fails.
+    let (other_dir, other) = fake_game();
+    let mut none = ModManager::open(&other).unwrap();
+    assert!(none.set_enabled("a", true).is_err());
+    assert!(!other_dir.path().join("_doctor_toolkit").exists());
 }

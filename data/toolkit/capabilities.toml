@@ -101,6 +101,20 @@ size = "M"
 why = "рендер делает программа редактора без окна; серверу нужна схема долгих задач"
 
 [[package]]
+key = "104-P"
+stage = 104
+title = "База проекта (этап 108) в MCP и Python: записать базу из модов игры и привести моды к базе"
+size = "S"
+why = "библиотека готова (project::base: record, differences, bring); нужны параметры инструмента и метод Python"
+
+[[package]]
+key = "104-F"
+stage = 104
+title = "Модель из файла на уровень одним вызовом MCP (level::place: образец, импорт в поток зоны, объект — одна операция)"
+size = "S"
+why = "библиотека готова (level::place::samples, plan, record); образец по точке выбирает она же, нужен инструмент"
+
+[[package]]
 key = "104-G"
 stage = 104
 title = "Смысловые эквиваленты действий мышью: несколько объектов, на землю, маршрут, снимок вида"
@@ -122,6 +136,8 @@ edits = [
     "project_pull", "revert", "remove_zone_cell", "sbk_edit", "sound_add", "set_speech_events",
     "set_mix", "apx_edit", "import_animation", "clip_events", "set_animation_graph",
     "cutscene_camera", "cutscene_actor", "cutscene_command",
+    # Stage 111.
+    "rebase",
 ]
 game = [
     "apply", "unapply", "play", "stop", "screenshot", "teleport", "send_message", "lua",
@@ -584,6 +600,21 @@ preset = "LEVEL=<зона>[+<зона>]"
 use = ["level list", "level info"]
 
 [[cap]]
+id = "level.presets"
+area = "level"
+title = "Пресеты зон по мировой сетке (уровень в ближней детализации, район, задания, контрольные точки) и сохранённые наборы зон"
+[cap.editor]
+use = ["cmd.toggle_zones"]
+at = "панель Zones → Presets и Saved sets; наборы — в project.toml открытого проекта, иначе в настройках игры; вкладка уровня открывается с загруженным в прошлый раз"
+input = "form"
+preset = "LEVEL=preset:<id>[+set:<имя>…] | LEVEL=last"
+[cap.cli]
+use = ["level presets"]
+partial = "список пресетов и слово preset:<id> в level info и level objects; сохранённые наборы — раздел [[zones]] в project.toml, отдельной команды нет"
+[cap.mcp]
+never = "пресет и набор выбирают, что показывает окно уровня; инструменты сервера принимают зоны и каталоги зон, а состав пресета даёт команда level presets"
+
+[[cap]]
 id = "level.objects"
 area = "level"
 title = "Список размещённых объектов: класс, имя, GUID, позиция, модель"
@@ -667,6 +698,28 @@ input = "form+mouse"
 preset = "LEVEL=…;act=add:<id>[:clone][:collision][:into=<зона>][:at=X/Y/Z]; WIZARD=place,model=,zones="
 [cap.cli]
 use = ["level add"]
+
+[[cap]]
+id = "level.place-file"
+area = "level"
+title = "Поставить модель из файла на уровень одним действием: новый набор в потоке зоны, своя коллизия, объект на земле"
+[cap.mcp]
+use = ["import_model", "add_object"]
+at = "двумя вызовами: import_model с name, stream и collision, затем add_object с id новой модели"
+partial = "образец и поток называет агент, импорт и объект — две операции"
+[cap.mcp.gap]
+add = "инструмент place_model: файл, точка, имя — через level::place"
+size = "S"
+why = "библиотека готова; образец по точке выбирает level::place::samples"
+package = "104-F"
+[cap.editor]
+use = ["cmd.level_place_file"]
+at = "файл модели, брошенный из файлового менеджера в вид уровня; меню Level и Add → Place a model from a file…; окно: имя, образец (Like), коллизия, размер текстур, план и просмотр"
+input = "menu+form+mouse"
+preset = "LEVEL=…;act=file:<файл>[:at=X/Y/Z][:name=][:collision=mesh|hull|box|none][:limit=<px>]"
+[cap.cli]
+use = ["model-import", "level add"]
+partial = "двумя командами: model-import --new --to --collision, затем level add --model; образец и поток называются руками"
 
 [[cap]]
 id = "level.add-empty"
@@ -1474,19 +1527,90 @@ use = ["Project.status", "Project.build", "Project.entries"]
 [[cap]]
 id = "project.new"
 area = "workspace"
-title = "Создать проект из потоков игры или изменений; записать версию рабочего пространства в файлы проекта"
+title = "Создать проект из потоков игры или изменений (с добавленными ресурсами и новыми потоками); записать версию рабочего пространства в файлы проекта; записать исходники всего, что держит рабочее пространство проекта"
 [cap.mcp]
 use = ["project_new", "project_pull"]
-at = "project_new пишет в папку вывода сервера (--output-dir); project_pull — в проект сервера (--project)"
+at = "project_new пишет в папку вывода сервера (--output-dir); project_pull — в проект сервера (--project), с параметром sources — исходники всего рабочего пространства проекта"
 [cap.editor]
 use = ["project.cmd"]
-at = "вкладка Project → Create, Open, Pull (версия рабочего пространства — в файлы проекта)"
+at = "вкладка Project → Create, Open, Pull (версия рабочего пространства — в файлы проекта), Write sources (исходники всего рабочего пространства проекта)"
 input = "form"
-preset = "PROJECT=<папка> и SHELL=pull"
+preset = "PROJECT=<папка> и SHELL=pull, SHELL=sources"
 [cap.cli]
-use = ["project new", "project pull"]
+use = ["project new", "project pull", "project sources"]
 [cap.python]
-use = ["Project.create", "Project.pull"]
+use = ["Project.create", "Project.pull", "Project.sources"]
+
+[[cap]]
+id = "project.document"
+area = "workspace"
+title = "Проект как документ: папка со своим рабочим пространством — создать пустой, открыть, закрыть"
+[cap.editor]
+use = ["cmd.project_new", "cmd.project_open", "cmd.project_close"]
+at = "меню File: New project…, Open project…, Recent projects, Close project; недавние проекты на Welcome; имя проекта в заголовке окна и строке состояния"
+input = "menu"
+preset = "OPEN_PROJECT=<папка>"
+[cap.mcp]
+use = ["project_new", "project_status"]
+at = "project_new без streams и from_workspace — пустой проект со своим рабочим пространством; сервер с --project работает с рабочим пространством проекта"
+[cap.cli]
+use = ["project new", "project status", "project build"]
+at = "project new GAME DIR без --stream и --from-workspace — пустой проект; команды project … и ключ --workspace-dir <проект>/workspace работают с его рабочим пространством"
+[cap.python]
+use = ["Project.create", "Project.status", "Project.build"]
+at = "Project.create(game, path, empty=True); Project(path) работает с рабочим пространством проекта"
+
+[[cap]]
+id = "project.adopt"
+area = "workspace"
+title = "Сделать проектом рабочее пространство игры: правки и история переезжают в собственное рабочее пространство нового проекта"
+[cap.editor]
+use = ["cmd.project_from_workspace"]
+at = "меню File: Make a project of the workspace…"
+input = "menu"
+[cap.mcp]
+never = "сервер работает с рабочим пространством, с которым запущен: перенос из-под работающего сервера оставил бы его без правок. Перенос — командой project new --move-workspace или в редакторе, после чего сервер запускают с --project"
+[cap.cli]
+use = ["project new"]
+at = "project new GAME DIR --move-workspace [--no-sources]: перенос и исходники перенесённого"
+
+[[cap]]
+id = "project.base"
+area = "workspace"
+title = "База проекта — моды, на которых он сделан: записать из игры, сверить с игрой, привести моды к базе"
+[cap.editor]
+use = ["cmd.project_base_record", "cmd.project_base_apply"]
+at = "меню File: Take the base from the mods in the game, Bring the mods to the project's base; полоса вверху окна — расхождения с кнопками и предложение записать базу; сверка при открытии проекта, Play и Install project into Mods"
+input = "menu+form"
+[cap.cli]
+use = ["project base"]
+at = "без ключей — база и расхождения; --record, --check (ошибка при расхождении), --apply"
+[cap.mcp]
+use = ["project_status"]
+at = "расхождения базы с модами игры — в warnings"
+partial = "записать базу и привести к ней моды инструментом нельзя"
+[cap.mcp.gap]
+add = "действия base_record и base_apply инструмента проекта (project::base: ProjectConfig::record_base, Base::bring)"
+size = "S"
+why = "библиотека готова (этап 108), нужны параметры инструмента"
+package = "104-P"
+
+[[cap]]
+id = "ws.rebase"
+area = "workspace"
+title = "Перебазирование: найти правки, сделанные на прежних данных модов под ними, и перенести их на то, что игра даёт сейчас, — слить по операциям, оставить своё или взять данные игры"
+[cap.mcp]
+use = ["rebase"]
+at = "check — только список; only, keep, take_base; устаревшие правки проекта — в warnings инструмента project_status"
+[cap.editor]
+use = ["cmd.project_rebase"]
+at = "меню File: Rebase the edits onto what the game gives now; полоса вверху окна проекта — «N edits were made on other data of the base» с кнопками Rebase и Changes; панель Changes — пометка stale, общий Rebase и для выбранной правки Rebase, Keep mine, Take the base's со сравнением «что игра изменила под правкой»; проверка при открытии рабочего пространства, после смены модов, перед Play и при Install project into Mods"
+input = "menu+form"
+[cap.cli]
+use = ["project rebase", "workspace rebase"]
+at = "без ключей — перенести все устаревшие правки одной операцией; --check (только список, ошибка при устаревших), --only KEY, --keep KEY, --take-base KEY; предупреждение в project status, project mod, project install, mods build"
+[cap.python]
+use = ["Workspace.stale", "Workspace.rebase"]
 
 # --- Mods -------------------------------------------------------------------
 
@@ -1521,9 +1645,25 @@ use = ["mods build", "class-schema"]
 at = "--native, --native-required"
 
 [[cap]]
+id = "mods.build-deltas"
+area = "mods"
+title = "Собрать мод с дельтами (формат 6): изменённые зоны (SimGroup), таблицы строк, базы частей и мировые сетки хранятся как операции, которые менеджер объединяет с другими модами; отказ от дельт — целые ресурсы для прежних менеджеров"
+[cap.mcp]
+use = ["mod_build"]
+at = "параметр deltas (false — целые ресурсы); ответ называет число дельт; у проекта — [build] deltas в project.toml"
+[cap.editor]
+at = "окно Mods → раздел сборки и мастер Package a mod → Dependencies, editions and load order: флажок Keep whole resources (no merging); проверка мастера называет число дельт"
+input = "form"
+[cap.cli]
+use = ["mods build", "mods install-workspace"]
+at = "--no-deltas; у проекта (project mod, project install) — [build] deltas = false в project.toml"
+[cap.python]
+use = ["Workspace.build_mod", "ModManager.install_workspace"]
+
+[[cap]]
 id = "mods.read"
 area = "mods"
-title = "Менеджер модов: установленные моды, состояние в игре, конфликты, совместимость"
+title = "Менеджер модов: установленные моды, состояние в игре, конфликты (целых ресурсов и по элементам у модов с дельтами), совместимость"
 [cap.mcp]
 use = ["mods"]
 [cap.editor]
@@ -1539,7 +1679,7 @@ use = ["Game.mods", "ModManager.mods", "ModManager.status", "ModManager.conflict
 [[cap]]
 id = "mods.info"
 area = "mods"
-title = "Что в файле мода (.zip, .vpat) до установки, и его проверка"
+title = "Что в файле мода (.zip, .vpat) до установки (ресурсы, дельты и число операций в них, потоки, связи, код), и его проверка"
 [cap.mcp]
 use = ["mods"]
 at = "действие info (на сервере с --allow-edits или --allow-game: читает файл по пути)"
@@ -1591,11 +1731,12 @@ title = "Поставить изменения рабочего простран
 use = ["mods_manage"]
 at = "действие install_workspace"
 [cap.editor]
-use = ["cmd.mods"]
-at = "окно Mods → раздел сборки → Install workspace"
-input = "form"
+use = ["cmd.mods", "cmd.project_install"]
+at = "окно Mods → раздел сборки → Install as mod; открытый проект — File → Install project into Mods (мод с id, именем и версией проекта)"
+input = "menu+form"
 [cap.cli]
-use = ["mods install-workspace"]
+use = ["mods install-workspace", "project install"]
+at = "project install — проект как мод с его id, именем и версией"
 [cap.python]
 use = ["ModManager.install_workspace"]
 

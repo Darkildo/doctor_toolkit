@@ -16,7 +16,7 @@ use doctor_toolkit::level::world_grid;
 use doctor_toolkit::navigation::unpack::{self, PackOptions, UnpackOptions};
 use doctor_toolkit::project::{self, NewProject, Project};
 use doctor_toolkit::resource::names::type_tags;
-use doctor_toolkit::workspace::Workspace;
+use doctor_toolkit::workspace::{RebaseOutcome, RebaseRequest, Stale, Workspace};
 
 use super::edit::finish;
 use super::{Output, clamp};
@@ -80,6 +80,13 @@ pub struct ProjectPullParams {
     /// entry that is out of sync with the workspace].
     #[serde(default)]
     pub only: Vec<String>,
+    /// Write sources for everything the project's own workspace holds: also
+    /// new entries for the changes that have none yet (resources replaced
+    /// and added, the streams the workspace creates), models included, and
+    /// nothing left of what the workspace no longer adds (as the command
+    /// `project sources`). Not with `only`.
+    #[serde(default)]
+    pub sources: Option<bool>,
 }
 
 #[derive(Debug, Default, Deserialize, JsonSchema)]
@@ -91,6 +98,27 @@ pub struct RevertParams {
     /// Take every change out.
     #[serde(default)]
     pub all: Option<bool>,
+}
+
+#[derive(Debug, Default, Deserialize, JsonSchema)]
+pub struct RebaseParams {
+    /// Only list the changes made on other data than the game gives now;
+    /// nothing is recorded.
+    #[serde(default)]
+    pub check: Option<bool>,
+    /// Rebase only these changes: whole keys (as `workspace_status` lists
+    /// them) or text that keys contain. Without it, every stale change
+    /// that is in neither `keep` nor `take_base`.
+    #[serde(default)]
+    pub only: Vec<String>,
+    /// "Keep mine": these changes stay as they are and count as made on
+    /// what the game gives now.
+    #[serde(default)]
+    pub keep: Vec<String>,
+    /// "Take the base's": these changes are removed; the resource is what
+    /// the game gives.
+    #[serde(default)]
+    pub take_base: Vec<String>,
 }
 
 #[derive(Debug, Default, Deserialize, JsonSchema)]
@@ -301,14 +329,28 @@ pub fn project_new(kit: &Toolkit, p: ProjectNewParams) -> ToolResult<Output> {
     let ws = read_workspace(kit, false)?;
     let custom_workspace = (kit.workspace_dir != Workspace::default_dir(kit.game.root()))
         .then(|| kit.workspace_dir.clone());
+    // Neither streams nor the workspace: an empty project with a workspace
+    // of its own, which names no file of the game.
+    let empty = p.project.streams.is_empty() && !p.project.from_workspace;
     let (made, report) = project::create_from(
         &kit.game,
         &ws,
-        Some(kit.index()),
+        (!empty).then(|| kit.index()),
         &root,
         &p.project,
         custom_workspace,
     )?;
+    if empty {
+        return Ok(Output::Json(json!({
+            "project": made.root(),
+            "id": made.config.project.id,
+            "workspace": made.workspace_dir(),
+            "entries": 0,
+            "next": "the project is empty and has its own workspace: a server started with \
+                     --project <folder> edits that workspace (this server keeps its own); \
+                     project_pull with sources writes its edits as files under src/",
+        })));
+    }
     Ok(Output::Json(json!({
         "project": made.root(),
         "id": made.config.project.id,
@@ -316,6 +358,7 @@ pub fn project_new(kit: &Toolkit, p: ProjectNewParams) -> ToolResult<Output> {
         "files": report.files,
         "entries": report.entries,
         "shared": report.shared,
+        "new_streams": report.new_streams,
         "bytes": report.bytes,
         "notes": report.notes,
         "next": "edit the files under src/; a server started with --project <folder> \
@@ -330,6 +373,22 @@ pub fn project_pull(kit: &Toolkit, p: ProjectPullParams) -> ToolResult<Output> {
     let mut project = Project::open(dir)
         .map_err(|e| ToolError(format!("{} is not a project: {e}", dir.display())))?;
     let ws = read_workspace(kit, false)?;
+    if p.sources == Some(true) {
+        if !p.only.is_empty() {
+            return fail("`sources` writes all of the workspace; leave `only` out");
+        }
+        let report = project.export_workspace(&kit.game, &ws, Some(kit.index()))?;
+        return Ok(Output::Json(json!({
+            "project": dir,
+            "added": report.added,
+            "pulled": report.pulled,
+            "removed": report.removed,
+            "streams": report.streams,
+            "files": report.files,
+            "bytes": report.bytes,
+            "notes": report.notes,
+        })));
+    }
     let pulled = project.pull(&kit.game, &ws, &p.only)?;
     Ok(Output::Json(json!({
         "project": dir,
@@ -370,6 +429,139 @@ pub fn revert(kit: &Toolkit, p: RevertParams) -> ToolResult<Output> {
             "reverted": done.resources.iter().map(ToString::to_string).collect::<Vec<_>>(),
             "reverted_files": done.files.iter().map(ToString::to_string).collect::<Vec<_>>(),
             "note": "an applied change stays in the game files until `apply` or `unapply`",
+        }),
+    )
+}
+
+/// The project whose changes the workspace of the server holds: the one
+/// the server was started with, or the one the folder of the workspace
+/// belongs to. Its own mod, written into the game, is not what its edits
+/// stand on (`Project::given`).
+fn workspace_project(kit: &Toolkit) -> ToolResult<Option<Project>> {
+    let dir = match &kit.project_dir {
+        Some(dir) => Some(dir.clone()),
+        None => project::project_of_workspace(&kit.workspace_dir),
+    };
+    dir.map(|dir| {
+        Project::open(&dir)
+            .map_err(|e| ToolError(format!("{} is not a project: {e}", dir.display())))
+    })
+    .transpose()
+}
+
+fn stale_json(stale: &[Stale]) -> Vec<Value> {
+    stale
+        .iter()
+        .map(|s| {
+            json!({
+                "key": s.key.to_string(),
+                "merged_by": s.kind.map(|kind| kind.name()),
+                "how": match s.kind {
+                    Some(_) => "rebased by its operations",
+                    None => "not merged: `keep` it or `take_base`",
+                },
+            })
+        })
+        .collect()
+}
+
+/// `rebase`: the changes made on other data than the game gives now are
+/// moved onto that data, as one operation (stage 111).
+pub fn rebase(kit: &Toolkit, p: RebaseParams) -> ToolResult<Output> {
+    if !Workspace::exists(&kit.workspace_dir) {
+        return fail("there is no workspace: nothing to rebase");
+    }
+    let project = workspace_project(kit)?;
+    let stale_of = |ws: &Workspace| match &project {
+        Some(project) => project.stale(&kit.game, ws),
+        None => ws.stale(&kit.game),
+    };
+    if p.check.unwrap_or(false) {
+        if !(p.only.is_empty() && p.keep.is_empty() && p.take_base.is_empty()) {
+            return fail("`check` only lists: give it without `only`, `keep` and `take_base`");
+        }
+        let Some(ws) = kit.workspace()? else {
+            return fail("there is no workspace: nothing to rebase");
+        };
+        let stale = stale_of(&ws)?;
+        return Ok(Output::Json(json!({
+            "stale": stale_json(&stale),
+            "count": stale.len(),
+            "note": if stale.is_empty() {
+                "every change is made on what the game gives now"
+            } else {
+                "a mod built of these changes would take back what the mods below changed \
+                 since; `rebase` without `check` moves them"
+            },
+        })));
+    }
+    let mut access = kit.write_workspace("rebase: move stale changes onto the game's data")?;
+    let ws = &mut access.ws;
+    let since = ws.head();
+    let stale = stale_of(ws)?;
+    let only = match p.only.is_empty() {
+        true => None,
+        false => Some(ws.matching_keys(&p.only)?),
+    };
+    let keep = ws.matching_keys(&p.keep)?;
+    let take_base = ws.matching_keys(&p.take_base)?;
+    let request = RebaseRequest {
+        keys: only.as_deref(),
+        keep: &keep,
+        take_base: &take_base,
+    };
+    let report = match &project {
+        Some(project) => project.rebase(&kit.game, ws, &request)?,
+        None => ws.rebase_with(&kit.game, &request)?,
+    };
+    let changes: Vec<Value> = report
+        .changes
+        .iter()
+        .map(|c| {
+            let notes = |list: &[doctor_toolkit::resource::delta::Note]| {
+                list.iter().map(ToString::to_string).collect::<Vec<_>>()
+            };
+            let key = c.key.to_string();
+            match &c.outcome {
+                RebaseOutcome::Merged {
+                    applied,
+                    skipped,
+                    conflicts,
+                    removed,
+                } => json!({
+                    "key": key,
+                    "outcome": "rebased",
+                    "applied": applied,
+                    "left_out": notes(skipped),
+                    "over_another_value": notes(conflicts),
+                    "change_removed": removed,
+                }),
+                RebaseOutcome::Kept => json!({ "key": key, "outcome": "kept" }),
+                RebaseOutcome::Taken => json!({ "key": key, "outcome": "taken from the game" }),
+                RebaseOutcome::Undecided { reason } => json!({
+                    "key": key,
+                    "outcome": "needs a decision",
+                    "reason": reason,
+                }),
+                RebaseOutcome::NotStale => json!({ "key": key, "outcome": "not stale" }),
+            }
+        })
+        .collect();
+    let undecided = report.undecided().count();
+    let label = super::create::last_label(ws);
+    finish(
+        ws,
+        since,
+        &label,
+        json!({
+            "stale": stale_json(&stale),
+            "changes": changes,
+            "needs_a_decision": undecided,
+            "note": match undecided {
+                0 => "the changes are made on what the game gives now",
+                _ => "a change that needs a decision is as it was: call again with its key \
+                      in `keep` (yours stays) or in `take_base` (the game's data)",
+            },
         }),
     )
 }

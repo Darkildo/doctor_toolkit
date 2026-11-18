@@ -1,7 +1,7 @@
 //! Workspace integration of the browser: edits are recorded in the workspace,
 //! views show the workspace version, and the Changes panel applies them.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use doctor_toolkit::resource::lh2::StringTable;
 use doctor_toolkit::resource::texture::TexturePair;
@@ -23,6 +23,28 @@ impl BrowserApp {
     pub(super) fn open_workspace(&mut self) {
         self.load_workspace();
         self.refresh_status();
+        // Another workspace: other edits, made on what they were made on.
+        self.check_stale();
+    }
+
+    /// The folder of the workspace the editor works with: the one it was
+    /// given ([`Self::workspace_at`]), else the game's own. Every part of
+    /// the editor that opens the workspace or reads beside it takes the
+    /// folder from here. `None` without a game.
+    pub(super) fn workspace_dir(&self) -> Option<PathBuf> {
+        let game = self.game.as_ref()?;
+        Some(match &self.workspace_at {
+            // Not relative to wherever the editor was started from.
+            Some(dir) => std::path::absolute(dir).unwrap_or_else(|_| dir.clone()),
+            None => Workspace::default_dir(game.root()),
+        })
+    }
+
+    /// The workspace of the open game as it is on disk, or a new one that
+    /// is not saved: for reading when the editor has none open yet.
+    pub(super) fn workspace_for_reading(&self) -> Result<Workspace, String> {
+        let game = self.game.as_ref().ok_or(tr("edits.no_game"))?;
+        Workspace::for_game(game, self.workspace_dir().as_deref()).map_err(|e| e.to_string())
     }
 
     /// [`Self::open_workspace`] without comparing it with the game.
@@ -30,8 +52,9 @@ impl BrowserApp {
         self.workspace = None;
         self.ws_lock = None;
         self.ws_status = None;
-        let Some(game) = &self.game else { return };
-        let dir = Workspace::default_dir(game.root());
+        let Some(dir) = self.workspace_dir() else {
+            return;
+        };
         if Workspace::exists(&dir) {
             match WorkspaceLock::acquire(&dir, LOCK_HOLDER) {
                 Ok(lock) => self.ws_lock = Some(lock),
@@ -63,6 +86,7 @@ impl BrowserApp {
             },
             _ => None,
         };
+        self.prune_stale();
         self.mark_changed_rows();
     }
 
@@ -121,9 +145,7 @@ impl BrowserApp {
 
     pub(super) fn workspace_mut(&mut self) -> Result<&mut Workspace, String> {
         if self.workspace.is_none() {
-            let game = self.game.as_ref().ok_or(tr("edits.no_game"))?;
-            let ws = Workspace::for_game(game, None).map_err(|e| e.to_string())?;
-            self.workspace = Some(ws);
+            self.workspace = Some(self.workspace_for_reading()?);
         }
         let ws = self.workspace.as_mut().expect("just created");
         if self.ws_lock.is_none() {
@@ -431,7 +453,7 @@ impl BrowserApp {
         let Some(game) = self.game.clone() else {
             return;
         };
-        if self.workspace.is_none() || self.refuse_write() {
+        if self.workspace.is_none() || self.project_refuses_write() || self.refuse_write() {
             return;
         }
         // Release the memory-mapped streams before their files are replaced.
@@ -532,6 +554,8 @@ impl BrowserApp {
             Err(error) => trf("edits.cannot_undo", &[("error", &error)]),
         };
         self.after_edit(None);
+        // An undone rebase leaves its edits stale again.
+        self.check_stale();
     }
 
     pub(super) fn redo(&mut self) {
@@ -545,6 +569,7 @@ impl BrowserApp {
             Err(error) => trf("edits.cannot_redo", &[("error", &error)]),
         };
         self.after_edit(None);
+        self.check_stale();
     }
 
     fn revert(&mut self, keys: &[ResourceKey]) {
@@ -642,10 +667,31 @@ impl BrowserApp {
 
     /// The Changes panel and what it asks for.
     pub(super) fn changes_pane(&mut self, ui: &mut egui::Ui) {
+        // What the game changed under a stale edit is compared when the
+        // panel shows that edit, not every frame.
+        let game = self.disk_game();
+        let own = self.own_mod_id();
+        let workspace = self.workspace.as_ref();
+        let base_detail = |key: &ResourceKey| {
+            let (Some(game), Some(ws)) = (&game, workspace) else {
+                return Err(tr("edits.no_game").to_owned());
+            };
+            let given = super::document::given_of(game, ws, own.as_deref())?;
+            ws.base_detail(game, &given, key).map_err(|e| e.to_string())
+        };
+        let stale = crate::changes_view::StaleChanges {
+            stale: &self.base.stale,
+            detail: &base_detail,
+        };
         let action = self
             .changes
-            .ui(ui, self.workspace.as_ref(), self.ws_status.as_ref());
+            .ui(ui, workspace, self.ws_status.as_ref(), &stale);
+        use super::document::Rebase;
         match action {
+            Some(ChangesAction::Rebase(None)) => self.rebase(Rebase::All),
+            Some(ChangesAction::Rebase(Some(keys))) => self.rebase(Rebase::Merge(keys)),
+            Some(ChangesAction::KeepMine(keys)) => self.rebase(Rebase::KeepMine(keys)),
+            Some(ChangesAction::TakeBase(keys)) => self.rebase(Rebase::TakeBase(keys)),
             Some(ChangesAction::Undo) => self.undo(),
             Some(ChangesAction::Redo) => self.redo(),
             // Overwriting foreign changes was confirmed in the panel.

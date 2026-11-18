@@ -68,10 +68,11 @@ impl BrowserApp {
                 id
             }
         };
+        let dir = self.workspace_dir();
         let editor = self.logics.entry(id).or_insert_with(|| {
             let mut editor = LogicEditor::new(scope);
-            if let (Some(game), Some(index)) = (&self.game, &self.index) {
-                editor.open_game(game.clone(), index.clone());
+            if let (Some(game), Some(index), Some(dir)) = (&self.game, &self.index, dir) {
+                editor.open_game(game.clone(), index.clone(), dir);
             }
             editor
         });
@@ -84,8 +85,10 @@ impl BrowserApp {
     pub(super) fn logic_pane(&mut self, ui: &mut egui::Ui, id: u64, scope: &mut String) {
         if !self.logics.contains_key(&id) {
             let mut editor = LogicEditor::new(scope);
-            if let (Some(game), Some(index)) = (&self.game, &self.index) {
-                editor.open_game(game.clone(), index.clone());
+            if let (Some(game), Some(index), Some(dir)) =
+                (&self.game, &self.index, self.workspace_dir())
+            {
+                editor.open_game(game.clone(), index.clone(), dir);
             }
             self.logics.insert(id, editor);
         }

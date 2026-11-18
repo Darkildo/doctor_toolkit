@@ -944,6 +944,9 @@ fn load_view(
     if source.type_id != TYPE_MESH {
         return None;
     }
+    if let Some(view) = load_edited(source) {
+        return Some(Box::new(view));
+    }
     ModelPreview::load(source.stream, source.index, source.assets, source.gpu)
         .map(|v| Box::new(v) as Box<dyn crate::views::ResourceViewer>)
 }
@@ -1004,4 +1007,77 @@ impl crate::views::ResourceViewer for ModelPreview {
     fn keys(&self) -> &'static [(&'static str, &'static str)] {
         KEYS
     }
+}
+
+/// The mesh as the workspace has it, with the workspace's materials and
+/// textures: an imported model shows before it is written into the game.
+/// `None` when the workspace changes nothing a model is drawn with (the
+/// game's data is shown then).
+fn load_edited(source: &mut crate::views::ViewSource<'_>) -> Option<ModelPreview> {
+    use std::hash::{Hash, Hasher};
+
+    let workspace = source.workspace?;
+    let index = source.index;
+    let volatile = doctor_toolkit::resource::mesh::volatile_for(source.stream.layout(), index);
+    let edited =
+        source.edited(index).is_some() || volatile.is_some_and(|v| source.edited(v).is_some());
+    let started = Instant::now();
+    let data = source.data(index);
+    let volatile_data = match volatile {
+        Some(v) => source.data(v),
+        None => Ok(Vec::new()),
+    };
+    let mut assets = doctor_toolkit::workspace::EditedAssets::new(workspace, &mut *source.assets);
+    if !edited && assets.is_empty() {
+        return None;
+    }
+    let model = data
+        .and_then(|mesh| Ok((mesh, volatile_data?)))
+        .and_then(|(mesh, volatile)| {
+            // The renderer keeps meshes by key: this version has its own.
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            load::mesh_key(source.stream, index).hash(&mut hasher);
+            mesh.hash(&mut hasher);
+            volatile.hash(&mut hasher);
+            Model::parse(&mesh, &volatile)
+                .map(|model| (model, hasher.finish()))
+                .map_err(|e| e.to_string())
+        });
+    Some(match (model, source.gpu) {
+        (Ok((model, mut key)), Some(gpu)) => {
+            // Materials are part of the uploaded mesh: a changed material
+            // or texture of the workspace makes another one.
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            key.hash(&mut hasher);
+            for record in &model.records {
+                if let Some(material) = assets.material(record.material_hash) {
+                    material.name.hash(&mut hasher);
+                    for (_, texture, param) in material.textures() {
+                        param.name.hash(&mut hasher);
+                        texture.hash(&mut hasher);
+                        assets.texture_version(texture).hash(&mut hasher);
+                    }
+                }
+            }
+            key = hasher.finish();
+            let loaded = load::load_parsed(&model, key, &mut assets, &mut gpu.lock())
+                .map_err(|e| e.to_string());
+            let mut view = GpuModelView::new(loaded, started.elapsed(), gpu);
+            view.collision = crate::collision_view::for_mesh(source.stream, index);
+            if let Ok(preset) = std::env::var("DOCTOR_TOOLKIT_GUI_MODEL") {
+                view.show_collision = preset.split(',').any(|o| o.trim() == "collision");
+            }
+            ModelPreview::Gpu(Box::new(view))
+        }
+        (Ok((model, _)), None) => {
+            ModelPreview::Software(software::ModelPreview::from_model(&model, &mut assets))
+        }
+        (Err(error), Some(gpu)) => ModelPreview::Gpu(Box::new(GpuModelView::new(
+            Err(error),
+            started.elapsed(),
+            gpu,
+        ))),
+        // Without the renderer the game's data is shown, with its error.
+        (Err(_), None) => return None,
+    })
 }

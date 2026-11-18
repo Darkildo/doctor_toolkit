@@ -572,8 +572,29 @@ impl BrowserApp {
             .as_ref()
             .filter(|ws| ws.is_saved())
             .map(|ws| ws.dir().to_path_buf());
-        let apply = config.apply_before && workspace_dir.is_some();
-        let choice = if apply || !options.is_empty() {
+        // A project is played with its edits, and only through the
+        // overlay: its workspace is never written into the game files. It
+        // is staged as the last mod on top of the enabled mods.
+        let project_root = self.project_root().filter(|_| workspace_dir.is_some());
+        let project = project_root.is_some();
+        // Its mod depends on the mods of its base: a launch that cannot be
+        // staged with the mods of the game is told why before it is tried.
+        if project && self.base_stops_play() {
+            return;
+        }
+        let apply = (config.apply_before || project) && workspace_dir.is_some();
+        let choice = if project {
+            match play::overlay::availability(game.root()) {
+                Ok(()) => play::overlay::Choice::Overlay,
+                Err(reason) => {
+                    self.notify(
+                        Level::Error,
+                        trf("document.needs_overlay", &[("reason", &reason)]),
+                    );
+                    return;
+                }
+            }
+        } else if apply || !options.is_empty() {
             match play::overlay::choose(game.root(), config.overlay) {
                 Ok(choice) => choice,
                 Err(error) => {
@@ -591,9 +612,12 @@ impl BrowserApp {
             );
         }
         let overlay = if choice == play::overlay::Choice::Overlay {
-            let source = workspace_dir
-                .filter(|_| apply)
-                .map(play::overlay::Source::Workspace);
+            let source = match project_root {
+                Some(root) => Some(play::overlay::Source::Project(root)),
+                None => workspace_dir
+                    .filter(|_| apply)
+                    .map(play::overlay::Source::Workspace),
+            };
             let built = play::overlay::remove_stale(game.root()).and_then(|_| {
                 let dir = play::overlay::default_dir(game.root()).ok_or_else(|| {
                     doctor_toolkit::Error::InvalidArgument("no folder for the staged files".into())
@@ -697,7 +721,9 @@ impl BrowserApp {
             }
         };
         // The crash module and the list of mods for its reports (stage 99).
-        let source = if overlay.is_some() {
+        let source = if overlay.is_some() && project {
+            "mods and the project staged outside the game"
+        } else if overlay.is_some() {
             "workspace staged outside the game"
         } else {
             "written into the game"

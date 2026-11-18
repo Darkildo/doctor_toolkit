@@ -21,7 +21,7 @@ use doctor_toolkit::workspace::{Workspace, WorkspaceLock};
 use doctor_toolkit_mcp::Config;
 use doctor_toolkit_mcp::game::XServer;
 
-const EDIT_TOOLS: [&str; 51] = [
+const EDIT_TOOLS: [&str; 52] = [
     "set_attribute",
     "move_object",
     "duplicate_object",
@@ -61,6 +61,7 @@ const EDIT_TOOLS: [&str; 51] = [
     "pack",
     "project_pull",
     "revert",
+    "rebase",
     "remove_zone_cell",
     "sbk_edit",
     "sound_add",

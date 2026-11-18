@@ -132,6 +132,7 @@ pub fn lend(kit: &Toolkit, what: &str) -> ToolResult<Lent> {
                 &Request::Lend {
                     client: CLIENT.into(),
                     summary: what.to_owned(),
+                    workspace: Some(kit.workspace_dir.clone()),
                 },
                 ASK_TIMEOUT,
             )

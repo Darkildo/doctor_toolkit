@@ -1,0 +1,1 @@
+{"format":1,"kind":"partsdb","ops":[{"op":"add_part","name":"cap","slot":"a_hat","models":["00000077","00000078","00000000","00000000","00000000"],"label":"pcollision_cap","tags":["hatCulled"]},{"op":"add_variant","name":"cap","parts":["cap","head"]},{"op":"allow","set":"db","slot":"a_hat","variant":"cap"},{"op":"allow","set":"db","slot":"head","variant":"head","only":true}]}

@@ -69,3 +69,29 @@ def test_a_project_folder_must_be_new(sample, tmp_path):
     (folder / "file.txt").write_text("x")
     with pytest.raises(dt.InvalidArgumentError, match="not empty"):
         dt.Project.create(game, folder, streams=["gf2/level"])
+
+
+def test_an_empty_project_gets_the_sources_of_its_workspace(sample, tmp_path):
+    game, keys, root = sample
+    original = snapshot(root)
+    project = dt.Project.create(game, tmp_path / "doc", name="Yard Mod", empty=True)
+    assert project.id == "yard-mod" and project.entries() == []
+    assert (project.root / "project.toml").is_file()
+    assert not (project.root / "workspace").exists() and not (project.root / "src").exists()
+    with pytest.raises(dt.InvalidArgumentError, match="empty project"):
+        dt.Project.create(game, tmp_path / "x", streams=["gf2/level"], empty=True)
+    assert project.sources()["added"] == []
+
+    # An edit in the project's own workspace gets a source file.
+    ws = game.workspace(project.root / "workspace")
+    ws.set_data(keys["vfx"], b"ember\0")
+    report = project.sources()
+    assert len(report["added"]) == 1 and report["notes"] == []
+    entry = project.entries()[0]
+    assert entry["keys"] == [keys["vfx"]] and entry["kind"] == "raw"
+    assert (project.root / entry["files"][0]).read_bytes() == b"ember\0"
+    assert project.status()["to_build"] == 0
+    assert project.sources()["added"] == []
+    # Nothing of it is in the game folder.
+    assert snapshot(root) == original
+    assert not (root / "_doctor_toolkit").exists()

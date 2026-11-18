@@ -48,6 +48,10 @@ pub struct FileInfo {
     /// Replaced and added resources, and how many of them are added.
     pub resources: usize,
     pub added: usize,
+    /// Resources stored as deltas (format version 6), which merge with
+    /// other mods, and the operations in them.
+    pub deltas: usize,
+    pub operations: usize,
     /// Streams the mod changes.
     pub streams: Vec<String>,
     /// Streams the mod creates.
@@ -78,6 +82,8 @@ impl FileInfo {
             format_version: m.format_version,
             resources: m.resources.len(),
             added: m.added().count(),
+            deltas: m.deltas().count(),
+            operations: 0,
             streams: m.streams().into_iter().map(str::to_owned).collect(),
             new_streams: m.streams.iter().map(|s| s.name.clone()).collect(),
             files: m.files.len(),
@@ -126,6 +132,8 @@ pub fn file_info(path: &Path) -> Result<FileInfo> {
             format_version: patch.format_version,
             resources: patch.files.iter().map(|f| f.resources.len()).sum(),
             added: 0,
+            deltas: 0,
+            operations: 0,
             streams: patch.files.iter().map(|f| f.stream.clone()).collect(),
             new_streams: Vec::new(),
             files: 0,
@@ -145,6 +153,11 @@ pub fn file_info(path: &Path) -> Result<FileInfo> {
     let mut archive = ModArchive::open(path)?;
     archive.verify()?;
     let mut info = FileInfo::of_manifest(archive.manifest());
+    info.operations = archive
+        .delta_operations()?
+        .iter()
+        .map(|(_, operations)| operations)
+        .sum();
     info.warnings.extend(archive.warnings().iter().cloned());
     info.verified = true;
     Ok(info)

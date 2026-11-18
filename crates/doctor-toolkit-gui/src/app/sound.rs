@@ -204,12 +204,13 @@ pub(crate) struct SoundWindow {
 fn read_ws<'a>(
     game: &GameInstance,
     ws: Option<&'a Workspace>,
+    dir: Option<&Path>,
     temp: &'a mut Option<Workspace>,
 ) -> Result<&'a Workspace, String> {
     match ws {
         Some(ws) => Ok(ws),
         None => {
-            *temp = Some(Workspace::for_game(game, None).map_err(|e| e.to_string())?);
+            *temp = Some(Workspace::for_game(game, dir).map_err(|e| e.to_string())?);
             Ok(temp.as_ref().expect("just made"))
         }
     }
@@ -253,14 +254,21 @@ impl SoundWindow {
     }
 
     /// Loads what the page shows, once.
-    fn ensure(&mut self, game: &GameInstance, ws: Option<&Workspace>) {
-        let result = self.load(game, ws);
+    /// `dir` is the folder of the editor's workspace
+    /// (`BrowserApp::workspace_dir`), read when the editor has none open.
+    fn ensure(&mut self, game: &GameInstance, ws: Option<&Workspace>, dir: Option<&Path>) {
+        let result = self.load(game, ws, dir);
         if let Err(error) = result {
             self.error = Some(error);
         }
     }
 
-    fn load(&mut self, game: &GameInstance, ws: Option<&Workspace>) -> Result<(), String> {
+    fn load(
+        &mut self,
+        game: &GameInstance,
+        ws: Option<&Workspace>,
+        dir: Option<&Path>,
+    ) -> Result<(), String> {
         let mut temp = None;
         match self.page {
             Page::Archives => {
@@ -285,7 +293,7 @@ impl SoundWindow {
             }
             Page::Banks => {
                 if self.banks.is_none() {
-                    let ws = read_ws(game, ws, &mut temp)?;
+                    let ws = read_ws(game, ws, dir, &mut temp)?;
                     let banks = doctor_toolkit::voice::banks(game, ws)
                         .map_err(|e| e.to_string())?
                         .into_iter()
@@ -321,7 +329,7 @@ impl SoundWindow {
             }
             Page::Events => {
                 if self.events.is_none() {
-                    let ws = read_ws(game, ws, &mut temp)?;
+                    let ws = read_ws(game, ws, dir, &mut temp)?;
                     let ((s, _), table) =
                         doctor_toolkit::voice::event_table(game, ws).map_err(|e| e.to_string())?;
                     let mut names =
@@ -359,11 +367,11 @@ impl SoundWindow {
                 }
             }
             Page::Config => {
-                let ws = read_ws(game, ws, &mut temp)?;
+                let ws = read_ws(game, ws, dir, &mut temp)?;
                 self.ensure_categories(game, ws)?;
             }
             Page::Mixes => {
-                let ws = read_ws(game, ws, &mut temp)?;
+                let ws = read_ws(game, ws, dir, &mut temp)?;
                 self.ensure_categories(game, ws)?;
                 if self.mixes.is_none() {
                     let mixes: Vec<(String, Mix)> = sound::mixes(game, ws)
@@ -1053,7 +1061,9 @@ impl BrowserApp {
             }
         }
         self.sound.error = None;
-        self.sound.ensure(&game, self.workspace.as_ref());
+        let dir = self.workspace_dir();
+        self.sound
+            .ensure(&game, self.workspace.as_ref(), dir.as_deref());
         let mut open = true;
         let mut actions = Vec::new();
         egui::Window::new(tr("sounds.title"))
@@ -1324,6 +1334,7 @@ impl BrowserApp {
         let Some(game) = self.game.clone() else {
             return;
         };
+        let dir = self.workspace_dir();
         self.sound.open = true;
         let mut subtitles = false;
         let mut channel = String::new();
@@ -1356,7 +1367,7 @@ impl BrowserApp {
                 }
                 "select" => {
                     s.page = Page::Archives;
-                    s.ensure(&game, self.workspace.as_ref());
+                    s.ensure(&game, self.workspace.as_ref(), dir.as_deref());
                     self.sound_action(SoundAction::Select(value))
                 }
                 "export" => self.sound_action(SoundAction::Export(Some(value.into()))),
@@ -1421,7 +1432,7 @@ impl BrowserApp {
                 }
                 "channel" => {
                     channel = value;
-                    s.ensure(&game, self.workspace.as_ref());
+                    s.ensure(&game, self.workspace.as_ref(), dir.as_deref());
                     let hash = doctor_toolkit::hash::string_id(&channel);
                     let form = match s.chosen_mix().and_then(|(m, _)| m.channel(hash)) {
                         Some(c) => ChannelForm {

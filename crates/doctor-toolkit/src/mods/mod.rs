@@ -27,6 +27,13 @@
 //! after the player agreed to that very code, and only into the edition of
 //! the game they are built for.
 //!
+//! Format version 6 lets a resource be a delta ([`ModResource::delta`]):
+//! the operations that turn the data the author worked on into the author's
+//! data, instead of the whole resource ([`crate::resource::delta`]). The mod
+//! manager folds the deltas of the enabled mods onto what the game has
+//! ([`fold`]), so two mods that add objects to one SimGroup both work, and
+//! a mod made on top of another survives its update.
+//!
 //! ```text
 //! example.zip
 //! ├── mod.json                 manifest: metadata and resources
@@ -50,8 +57,10 @@
 //! together with other mods by installing the workspace as a mod
 //! ([`manager::ModManager::install_workspace`]).
 
+pub mod fold;
 pub mod info;
 pub mod integrity;
+pub mod lock;
 pub mod manager;
 pub mod native;
 pub mod order;
@@ -66,6 +75,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::game::GameInstance;
 use crate::game_types::MessageId;
+use crate::resource::delta;
 use crate::workspace::{
     Added, Blob, Deployment, FileKey, GameFingerprint, NewStream, ResourceKey, StorageChoice,
     Workspace,
@@ -73,6 +83,7 @@ use crate::workspace::{
 use crate::{Error, Result};
 
 pub use info::{FileInfo, FileKind, file_info};
+pub use lock::RegistryLock;
 pub use manager::{InstalledMod, ModManager};
 pub use native::{ModNative, NativeModule};
 pub use package::ModArchive;
@@ -82,8 +93,9 @@ pub const FORMAT: &str = "doctor-toolkit-mod";
 /// Current version of the mod format: 2 added new resources and new
 /// streams, 3 dependencies, editions and rules of the load order, 4 files of
 /// the `.viv` archives (voice lines and other streamed sounds) and child
-/// streams that load with their parent, 5 executable code (`native`).
-pub const FORMAT_VERSION: u32 = 5;
+/// streams that load with their parent, 5 executable code (`native`), 6
+/// resources stored as deltas.
+pub const FORMAT_VERSION: u32 = 6;
 /// The first format version that can add resources and streams.
 pub const ADDING_VERSION: u32 = 2;
 /// The first format version with relations: dependencies, editions, load order.
@@ -95,6 +107,12 @@ pub const FILES_VERSION: u32 = 4;
 /// one of those versions would be installed by them without its code and
 /// without a word, so the code needs a version they refuse.
 pub const NATIVE_VERSION: u32 = 5;
+/// The first format version in which a resource may be a delta
+/// ([`ModResource::delta`]). It needs a version of its own for the reason
+/// code did: the managers that read versions 3 to 5 skip the field they do
+/// not know and would write the delta document into the game as if it were
+/// the resource. A version they refuse makes them say "update" instead.
+pub const DELTA_VERSION: u32 = 6;
 /// Name of the manifest inside a mod.
 pub const MANIFEST_NAME: &str = "mod.json";
 /// Directory of the payloads inside a mod.
@@ -334,29 +352,102 @@ pub struct ModFile {
     pub label: String,
 }
 
-/// One resource a mod replaces or adds.
+/// One resource a mod replaces, adds or changes by a delta.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "ResourceForm", into = "ResourceForm")]
 pub struct ModResource {
     pub key: ResourceKey,
-    /// The new data: `payloads/<sha256>` in the package.
+    /// The new data: `payloads/<sha256>` in the package. Of a delta
+    /// ([`Self::delta`]), the delta document.
     pub payload: Blob,
     /// The data of the resource in the game the mod was made for; empty data
-    /// for an added resource.
+    /// for an added resource. Of a delta, the data the delta was made on,
+    /// which nothing is checked against: empty data when the mod does not
+    /// say (`original` is then left out of `mod.json`).
     pub original: Blob,
-    #[serde(default, skip_serializing_if = "StorageChoice::is_keep")]
     pub storage: StorageChoice,
     /// What the change is, e.g. the label of the workspace operation.
-    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub label: String,
     /// Set when the mod adds the resource (format version 2): its memory
     /// policy, alignment and place in the stream, as in the workspace.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub added: Option<Added>,
+    /// Set when the payload is a delta (format version 6): the mod manager
+    /// applies it to the data the resource has below this mod.
+    pub delta: Option<ModDelta>,
 }
 
 impl ModResource {
     pub fn is_added(&self) -> bool {
         self.added.is_some()
+    }
+
+    /// Whether the payload is a delta and not the resource.
+    pub fn is_delta(&self) -> bool {
+        self.delta.is_some()
+    }
+}
+
+/// What kind of delta the payload of a resource is (format version 6).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ModDelta {
+    /// The kind of the delta, which is the kind of the resource.
+    pub kind: delta::Kind,
+    /// Version of the delta document ([`delta::FORMAT`]).
+    pub format: u32,
+}
+
+/// [`ModResource`] as `mod.json` has it: `original` may be absent, but only
+/// of a delta.
+#[derive(Serialize, Deserialize)]
+struct ResourceForm {
+    key: ResourceKey,
+    payload: Blob,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    original: Option<Blob>,
+    #[serde(default, skip_serializing_if = "StorageChoice::is_keep")]
+    storage: StorageChoice,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    label: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    added: Option<Added>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    delta: Option<ModDelta>,
+}
+
+impl TryFrom<ResourceForm> for ModResource {
+    type Error = String;
+
+    fn try_from(form: ResourceForm) -> std::result::Result<Self, String> {
+        let original = match (form.original, &form.delta) {
+            (Some(original), _) => original,
+            (None, Some(_)) => Blob::of(&[]),
+            (None, None) => return Err("missing field `original`".into()),
+        };
+        Ok(Self {
+            key: form.key,
+            payload: form.payload,
+            original,
+            storage: form.storage,
+            label: form.label,
+            added: form.added,
+            delta: form.delta,
+        })
+    }
+}
+
+impl From<ModResource> for ResourceForm {
+    fn from(resource: ModResource) -> Self {
+        // A delta that does not say what it was made on has no `original`.
+        let unsaid = resource.delta.is_some() && resource.original == Blob::of(&[]);
+        Self {
+            key: resource.key,
+            payload: resource.payload,
+            original: (!unsaid).then_some(resource.original),
+            storage: resource.storage,
+            label: resource.label,
+            added: resource.added,
+            delta: resource.delta,
+        }
     }
 }
 
@@ -371,6 +462,10 @@ pub struct ModInfo {
     pub url: Option<String>,
     /// Dependencies, editions and the load order (format version 3).
     pub relations: Relations,
+    /// Keeps every resource whole: no deltas (format version 6), so that
+    /// the mod managers before that version can install the mod. Such a
+    /// mod replaces what other mods do to the same resources.
+    pub whole_resources: bool,
 }
 
 /// What a mod being built says about other mods and the game (format
@@ -395,6 +490,10 @@ pub struct Relations {
     /// rather than on the game's original: that data becomes the
     /// resource's `original` ([`add_suggested_dependencies`] fills it in).
     pub made_on: BTreeMap<ResourceKey, Blob>,
+    /// The data of [`Self::made_on`], for the resources that have deltas:
+    /// the build writes the difference to it. A resource of
+    /// [`Self::made_on`] that has no data here stays whole.
+    pub made_on_data: BTreeMap<ResourceKey, Vec<u8>>,
     /// Executable code to put into the mod (format version 5).
     pub native: Option<NativeBuild>,
 }
@@ -421,12 +520,125 @@ impl NativeBuild {
     }
 }
 
-/// The data of a payload of a mod built from `ws` with `info`: a module of
-/// its code, or a payload of the workspace.
-pub(crate) fn built_payload(ws: &Workspace, info: &ModInfo, blob: &Blob) -> Result<Vec<u8>> {
-    match info.relations.native.as_ref().and_then(|n| n.payload(blob)) {
-        Some(data) => Ok(data.to_vec()),
-        None => ws.store().get(blob),
+/// A mod made of the changes of a workspace ([`mod_from_workspace`]): its
+/// manifest, and the data the workspace does not have — the delta documents.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BuiltMod {
+    pub manifest: ModManifest,
+    /// The delta documents by their SHA-256.
+    deltas: HashMap<String, Vec<u8>>,
+    /// Resources of the kinds that have deltas which stay whole although
+    /// deltas were asked for, each with the reason.
+    pub kept_whole: Vec<(ResourceKey, KeptWhole)>,
+    /// Replaced resources whose change was made on other data
+    /// ([`Change::made_on`](crate::workspace::Change::made_on)) than the
+    /// mod is built on — the data of its dependencies
+    /// ([`Relations::made_on`]), else the game's original: the mods below
+    /// were updated or are others since the edit, or the build was not
+    /// told of them. The mod holds the difference to data its author did
+    /// not see, so it takes back what changed there since — it removes
+    /// what an update added and puts back what it removed. A rebase of the
+    /// workspace makes the two the same ([`Workspace::rebase`], stage 111).
+    pub stale: Vec<ResourceKey>,
+}
+
+/// Why a resource of a kind that has deltas is in a mod whole
+/// ([`BuiltMod::kept_whole`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum KeptWhole {
+    /// The change is more than the operations of a delta can say, or the
+    /// operations do not give the author's bytes back ([`delta::exact`]).
+    NotExact,
+    /// The delta document does not take less room in the mod file than the
+    /// resource: the sizes of both, deflated.
+    NotSmaller { delta: u64, resource: u64 },
+    /// The resource, or the data it was made on, does not read as a
+    /// resource of its type.
+    Unreadable(String),
+    /// The change was made on the data of a dependency
+    /// ([`Relations::made_on`]) that the build was not given.
+    NoBase,
+}
+
+impl KeptWhole {
+    pub fn describe(&self) -> String {
+        match self {
+            Self::NotExact => {
+                "the change cannot be written as operations that give the same bytes back"
+                    .to_owned()
+            }
+            Self::NotSmaller { delta, resource } => format!(
+                "the operations take {delta} bytes in the mod file and the resource \
+                 {resource}: the mod changes most of it"
+            ),
+            Self::Unreadable(why) => format!("the resource does not read: {why}"),
+            Self::NoBase => "the data of the mod it was made on is not known".to_owned(),
+        }
+    }
+}
+
+impl BuiltMod {
+    /// The data of the payload `blob` of the mod, built from `ws` with
+    /// `info`: a delta document, a module of its code, or a payload of the
+    /// workspace.
+    pub fn payload(&self, ws: &Workspace, info: &ModInfo, blob: &Blob) -> Result<Vec<u8>> {
+        if let Some(data) = self.deltas.get(&blob.sha256) {
+            return Ok(data.clone());
+        }
+        match info.relations.native.as_ref().and_then(|n| n.payload(blob)) {
+            Some(data) => Ok(data.to_vec()),
+            None => ws.store().get(blob),
+        }
+    }
+
+    /// Notes for the author on the resources that could not be deltas: the
+    /// first few by name, the rest counted.
+    pub fn delta_notes(&self) -> Vec<String> {
+        const NAMED: usize = 8;
+        let mut notes: Vec<String> = self
+            .kept_whole
+            .iter()
+            .take(NAMED)
+            .map(|(key, why)| {
+                format!(
+                    "{key} is in the mod whole and replaces what other mods do to it: {}",
+                    why.describe()
+                )
+            })
+            .collect();
+        if self.kept_whole.len() > NAMED {
+            notes.push(format!(
+                "{} more resource(s) are in the mod whole for the same reasons",
+                self.kept_whole.len() - NAMED
+            ));
+        }
+        notes
+    }
+
+    /// The warning about [`Self::stale`] changes, for the author; `None`
+    /// when every change was made on what the mod is built on.
+    pub fn stale_note(&self) -> Option<String> {
+        const NAMED: usize = 4;
+        if self.stale.is_empty() {
+            return None;
+        }
+        let mut names: Vec<String> = self
+            .stale
+            .iter()
+            .take(NAMED)
+            .map(ToString::to_string)
+            .collect();
+        if self.stale.len() > NAMED {
+            names.push(format!("{} more", self.stale.len() - NAMED));
+        }
+        Some(format!(
+            "{} change(s) were made on other data than the mod is built on ({}): the mods \
+             below were updated or are others since the edits, and the mod takes back what \
+             they changed since. Rebase the changes first (`doctor-toolkit project rebase`, \
+             `workspace rebase`, Rebase in the Changes panel of the editor)",
+            self.stale.len(),
+            names.join(", ")
+        ))
     }
 }
 
@@ -492,9 +704,13 @@ impl ModManifest {
     /// files of the archives or a child stream that loads with its parent
     /// (`auto_load`: a manager older than that field would install the
     /// stream disabled without a word), 5 when it has executable code (the
-    /// managers of versions 3 and 4 would install it without the code).
+    /// managers of versions 3 and 4 would install it without the code), 6
+    /// when a resource is a delta (the managers of versions 3 to 5 would
+    /// write the delta document into the game as the resource).
     pub fn required_version(&self) -> u32 {
-        if self.native.is_some() {
+        if self.resources.iter().any(ModResource::is_delta) {
+            DELTA_VERSION
+        } else if self.native.is_some() {
             NATIVE_VERSION
         } else if !self.files.is_empty() || self.streams.iter().any(|s| s.auto_load) {
             FILES_VERSION
@@ -608,6 +824,14 @@ impl ModManifest {
             .map_err(|e| Error::mod_error(format!("mod.json: {e}")))?;
         text.push(b'\n');
         Ok(text)
+    }
+
+    /// SHA-256 of the manifest as this program writes it ([`Self::to_json`]):
+    /// it names every payload by its hash, so two builds of a mod with the
+    /// same version number but other data differ in it. A project records
+    /// it for each mod of its base (`crate::project::base`).
+    pub fn sha256(&self) -> String {
+        crate::workspace::store::sha256_hex(&self.to_json().unwrap_or_default())
     }
 
     /// Checks every field against the format and the limits.
@@ -806,6 +1030,9 @@ impl ModManifest {
                 }
             }
             check_text("label", &resource.label, MAX_NAME, true)?;
+            if let Some(delta) = &resource.delta {
+                self.validate_delta(resource, delta)?;
+            }
             if let Some(added) = &resource.added {
                 validate_added(resource, added, &new_streams)?;
                 if key.ids != [0; 4]
@@ -831,6 +1058,39 @@ impl ModManifest {
             return bad(format!(
                 "the payloads add up to {total} bytes; at most {MAX_TOTAL_SIZE} are allowed"
             ));
+        }
+        Ok(())
+    }
+
+    /// Checks a resource that is a delta (format version 6).
+    fn validate_delta(&self, resource: &ModResource, delta: &ModDelta) -> Result<()> {
+        let key = &resource.key;
+        let bad = |why: String| Err(Error::mod_error(format!("mod.json: {key}: {why}")));
+        if self.format_version < DELTA_VERSION {
+            return bad(format!(
+                "format version {} cannot hold a resource as a delta (`delta`); version \
+                 {DELTA_VERSION} is needed",
+                self.format_version
+            ));
+        }
+        if delta::kind_of(key.type_id) != Some(delta.kind) {
+            return bad(format!(
+                "a {} delta does not fit a resource of this type",
+                delta.kind
+            ));
+        }
+        if delta.format == 0 || delta.format > delta::FORMAT {
+            return bad(format!(
+                "the delta is of format {}; this program reads up to {}. Update Open Mod \
+                 Manager (doctor_toolkit) to install the mod",
+                delta.format,
+                delta::FORMAT
+            ));
+        }
+        if resource.added.is_some() {
+            return bad(
+                "an added resource cannot be a delta: there is nothing to apply it to".into(),
+            );
         }
         Ok(())
     }
@@ -1016,6 +1276,11 @@ impl ModManifest {
         self.resources.iter().filter(|r| !r.is_added())
     }
 
+    /// Resources the mod changes by a delta (format version 6).
+    pub fn deltas(&self) -> impl Iterator<Item = &ModResource> {
+        self.resources.iter().filter(|r| r.is_delta())
+    }
+
     /// The new stream `name`, if the mod creates it.
     pub fn new_stream(&self, name: &str) -> Option<&NewStream> {
         self.streams.iter().find(|s| s.name == name)
@@ -1057,12 +1322,68 @@ impl ModManifest {
 }
 
 /// The manifest of a mod made of the changes of a workspace: all of them, or
-/// those in `keys`.
+/// those in `keys` ([`mod_from_workspace`]).
 pub fn manifest_from_workspace(
     ws: &Workspace,
     info: &ModInfo,
     keys: Option<&[ResourceKey]>,
 ) -> Result<ModManifest> {
+    Ok(mod_from_workspace(ws, info, keys)?.manifest)
+}
+
+/// The room `data` takes in a mod file: the payloads of a mod are deflated
+/// ([`package::write_package`]).
+fn stored_size(data: &[u8]) -> u64 {
+    use std::io::Write as _;
+    let mut encoder =
+        flate2::write::DeflateEncoder::new(Vec::new(), flate2::Compression::default());
+    // Writing into a vector does not fail.
+    let _ = encoder.write_all(data);
+    encoder.finish().map_or(data.len(), |out| out.len()) as u64
+}
+
+/// The delta that goes into a mod instead of the resource `mine`, changed
+/// from `base`: the document, or why the resource stays whole.
+///
+/// The rule of the build: a resource goes as a delta when
+/// [`delta::exact`] gives one — applying it to `base` gives `mine` byte for
+/// byte — **and** the document takes less room in the mod file than the
+/// resource would (both deflated, as the payloads of a mod are). A document
+/// that takes more says the mod rewrites most of the resource: little of
+/// the base is left for another mod to merge with, and the mod file would
+/// only grow. The sizes are compared as they are stored because a document
+/// is text: written as operations, an object takes two to three times its
+/// bytes in the group, and about as many once both are deflated.
+pub fn delta_for(
+    type_id: u32,
+    base: &[u8],
+    mine: &[u8],
+) -> std::result::Result<Vec<u8>, KeptWhole> {
+    match delta::exact(type_id, base, mine) {
+        Ok(Some(document)) => {
+            let (delta, resource) = (stored_size(&document), stored_size(mine));
+            match delta < resource {
+                true => Ok(document),
+                false => Err(KeptWhole::NotSmaller { delta, resource }),
+            }
+        }
+        Ok(None) => Err(KeptWhole::NotExact),
+        Err(error) => Err(KeptWhole::Unreadable(error.to_string())),
+    }
+}
+
+/// A mod made of the changes of a workspace: all of them, or those in
+/// `keys`. A replaced resource of a kind that has deltas
+/// ([`delta::kind_of`]) goes as a delta ([`delta_for`]) from the data its
+/// change was made on — the data of a dependency
+/// ([`Relations::made_on_data`]), else the game's original — unless
+/// `info.whole_resources`; a mod without a delta is what it was before
+/// deltas, byte for byte.
+pub fn mod_from_workspace(
+    ws: &Workspace,
+    info: &ModInfo,
+    keys: Option<&[ResourceKey]>,
+) -> Result<BuiltMod> {
     let mut manifest = ModManifest::new(info, ModGame::from_fingerprint(&ws.manifest().game));
     manifest.set_relations(&info.relations);
     if let Some(keys) = keys {
@@ -1078,19 +1399,58 @@ pub fn manifest_from_workspace(
         ws.changes()
             .filter(|c| keys.is_none_or(|keys| keys.contains(&c.key)))
     };
-    manifest.resources = selected()
-        .map(|c| ModResource {
+    let mut deltas = HashMap::new();
+    let mut kept_whole = Vec::new();
+    let mut stale = Vec::new();
+    for c in selected() {
+        let made_on = match &c.added {
+            None => info.relations.made_on.get(&c.key),
+            Some(_) => None,
+        };
+        // The edit was made on other data than the mod is built on.
+        if c.added.is_none() && c.made_on() != made_on.unwrap_or(&c.original) {
+            stale.push(c.key.clone());
+        }
+        let mut resource = ModResource {
             key: c.key.clone(),
             payload: c.payload.clone(),
-            original: match (&c.added, info.relations.made_on.get(&c.key)) {
-                (None, Some(base)) => base.clone(),
-                _ => c.original.clone(),
-            },
+            original: made_on.unwrap_or(&c.original).clone(),
             storage: c.storage,
             label: c.label.chars().take(MAX_NAME).collect(),
             added: c.added.clone(),
-        })
-        .collect();
+            delta: None,
+        };
+        if let Some(kind) = delta::kind_of(c.key.type_id)
+            && c.added.is_none()
+            && !info.whole_resources
+        {
+            // What the change was made on: the data of a dependency, else
+            // the game's own.
+            let base = match (made_on, info.relations.made_on_data.get(&c.key)) {
+                (Some(_), Some(data)) => Some(data.clone()),
+                (Some(_), None) => None,
+                (None, _) => Some(ws.store().get(&c.original)?),
+            };
+            let made = match &base {
+                Some(base) => delta_for(c.key.type_id, base, &ws.store().get(&c.payload)?),
+                None => Err(KeptWhole::NoBase),
+            };
+            match (made, base) {
+                (Ok(document), Some(base)) => {
+                    resource.payload = Blob::of(&document);
+                    resource.original = Blob::of(&base);
+                    resource.delta = Some(ModDelta {
+                        kind,
+                        format: delta::FORMAT,
+                    });
+                    deltas.insert(resource.payload.sha256.clone(), document);
+                }
+                (Err(why), _) => kept_whole.push((c.key.clone(), why)),
+                (Ok(_), None) => {}
+            }
+        }
+        manifest.resources.push(resource);
+    }
     // Every new stream of the workspace, or those the selected resources go into.
     manifest.streams = ws
         .new_streams()
@@ -1139,7 +1499,12 @@ pub fn manifest_from_workspace(
     .custom;
     manifest.format_version = manifest.required_version();
     manifest.validate()?;
-    Ok(manifest)
+    Ok(BuiltMod {
+        manifest,
+        deltas,
+        kept_whole,
+        stale,
+    })
 }
 
 /// What a mod built from a workspace needs of the mods the mod manager has
@@ -1148,16 +1513,32 @@ pub fn manifest_from_workspace(
 pub struct Suggested {
     /// id → `>=its version` (`*` for a version that is no version number).
     pub depends: BTreeMap<String, String>,
-    /// For each replaced resource such a mod changes: its data, which the
-    /// change was made on, and the id of the mod.
-    pub made_on: BTreeMap<ResourceKey, (Blob, String)>,
+    /// For each replaced resource such mods change: the data they give it,
+    /// which the change was made on.
+    pub made_on: BTreeMap<ResourceKey, MadeOn>,
+}
+
+/// The data other mods give a resource a workspace changes
+/// ([`Suggested::made_on`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MadeOn {
+    pub blob: Blob,
+    /// The ids of the mods whose data it is, in load order: one mod that
+    /// replaces the resource whole, or the mods whose deltas are folded
+    /// into it.
+    pub mods: Vec<String>,
+    /// The data itself, of a resource of a kind that has deltas: the build
+    /// writes the difference to it.
+    pub data: Option<Vec<u8>>,
 }
 
 /// The dependencies of a mod built from the changes of `ws` (all, or those
 /// in `keys`) on the mods the mod manager has written into the game: a mod
 /// is one when a change replaces a resource it changes (the editor shows
 /// the game with the mod, so the change is made on the mod's data) or goes
-/// into a stream it creates. The mod `own_id` itself is left out.
+/// into a stream it creates. The mod `own_id` itself is left out: the
+/// resources are taken as the other mods give them, without the state of
+/// this mod that is installed.
 pub fn suggested_dependencies(
     game: &GameInstance,
     ws: &Workspace,
@@ -1170,7 +1551,9 @@ pub fn suggested_dependencies(
     if written.is_empty() {
         return Ok(out);
     }
-    let plan = manager.plan();
+    let plan = manager.folded_plan(game, fold::Want::Data, |m| {
+        m.enabled && m.problem.is_none() && m.id != own_id
+    })?;
     let streams = manager.plan_streams();
     let mut found: Vec<usize> = Vec::new();
     for change in ws
@@ -1185,14 +1568,25 @@ pub fn suggested_dependencies(
         {
             found.push(*index);
         }
-        if let Some((planned, index)) = plan.get(&change.key)
-            && manager.mods()[*index].id != own_id
-        {
-            found.push(*index);
+        if let Some((planned, index)) = plan.changes.get(&change.key) {
+            // Every mod whose delta is in the data, or the one mod that
+            // gives it whole.
+            let mods = match plan.folded.get(&change.key) {
+                Some(mods) => mods.clone(),
+                None => vec![*index],
+            };
+            found.extend(&mods);
             if change.added.is_none() {
-                let id = manager.mods()[*index].id.clone();
-                out.made_on
-                    .insert(change.key.clone(), (planned.payload.clone(), id));
+                let data = match delta::kind_of(change.key.type_id) {
+                    Some(_) => Some(manager.planned_data(&plan, &change.key)?),
+                    None => None,
+                };
+                let made_on = MadeOn {
+                    blob: planned.payload.clone(),
+                    mods: mods.iter().map(|i| manager.mods()[*i].id.clone()).collect(),
+                    data,
+                };
+                out.made_on.insert(change.key.clone(), made_on);
             }
         }
     }
@@ -1203,6 +1597,71 @@ pub fn suggested_dependencies(
             |v| version::Condition::at_least(&v).to_string(),
         );
         out.depends.insert(m.id.clone(), condition);
+    }
+    Ok(out)
+}
+
+/// The folder of a workspace as the registry of the mod manager names it
+/// ([`manager::InstalledMod::workspace`]).
+pub(crate) fn workspace_folder(ws: &Workspace) -> PathBuf {
+    let dir = ws.dir();
+    std::fs::canonicalize(dir)
+        .or_else(|_| std::path::absolute(dir))
+        .unwrap_or_else(|_| dir.to_owned())
+}
+
+/// What the game gives the replaced resources of `ws` without the
+/// workspace's own mods, where the files of the game hold such a mod. A mod
+/// is the workspace's own when it was installed from this workspace
+/// ([`manager::InstalledMod::workspace`]) or has one of the ids `own_ids`
+/// (the id of the project the workspace belongs to): an author installs
+/// the workspace as a mod and writes the mods to see it in the game, and
+/// keeps editing. The file then holds the installed state of the
+/// workspace's own change, which is not what the change stands on, so the
+/// data is what the other enabled mods give the resource (their fold, as
+/// [`suggested_dependencies`] takes it), else the game's original. Empty
+/// when no such mod is enabled or nothing of it can be in the game.
+///
+/// For [`Workspace::stale_given`] and [`Workspace::rebase_given`].
+pub fn game_without_mod(
+    game: &GameInstance,
+    ws: &Workspace,
+    own_ids: &[&str],
+) -> Result<crate::workspace::Given> {
+    let mut out = crate::workspace::Given::new();
+    if !mods_dir(game.root()).is_dir() {
+        return Ok(out);
+    }
+    let manager = ModManager::open(game)?;
+    let folder = workspace_folder(ws);
+    let is_own = |m: &manager::InstalledMod| {
+        own_ids.contains(&m.id.as_str()) || m.workspace.as_deref() == Some(folder.as_path())
+    };
+    let written = manager.written_streams();
+    let keys: std::collections::BTreeSet<&ResourceKey> = manager
+        .mods()
+        .iter()
+        .filter(|m| m.enabled && m.problem.is_none() && is_own(m))
+        .flat_map(|m| m.manifest.replaced())
+        .map(|r| &r.key)
+        .filter(|key| written.contains(key.stream.as_str()))
+        .filter(|key| ws.change(key).is_some_and(|c| c.added.is_none()))
+        .collect();
+    if keys.is_empty() {
+        return Ok(out);
+    }
+    let plan = manager.folded_plan(game, fold::Want::Data, |m| {
+        m.enabled && m.problem.is_none() && !is_own(m)
+    })?;
+    let mut originals = manager.originals(game);
+    for key in keys {
+        let data = match plan.changes.contains_key(key) {
+            true => Some(manager.planned_data(&plan, key)?),
+            false => originals.data(key)?,
+        };
+        if let Some(data) = data {
+            out.insert(key.clone(), data);
+        }
     }
     Ok(out)
 }
@@ -1228,12 +1687,68 @@ pub fn add_suggested_dependencies(
             added.push(id);
         }
     }
-    for (key, (blob, id)) in suggested.made_on {
-        if info.relations.depends.contains_key(&id) {
-            info.relations.made_on.insert(key, blob);
+    for (key, made_on) in suggested.made_on {
+        let depends = &info.relations.depends;
+        if made_on.mods.iter().all(|id| depends.contains_key(id)) {
+            if let Some(data) = made_on.data {
+                info.relations.made_on_data.insert(key.clone(), data);
+            }
+            info.relations.made_on.insert(key, made_on.blob);
         }
     }
     Ok(added)
+}
+
+/// Records the data of the dependencies `info` names that the changes of
+/// `ws` (all, or those in `keys`) replace ([`Relations::made_on`]), and adds
+/// no dependency: for a mod whose dependencies are known — a project with a
+/// base (`crate::project::base`). The data is what the mod manager checks a
+/// patch on top of mods against (`ModManager::check_mods`): for each
+/// replaced resource, what the enabled dependencies (also indirect ones)
+/// give it — the payload of the last one that changes or adds it whole,
+/// with the deltas of those above it folded in. Whether a dependency is
+/// written into the game does not matter — the mod depends on it either
+/// way, and is checked against it wherever it is installed. Returns how
+/// many resources were made on a dependency.
+pub fn add_made_on(
+    info: &mut ModInfo,
+    game: &GameInstance,
+    manager: &ModManager,
+    ws: &Workspace,
+    keys: Option<&[ResourceKey]>,
+) -> Result<usize> {
+    let mut needed: HashSet<String> = HashSet::new();
+    for id in info.relations.depends.keys() {
+        needed.extend(manager.dependencies(id));
+        needed.insert(id.clone());
+    }
+    needed.remove(&info.id);
+    // As the manager gives the resources of those mods: a resource a
+    // dependency changes by a delta is the fold of the deltas, not the
+    // document of the last one (stage 110).
+    let plan = manager.folded_plan(game, fold::Want::Data, |m| {
+        m.enabled && m.problem.is_none() && needed.contains(&m.id)
+    })?;
+    let mut count = 0;
+    for change in ws
+        .changes()
+        .filter(|c| c.added.is_none() && keys.is_none_or(|keys| keys.contains(&c.key)))
+    {
+        let Some((planned, _)) = plan.changes.get(&change.key) else {
+            continue;
+        };
+        // The data itself, for a resource whose change can be a delta: the
+        // build writes the difference to it.
+        if delta::kind_of(change.key.type_id).is_some() {
+            let data = manager.planned_data(&plan, &change.key)?;
+            info.relations.made_on_data.insert(change.key.clone(), data);
+        }
+        info.relations
+            .made_on
+            .insert(change.key.clone(), planned.payload.clone());
+        count += 1;
+    }
+    Ok(count)
 }
 
 /// A preview picture for a mod being built.
@@ -1286,8 +1801,36 @@ pub struct BuildReport {
     pub file_size: u64,
     /// Modules of executable code.
     pub native_modules: usize,
-    /// What the author should know about the mod ([`whole_sound_notes`]).
+    /// Resources that went as deltas (format version 6): the operations
+    /// instead of the resource, which merge with other mods.
+    pub deltas: usize,
+    /// Resources of the kinds that have deltas, the deltas among them and
+    /// those that stay whole.
+    pub delta_kinds: usize,
+    /// What the author should know about the mod ([`BuiltMod::stale_note`]
+    /// first, [`whole_sound_notes`], [`BuiltMod::delta_notes`]).
     pub notes: Vec<String>,
+    /// Changes made on other data than the mod is built on
+    /// ([`BuiltMod::stale`]): the mod takes back what the mods below
+    /// changed since. Told in [`Self::notes`] as well.
+    pub stale: Vec<ResourceKey>,
+}
+
+/// Reads the payload `data` of the resource `resource` of a mod as the
+/// delta its manifest says it is. A mod file comes from a stranger: a
+/// payload that is no such document is refused when the mod is read, not
+/// when it is written into the game.
+pub(crate) fn read_delta(resource: &ModResource, data: &[u8]) -> Result<delta::Delta> {
+    let key = &resource.key;
+    let document = delta::Delta::parse(data)
+        .map_err(|e| Error::mod_error(format!("{key}: the delta of the mod does not read: {e}")))?;
+    match &resource.delta {
+        Some(named) if named.kind == document.kind() => Ok(document),
+        _ => Err(Error::mod_error(format!(
+            "{key}: the payload is a {} delta, which is not what mod.json says",
+            document.kind()
+        ))),
+    }
 }
 
 /// A sound of the archives from this size on is worth a note when a mod
@@ -1330,13 +1873,17 @@ pub fn build_from_workspace(
     preview: Option<&Preview>,
     out: &Path,
 ) -> Result<BuildReport> {
-    let mut manifest = manifest_from_workspace(ws, info, keys)?;
-    manifest.preview = preview.map(|p| p.name.clone());
-    manifest.validate()?;
+    let mut built = mod_from_workspace(ws, info, keys)?;
+    built.manifest.preview = preview.map(|p| p.name.clone());
+    built.manifest.validate()?;
+    let manifest = &built.manifest;
     let file_size =
-        package::write_package(out, &manifest, preview.map(|p| p.data.as_slice()), |blob| {
-            built_payload(ws, info, blob)
+        package::write_package(out, manifest, preview.map(|p| p.data.as_slice()), |blob| {
+            built.payload(ws, info, blob)
         })?;
+    let mut notes: Vec<String> = built.stale_note().into_iter().collect();
+    notes.extend(whole_sound_notes(ws, manifest));
+    notes.extend(built.delta_notes());
     Ok(BuildReport {
         format_version: manifest.format_version,
         resources: manifest.resources.len(),
@@ -1345,7 +1892,13 @@ pub fn build_from_workspace(
         payload_bytes: manifest.payload_bytes(),
         file_size,
         native_modules: manifest.native.as_ref().map_or(0, |n| n.modules.len()),
-        notes: whole_sound_notes(ws, &manifest),
+        deltas: manifest.deltas().count(),
+        delta_kinds: manifest
+            .replaced()
+            .filter(|r| delta::kind_of(r.key.type_id).is_some())
+            .count(),
+        notes,
+        stale: built.stale.clone(),
     })
 }
 

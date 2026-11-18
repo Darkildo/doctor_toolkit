@@ -117,9 +117,11 @@ impl Server {
 
     #[tool(
         description = "Make a mod project in a folder of the output folder (--output-dir) from \
-                       streams of the game, or from the resources the workspace changes: every \
-                       resource becomes a source file under src/, equal resources of several streams \
-                       go to shared/ once. Nothing in the game or the workspace changes.",
+                       streams of the game, or from what the workspace changes (the resources it \
+                       replaces and adds, the streams it creates): every resource becomes a source \
+                       file under src/, equal resources of several streams go to shared/ once. \
+                       Without streams and without from_workspace: an empty project with a \
+                       workspace of its own. Nothing in the game or the workspace changes.",
         annotations(
             read_only_hint = false,
             destructive_hint = false,
@@ -396,7 +398,9 @@ impl Server {
     #[tool(
         description = "Write the workspace's version of out-of-sync entries into the source files of \
                        the project (--project), so that the project follows edits made by other \
-                       tools. The workspace does not change.",
+                       tools; with sources, also write source files for everything the project's \
+                       own workspace holds and no entry has yet (added resources, new streams). \
+                       The workspace does not change.",
         annotations(
             read_only_hint = false,
             destructive_hint = false,
@@ -430,6 +434,29 @@ impl Server {
         params: Parameters<tools::files::RevertParams>,
     ) -> Result<CallToolResult, ErrorData> {
         self.run("revert", move |k| tools::files::revert(k, params.0))
+            .await
+    }
+
+    #[tool(
+        description = "Rebase the changes made on other data than the game gives now: a mod \
+                       under them was updated, or the mods of the game are others since the \
+                       edits, and a mod built of them would take back what changed. SimGroups, \
+                       string tables, the parts database and the world grid are merged by their \
+                       operations (those left out are listed by object or string); any other \
+                       resource needs `keep` (yours stays) or `take_base` (the game's data). \
+                       `check` only lists them. One undoable operation with its diff.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
+    )]
+    async fn rebase(
+        &self,
+        params: Parameters<tools::files::RebaseParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.run("rebase", move |k| tools::files::rebase(k, params.0))
             .await
     }
 

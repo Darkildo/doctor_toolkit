@@ -31,6 +31,7 @@ fn info(id: &str, version: &str, code: NativeBuild) -> ModInfo {
             native: Some(code),
             ..Relations::none()
         },
+        whole_resources: false,
     }
 }
 

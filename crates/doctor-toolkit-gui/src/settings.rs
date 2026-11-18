@@ -14,7 +14,9 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
+use doctor_toolkit::level::ZoneSet;
 use doctor_toolkit::play::PlayConfig;
+use doctor_toolkit::project::EditorCamera;
 use serde::{Deserialize, Serialize};
 
 /// Games remembered in File → Recent games.
@@ -42,6 +44,12 @@ pub struct Settings {
     pub last_resource: Option<String>,
     /// Most recent first.
     pub recent_games: Vec<PathBuf>,
+    /// Folders of the projects opened as the document (stage 106), most
+    /// recent first.
+    pub recent_projects: Vec<PathBuf>,
+    /// The project that was open last; `None` when the game was open
+    /// without one.
+    pub last_project: Option<PathBuf>,
     pub window: Window,
     pub external_editors: ExternalEditors,
     pub export_dirs: ExportDirs,
@@ -54,7 +62,7 @@ pub struct Settings {
 }
 
 /// Settings of one game.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct GameSettings {
     /// How Play starts the game, and whether it applies and reverts the workspace.
@@ -66,6 +74,18 @@ pub struct GameSettings {
     /// X server of its own, on Windows its window inside the editor's. The
     /// size of its screen is `play.start.resolution` (1280×720 by default).
     pub in_tab: bool,
+    /// Sets of zones saved in the level editor while no project is open
+    /// (stage 113); a project keeps its own in `project.toml`.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub zone_sets: Vec<ZoneSet>,
+    /// The zones the level editor loaded last without a project: stream
+    /// names or `preset:<id>` (`doctor_toolkit::level::presets`). The level
+    /// tab opens with them.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub last_zones: Vec<String>,
+    /// Where the camera stood over them.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_camera: Option<EditorCamera>,
 }
 
 impl Default for GameSettings {
@@ -74,6 +94,9 @@ impl Default for GameSettings {
             play: PlayConfig::default(),
             skip_first_run: false,
             in_tab: in_tab_by_default(),
+            zone_sets: Vec::new(),
+            last_zones: Vec::new(),
+            last_camera: None,
         }
     }
 }
@@ -97,6 +120,8 @@ impl Default for Settings {
             last_stream: None,
             last_resource: None,
             recent_games: Vec::new(),
+            recent_projects: Vec::new(),
+            last_project: None,
             window: Window::default(),
             external_editors: ExternalEditors::default(),
             export_dirs: ExportDirs::default(),
@@ -271,6 +296,15 @@ impl Settings {
         }
         self.last_game = Some(dir.to_owned());
     }
+
+    /// Puts the project in `dir` first in the recent projects and makes it
+    /// the last project.
+    pub fn add_recent_project(&mut self, dir: &Path) {
+        self.recent_projects.retain(|d| d != dir);
+        self.recent_projects.insert(0, dir.to_owned());
+        self.recent_projects.truncate(RECENT_LIMIT);
+        self.last_project = Some(dir.to_owned());
+    }
 }
 
 /// Writes `bytes` to `path` through a temporary file in the same folder.
@@ -374,6 +408,16 @@ mod tests {
         };
         game.play.apply_before = true;
         game.skip_first_run = true;
+        game.zone_sets = vec![ZoneSet {
+            name: "the yard".into(),
+            streams: vec!["gf2/town".into(), "gf2/town/yard".into()],
+        }];
+        game.last_zones = vec!["preset:gf2/town".into()];
+        game.last_camera = Some(EditorCamera {
+            eye: [1.0, 2.5, -3.0],
+            yaw: 0.5,
+            pitch: -0.25,
+        });
         settings.game_mut(Path::new("/games/b")).play.method =
             doctor_toolkit::play::LaunchMethod::Steam { app_id: 24830 };
         settings.save(&path).unwrap();

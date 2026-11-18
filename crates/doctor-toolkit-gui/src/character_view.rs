@@ -15,7 +15,7 @@
 use std::collections::BTreeMap;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use doctor_toolkit::character::{Character, MeshLocator, parse_selection};
@@ -124,6 +124,8 @@ pub struct CharacterView {
     extra: Extra,
     /// What the workspace adds was read into `extra`.
     workspace_read: bool,
+    /// The folder of the editor's workspace (`None`: it has none yet).
+    workspace_dir: Option<PathBuf>,
 }
 
 impl CharacterView {
@@ -135,6 +137,7 @@ impl CharacterView {
         type_id: u32,
         data: &[u8],
         gpu: Option<&Gpu>,
+        workspace_dir: Option<&Path>,
     ) -> Option<Self> {
         if type_id != TYPE_PARTSDB {
             return None;
@@ -143,6 +146,7 @@ impl CharacterView {
         let mut view = Self {
             gpu: gpu.cloned(),
             root: game.root().to_owned(),
+            workspace_dir: workspace_dir.map(Path::to_owned),
             game: None,
             stream,
             db,
@@ -238,7 +242,7 @@ impl CharacterView {
         if self.meshes.is_none() {
             self.meshes = Some(MeshLocator::new(&index));
         }
-        self.read_workspace(&game);
+        self.read_workspace();
         let character = Character::load_with(
             &game,
             self.meshes.as_ref().expect("built above"),
@@ -305,15 +309,17 @@ impl CharacterView {
     /// to streams of the game are drawn as if they were written (those of
     /// new streams are in the staged game already). What a preview gave
     /// stays in front.
-    fn read_workspace(&mut self, game: &GameInstance) {
+    fn read_workspace(&mut self) {
         if std::mem::replace(&mut self.workspace_read, true) {
             return;
         }
-        let dir = doctor_toolkit::workspace::Workspace::default_dir(game.root());
-        if !doctor_toolkit::workspace::Workspace::exists(&dir) {
+        let Some(dir) = &self.workspace_dir else {
+            return;
+        };
+        if !doctor_toolkit::workspace::Workspace::exists(dir) {
             return;
         }
-        let Ok(ws) = doctor_toolkit::workspace::Workspace::open_read_only(&dir) else {
+        let Ok(ws) = doctor_toolkit::workspace::Workspace::open_read_only(dir) else {
             return;
         };
         let added = doctor_toolkit::character::WorkspaceAssets::of(&ws);
@@ -1035,6 +1041,7 @@ fn load_view(
         source.type_id,
         &data,
         source.gpu,
+        source.workspace.map(|ws| ws.dir()),
     )?;
     Some(Box::new(view))
 }

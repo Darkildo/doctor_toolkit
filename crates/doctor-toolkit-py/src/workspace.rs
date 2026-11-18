@@ -140,7 +140,8 @@ pub fn report_dict<'py>(py: Python<'py>, report: &ApplyReport) -> PyResult<Bound
     Ok(dict)
 }
 
-/// Mod metadata from keyword arguments, with the CLI's defaults.
+/// Mod metadata from keyword arguments, with the CLI's defaults. Without
+/// `deltas` every resource stays whole (`ModInfo::whole_resources`).
 pub fn mod_info(
     name: &str,
     id: Option<String>,
@@ -148,6 +149,7 @@ pub fn mod_info(
     author: &str,
     description: &str,
     url: Option<String>,
+    deltas: bool,
 ) -> ModInfo {
     ModInfo {
         id: id.unwrap_or_else(|| mods::id_from_name(name)),
@@ -157,10 +159,18 @@ pub fn mod_info(
         description: description.to_owned(),
         url,
         relations: Default::default(),
+        whole_resources: !deltas,
     }
 }
 
 /// Keys of the changes matching `keys` (exact keys or parts of keys); all when `None`.
+/// The project whose own workspace `workspace` is: its changes are
+/// compared with the game without the project's own mod.
+fn rebase_project(workspace: &ws::Workspace) -> Option<doctor_toolkit::project::Project> {
+    let root = doctor_toolkit::project::project_of_workspace(workspace.dir())?;
+    doctor_toolkit::project::Project::open(root).ok()
+}
+
 pub fn match_keys(
     workspace: &ws::Workspace,
     keys: Option<Vec<String>>,
@@ -831,6 +841,105 @@ impl Workspace {
         self.ws.revert_all().py()
     }
 
+    /// The changes made on other data than the game gives now: a mod under
+    /// them was updated, or the mods of the game are others since the edits
+    /// (a mod built of such changes takes back what changed). Dicts `key`,
+    /// `kind` (`simgroup`, `lh2`, `partsdb`, `wgi`: rebased by its
+    /// operations; `None`: kept or given up), `made_on_sha256`, `now_sha256`.
+    fn stale<'py>(&self, py: Python<'py>) -> PyResult<Vec<Bound<'py, PyDict>>> {
+        let (game, workspace) = (&self.game, &self.ws);
+        let stale = py
+            .detach(|| match rebase_project(workspace) {
+                Some(project) => project.stale(game, workspace),
+                None => workspace.stale(game),
+            })
+            .py()?;
+        stale
+            .iter()
+            .map(|s| {
+                let dict = PyDict::new(py);
+                dict.set_item("key", s.key.to_string())?;
+                dict.set_item("kind", s.kind.map(|kind| kind.name()))?;
+                dict.set_item("made_on_sha256", &s.made_on.sha256)?;
+                dict.set_item("now_sha256", &s.now.sha256)?;
+                Ok(dict)
+            })
+            .collect()
+    }
+
+    /// Moves the stale changes (`stale()`) onto the data the game gives
+    /// now, as one undoable operation: those of `only` (exact keys or parts
+    /// of keys; all when `None`) are merged by their operations, those of
+    /// `keep` stay as they are, those of `take_base` are removed. Returns a
+    /// dict: `recorded` and `changes` — dicts `key`, `outcome` (`rebased`,
+    /// `kept`, `taken`, `undecided`, `not_stale`), and for a rebased one
+    /// `applied`, `skipped` and `conflicts` (lists of texts that name the
+    /// object or string), `removed`; for an undecided one `reason`.
+    #[pyo3(signature = (only = None, keep = None, take_base = None))]
+    fn rebase<'py>(
+        &mut self,
+        py: Python<'py>,
+        only: Option<Vec<String>>,
+        keep: Option<Vec<String>>,
+        take_base: Option<Vec<String>>,
+    ) -> PyResult<Bound<'py, PyDict>> {
+        let only = match_keys(&self.ws, only)?;
+        let keep = match_keys(&self.ws, keep)?.unwrap_or_default();
+        let take_base = match_keys(&self.ws, take_base)?.unwrap_or_default();
+        let (game, workspace) = (&self.game, &mut self.ws);
+        let report = py
+            .detach(|| {
+                let request = ws::RebaseRequest {
+                    keys: only.as_deref(),
+                    keep: &keep,
+                    take_base: &take_base,
+                };
+                match rebase_project(workspace) {
+                    Some(project) => project.rebase(game, workspace, &request),
+                    None => workspace.rebase_with(game, &request),
+                }
+            })
+            .py()?;
+        let changes = report
+            .changes
+            .iter()
+            .map(|c| {
+                let dict = PyDict::new(py);
+                dict.set_item("key", c.key.to_string())?;
+                let outcome = match &c.outcome {
+                    ws::RebaseOutcome::Merged {
+                        applied,
+                        skipped,
+                        conflicts,
+                        removed,
+                    } => {
+                        let texts = |notes: &[doctor_toolkit::resource::delta::Note]| {
+                            notes.iter().map(ToString::to_string).collect::<Vec<_>>()
+                        };
+                        dict.set_item("applied", applied)?;
+                        dict.set_item("skipped", texts(skipped))?;
+                        dict.set_item("conflicts", texts(conflicts))?;
+                        dict.set_item("removed", removed)?;
+                        "rebased"
+                    }
+                    ws::RebaseOutcome::Kept => "kept",
+                    ws::RebaseOutcome::Taken => "taken",
+                    ws::RebaseOutcome::Undecided { reason } => {
+                        dict.set_item("reason", reason)?;
+                        "undecided"
+                    }
+                    ws::RebaseOutcome::NotStale => "not_stale",
+                };
+                dict.set_item("outcome", outcome)?;
+                Ok(dict)
+            })
+            .collect::<PyResult<Vec<_>>>()?;
+        let dict = PyDict::new(py);
+        dict.set_item("recorded", report.seq.is_some())?;
+        dict.set_item("changes", changes)?;
+        Ok(dict)
+    }
+
     /// Undoes the last operation; returns its label, or `None` when there is nothing to undo.
     fn undo(&mut self) -> PyResult<Option<String>> {
         self.ws.undo().py()
@@ -1014,9 +1123,14 @@ impl Workspace {
     /// Builds a mod (`.zip`) from the changes (all, or those matching `keys`)
     /// and writes it to `out`. `id` defaults to one made from `name`;
     /// `preview` is a PNG or JPEG picture. Added resources and new streams
-    /// go into the mod too (format version 2). Returns `resources`, `added`,
-    /// `new_streams`, `payload_bytes`, `file_size`.
-    #[pyo3(signature = (out, name, *, id = None, version = "1.0", author = "", description = "", url = None, keys = None, preview = None))]
+    /// go into the mod too (format version 2). A changed SimGroup, string
+    /// table, parts database or world grid goes as a delta — the operations
+    /// that make the change, which the mod manager merges with other mods
+    /// (format version 6) — unless `deltas` is false, which keeps every
+    /// resource whole for older mod managers. Returns `resources`, `added`,
+    /// `new_streams`, `deltas` (resources stored as deltas),
+    /// `format_version`, `payload_bytes`, `file_size`, `notes`.
+    #[pyo3(signature = (out, name, *, id = None, version = "1.0", author = "", description = "", url = None, keys = None, preview = None, deltas = true))]
     #[allow(clippy::too_many_arguments)]
     fn build_mod<'py>(
         &self,
@@ -1030,8 +1144,9 @@ impl Workspace {
         url: Option<String>,
         keys: Option<Vec<String>>,
         preview: Option<Vec<u8>>,
+        deltas: bool,
     ) -> PyResult<Bound<'py, PyDict>> {
-        let info = mod_info(name, id, version, author, description, url);
+        let info = mod_info(name, id, version, author, description, url, deltas);
         let keys = match_keys(&self.ws, keys)?;
         let preview = preview.map(Preview::from_image).transpose().py()?;
         let workspace = &self.ws;
@@ -1051,8 +1166,11 @@ impl Workspace {
         dict.set_item("resources", report.resources)?;
         dict.set_item("added", report.added)?;
         dict.set_item("new_streams", report.new_streams)?;
+        dict.set_item("deltas", report.deltas)?;
+        dict.set_item("format_version", report.format_version)?;
         dict.set_item("payload_bytes", report.payload_bytes)?;
         dict.set_item("file_size", report.file_size)?;
+        dict.set_item("notes", &report.notes)?;
         Ok(dict)
     }
 

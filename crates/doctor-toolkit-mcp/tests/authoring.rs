@@ -537,8 +537,18 @@ async fn a_project_is_made_and_pulled() {
         )
         .await;
     assert!(error && text.contains("not empty"), "{text}");
-    let (text, error) = c.call("project_new", json!({ "folder": "p2" })).await;
-    assert!(error && text.contains("streams"), "{text}");
+    // Types choose among resources of streams or of the workspace.
+    let (text, error) = c
+        .call("project_new", json!({ "folder": "p2", "types": ["lh2"] }))
+        .await;
+    assert!(error && text.contains("empty"), "{text}");
+    let (text, error) = c
+        .call(
+            "project_new",
+            json!({ "folder": "p2", "streams": [TEXT], "from_workspace": true }),
+        )
+        .await;
+    assert!(error && text.contains("not both"), "{text}");
     // Without --project there is nothing to pull into.
     let (text, error) = c.call("project_pull", json!({})).await;
     assert!(error && text.contains("--project"), "{text}");
@@ -554,6 +564,82 @@ async fn a_project_is_made_and_pulled() {
         .await;
     let pulled = c.json("project_pull", json!({})).await;
     assert_eq!(pulled["pulled"].as_array().unwrap().len(), 1, "{pulled}");
+    // The project names the workspace of this server as its own: sources
+    // are written for what no entry has (the string of the other table).
+    let written = c.json("project_pull", json!({ "sources": true })).await;
+    assert_eq!(
+        written["added"],
+        json!(["src/gf2/level.str/lh2/00000009.json"]),
+        "{written}"
+    );
+}
+
+/// Stage 112: without streams and without the workspace `project_new` makes
+/// an empty project with its own workspace; a server of that project edits
+/// the workspace, and `project_pull` with `sources` writes what it holds —
+/// a resource it adds too — as files of the project.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_empty_project_gets_the_sources_of_its_workspace() {
+    let f = fixture();
+    let mut c = start(&f, true).await;
+    let made = c
+        .json(
+            "project_new",
+            json!({ "folder": "doc", "name": "Yard Mod" }),
+        )
+        .await;
+    let root = PathBuf::from(made["project"].as_str().unwrap());
+    assert_eq!(made["id"], "yard-mod", "{made}");
+    assert_eq!(made["entries"], 0, "{made}");
+    let workspace = PathBuf::from(made["workspace"].as_str().unwrap());
+    assert_eq!(workspace, root.join("workspace"));
+    let project = doctor_toolkit::project::Project::open(&root).unwrap();
+    assert!(project.has_own_workspace() && project.entries().count() == 0);
+    assert!(!root.join("src").exists() && !workspace.exists());
+
+    // A server of the project: its edits go into the project's workspace.
+    let mut config = configured(&f, true);
+    config.project = Some(root.clone());
+    config.workspace = None;
+    let mut c = Client::start(doctor_toolkit_mcp::open(&config).unwrap());
+    c.initialize().await;
+    c.json("edit_string", json!({ "entry": "0x1", "text": "Maybe" }))
+        .await;
+    let raw = f.out.join("sparks.bin");
+    std::fs::write(&raw, b"sparks").unwrap();
+    let added = c
+        .json(
+            "add_resource",
+            json!({ "stream": LEVEL, "type": "vfx", "file": raw, "ids": "00005601" }),
+        )
+        .await;
+    assert_eq!(added["changed"], true, "{added}");
+    assert!(workspace.join("manifest.json").is_file());
+    let (text, error) = c
+        .call("project_pull", json!({ "sources": true, "only": ["src"] }))
+        .await;
+    assert!(error && text.contains("only"), "{text}");
+    let written = c.json("project_pull", json!({ "sources": true })).await;
+    let ids: Vec<&str> = written["added"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap())
+        .collect();
+    assert!(
+        ids.contains(&"src/gf2/level.str/vfx/00005601.bin") && ids.len() == 3,
+        "{written}"
+    );
+    assert_eq!(
+        std::fs::read(root.join("src/gf2/level.str/vfx/00005601.bin")).unwrap(),
+        b"sparks"
+    );
+    let manifest = std::fs::read_to_string(root.join("src/gf2/level.str/stream.toml")).unwrap();
+    assert!(manifest.contains("[[resource.added]]"), "{manifest}");
+    let again = c.json("project_pull", json!({ "sources": true })).await;
+    assert_eq!(again["added"], json!([]), "{again}");
+    let status = c.json("project_status", json!({})).await;
+    assert_eq!(status["counts"]["to_build"], 0, "{status}");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -627,6 +713,122 @@ async fn the_original_game_files_come_back() {
 // ------------------------------------------------------------ 104-D
 
 /// A fixture with the stream of sound, animation and interface data.
+/// Stage 111: something else — a mod — changes the game under the edits
+/// of the workspace. `rebase` lists the stale changes, merges the string
+/// table by its operations, leaves the mesh for a decision, and takes the
+/// two decisions; every call is one operation `undo` takes back.
+#[tokio::test(flavor = "multi_thread")]
+async fn stale_changes_are_rebased_kept_or_given_up() {
+    use doctor_toolkit::container::ustream::{Replacement, Storage};
+    use doctor_toolkit::resource::lh2::StringTable;
+    use doctor_toolkit::testing::{MESH, STRINGS};
+
+    let f = fixture();
+    let game = GameInstance::open(&f.game).unwrap();
+    let level = game.find_stream(LEVEL).unwrap();
+    let table_of = |data: &[u8]| StringTable::parse(data).unwrap();
+    // A write that leaves a backup, as the mod manager makes one.
+    let game_gets = |word: &str, mesh: u8| {
+        let original = GameInstance::open(&f.game).unwrap();
+        let file = original.open_stream(level).unwrap();
+        let mut table = table_of(&file.resource_data(STRINGS).unwrap());
+        drop(file);
+        table.strings[0][0] = word.into();
+        let (strings, mesh) = (table.to_bytes().unwrap(), vec![mesh; 40]);
+        let replacements = [
+            Replacement {
+                index: STRINGS,
+                data: &strings,
+                storage: Storage::Raw,
+            },
+            Replacement {
+                index: MESH,
+                data: &mesh,
+                storage: Storage::RefPack,
+            },
+        ];
+        game.replace_resources(level, &replacements, Default::default())
+            .unwrap();
+    };
+    game_gets("City", 2);
+    // The edits, made on the game with the mod.
+    let mut ws = Workspace::create(&f.workspace, &game).unwrap();
+    let mut table = table_of(&ws.current_data(&game, level, STRINGS).unwrap());
+    assert_eq!(table.strings[0][0], "City");
+    table.strings[0][1] = "Mine".into();
+    ws.set_string_table(&game, level, STRINGS, &table).unwrap();
+    ws.set_resource(&game, level, MESH, vec![3; 30], "my mesh")
+        .unwrap();
+    drop(ws);
+
+    let mut c = start(&f, true).await;
+    let none = c.json("rebase", json!({ "check": true })).await;
+    assert_eq!(none["count"], 0, "{none}");
+    let nothing = c.json("rebase", json!({})).await;
+    assert_eq!(nothing["changed"], false, "{nothing}");
+
+    // The mod is updated.
+    game_gets("Town", 5);
+    let listed = c.json("rebase", json!({ "check": true })).await;
+    assert_eq!(listed["count"], 2, "{listed}");
+    let kinds: Vec<&Value> = listed["stale"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| &s["merged_by"])
+        .collect();
+    assert!(
+        kinds.contains(&&json!("lh2")) && kinds.contains(&&Value::Null),
+        "{listed}"
+    );
+    assert_eq!(Workspace::open_read_only(&f.workspace).unwrap().head(), 2);
+
+    let rebased = c.json("rebase", json!({})).await;
+    assert_eq!(rebased["changed"], true, "{rebased}");
+    assert_eq!(rebased["done"]["needs_a_decision"], 1, "{rebased}");
+    let outcome = |answer: &Value, part: &str| -> Value {
+        answer["done"]["changes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|c| c["key"].as_str().unwrap().contains(part))
+            .unwrap_or_else(|| panic!("{answer}"))
+            .clone()
+    };
+    assert_eq!(outcome(&rebased, "lh2")["outcome"], "rebased", "{rebased}");
+    assert_eq!(outcome(&rebased, "lh2")["applied"], 1);
+    assert_eq!(outcome(&rebased, "mesh")["outcome"], "needs a decision");
+    let (game, ws) = workspace(&f);
+    let table = table_of(&ws.current_data(&game, level, STRINGS).unwrap());
+    assert_eq!(table.strings[0], ["Town", "Mine"]);
+    assert_eq!(ws.head(), 3, "one operation");
+    drop(ws);
+
+    // Keep mine, then the other way after an undo.
+    let kept = c.json("rebase", json!({ "keep": ["mesh"] })).await;
+    assert_eq!(outcome(&kept, "mesh")["outcome"], "kept", "{kept}");
+    let clean = c.json("rebase", json!({ "check": true })).await;
+    assert_eq!(clean["count"], 0, "{clean}");
+    c.json("undo", json!({})).await;
+    let taken = c.json("rebase", json!({ "take_base": ["mesh"] })).await;
+    assert_eq!(
+        outcome(&taken, "mesh")["outcome"],
+        "taken from the game",
+        "{taken}"
+    );
+    let (game, ws) = workspace(&f);
+    assert_eq!(ws.len(), 1);
+    assert_eq!(ws.current_data(&game, level, MESH).unwrap(), [5; 40]);
+
+    for bad in [
+        json!({ "check": true, "keep": ["mesh"] }),
+        json!({ "keep": ["nothing-like-this"] }),
+    ] {
+        let (text, error) = c.call("rebase", bad).await;
+        assert!(error, "{text}");
+    }
+}
+
 fn sound_fixture() -> Fixture {
     let f = fixture();
     testing::write_sound_stream(&f.game).unwrap();

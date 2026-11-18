@@ -30,6 +30,9 @@ pub struct RelationsForm {
     pub native: String,
     /// The mod makes no sense without its code.
     pub native_required: bool,
+    /// Every resource whole: no deltas (format version 6), for the mod
+    /// managers before that version (`ModInfo::whole_resources`).
+    pub whole_resources: bool,
 }
 
 /// `id condition` lines.
@@ -90,6 +93,7 @@ impl RelationsForm {
             editions,
             requires_manager,
             made_on: Default::default(),
+            made_on_data: Default::default(),
             native: self.native(),
         }
     }
@@ -211,6 +215,11 @@ impl RelationsForm {
                     ui.checkbox(&mut self.native_required, tr("mods.field_native_required"));
                 });
                 ui.end_row();
+                ui.label(tr("mods.field_deltas"))
+                    .on_hover_text(tr("mods.field_deltas_hint"));
+                ui.checkbox(&mut self.whole_resources, tr("mods.field_whole_resources"))
+                    .on_hover_text(tr("mods.field_deltas_hint"));
+                ui.end_row();
             });
     }
 }
@@ -225,6 +234,9 @@ pub(crate) struct BuildForm {
     pub url: String,
     pub preview: Option<PathBuf>,
     pub relations: RelationsForm,
+    /// The dependencies typed are all the mod has (those of the base of
+    /// the editor's open project, stage 108): none is added by a guess.
+    pub dependencies_named: bool,
 }
 
 impl Default for BuildForm {
@@ -238,6 +250,7 @@ impl Default for BuildForm {
             url: String::new(),
             preview: None,
             relations: RelationsForm::default(),
+            dependencies_named: false,
         }
     }
 }
@@ -261,14 +274,23 @@ impl BuildForm {
             description: self.description.clone(),
             url: Some(self.url.trim().to_owned()).filter(|u| !u.is_empty()),
             relations: self.relations.relations(),
+            whole_resources: self.relations.whole_resources,
         }
     }
 
     /// [`Self::info`] with the dependencies on the mods written into the
-    /// game that the changes were made on.
+    /// game that the changes were made on — or, when the dependencies are
+    /// those of a project's base, with no more than the data of those mods
+    /// the changes replace.
     fn info_for(&self, game: Option<&GameInstance>, ws: &Workspace) -> Result<ModInfo, String> {
         let mut info = self.info();
-        if let Some(game) = game {
+        let Some(game) = game else {
+            return Ok(info);
+        };
+        if self.dependencies_named {
+            let manager = mods::ModManager::open(game).map_err(|e| e.to_string())?;
+            mods::add_made_on(&mut info, game, &manager, ws, None).map_err(|e| e.to_string())?;
+        } else {
             mods::add_suggested_dependencies(&mut info, game, ws, None)
                 .map_err(|e| e.to_string())?;
         }
@@ -429,8 +451,16 @@ impl ModsPanel {
                 ("kib", &(report.file_size / 1024)),
             ],
         );
+        if report.delta_kinds > 0 && !info.whole_resources {
+            message.push('\n');
+            message.push_str(&trf(
+                "mods.built_deltas",
+                &[("deltas", &report.deltas), ("of", &report.delta_kinds)],
+            ));
+        }
         // What the author should know about the mod's size (a whole sound
-        // for a retimed subtitle): the library's text, as its errors are.
+        // for a retimed subtitle) and about the resources that could not be
+        // changes: the library's text, as its errors are.
         for note in &report.notes {
             message.push('\n');
             message.push_str(note);
@@ -461,7 +491,7 @@ impl ModsPanel {
             .install_workspace(&game, ws, &info, None)
             .map_err(|e| trf("mods.cannot_install_workspace", &[("error", &e)]))?;
         self.selected = Some(report.id.clone());
-        Ok(trf(
+        let mut message = trf(
             "mods.installed_workspace",
             &[
                 ("name", &report.name),
@@ -470,7 +500,14 @@ impl ModsPanel {
                     &trn("count.resources", report.resources as u64, &[]),
                 ),
             ],
-        ))
+        );
+        // A mod of edits made on other data than it is built on takes back
+        // what the mods below changed since: said, in the library's words.
+        for warning in &report.warnings {
+            message.push('\n');
+            message.push_str(warning);
+        }
+        Ok(message)
     }
 }
 

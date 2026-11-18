@@ -35,6 +35,18 @@ pub struct Built {
     pub outputs: Outputs,
 }
 
+/// A stream the project creates, as the last build or export left it in
+/// the workspace.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BuiltStream {
+    pub stream: String,
+    /// Digest of its description in `stream.toml` at that time
+    /// ([`super::manifest::NewStreamSource::digest`]): a description that
+    /// differs was changed by hand and is not built yet.
+    #[serde(default)]
+    pub described: String,
+}
+
 /// Size and time of a source file and its SHA-256.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FileStamp {
@@ -54,6 +66,11 @@ pub struct BuildCache {
     /// Source files (path from the project root) → stamp and hash.
     #[serde(default)]
     pub files: BTreeMap<String, FileStamp>,
+    /// Folders of streams the project creates (path from the project root)
+    /// → the stream, as the last build or export left them in the
+    /// workspace. A folder that is gone names a stream to remove.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub streams: BTreeMap<String, BuiltStream>,
 }
 
 impl BuildCache {

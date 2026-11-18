@@ -237,6 +237,7 @@ fn enabled_mods_of_format_2_are_staged() {
         description: String::new(),
         url: None,
         relations: Default::default(),
+        whole_resources: false,
     };
     crate::mods::build_from_workspace(&ws, &info, None, None, &package).unwrap();
     let mut mods = ModManager::open(&game).unwrap();
@@ -519,6 +520,7 @@ fn enabled_mods_are_staged_as_resource_patches() {
         description: String::new(),
         url: None,
         relations: Default::default(),
+        whole_resources: false,
     };
     crate::mods::build_from_workspace(&ws, &info, None, None, &package).unwrap();
     let mut mods = ModManager::open(&game).unwrap();
@@ -627,4 +629,436 @@ fn a_patch_for_a_stream_written_earlier_names_its_original() {
         read_by_game(root, &overlay, "gf2/level.toc").unwrap(),
         fs::read(written.path().join("gf2/level.toc")).unwrap()
     );
+}
+
+/// Every file below `dir`, links too.
+fn everything_below(dir: &Path) -> Vec<std::path::PathBuf> {
+    let mut out = Vec::new();
+    for entry in fs::read_dir(dir).unwrap() {
+        let path = entry.unwrap().path();
+        if fs::symlink_metadata(&path).unwrap().is_dir() {
+            out.extend(everything_below(&path));
+        } else {
+            out.push(path);
+        }
+    }
+    out
+}
+
+/// The words of the string table that is resource `index` of the stream
+/// file `data`.
+fn words_of(data: &[u8], index: usize) -> Vec<String> {
+    let (_, table) = resources_of(data).swap_remove(index);
+    crate::resource::lh2::StringTable::parse(&table)
+        .unwrap()
+        .strings
+        .swap_remove(0)
+}
+
+/// Sets word `row` of the string table that is resource `index` of
+/// `stream`, as the editor does: in the table as `ws` has it, else as it is
+/// in the game files (with the mods written there).
+fn set_word(
+    ws: &mut Workspace,
+    game: &GameInstance,
+    stream: &str,
+    index: usize,
+    row: usize,
+    word: &str,
+) {
+    use crate::workspace::tests::{game_data, key};
+    let shown = ws
+        .data(&key(game, stream, index))
+        .unwrap()
+        .unwrap_or_else(|| game_data(game, stream, index));
+    let mut table = crate::resource::lh2::StringTable::parse(&shown).unwrap();
+    table.strings[0][row] = word.into();
+    let at = game.find_stream(stream).unwrap();
+    ws.set_string_table(game, at, index, &table).unwrap();
+}
+
+/// Stage 107: a project is staged as the last mod of the game's mod
+/// manager. With a mod written into the game files — where the project's
+/// workspace by itself is refused — the game reads both: the mod's word
+/// and the project's word in the table both change, and the project's own
+/// table. The game folder, the registry of the mod manager and its record
+/// of what is written stay byte for byte; so does the project.
+#[test]
+fn a_project_is_staged_on_top_of_the_mods_written_into_the_game() {
+    use crate::project::{NewDocument, create_document};
+    use crate::testing::{LEVEL, STRINGS, TEXT, write_game, write_town};
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("game");
+    fs::create_dir_all(&root).unwrap();
+    write_game(&root).unwrap();
+    write_town(&root).unwrap();
+    let game = GameInstance::open(&root).unwrap();
+
+    // The base mod, made in a workspace of its own and written into the game.
+    let mut base = Workspace::for_game(&game, Some(&temp.path().join("base"))).unwrap();
+    set_word(&mut base, &game, TEXT, 0, 0, "Base");
+    let package = temp.path().join("base.zip");
+    let info = crate::mods::ModInfo {
+        id: "base".into(),
+        name: "Base".into(),
+        version: "1.2".into(),
+        ..Default::default()
+    };
+    crate::mods::build_from_workspace(&base, &info, None, None, &package).unwrap();
+    let mut mods = ModManager::open(&game).unwrap();
+    mods.install_file(&game, &package, true).unwrap();
+    mods.apply(&game, ModApplyOptions::default()).unwrap();
+    let game = GameInstance::open(&root).unwrap();
+
+    // The project, edited on the game as it is with the mod.
+    let at = temp.path().join("My Mod");
+    let project = create_document(
+        &game,
+        &at,
+        &NewDocument {
+            name: "My Mod".into(),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let mut ws = project.workspace(&game).unwrap();
+    set_word(&mut ws, &game, TEXT, 0, 1, "Mine");
+    set_word(&mut ws, &game, LEVEL, STRINGS, 0, "Project");
+    let ws_dir = at.join("workspace");
+    assert_eq!(
+        Source::of_workspace(ws_dir.clone()),
+        Source::Project(at.clone())
+    );
+    assert_eq!(
+        Source::of_workspace(Workspace::default_dir(&root)),
+        Source::Workspace(Workspace::default_dir(&root))
+    );
+    let before = everything(&root);
+    let project_before = everything(&at);
+
+    // What installing the project and writing the mods would give, on a copy.
+    let written = tempfile::tempdir().unwrap();
+    copy_dir(&root, written.path());
+    let copy = GameInstance::open(written.path()).unwrap();
+    let mut copy_mods = ModManager::open(&copy).unwrap();
+    project
+        .install_into(&copy, &mut copy_mods, &ws, Default::default())
+        .unwrap();
+    copy_mods.apply(&copy, ModApplyOptions::default()).unwrap();
+    assert_eq!(
+        copy_mods
+            .mods()
+            .iter()
+            .map(|m| m.id.as_str())
+            .collect::<Vec<_>>(),
+        ["base", "my-mod"]
+    );
+    // It was made on the mod's data: it needs the mod and wins as a patch.
+    let installed = copy_mods.get("my-mod").unwrap();
+    assert!(installed.enabled);
+    assert_eq!(installed.manifest.version, "1.0");
+    assert!(installed.manifest.depends.contains_key("base"));
+
+    // The workspace by itself is not staged: a project's is not written,
+    // and the mods are in the game.
+    let alone = Overlay::build(
+        &game,
+        Some(&Source::Workspace(ws_dir.clone())),
+        None,
+        &temp.path().join("alone"),
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(alone.contains("a project's own"), "{alone}");
+
+    for streams in [Streams::Rebuilt, Streams::Patched] {
+        let overlay = Overlay::build_with(
+            &game,
+            Some(&Source::Project(at.clone())),
+            None,
+            &temp.path().join("o"),
+            streams,
+        )
+        .unwrap();
+        // The project's data is not copied for the launch: the payloads
+        // of its staged mod are links to the files of its workspace.
+        let staged_mod = overlay.dir().join("game/_doctor_toolkit/mods/my-mod");
+        assert!(staged_mod.join("mod.json").is_file());
+        let payloads = everything_below(&staged_mod.join("payloads"));
+        assert_eq!(payloads.len(), 2, "{payloads:?}");
+        for payload in payloads {
+            let link = fs::read_link(&payload).unwrap();
+            assert!(link.starts_with(&ws_dir), "{}", link.display());
+        }
+        // Nothing of the game changed, the mod manager's files neither.
+        assert!(
+            everything(&root) == before,
+            "{streams:?}: the game folder changed"
+        );
+        assert!(
+            everything(&at) == project_before,
+            "{streams:?}: the project changed"
+        );
+        let text = read_by_game(&root, &overlay, "gf2/text/abcd.str").unwrap();
+        assert_eq!(words_of(&text, 0), ["Base", "Mine"], "{streams:?}");
+        let level = read_by_game(&root, &overlay, "gf2/level.str").unwrap();
+        assert_eq!(words_of(&level, STRINGS)[0], "Project", "{streams:?}");
+        for (rel, data) in everything(written.path()) {
+            if rel.starts_with("_doctor_toolkit") {
+                continue;
+            }
+            let read = read_by_game(&root, &overlay, &rel).unwrap_or_else(|| panic!("{rel}"));
+            if rel.ends_with(".str") {
+                assert!(
+                    resources_of(&read) == resources_of(&data),
+                    "{streams:?}: {rel}"
+                );
+            } else {
+                assert!(read == data, "{streams:?}: {rel}");
+            }
+        }
+        overlay.remove().unwrap();
+    }
+    // The game's mod manager knows nothing of the project.
+    let mods = ModManager::open(&game).unwrap();
+    assert!(mods.get("my-mod").is_none());
+    assert_eq!(mods.mods().len(), 1);
+
+    // The mod alone, as before.
+    let overlay = Overlay::build(&game, Some(&Source::Mods), None, &temp.path().join("o")).unwrap();
+    assert!(
+        overlay.redirects().is_empty(),
+        "the mods are in the game already"
+    );
+    assert!(everything(&root) == before);
+}
+
+/// Stage 110: the staged mod manager folds the deltas of the mods. Two mods
+/// that add a crate each to one SimGroup, enabled and not written into the
+/// game: the game reads a yard with both. A project on top of them is
+/// staged as a delta too, and the yard has all three. The game folder,
+/// with the mod manager's files and its folds, stays byte for byte.
+#[test]
+fn the_staged_mods_and_a_project_are_folded() {
+    use crate::mods::fold::tests::{add_crate, edit_group, guid, has, info, town, yard_mod};
+    use crate::project::{NewDocument, create_document};
+    use crate::resource::simgroup::SimGroup;
+    use crate::testing::{YARD, YARD_SIMGROUP};
+    use crate::workspace::tests::game_data;
+    let (dir, game) = town();
+    let root = dir.path();
+    let temp = tempfile::tempdir().unwrap();
+    let mut mods = ModManager::open(&game).unwrap();
+    for (id, n) in [("a", 21), ("b", 22)] {
+        let path = yard_mod(&game, temp.path(), &info(id, "1.0"), |g| add_crate(g, n));
+        mods.install_file(&game, &path, true).unwrap();
+    }
+    let yard_of = |overlay: &Overlay| {
+        let file = read_by_game(root, overlay, "gf2/town/yard.str").unwrap();
+        let (_, data) = resources_of(&file).swap_remove(YARD_SIMGROUP);
+        SimGroup::parse(&data).unwrap()
+    };
+    let before = everything(root);
+    for streams in [Streams::Rebuilt, Streams::Patched] {
+        let overlay = Overlay::build_with(
+            &game,
+            Some(&Source::Mods),
+            None,
+            &temp.path().join("o"),
+            streams,
+        )
+        .unwrap();
+        let yard = yard_of(&overlay);
+        assert!(has(&yard, 21) && has(&yard, 22), "{streams:?}");
+        assert_eq!(yard.objects.len(), 15, "{streams:?}");
+        // The folds are the staged copy's: the game has none.
+        assert!(
+            overlay
+                .dir()
+                .join("game/_doctor_toolkit/mods/.folded/index.json")
+                .is_file()
+        );
+        assert!(
+            everything(root) == before,
+            "{streams:?}: the game folder changed"
+        );
+        overlay.remove().unwrap();
+    }
+
+    // Written into the game, the mods leave their folds there; a staged
+    // copy then links to them and computes nothing anew.
+    mods.apply(&game, ModApplyOptions::default()).unwrap();
+    let game = GameInstance::open(root).unwrap();
+    let written = everything(root);
+    let overlay = Overlay::build(&game, Some(&Source::Mods), None, &temp.path().join("o")).unwrap();
+    assert!(
+        overlay.redirects().is_empty(),
+        "the mods are in the game already"
+    );
+    let index = overlay
+        .dir()
+        .join("game/_doctor_toolkit/mods/.folded/index.json");
+    assert!(
+        fs::symlink_metadata(&index)
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+    overlay.remove().unwrap();
+    assert!(everything(root) == written);
+
+    // A project made on the game with both mods in it.
+    let at = temp.path().join("My Mod");
+    let project = create_document(
+        &game,
+        &at,
+        &NewDocument {
+            name: "My Mod".into(),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let mut ws = project.workspace(&game).unwrap();
+    let mine = edit_group(&game_data(&game, YARD, YARD_SIMGROUP), |g| add_crate(g, 60));
+    let yard = game.find_stream(YARD).unwrap();
+    ws.set_resources(&game, "crate", yard, &[edit(YARD_SIMGROUP, mine)])
+        .unwrap();
+    drop(ws);
+    let project_before = everything(&at);
+    for streams in [Streams::Rebuilt, Streams::Patched] {
+        let overlay = Overlay::build_with(
+            &game,
+            Some(&Source::Project(at.clone())),
+            None,
+            &temp.path().join("o"),
+            streams,
+        )
+        .unwrap();
+        // The project is staged as a delta on what the two mods give.
+        let staged = overlay
+            .dir()
+            .join("game/_doctor_toolkit/mods/my-mod/mod.json");
+        let manifest = crate::mods::ModManifest::parse(&fs::read(staged).unwrap()).unwrap();
+        assert_eq!(manifest.deltas().count(), 1, "{streams:?}");
+        assert_eq!(
+            manifest.depends.keys().collect::<Vec<_>>(),
+            ["a", "b"],
+            "{streams:?}"
+        );
+        let yard = yard_of(&overlay);
+        assert!(
+            has(&yard, 21) && has(&yard, 22) && has(&yard, 60),
+            "{streams:?}"
+        );
+        assert_eq!(yard.objects.len(), 16, "{streams:?}");
+        assert!(yard.objects[15].guid == guid(60), "{streams:?}");
+        assert!(
+            everything(root) == written,
+            "{streams:?}: the game folder changed"
+        );
+        assert!(
+            everything(&at) == project_before,
+            "{streams:?}: the project changed"
+        );
+        overlay.remove().unwrap();
+    }
+}
+
+/// A project that is installed into the game's mods and written is played
+/// as it is now: the staged manager replaces the installed state. A project
+/// without changes is no mod, and its installed state is switched off for
+/// the launch. A replaced movie, which a mod does not carry, is staged as
+/// a file. The game folder stays as it is every time.
+#[test]
+fn the_installed_state_of_a_project_is_replaced_for_the_launch() {
+    use crate::project::{NewDocument, create_document};
+    use crate::testing::{TEXT, write_game};
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("game");
+    fs::create_dir_all(root.join("movies")).unwrap();
+    write_game(&root).unwrap();
+    fs::write(root.join("movies/intro.vp6"), b"MVhd old").unwrap();
+    let game = GameInstance::open(&root).unwrap();
+    let at = temp.path().join("p");
+    let project = create_document(
+        &game,
+        &at,
+        &NewDocument {
+            name: "P".into(),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let build = |name: &str| {
+        Overlay::build(
+            &game,
+            Some(&Source::Project(at.clone())),
+            None,
+            &temp.path().join(name),
+        )
+        .unwrap()
+    };
+
+    // Nothing edited yet, no mods: nothing is staged, no folder is made.
+    let before = everything(&root);
+    assert!(build("o").redirects().is_empty());
+    assert!(everything(&root) == before);
+    assert!(!root.join("_doctor_toolkit").exists());
+
+    // Installed into Mods and written into the game.
+    let mut ws = project.workspace(&game).unwrap();
+    set_word(&mut ws, &game, TEXT, 0, 0, "One");
+    let mut mods = ModManager::open(&game).unwrap();
+    project
+        .install_into(&game, &mut mods, &ws, Default::default())
+        .unwrap();
+    mods.apply(&game, ModApplyOptions::default()).unwrap();
+    let game = GameInstance::open(&root).unwrap();
+    assert_eq!(
+        words_of(&fs::read(root.join("gf2/text/abcd.str")).unwrap(), 0)[0],
+        "One"
+    );
+
+    // Edited further, and a movie replaced.
+    let mut ws = project.workspace(&game).unwrap();
+    set_word(&mut ws, &game, TEXT, 0, 1, "Two");
+    ws.set_file(
+        &game,
+        &FileKey::loose("movies/intro.vp6"),
+        b"MVhd new".to_vec(),
+        "movie",
+    )
+    .unwrap();
+    let before = everything(&root);
+    let overlay = build("o");
+    assert!(everything(&root) == before);
+    let text = seen_by_game(&root, overlay.redirects(), "gf2/text/abcd.str").unwrap();
+    assert_eq!(words_of(&text, 0), ["One", "Two"]);
+    assert_eq!(
+        seen_by_game(&root, overlay.redirects(), "movies/intro.vp6").unwrap(),
+        b"MVhd new"
+    );
+    overlay.remove().unwrap();
+
+    // Every edit taken back: the launch shows the game without the project,
+    // though its installed state is still written in the game files.
+    ws.revert_all().unwrap();
+    let overlay = build("o");
+    assert!(everything(&root) == before);
+    let text = seen_by_game(&root, overlay.redirects(), "gf2/text/abcd.str").unwrap();
+    assert_eq!(words_of(&text, 0), ["Yes", "No"]);
+    assert!(ModManager::open(&game).unwrap().get("p").unwrap().enabled);
+
+    // While another program changes the mods, they are not staged.
+    let held = RegistryLock::acquire(&crate::mods::mods_dir(&root), "open-mod-manager").unwrap();
+    let error = Overlay::build(
+        &game,
+        Some(&Source::Project(at.clone())),
+        None,
+        &temp.path().join("busy"),
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(error.contains("changed by open-mod-manager"), "{error}");
+    drop(held);
 }

@@ -37,8 +37,19 @@
 //! compatibility is ignored. Installing and enabling put a mod in the
 //! nearest place its rules allow; [`ModManager::sort`] sorts the whole list
 //! ([`super::order`]).
+//!
+//! Mods of format version 6 may change a resource by a delta instead of
+//! replacing it. The data of such a resource is the game's original, or the
+//! last whole resource an enabled mod gives it, with the deltas of the
+//! enabled mods above applied in load order ([`super::fold`]): the mods
+//! merge. A whole resource above a delta still replaces it — that is the
+//! conflict it always was; two deltas that set one attribute of one object
+//! are a conflict by element ([`Conflict::elements`]), which the later mod
+//! wins. An operation whose target is gone is left out and said
+//! ([`Problem::OperationsSkipped`]); a delta that adds an element another
+//! mod has added stops the later mod ([`Problem::DeltaRefused`]).
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -47,6 +58,8 @@ use std::sync::OnceLock;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
+use super::fold::{Entry, FoldCache, KeyFold, Originals, Outcome, Step, Want};
+use super::lock::{self, RegistryLock};
 use super::native::{self, NativeBlock, NativeHost, NativeReport};
 use super::order::{self, Rule, Strength};
 use super::package::ModArchive;
@@ -60,11 +73,11 @@ use crate::game::{GameInstance, StreamFile};
 use crate::toc::Toc;
 use crate::workspace::{
     ApplyReport, Blob, Change, DeployStatus, Deployment, FileChange, FileKey, GameFingerprint,
-    NewStream, PayloadStore, ResourceKey, SyncProgress, Workspace, files,
+    NewStream, PayloadStore, ResourceKey, StreamState, SyncProgress, Workspace, files,
 };
 use crate::{Error, Result};
 
-const REGISTRY_FILE: &str = "registry.json";
+pub(super) const REGISTRY_FILE: &str = "registry.json";
 const APPLIED_FILE: &str = "applied.json";
 const REGISTRY_FORMAT: &str = "doctor-toolkit-mods";
 const REGISTRY_VERSION: u32 = 1;
@@ -98,6 +111,10 @@ struct RegistryEntry {
     /// File name the mod was installed from.
     #[serde(default)]
     source: String,
+    /// The folder of the workspace the mod was installed from
+    /// ([`InstalledMod::workspace`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    workspace: Option<PathBuf>,
 }
 
 /// An installed mod.
@@ -109,6 +126,13 @@ pub struct InstalledMod {
     pub installed: u64,
     /// File name the mod was installed from.
     pub source: String,
+    /// The folder of the workspace the mod was installed from
+    /// ([`ModManager::install_workspace`]), on this computer: the mod is
+    /// that workspace's own. Written into the game, it is in the files the
+    /// workspace's edits are compared with, and it is not what they stand
+    /// on (`super::game_without_mod`, stage 111). `None` for a mod
+    /// installed from a file.
+    pub workspace: Option<PathBuf>,
     pub manifest: ModManifest,
     /// Why the mod cannot be used, e.g. a damaged `mod.json`. Such a mod can
     /// only be uninstalled.
@@ -224,6 +248,28 @@ pub enum Problem {
     /// (`required`). With `required` the mod cannot be applied; without, its
     /// data is written and this is only said.
     Native { block: NativeBlock, required: bool },
+    /// The delta of the resource (format version 6) cannot be applied: it
+    /// adds an element that is there already — an object GUID, a string
+    /// hash, the name of a part or a variant, the cell of a stream that a
+    /// mod below, or the game, has — or the document, or the data it
+    /// applies to, does not read. Addresses are unique, so the later mod
+    /// cannot be written.
+    DeltaRefused { error: String },
+    /// Operations of the delta were left out because what they change is
+    /// not there: a mod below removed the object, or the game is another
+    /// edition. The other `applied` operations are written. Only said.
+    OperationsSkipped {
+        /// Each as `<what it addresses>: <why>`.
+        skipped: Vec<String>,
+        applied: usize,
+    },
+    /// Operations of the delta set values that were not what the author of
+    /// the mod saw, and no mod below set them: the game's own data differs.
+    /// The mod's values are written. Only said.
+    ValuesDiffer {
+        /// Each as `<what it addresses>: <what was there>`.
+        elements: Vec<String>,
+    },
 }
 
 impl Problem {
@@ -240,6 +286,8 @@ impl Problem {
                 | Self::Edition { .. }
                 | Self::DependencyVersion { .. }
                 | Self::Recommended { .. }
+                | Self::OperationsSkipped { .. }
+                | Self::ValuesDiffer { .. }
         )
     }
 
@@ -247,7 +295,13 @@ impl Problem {
     pub fn is_notice(&self) -> bool {
         match self {
             Self::Native { .. } => !self.is_fatal(),
-            _ => matches!(self, Self::AnchorMissing { .. } | Self::Recommended { .. }),
+            _ => matches!(
+                self,
+                Self::AnchorMissing { .. }
+                    | Self::Recommended { .. }
+                    | Self::OperationsSkipped { .. }
+                    | Self::ValuesDiffer { .. }
+            ),
         }
     }
 
@@ -350,6 +404,22 @@ impl CompatIssue {
                 block,
                 required: false,
             } => format!("{}; only its data is written", block.describe()),
+            Problem::DeltaRefused { error } => format!(
+                "its changes cannot be merged into the resource ({error}); disable this mod or \
+                 the one that has added the same"
+            ),
+            Problem::OperationsSkipped { skipped, applied } => format!(
+                "{} of its {} change(s) are left out because what they change is not there; \
+                 the rest is written: {}",
+                skipped.len(),
+                skipped.len() + applied,
+                list_some(skipped)
+            ),
+            Problem::ValuesDiffer { elements } => format!(
+                "{} value(s) were not what the mod was made on; the mod's values are written: {}",
+                elements.len(),
+                list_some(elements)
+            ),
         };
         match self.subject {
             Subject::Mod => format!("{}: {what}", self.mod_id),
@@ -506,7 +576,8 @@ impl Clash {
     }
 }
 
-/// Two or more mods replacing the same resource.
+/// Two or more mods replacing the same resource, or setting the same
+/// elements of it by deltas.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Conflict {
     pub key: ResourceKey,
@@ -517,6 +588,11 @@ pub struct Conflict {
     /// Whether the winner depends on all the others: a patch on top of
     /// them, which is meant to win (format version 3).
     pub patch: bool,
+    /// Empty when the last mod replaces the resource whole. Otherwise the
+    /// mods merge (format version 6) and the conflict is only these
+    /// elements, which the delta of the last mod set over a value another
+    /// mod gave them: each as `<object and attribute>: <what was there>`.
+    pub elements: Vec<String>,
 }
 
 impl Conflict {
@@ -544,6 +620,64 @@ pub struct InstallReport {
     pub issues: Vec<CompatIssue>,
 }
 
+/// How the data of a workspace gets into the folder of the mod installed
+/// from it ([`ModManager::install_workspace_with`]). Either way a payload
+/// the installed state of the mod already has is taken from there (a hard
+/// link: the files are named by the hash of their contents and never
+/// rewritten), so installing a project again costs what changed.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Payloads {
+    /// Copied: the mod is whole without the workspace. For the mod manager
+    /// of the game.
+    #[default]
+    Copied,
+    /// Symbolic links to the payload files of the workspace: nothing is
+    /// copied, and the mod is good as long as the workspace keeps those
+    /// files. For the mod manager of a staged copy of the game
+    /// ([`crate::play::overlay`]), which lasts one launch — never for the
+    /// game's own.
+    Linked,
+}
+
+/// Gives the payload `blob` of a mod being installed the file `from` of
+/// another store instead of a copy of its data: a symbolic link to it
+/// (`symbolic`) or a second name of the same file. Whether it did; a
+/// failure (no such file, another size, another file system, no right to
+/// make links) leaves the payload to be copied.
+fn take_payload(from: &Path, to: &Path, blob: &Blob, symbolic: bool) -> bool {
+    if !fs::metadata(from).is_ok_and(|m| m.is_file() && m.len() == blob.size) {
+        return false;
+    }
+    if fs::symlink_metadata(to).is_ok() {
+        return true;
+    }
+    let Some(parent) = to.parent() else {
+        return false;
+    };
+    if fs::create_dir_all(parent).is_err() {
+        return false;
+    }
+    if !symbolic {
+        return fs::hard_link(from, to).is_ok();
+    }
+    let Ok(from) = std::path::absolute(from) else {
+        return false;
+    };
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(from, to).is_ok()
+    }
+    #[cfg(windows)]
+    {
+        std::os::windows::fs::symlink_file(from, to).is_ok()
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = from;
+        false
+    }
+}
+
 /// Options for [`ModManager::apply`].
 #[derive(Debug, Clone, Copy, Default)]
 pub struct ModApplyOptions {
@@ -567,6 +701,54 @@ pub struct ModManager {
     native_host_fixed: bool,
     /// What the last write or removal did with the code of the mods.
     native_report: NativeReport,
+    /// The lock of the folder while a change is being made ([`Self::changing`]).
+    lock: Option<RegistryLock>,
+    /// The files of the folder as this manager knows them.
+    seen: Seen,
+    /// The folds of the deltas of the mods ([`super::fold`]).
+    folds: FoldCache,
+}
+
+/// The combined changes of the enabled mods ([`ModManager::plan`]) with
+/// what folding the deltas told.
+#[derive(Debug, Clone, Default)]
+pub(super) struct FoldedPlan {
+    /// For each resource its change and the index of the last mod in it.
+    pub changes: BTreeMap<ResourceKey, (Change, usize)>,
+    /// The resources whose data is a fold, of no single mod: the indices of
+    /// the mods in it, in load order — the mod of the whole resource the
+    /// fold starts from, if one, and the mods whose deltas applied.
+    pub folded: BTreeMap<ResourceKey, Vec<usize>>,
+    /// The steps of the folds the plan stands on.
+    steps: HashSet<String>,
+}
+
+/// The entries of the mods for one resource, each with the index of its
+/// mod, in load order.
+type Chain<'a> = Vec<(usize, &'a ModResource)>;
+
+/// The registry and the record of what is written into the game as a mod
+/// manager read or last wrote them (the SHA-256 of each; `None`: no such
+/// file). When they are something else on disk, another program changed
+/// the mods, and what this manager has in memory is old.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct Seen {
+    registry: Option<String>,
+    applied: Option<String>,
+}
+
+impl Seen {
+    fn of(dir: &Path) -> Self {
+        let hash = |name: &str| {
+            fs::read(dir.join(name))
+                .ok()
+                .map(|data| crate::workspace::store::sha256_hex(&data))
+        };
+        Self {
+            registry: hash(REGISTRY_FILE),
+            applied: hash(APPLIED_FILE),
+        }
+    }
 }
 
 impl ModManager {
@@ -575,6 +757,27 @@ impl ModManager {
     pub fn open(game: &GameInstance) -> Result<Self> {
         let root = game.root().to_owned();
         let dir = mods_dir(&root);
+        // Before the files are read: a change in between is then found
+        // later, not missed.
+        let seen = Seen::of(&dir);
+        let (mods, deployment) = Self::read(&dir)?;
+        Ok(Self {
+            root,
+            folds: FoldCache::new(&dir),
+            dir,
+            mods,
+            deployment,
+            native_host: OnceLock::new(),
+            native_host_fixed: false,
+            native_report: NativeReport::default(),
+            lock: None,
+            seen,
+        })
+    }
+
+    /// The installed mods in load order and what is written into the game,
+    /// as the folder `dir` has them.
+    fn read(dir: &Path) -> Result<(Vec<InstalledMod>, Deployment)> {
         let registry_path = dir.join(REGISTRY_FILE);
         let registry = if registry_path.is_file() {
             let text = fs::read(&registry_path).map_err(|e| Error::io(&registry_path, e))?;
@@ -600,18 +803,61 @@ impl ModManager {
             if validate_id(&entry.id).is_err() || !seen.insert(entry.id.clone()) {
                 continue;
             }
-            mods.push(load_installed(&dir, entry));
+            mods.push(load_installed(dir, entry));
         }
         let deployment = Deployment::load(&dir.join(APPLIED_FILE))?;
-        Ok(Self {
-            root,
-            dir,
-            mods,
-            deployment,
-            native_host: OnceLock::new(),
-            native_host_fixed: false,
-            native_report: NativeReport::default(),
-        })
+        Ok((mods, deployment))
+    }
+
+    /// Reads the mods again when another program changed them since this
+    /// manager read or wrote them (it installed a mod, changed the order,
+    /// wrote into the game). Returns whether it did. A window that keeps a
+    /// manager calls this before it shows the mods; every change of the
+    /// manager does it by itself ([`Self::changing`]).
+    pub fn reload_if_changed(&mut self) -> Result<bool> {
+        let seen = Seen::of(&self.dir);
+        if seen == self.seen {
+            return Ok(false);
+        }
+        let (mods, deployment) = Self::read(&self.dir)?;
+        self.mods = mods;
+        self.deployment = deployment;
+        self.seen = seen;
+        self.forget_native_host();
+        self.folds.forget();
+        Ok(true)
+    }
+
+    /// Makes a change of the mods — of the registry, of a mod's folder, of
+    /// the game files — as the only program doing so ([`RegistryLock`]):
+    /// refused, with the holder named, while another program makes one. The
+    /// mods are read again first when another program changed them since
+    /// ([`Self::reload_if_changed`]), so that the change is made to what is
+    /// there now and loses nothing. A change made of other changes holds
+    /// the lock once.
+    fn changing<T>(&mut self, change: impl FnOnce(&mut Self) -> Result<T>) -> Result<T> {
+        if self.lock.is_some() {
+            return change(self);
+        }
+        self.lock = Some(RegistryLock::acquire(&self.dir, &lock::program_name())?);
+        let result = self.reload_if_changed().and_then(|_| change(self));
+        if result.is_ok() {
+            // Nobody else wrote meanwhile: the files are what this manager
+            // has. After a failure they are compared again by the next
+            // change, which reads them when a part was written.
+            self.seen = Seen::of(&self.dir);
+        }
+        self.lock = None;
+        result
+    }
+
+    /// The lock for a change that needs no more than `&self` (the saved
+    /// sets); nothing when a change of this manager holds it already.
+    fn hold(&self) -> Result<Option<RegistryLock>> {
+        match self.lock {
+            Some(_) => Ok(None),
+            None => RegistryLock::acquire(&self.dir, &lock::program_name()).map(Some),
+        }
     }
 
     /// The game and the files of the toolkit, as installing executable code
@@ -688,6 +934,7 @@ impl ModManager {
                     enabled: m.enabled,
                     installed: m.installed,
                     source: m.source.clone(),
+                    workspace: m.workspace.clone(),
                 })
                 .collect(),
         };
@@ -711,6 +958,16 @@ impl ModManager {
     /// and its enabled state; a new mod goes last, enabled when `enable`.
     /// The game is not changed until [`Self::apply`].
     pub fn install_file(
+        &mut self,
+        game: &GameInstance,
+        path: &Path,
+        enable: bool,
+    ) -> Result<InstallReport> {
+        self.changing(|manager| manager.install_file_locked(game, path, enable))
+    }
+
+    /// [`Self::install_file`], with the lock held.
+    fn install_file_locked(
         &mut self,
         game: &GameInstance,
         path: &Path,
@@ -764,12 +1021,58 @@ impl ModManager {
         info: &ModInfo,
         keys: Option<&[ResourceKey]>,
     ) -> Result<InstallReport> {
-        let manifest = super::manifest_from_workspace(ws, info, keys)?;
+        self.install_workspace_with(game, ws, info, keys, Payloads::Copied)
+    }
+
+    /// [`Self::install_workspace`], saying how the data gets into the
+    /// folder of the mod ([`Payloads`]).
+    pub fn install_workspace_with(
+        &mut self,
+        game: &GameInstance,
+        ws: &Workspace,
+        info: &ModInfo,
+        keys: Option<&[ResourceKey]>,
+        payloads: Payloads,
+    ) -> Result<InstallReport> {
+        self.changing(|manager| manager.install_workspace_locked(game, ws, info, keys, payloads))
+    }
+
+    /// [`Self::install_workspace_with`], with the lock held.
+    fn install_workspace_locked(
+        &mut self,
+        game: &GameInstance,
+        ws: &Workspace,
+        info: &ModInfo,
+        keys: Option<&[ResourceKey]>,
+        payloads: Payloads,
+    ) -> Result<InstallReport> {
+        let built = super::mod_from_workspace(ws, info, keys)?;
+        let manifest = built.manifest.clone();
         let staging = self.new_staging()?;
+        // The state of this mod installed before: what it has is not
+        // copied again.
+        let installed = self
+            .get(&manifest.id)
+            .filter(|m| m.problem.is_none())
+            .map(InstalledMod::store);
         let result = (|| {
             let store = PayloadStore::new(staging.join(PAYLOAD_DIR));
             for blob in manifest.payloads() {
-                let data = super::built_payload(ws, info, blob)?;
+                let to = store.path(&blob.sha256);
+                let sources = [
+                    (payloads == Payloads::Linked).then(|| (ws.store().path(&blob.sha256), true)),
+                    installed
+                        .as_ref()
+                        .map(|store| (store.path(&blob.sha256), false)),
+                ];
+                if sources
+                    .into_iter()
+                    .flatten()
+                    .any(|(from, symbolic)| take_payload(&from, &to, blob, symbolic))
+                {
+                    continue;
+                }
+                let data = built.payload(ws, info, blob)?;
                 store.put(&data)?;
             }
             write_manifest(&staging, &manifest)?;
@@ -780,17 +1083,15 @@ impl ModManager {
             return Err(error);
         }
         let id = manifest.id.clone();
-        let report = self.commit_staged(
-            game,
-            &staging,
-            manifest,
-            "workspace".into(),
-            Vec::new(),
-            true,
-        )?;
+        // Not silently: a mod of changes made on other data than it is
+        // built on takes back what the mods below changed since.
+        let warnings = built.stale_note().into_iter().collect();
+        let report =
+            self.commit_staged(game, &staging, manifest, "workspace".into(), warnings, true)?;
         let index = self.position(&id)?;
         let mut m = self.mods.remove(index);
         m.enabled = true;
+        m.workspace = Some(super::workspace_folder(ws));
         self.mods.push(m);
         self.place(&id);
         self.save_registry()?;
@@ -838,9 +1139,17 @@ impl ModManager {
             .flat_map(|n| &n.modules)
             .map(|m| (m.payload.sha256.as_str(), m.file.as_str()))
             .collect();
+        let deltas: HashMap<&str, &ModResource> = manifest
+            .deltas()
+            .map(|r| (r.payload.sha256.as_str(), r))
+            .collect();
         for blob in &blobs {
             // Checked against its hash by the archive.
             let data = archive.read_payload(blob)?;
+            if let Some(resource) = deltas.get(blob.sha256.as_str()) {
+                super::read_delta(resource, &data)
+                    .map_err(|e| Error::mod_error(format!("{}: {e}", path.display())))?;
+            }
             if let Some(file) = modules.get(blob.sha256.as_str()) {
                 native::check_module(&data).map_err(|why| {
                     Error::mod_error(format!("{}: native module `{file}`: {why}", path.display()))
@@ -916,6 +1225,7 @@ impl ModManager {
             enabled: existing.map_or(enable, |i| self.mods[i].enabled),
             installed: now(),
             source,
+            workspace: None,
             manifest,
             problem: None,
             dir: target,
@@ -961,6 +1271,11 @@ impl ModManager {
 
     /// Removes a mod. The game keeps its data until [`Self::apply`].
     pub fn uninstall(&mut self, id: &str) -> Result<()> {
+        self.changing(|manager| manager.uninstall_locked(id))
+    }
+
+    /// [`Self::uninstall`], with the lock held.
+    fn uninstall_locked(&mut self, id: &str) -> Result<()> {
         let index = self.position(id)?;
         let removed = self.mods.remove(index);
         self.save_registry()?;
@@ -976,6 +1291,11 @@ impl ModManager {
     /// mods that need a mod switched off are not switched off
     /// ([`Self::dependents`] lists them).
     pub fn set_enabled(&mut self, id: &str, enabled: bool) -> Result<()> {
+        self.changing(|manager| manager.set_enabled_locked(id, enabled))
+    }
+
+    /// [`Self::set_enabled`], with the lock held.
+    fn set_enabled_locked(&mut self, id: &str, enabled: bool) -> Result<()> {
         let index = self.position(id)?;
         if enabled && let Some(problem) = &self.mods[index].problem {
             return Err(Error::mod_error(format!(
@@ -992,6 +1312,11 @@ impl ModManager {
     /// Switches on mod `id` and every installed dependency of it that is
     /// off; returns the ids of those dependencies.
     pub fn enable_with_dependencies(&mut self, id: &str) -> Result<Vec<String>> {
+        self.changing(|manager| manager.enable_with_dependencies_locked(id))
+    }
+
+    /// [`Self::enable_with_dependencies`], with the lock held.
+    fn enable_with_dependencies_locked(&mut self, id: &str) -> Result<Vec<String>> {
         let deps = self.disabled_dependencies(id);
         for dep in &deps {
             self.set_enabled(dep, true)?;
@@ -1006,6 +1331,11 @@ impl ModManager {
     /// (`load_after`, `load_before`) the move breaks are returned as
     /// warnings.
     pub fn move_mod(&mut self, id: &str, position: usize) -> Result<Vec<String>> {
+        self.changing(|manager| manager.move_mod_locked(id, position))
+    }
+
+    /// [`Self::move_mod`], with the lock held.
+    fn move_mod_locked(&mut self, id: &str, position: usize) -> Result<Vec<String>> {
         self.position(id)?;
         let rules = self.rules();
         let ids: Vec<&str> = self.mods.iter().map(|m| m.id.as_str()).collect();
@@ -1061,6 +1391,15 @@ impl ModManager {
     /// order where the rules allow ([`order::sort`]); with `dry_run`, only
     /// tells what the order would be. A circle of dependencies is an error.
     pub fn sort(&mut self, dry_run: bool) -> Result<SortReport> {
+        if dry_run {
+            // Nothing is written.
+            return self.sort_locked(true);
+        }
+        self.changing(|manager| manager.sort_locked(false))
+    }
+
+    /// [`Self::sort`], with the lock held.
+    fn sort_locked(&mut self, dry_run: bool) -> Result<SortReport> {
         let rules = self.rules();
         let ids: Vec<&str> = self.mods.iter().map(|m| m.id.as_str()).collect();
         let sorted = order::sort(&ids, &rules).map_err(|cycle| {
@@ -1226,27 +1565,118 @@ impl ModManager {
 
     /// For each mod of `indices`, the data its enabled dependencies (also
     /// indirect ones) give each resource, applied in load order: what the
-    /// mod was made on instead of the game's original.
-    fn dependency_bases(&self, indices: &[usize]) -> HashMap<usize, HashMap<&ResourceKey, &Blob>> {
+    /// mod was made on instead of the game's original. Where a dependency
+    /// changes a resource by a delta, that is the fold of the dependencies
+    /// alone.
+    fn dependency_bases(
+        &self,
+        originals: &mut Originals<'_>,
+        indices: &[usize],
+    ) -> Result<HashMap<usize, HashMap<&ResourceKey, Blob>>> {
         let mut out = HashMap::new();
         for &i in indices {
             let deps = self.dependencies(&self.mods[i].id);
             if deps.is_empty() {
                 continue;
             }
+            let chains = self.chains(|m| m.enabled && m.problem.is_none() && deps.contains(&m.id));
             let mut base = HashMap::new();
-            for m in self
-                .mods
-                .iter()
-                .filter(|m| m.enabled && m.problem.is_none() && deps.contains(&m.id))
-            {
-                for resource in &m.manifest.resources {
-                    base.insert(&resource.key, &resource.payload);
+            for (key, chain) in chains {
+                let data = match chain.iter().any(|(_, r)| r.is_delta()) {
+                    true => self.fold(originals, key, &chain, Want::Hash)?.result,
+                    false => chain.last().map(|(_, r)| r.payload.clone()),
+                };
+                if let Some(data) = data {
+                    base.insert(key, data);
                 }
             }
             out.insert(i, base);
         }
-        out
+        Ok(out)
+    }
+
+    // ----------------------------------------------------------------- folds
+
+    /// The entries of the mods `included` for each resource, in load order.
+    fn chains(
+        &self,
+        included: impl Fn(&InstalledMod) -> bool,
+    ) -> BTreeMap<&ResourceKey, Chain<'_>> {
+        let mut chains: BTreeMap<&ResourceKey, Chain<'_>> = BTreeMap::new();
+        for (index, m) in self.mods.iter().enumerate().filter(|(_, m)| included(m)) {
+            for resource in &m.manifest.resources {
+                chains
+                    .entry(&resource.key)
+                    .or_default()
+                    .push((index, resource));
+            }
+        }
+        chains
+    }
+
+    /// The resources of the unmodified game, for the folds.
+    pub(super) fn originals<'a>(&self, game: &'a GameInstance) -> Originals<'a> {
+        let created = self
+            .created_streams()
+            .into_iter()
+            .map(str::to_owned)
+            .collect();
+        Originals::new(game, created)
+    }
+
+    /// The fold of the resource `key` over the entries `chain`.
+    fn fold(
+        &self,
+        originals: &mut Originals<'_>,
+        key: &ResourceKey,
+        chain: &[(usize, &ModResource)],
+        want: Want,
+    ) -> Result<KeyFold> {
+        let entries: Vec<Entry<'_>> = chain
+            .iter()
+            .map(|(index, resource)| Entry {
+                resource,
+                store: self.mods[*index].store(),
+            })
+            .collect();
+        self.folds.fold(originals, key, &entries, want)
+    }
+
+    /// For each value the last delta of `chain` set over one its author did
+    /// not see ([`Outcome::conflicts`]), the mod that gave the value: the
+    /// nearest mod below whose delta addresses the same element, else the
+    /// mod of the whole resource the fold starts from, else none — the
+    /// value is the game's.
+    fn conflict_sources(
+        &self,
+        chain: &[(usize, &ModResource)],
+        steps: &[Step],
+        outcome: &Outcome,
+    ) -> Result<Vec<(String, Option<usize>)>> {
+        let below = chain.len() - 1;
+        let whole = chain[..below].iter().rposition(|(_, r)| !r.is_delta());
+        // Later mods last: they are the ones whose value was there.
+        let mut set_by: HashMap<String, usize> = HashMap::new();
+        for (at, (index, resource)) in chain[..below].iter().enumerate() {
+            if !matches!(&steps[at], Step::Delta(o) if o.data.is_some()) {
+                continue;
+            }
+            let document = self.mods[*index].store().get(&resource.payload)?;
+            for target in super::read_delta(resource, &document)?.targets() {
+                set_by.insert(target, *index);
+            }
+        }
+        Ok(outcome
+            .conflicts
+            .iter()
+            .map(|note| {
+                let source = set_by
+                    .get(&note.target)
+                    .copied()
+                    .or(whole.map(|w| chain[w].0));
+                (format!("{}: {}", note.target, note.reason), source)
+            })
+            .collect())
     }
 
     /// Problems of mod `index` as a whole: the edition of the game, the
@@ -1325,41 +1755,77 @@ impl ModManager {
         self.mods.iter().enumerate().filter(|(_, m)| m.enabled)
     }
 
-    /// Resources replaced by more than one mod: of the enabled mods, or of
-    /// all installed mods.
-    pub fn conflicts(&self, enabled_only: bool) -> Vec<Conflict> {
-        let mut by_key: BTreeMap<&ResourceKey, Vec<(&str, &Blob)>> = BTreeMap::new();
-        let mut deps: HashMap<&str, Vec<String>> = HashMap::new();
-        for m in self
-            .mods
-            .iter()
-            .filter(|m| (m.enabled || !enabled_only) && m.problem.is_none())
-        {
-            for resource in &m.manifest.resources {
-                by_key
-                    .entry(&resource.key)
-                    .or_default()
-                    .push((&m.id, &resource.payload));
+    /// Resources more than one mod changes in a way that makes one of them
+    /// lose: of the enabled mods, or of all installed mods.
+    ///
+    /// A resource replaced whole by several mods, or replaced whole above
+    /// the deltas of others, is the data of the last of them
+    /// ([`Conflict::elements`] is empty). Deltas above that merge, and are
+    /// a conflict only where a delta set a value another mod had given the
+    /// same element: one conflict for each pair of such mods, with the
+    /// elements. The game is read for the resources that have deltas.
+    pub fn conflicts(&self, game: &GameInstance, enabled_only: bool) -> Result<Vec<Conflict>> {
+        let chains = self.chains(|m| (m.enabled || !enabled_only) && m.problem.is_none());
+        let mut originals = self.originals(game);
+        let mut deps: HashMap<usize, Vec<String>> = HashMap::new();
+        let mut needs = |winner: usize, others: &[usize]| {
+            let needs = deps
+                .entry(winner)
+                .or_insert_with(|| self.dependencies(&self.mods[winner].id));
+            others
+                .iter()
+                .all(|other| needs.contains(&self.mods[*other].id))
+        };
+        let id = |index: &usize| self.mods[*index].id.clone();
+        let mut conflicts = Vec::new();
+        for (key, chain) in chains.into_iter().filter(|(_, chain)| chain.len() > 1) {
+            let whole = chain.iter().rposition(|(_, r)| !r.is_delta());
+            if let Some(w) = whole.filter(|w| *w > 0) {
+                let below: Vec<usize> = chain[..w].iter().map(|(index, _)| *index).collect();
+                conflicts.push(Conflict {
+                    key: key.clone(),
+                    same_data: chain[..=w]
+                        .iter()
+                        .all(|(_, r)| !r.is_delta() && r.payload == chain[0].1.payload),
+                    patch: needs(chain[w].0, &below),
+                    mods: chain[..=w].iter().map(|(index, _)| id(index)).collect(),
+                    elements: Vec::new(),
+                });
+            }
+            let first = whole.map_or(0, |w| w + 1);
+            if first == chain.len() {
+                continue;
+            }
+            let fold = self.fold(&mut originals, key, &chain, Want::Hash)?;
+            // The first mod of a chain has no mod below to be in conflict
+            // with: what its delta finds changed is the game's own data.
+            for at in first.max(1)..chain.len() {
+                let Step::Delta(outcome) = &fold.steps[at] else {
+                    continue;
+                };
+                if outcome.conflicts.is_empty() {
+                    continue;
+                }
+                let sources = self.conflict_sources(&chain[..=at], &fold.steps[..=at], outcome)?;
+                let mut by_other: BTreeMap<usize, Vec<String>> = BTreeMap::new();
+                for (element, source) in sources {
+                    if let Some(other) = source {
+                        by_other.entry(other).or_default().push(element);
+                    }
+                }
+                let winner = chain[at].0;
+                for (other, elements) in by_other {
+                    conflicts.push(Conflict {
+                        key: key.clone(),
+                        mods: vec![id(&other), id(&winner)],
+                        same_data: false,
+                        patch: needs(winner, &[other]),
+                        elements,
+                    });
+                }
             }
         }
-        by_key
-            .into_iter()
-            .filter(|(_, mods)| mods.len() > 1)
-            .map(|(key, mods)| {
-                let (winner, _) = mods[mods.len() - 1];
-                let needs = deps
-                    .entry(winner)
-                    .or_insert_with(|| self.dependencies(winner));
-                Conflict {
-                    key: key.clone(),
-                    same_data: mods.iter().all(|(_, b)| *b == mods[0].1),
-                    patch: mods[..mods.len() - 1]
-                        .iter()
-                        .all(|(id, _)| needs.iter().any(|d| d == id)),
-                    mods: mods.iter().map(|(id, _)| (*id).to_owned()).collect(),
-                }
-            })
-            .collect()
+        Ok(conflicts)
     }
 
     /// Checks every enabled mod against the game.
@@ -1391,9 +1857,17 @@ impl ModManager {
     /// the mod's `original` must be the dependency's data. The mod as a
     /// whole is checked too ([`Subject::Mod`]): the edition of the game, the
     /// version of the mod manager, its dependencies and recommendations.
+    ///
+    /// A resource the mod changes by a delta (format version 6) has no
+    /// original to compare: the delta is applied to what the enabled mods
+    /// below give the resource, and what that tells is the check — a delta
+    /// that is refused, operations left out, values that were not what the
+    /// author saw.
     pub fn check_mods(&self, game: &GameInstance, indices: &[usize]) -> Result<Vec<CompatIssue>> {
         let created = self.created_streams();
-        let bases = self.dependency_bases(indices);
+        let mut originals = self.originals(game);
+        let bases = self.dependency_bases(&mut originals, indices)?;
+        let enabled = self.chains(|m| m.enabled && m.problem.is_none());
         // Streams of the game, as the game was before the mod manager. (A
         // game opened earlier may still list a created stream deleted since.)
         let game_stream = |name: &str| {
@@ -1465,9 +1939,60 @@ impl ModManager {
             let mut hashes: HashMap<usize, Blob> = HashMap::new();
             for (index, id, resource) in resources {
                 let key = &resource.key;
+                if resource.is_delta() {
+                    // On what the enabled mods below this one give it.
+                    let mut chain: Chain<'_> = enabled
+                        .get(key)
+                        .map(|chain| chain.iter().filter(|(i, _)| *i < index).copied().collect())
+                        .unwrap_or_default();
+                    chain.push((index, resource));
+                    let fold = self.fold(&mut originals, key, &chain, Want::Hash)?;
+                    match fold.steps.last() {
+                        Some(Step::NoBase) => {
+                            let problem = match (&original, new_streams.get(stream)) {
+                                (Some(_), _) => Problem::ResourceMissing,
+                                (None, Some(creator)) => Problem::InNewStream {
+                                    creator: (*creator).to_owned(),
+                                },
+                                (None, None) => Problem::StreamMissing,
+                            };
+                            issue(id, key, problem);
+                        }
+                        Some(Step::Delta(outcome)) => {
+                            if let Some(error) = &outcome.error {
+                                let error = error.clone();
+                                issue(id, key, Problem::DeltaRefused { error });
+                            }
+                            if !outcome.skipped.is_empty() {
+                                let skipped = outcome
+                                    .skipped
+                                    .iter()
+                                    .map(|n| format!("{}: {}", n.target, n.reason))
+                                    .collect();
+                                let applied = outcome.applied;
+                                issue(id, key, Problem::OperationsSkipped { skipped, applied });
+                            }
+                            if !outcome.conflicts.is_empty() {
+                                // Values other mods gave are conflicts
+                                // between the mods; the game's are said here.
+                                let elements: Vec<String> = self
+                                    .conflict_sources(&chain, &fold.steps, outcome)?
+                                    .into_iter()
+                                    .filter(|(_, source)| source.is_none())
+                                    .map(|(element, _)| element)
+                                    .collect();
+                                if !elements.is_empty() {
+                                    issue(id, key, Problem::ValuesDiffer { elements });
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                    continue;
+                }
                 let Some(added) = &resource.added else {
                     // Made on top of a dependency that changes the resource.
-                    if let Some(&base) = bases.get(&index).and_then(|b| b.get(key)) {
+                    if let Some(base) = bases.get(&index).and_then(|b| b.get(key)) {
                         if *base != resource.original {
                             issue(
                                 id,
@@ -1742,32 +2267,122 @@ impl ModManager {
 
     // ------------------------------------------------------------ the game
 
-    /// The combined changes of the enabled mods: for each resource, the data
-    /// of the last enabled mod that replaces or adds it, with that mod's index.
-    /// A later mod that replaces a resource an earlier one adds (a patch on
-    /// top of a mod) keeps it added; the original is the game's.
-    pub fn plan(&self) -> BTreeMap<ResourceKey, (Change, usize)> {
-        let mut plan: BTreeMap<ResourceKey, (Change, usize)> = BTreeMap::new();
-        for (index, m) in self.enabled().filter(|(_, m)| m.problem.is_none()) {
-            for resource in &m.manifest.resources {
-                let mut change = Change {
-                    key: resource.key.clone(),
-                    payload: resource.payload.clone(),
-                    original: resource.original.clone(),
-                    storage: resource.storage,
-                    label: m.manifest.name.clone(),
-                    added: resource.added.clone(),
-                };
-                if let Some((earlier, _)) = plan.get(&resource.key) {
-                    change.original = earlier.original.clone();
-                    if change.added.is_none() {
-                        change.added = earlier.added.clone();
+    /// The combined changes of the enabled mods: for each resource its data
+    /// and the index of the last enabled mod that has a part in it. The
+    /// data is that of the last enabled mod that replaces or adds the
+    /// resource whole — else the game's own — with the deltas of the
+    /// enabled mods above applied in load order ([`super::fold`]); the game
+    /// is read for the resources that have deltas.
+    /// A later mod that replaces or changes a resource an earlier one adds
+    /// (a patch on top of a mod) keeps it added; the original is the game's.
+    pub fn plan(&self, game: &GameInstance) -> Result<BTreeMap<ResourceKey, (Change, usize)>> {
+        Ok(self
+            .folded_plan(game, Want::Hash, |m| m.enabled && m.problem.is_none())?
+            .changes)
+    }
+
+    /// [`Self::plan`] of the mods `included`, with what the folds told.
+    pub(super) fn folded_plan(
+        &self,
+        game: &GameInstance,
+        want: Want,
+        included: impl Fn(&InstalledMod) -> bool,
+    ) -> Result<FoldedPlan> {
+        let mut plan = FoldedPlan::default();
+        let mut originals = self.originals(game);
+        for (key, chain) in self.chains(included) {
+            let fold = match chain.iter().any(|(_, r)| r.is_delta()) {
+                true => Some(self.fold(&mut originals, key, &chain, want)?),
+                false => None,
+            };
+            let mut planned: Option<(Change, usize)> = None;
+            let mut mods = Vec::new();
+            for (at, (index, resource)) in chain.iter().enumerate() {
+                let label = self.mods[*index].manifest.name.clone();
+                match fold.as_ref().map(|fold| &fold.steps[at]) {
+                    None | Some(Step::Whole) => {
+                        let mut change = Change {
+                            key: key.clone(),
+                            payload: resource.payload.clone(),
+                            original: resource.original.clone(),
+                            storage: resource.storage,
+                            label,
+                            added: resource.added.clone(),
+                            made_on: None,
+                        };
+                        if let Some((earlier, _)) = &planned {
+                            change.original = earlier.original.clone();
+                            if change.added.is_none() {
+                                change.added = earlier.added.clone();
+                            }
+                        }
+                        planned = Some((change, *index));
+                        mods = vec![*index];
                     }
+                    Some(Step::Delta(Outcome {
+                        data: Some(data), ..
+                    })) => {
+                        let below = match planned.take() {
+                            Some((change, _)) => change,
+                            // The fold starts from the game's own data.
+                            None => Change {
+                                key: key.clone(),
+                                payload: data.clone(),
+                                original: fold
+                                    .as_ref()
+                                    .and_then(|fold| fold.original.clone())
+                                    .unwrap_or_else(|| resource.original.clone()),
+                                storage: resource.storage,
+                                label: String::new(),
+                                added: None,
+                                made_on: None,
+                            },
+                        };
+                        let storage = match resource.storage.is_keep() {
+                            true => below.storage,
+                            false => resource.storage,
+                        };
+                        let change = Change {
+                            payload: data.clone(),
+                            storage,
+                            label,
+                            ..below
+                        };
+                        planned = Some((change, *index));
+                        mods.push(*index);
+                    }
+                    // A delta that is replaced, refused or has nothing to
+                    // be applied to gives the resource nothing.
+                    Some(_) => {}
                 }
-                plan.insert(resource.key.clone(), (change, index));
             }
+            let Some((change, index)) = planned else {
+                continue;
+            };
+            if let Some(fold) = fold.filter(|fold| fold.folded) {
+                // Deltas that left the game's data as it is change nothing.
+                if change.added.is_none() && fold.original.as_ref() == Some(&change.payload) {
+                    continue;
+                }
+                plan.steps.extend(fold.ids);
+                plan.folded.insert(key.clone(), mods);
+            }
+            plan.changes.insert(key.clone(), (change, index));
         }
-        plan
+        Ok(plan)
+    }
+
+    /// The data of the resource `key` as `plan` (made with [`Want::Data`])
+    /// has it.
+    pub(super) fn planned_data(&self, plan: &FoldedPlan, key: &ResourceKey) -> Result<Vec<u8>> {
+        let (change, index) = plan
+            .changes
+            .get(key)
+            .ok_or_else(|| Error::mod_error(format!("{key} is not planned")))?;
+        match plan.folded.contains_key(key) {
+            true => self.folds.data(&change.payload),
+            false => self.mods[*index].store().get(&change.payload),
+        }
     }
 
     /// The files of the archives the enabled mods carry: for each entry, the
@@ -1868,7 +2483,7 @@ impl ModManager {
 
     /// Compares the combined result of the enabled mods with the game.
     pub fn status(&self, game: &GameInstance) -> Result<DeployStatus> {
-        let plan = self.plan();
+        let plan = self.plan(game)?;
         let new_streams = self.new_streams();
         self.deployment
             .status_with(game, &Self::desired(&plan, &new_streams), &new_streams)
@@ -1901,6 +2516,89 @@ impl ModManager {
                 .is_ok_and(|w| w.iter().any(|(_, owner)| owner != native::OWNER_LOADER))
     }
 
+    /// The installed mods against the files of the game: which of them the
+    /// game holds now ([`ModInGame::written`]), and how much it still holds
+    /// of mods that are switched off or removed. This is what a project
+    /// compares its base with (`crate::project::base`): the editor reads
+    /// the files of the game, so a mod that is enabled but not written is
+    /// not in what its author sees.
+    pub fn in_game(&self, game: &GameInstance) -> Result<GameMods> {
+        let status = self.status(game)?;
+        // The streams whose file is, right now, what the record says.
+        let records: BTreeMap<&str, &crate::workspace::AppliedStream> = status
+            .streams
+            .iter()
+            .filter(|s| s.state == StreamState::Applied)
+            .filter_map(|s| {
+                let record = self.deployment.streams.get(&s.stream)?;
+                record
+                    .in_flight
+                    .is_none()
+                    .then_some((s.stream.as_str(), record))
+            })
+            .collect();
+        let plan = self.plan(game)?;
+        let files = self.plan_files();
+        // The game holds the data of the mod, or the data of the enabled
+        // mod that wins the resource over it: a mod is not less written for
+        // being overridden, nor for a later mod waiting to be written into
+        // the same stream.
+        let holds = |sha: &String, own: &Blob, winner: Option<&Blob>| {
+            *sha == own.sha256 || winner.is_some_and(|w| *sha == w.sha256)
+        };
+        let resource_written = |key: &ResourceKey, payload: &Blob| {
+            records
+                .get(key.stream.as_str())
+                .and_then(|record| record.resources.get(key))
+                .is_some_and(|sha| holds(sha, payload, plan.get(key).map(|(c, _)| &c.payload)))
+        };
+        let file_written = |key: &FileKey, payload: &Blob| {
+            self.deployment.files.values().any(|record| {
+                record.in_flight.is_none()
+                    && record.changes.get(key).is_some_and(|sha| {
+                        holds(sha, payload, files.get(key).map(|(c, _)| &c.payload))
+                    })
+            })
+        };
+        let mods = self
+            .mods
+            .iter()
+            .map(|m| {
+                let manifest = &m.manifest;
+                // Executable code is not data the editor reads: a mod is
+                // written by its resources, streams and files.
+                let written = m.enabled
+                    && m.problem.is_none()
+                    && manifest
+                        .resources
+                        .iter()
+                        .all(|r| resource_written(&r.key, &r.payload))
+                    && manifest.streams.iter().all(|s| {
+                        records
+                            .get(s.name.as_str())
+                            .is_some_and(|record| record.new_stream.is_some())
+                    })
+                    && manifest
+                        .files
+                        .iter()
+                        .all(|f| file_written(&f.key, &f.payload));
+                ModInGame {
+                    id: m.id.clone(),
+                    name: manifest.name.clone(),
+                    version: manifest.version.clone(),
+                    sha256: manifest.sha256(),
+                    enabled: m.enabled,
+                    damaged: m.problem.is_some(),
+                    written,
+                }
+            })
+            .collect();
+        Ok(GameMods {
+            mods,
+            leftover: status.pending_reverts.len(),
+        })
+    }
+
     /// Writes the combined result of the enabled mods into the game. Streams
     /// that no enabled mod changes any more are put back to their originals.
     ///
@@ -1920,6 +2618,16 @@ impl ModManager {
         options: ModApplyOptions,
         progress: &mut dyn FnMut(SyncProgress<'_>),
     ) -> Result<ApplyReport> {
+        self.changing(|manager| manager.apply_with_progress_locked(game, options, progress))
+    }
+
+    /// [`Self::apply_with_progress`], with the lock held.
+    fn apply_with_progress_locked(
+        &mut self,
+        game: &GameInstance,
+        options: ModApplyOptions,
+        progress: &mut dyn FnMut(SyncProgress<'_>),
+    ) -> Result<ApplyReport> {
         if let Some(m) = self.enabled().map(|(_, m)| m).find(|m| m.problem.is_some()) {
             return Err(Error::mod_error(format!(
                 "mod `{}` is damaged ({}); disable or uninstall it",
@@ -1927,7 +2635,8 @@ impl ModManager {
                 m.problem.as_deref().unwrap_or_default()
             )));
         }
-        let plan = self.plan();
+        let folded = self.folded_plan(game, Want::Data, |m| m.enabled && m.problem.is_none())?;
+        let plan = &folded.changes;
         let new_streams = self.new_streams();
         if !plan.is_empty() || !new_streams.is_empty() || !self.plan_files().is_empty() {
             ensure_workspace_not_in_game(game)?;
@@ -1973,14 +2682,31 @@ impl ModManager {
                 list_some(&differ)
             )));
         }
+        // What the folds left out or wrote over is said with the result.
+        let told: Vec<String> = issues
+            .iter()
+            .filter(|i| {
+                matches!(
+                    i.problem,
+                    Problem::OperationsSkipped { .. } | Problem::ValuesDiffer { .. }
+                )
+            })
+            .map(CompatIssue::describe)
+            .collect();
         let mut names: BTreeSet<String> = plan.keys().map(|k| k.stream.clone()).collect();
         names.extend(new_streams.keys().cloned());
         names.extend(self.deployment.streams.keys().cloned());
         let stores: Vec<PayloadStore> = self.mods.iter().map(InstalledMod::store).collect();
-        let by_stream: BTreeMap<String, Vec<Change>> = Self::desired(&plan, &new_streams)
+        let by_stream: BTreeMap<String, Vec<Change>> = Self::desired(plan, &new_streams)
             .into_iter()
             .map(|(name, changes)| (name, changes.into_iter().cloned().collect()))
             .collect();
+        // The folded resources are data of no mod: they go into the store
+        // of the folds before the write, which reads them by the hash the
+        // plan names.
+        let results = || folded.folded.keys().map(|key| &plan[key].0.payload);
+        self.folds.persist(results())?;
+        let fold_store = self.folds.store();
         let path = self.dir.join(APPLIED_FILE);
         let mut report = self.deployment.sync_with_progress(
             &path,
@@ -1993,10 +2719,20 @@ impl ModManager {
                 let (_, index) = plan
                     .get(&change.key)
                     .ok_or_else(|| Error::mod_error(format!("{} is not planned", change.key)))?;
-                stores[*index].get(&change.payload)
+                match folded.folded.contains_key(&change.key) {
+                    true => fold_store.get(&change.payload),
+                    false => stores[*index].get(&change.payload),
+                }
             },
             progress,
         )?;
+        report.warnings.extend(told);
+        // The folds of mods that are no longer in the game are not kept.
+        if let Err(error) = self.folds.settle(results(), &folded.steps) {
+            report
+                .warnings
+                .push(format!("the folded resources are not tidied: {error}"));
+        }
         // Files of the archives go after the streams, into the overlay archive.
         report.merge(self.sync_files(game, true, options.force)?);
         // Executable code goes last, and only what the player agreed to.
@@ -2022,6 +2758,16 @@ impl ModManager {
 
     /// [`Self::unapply`], telling `progress` before each stream is put back.
     pub fn unapply_with_progress(
+        &mut self,
+        game: &GameInstance,
+        force: bool,
+        progress: &mut dyn FnMut(SyncProgress<'_>),
+    ) -> Result<ApplyReport> {
+        self.changing(|manager| manager.unapply_with_progress_locked(game, force, progress))
+    }
+
+    /// [`Self::unapply_with_progress`], with the lock held.
+    fn unapply_with_progress_locked(
         &mut self,
         game: &GameInstance,
         force: bool,
@@ -2063,6 +2809,11 @@ impl ModManager {
     /// files are not changed; applying afterwards needs `force`, because the
     /// patched files differ from the adopted originals.
     pub fn import_old_toolkit(&mut self, game: &GameInstance) -> Result<OldToolkitImport> {
+        self.changing(|manager| manager.import_old_toolkit_locked(game))
+    }
+
+    /// [`Self::import_old_toolkit`], with the lock held.
+    fn import_old_toolkit_locked(&mut self, game: &GameInstance) -> Result<OldToolkitImport> {
         let old = super::integrity::detect_old_toolkit(game.root()).ok_or_else(|| {
             Error::mod_error("the old toolkit's directory `_toolkit` is not in the game directory")
         })?;
@@ -2128,6 +2879,11 @@ impl ModManager {
     /// `entries` that are not installed. The game is not changed until
     /// [`Self::apply`].
     pub fn arrange(&mut self, entries: &[SetEntry]) -> Result<Vec<String>> {
+        self.changing(|manager| manager.arrange_locked(entries))
+    }
+
+    /// [`Self::arrange`], with the lock held.
+    fn arrange_locked(&mut self, entries: &[SetEntry]) -> Result<Vec<String>> {
         let (order, missing) = self.arranged(entries);
         let mut rest = std::mem::take(&mut self.mods);
         for entry in order {
@@ -2140,6 +2896,55 @@ impl ModManager {
         self.mods.append(&mut rest);
         self.save_registry()?;
         Ok(missing)
+    }
+
+    /// Arranges the mods as `entries` ([`Self::arrange`]) and writes them
+    /// into the game ([`Self::apply_with_progress`]) as one change. When the
+    /// write is refused or fails, the arrangement before comes back, so
+    /// that the mod manager does not show an arrangement the game was never
+    /// brought to. Returns the ids of `entries` that are not installed, and
+    /// what was written.
+    pub fn arrange_and_apply(
+        &mut self,
+        game: &GameInstance,
+        entries: &[SetEntry],
+        options: ModApplyOptions,
+        progress: &mut dyn FnMut(SyncProgress<'_>),
+    ) -> Result<(Vec<String>, ApplyReport)> {
+        self.changing(|manager| {
+            let before = manager.arrangement();
+            let missing = manager.arrange_locked(entries)?;
+            match manager.apply_with_progress_locked(game, options, progress) {
+                Ok(report) => Ok((missing, report)),
+                Err(error) => {
+                    // The first error is the one to tell.
+                    let _ = manager.arrange_locked(&before);
+                    Err(error)
+                }
+            }
+        })
+    }
+
+    /// A name for a new set of mods that no saved set has: `wanted`, or
+    /// `wanted (2)`, `wanted (3)`… (shortened to fit the limit of a name).
+    pub fn free_set_name(&self, wanted: &str) -> Result<String> {
+        let taken: Vec<String> = self.sets()?.into_iter().map(|s| s.name).collect();
+        let clean: String = wanted.chars().filter(|c| !c.is_control()).collect();
+        let clean = clean.trim();
+        for n in 1usize.. {
+            let suffix = if n == 1 {
+                String::new()
+            } else {
+                format!(" ({n})")
+            };
+            let room = MAX_SET_NAME - suffix.chars().count();
+            let head: String = clean.chars().take(room).collect();
+            let name = format!("{}{suffix}", head.trim_end());
+            if !taken.contains(&name) {
+                return validate_set_name(&name).map(str::to_owned);
+            }
+        }
+        unreachable!("one of more names than there are sets is free")
     }
 
     /// The saved sets of mods (`sets.json` of the mod manager directory).
@@ -2177,6 +2982,7 @@ impl ModManager {
     /// replacing a set of that name.
     pub fn save_set(&self, name: &str) -> Result<()> {
         let name = validate_set_name(name)?;
+        let _lock = self.hold()?;
         let mut sets = self.sets()?;
         let set = ModSet {
             name: name.to_owned(),
@@ -2191,6 +2997,7 @@ impl ModManager {
 
     /// Forgets the set `name`; returns whether there was one.
     pub fn delete_set(&self, name: &str) -> Result<bool> {
+        let _lock = self.hold()?;
         let mut sets = self.sets()?;
         let before = sets.len();
         sets.retain(|s| s.name != name);
@@ -2226,6 +3033,11 @@ impl ModManager {
     /// that [`Self::restore_removed`] can bring it back to its place.
     /// [`Self::discard_removed`] deletes them.
     pub fn remove_undoable(&mut self, id: &str) -> Result<RemovedMod> {
+        self.changing(|manager| manager.remove_undoable_locked(id))
+    }
+
+    /// [`Self::remove_undoable`], with the lock held.
+    fn remove_undoable_locked(&mut self, id: &str) -> Result<RemovedMod> {
         let index = self.position(id)?;
         let stamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -2256,6 +3068,7 @@ impl ModManager {
                 enabled: m.enabled,
                 installed: m.installed,
                 source: m.source,
+                workspace: m.workspace,
             },
             kept: moved.then_some(kept),
         })
@@ -2265,6 +3078,11 @@ impl ModManager {
     /// place and with its enabled state. Refused when a mod of that id was
     /// installed since.
     pub fn restore_removed(&mut self, removed: &RemovedMod) -> Result<()> {
+        self.changing(|manager| manager.restore_removed_locked(removed))
+    }
+
+    /// [`Self::restore_removed`], with the lock held.
+    fn restore_removed_locked(&mut self, removed: &RemovedMod) -> Result<()> {
         if self.get(&removed.id).is_some() {
             return Err(Error::mod_error(format!(
                 "a mod `{}` is installed again",
@@ -2403,11 +3221,55 @@ struct SetsFile {
     sets: Vec<ModSet>,
 }
 
+/// One installed mod against the files of the game ([`ModManager::in_game`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModInGame {
+    pub id: String,
+    pub name: String,
+    pub version: String,
+    /// SHA-256 of its manifest ([`ModManifest::sha256`]): which build of
+    /// that version it is.
+    pub sha256: String,
+    pub enabled: bool,
+    /// It cannot be used (a damaged `mod.json`), and so is never enabled.
+    pub damaged: bool,
+    /// It is enabled and the files of the game hold it: each of its
+    /// resources and files of the archives with its data (or with the data
+    /// of the enabled mod that wins it), each stream it creates.
+    pub written: bool,
+}
+
+/// [`ModManager::in_game`].
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct GameMods {
+    /// Every installed mod, in load order.
+    pub mods: Vec<ModInGame>,
+    /// Resources the files of the game still hold changed although no
+    /// enabled mod changes them any more: of mods switched off or removed
+    /// since the mods were written.
+    pub leftover: usize,
+}
+
+impl GameMods {
+    pub fn get(&self, id: &str) -> Option<&ModInGame> {
+        self.mods.iter().find(|m| m.id == id)
+    }
+
+    /// The mods the files of the game hold, in load order.
+    pub fn written(&self) -> impl Iterator<Item = &ModInGame> {
+        self.mods.iter().filter(|m| m.written)
+    }
+}
+
+/// Longest name of a set of mods, in characters.
+const MAX_SET_NAME: usize = 64;
+
 /// The name of a set: trimmed, not empty, at most 64 characters, no
 /// control characters.
 fn validate_set_name(name: &str) -> Result<&str> {
     let name = name.trim();
-    if name.is_empty() || name.chars().count() > 64 || name.chars().any(char::is_control) {
+    if name.is_empty() || name.chars().count() > MAX_SET_NAME || name.chars().any(char::is_control)
+    {
         return Err(Error::mod_error(format!(
             "`{name}` is not a name for a set of mods: 1 to 64 characters, no control characters"
         )));
@@ -2478,6 +3340,7 @@ fn load_installed(dir: &Path, entry: RegistryEntry) -> InstalledMod {
         id: entry.id,
         installed: entry.installed,
         source: entry.source,
+        workspace: entry.workspace,
         manifest,
         problem,
         dir: mod_dir,
