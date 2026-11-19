@@ -107,6 +107,12 @@ const TEXTURE_LIMIT: u32 = 512;
 const TINY_PIXELS: f32 = 2.0;
 /// Time per frame spent uploading converted meshes.
 const UPLOAD_BUDGET: Duration = Duration::from_millis(12);
+/// Elevation of the camera that flies to an object, radians: from 57° to
+/// 12° down.
+const FOCUS_PITCH: (f32, f32) = (-1.0, -0.2);
+/// How high above a camera under the ground "Play from here" looks for the
+/// ground, metres.
+const PLAY_HERE_ABOVE: f32 = 300.0;
 
 /// An edit the app records in the workspace.
 pub enum LevelAction {
@@ -455,6 +461,9 @@ pub struct LevelView {
     show_collision: bool,
     /// "Play from here" was clicked.
     play_here: bool,
+    /// The point "Play from here" of the context menu starts below (the
+    /// camera without one).
+    play_here_at: Option<[f32; 3]>,
     /// Collision wireframes by `hkx` id (`None`: not readable).
     collisions: HashMap<u32, Option<Arc<crate::collision_view::Wire>>>,
     /// Navigation graphs of the loaded zones.
@@ -569,6 +578,7 @@ impl LevelView {
             markers_choice: None,
             show_collision: false,
             play_here: false,
+            play_here_at: None,
             collisions: HashMap::new(),
             nav: nav::NavLayer::default(),
             nav_action: None,
@@ -2150,6 +2160,10 @@ impl LevelView {
         } else {
             (bounds.center(), bounds.radius().clamp(1.0, 400.0))
         };
+        // The camera backs off along its view: looking up it would go under
+        // the ground, looking straight down high above. It looks down a
+        // little, whatever it looked at before.
+        self.camera.pitch = self.camera.pitch.clamp(FOCUS_PITCH.0, FOCUS_PITCH.1);
         self.camera.look_at(center, radius * 2.5 + 3.0);
         self.refill = true;
     }
@@ -2211,6 +2225,34 @@ impl LevelView {
     }
 
     /// Starts the game at the camera, as "Play from here".
+    /// Where "Play from here" starts: the ground below the camera or the
+    /// object of the context menu (the camera flies, it may stand high above
+    /// the street or under it, an object's origin may be inside it); from
+    /// above when nothing is below; the camera itself without collision.
+    /// `None` while the collision is being built.
+    fn play_here_point(&mut self) -> Option<[f32; 3]> {
+        let eye = self.play_here_at.unwrap_or(self.camera.eye);
+        let (Some(level), Some(input)) = (self.level.as_ref(), self.input.as_ref()) else {
+            return Some(eye);
+        };
+        let Some(world) = self
+            .walk
+            .world_for(level, &self.catalog, &input.parents, eye)
+        else {
+            if self.walk.building() {
+                self.status = tr("drop.waiting").to_owned();
+                self.ctx.request_repaint_after(Duration::from_millis(100));
+                return None;
+            }
+            return Some(eye);
+        };
+        let down = [0.0, -1.0, 0.0];
+        let ground = drop::ground_point(world, eye, down).or_else(|| {
+            drop::ground_point(world, [eye[0], eye[1] + PLAY_HERE_ABOVE, eye[2]], down)
+        });
+        Some(ground.map_or(eye, |g| [g[0], g[1] + 0.1, g[2]]))
+    }
+
     pub fn request_play_here(&mut self) {
         self.play_here = true;
     }
@@ -2259,11 +2301,14 @@ impl LevelView {
             self.queue
                 .push_back(LevelAction::LiveObject(ObjectAction::Get(g)));
         }
-        if std::mem::take(&mut self.play_here)
+        if self.play_here
+            && let Some(at) = self.play_here_point()
             && let Some(level) = &self.level
         {
+            self.play_here = false;
+            self.play_here_at = None;
             self.queue.push_back(LevelAction::PlayHere {
-                eye: self.camera.eye,
+                eye: at,
                 streams: level.streams.clone(),
             });
         }

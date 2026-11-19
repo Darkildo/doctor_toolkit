@@ -1,14 +1,26 @@
 # 1. Установка
 
-## 1.1 Готовый архив для Linux
+## 1.1 Пакет для Windows
 
-Релиз — архив `doctor_toolkit-<версия>-linux-x86_64.tar.gz` и файл с его
-SHA-256 рядом.
+С выпуска 1.0.0 релизы собираются только для Windows x86_64:
+`doctor_toolkit-<версия>-windows-x86_64.zip` (редактор `doctor-toolkit-gui.exe`,
+командная строка `doctor-toolkit.exe`, Open Mod Manager `open-mod-manager.exe`,
+README, лицензия, документация, `BUILD-INFO.txt`), отдельный Open Mod Manager
+(`open-mod-manager-<версия>-windows-x86_64.zip`) и модули для ASI-загрузчика
+игры (`doctor_live.asi`, `doctor_render.asi`, `doctor_crash.asi`,
+`doctor_platform.asi`, `doctor_loader.dll`); у каждого файла рядом его
+SHA-256. Распакуйте архив куда угодно и запустите `doctor-toolkit-gui.exe`.
+
+## 1.1a Архив для Linux
+
+Готового архива для Linux в релизах больше нет: его собирает из исходников
+`tools/release.sh` (раздел [1.3](#13-сборка-из-исходников)) в
+`dist/doctor_toolkit-<версия>-linux-x86_64.tar.gz`, файл с SHA-256 рядом.
 
 ```sh
-sha256sum -c doctor_toolkit-1.0.0-linux-x86_64.tar.gz.sha256
-tar xzf doctor_toolkit-1.0.0-linux-x86_64.tar.gz
-cd doctor_toolkit-1.0.0-linux-x86_64
+sha256sum -c doctor_toolkit-1.1.0-linux-x86_64.tar.gz.sha256
+tar xzf doctor_toolkit-1.1.0-linux-x86_64.tar.gz
+cd doctor_toolkit-1.1.0-linux-x86_64
 ./doctor-toolkit --version
 ./doctor-toolkit-gui
 ```

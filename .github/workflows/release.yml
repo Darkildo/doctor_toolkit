@@ -1,10 +1,10 @@
 name: Release
 
 # Packages for a release tag `v<version>` (the version of Cargo.toml):
-# Linux x86_64 (tools/release.sh), Windows x86_64 and macOS (tools/package.sh)
-# and the in-game modules: the live link (doctor_live.asi) and graphics
-# (doctor_render.asi, stage 59). They are put on
-# a draft release; run the workflow by hand to build them without one.
+# Windows x86_64 only (tools/package.sh), and the in-game modules (Windows
+# files, built by MinGW in the Linux job from the archive of
+# tools/release.sh, which itself is not released). They are put on a draft
+# release; run the workflow by hand to build them without one.
 
 on:
   push:
@@ -24,7 +24,7 @@ concurrency:
 
 jobs:
   linux:
-    name: Linux x86_64 archive
+    name: In-game modules
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
@@ -58,8 +58,12 @@ jobs:
           done
       - uses: actions/upload-artifact@v7
         with:
-          name: linux-x86_64
-          path: dist/*
+          name: modules
+          path: |
+            dist/*.asi
+            dist/*.asi.sha256
+            dist/*.dll
+            dist/*.dll.sha256
 
   windows:
     name: Windows x86_64 package
@@ -77,22 +81,9 @@ jobs:
           name: windows-x86_64
           path: dist/*
 
-  macos:
-    name: macOS package
-    runs-on: macos-latest
-    steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@1.97.1
-      - uses: Swatinem/rust-cache@v2
-      - run: tools/package.sh
-      - uses: actions/upload-artifact@v7
-        with:
-          name: macos
-          path: dist/*
-
   publish:
     name: Draft release
-    needs: [linux, windows, macos]
+    needs: [linux, windows]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-24.04
     steps:
@@ -107,4 +98,4 @@ jobs:
           ls -l dist
           gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" --draft \
             --title "doctor_toolkit $GITHUB_REF_NAME" \
-            --notes "Packages for Linux x86_64, Windows x86_64 and macOS, Open Mod Manager alone (open-mod-manager-*), and the in-game modules: live link (doctor_live.asi), graphics (doctor_render.asi), crash reports (doctor_crash.asi), the platform of native mods (doctor_platform.asi) and the ASI loader of the mod manager (doctor_loader.dll). See README.md and docs/guide (Russian)."
+            --notes "Packages for Windows x86_64, Open Mod Manager alone (open-mod-manager-*), and the in-game modules: live link (doctor_live.asi), graphics (doctor_render.asi), crash reports (doctor_crash.asi), the platform of native mods (doctor_platform.asi) and the ASI loader of the mod manager (doctor_loader.dll). See README.md and docs/guide (Russian)."

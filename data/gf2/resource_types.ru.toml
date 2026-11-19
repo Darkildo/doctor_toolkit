@@ -33,11 +33,11 @@ confidence = "data"
 docs = ["docs/formats/characters.md §6", "docs/formats/anim-graph.md", "docs/formats/resource-types.md §8"]
 
 [type.bricknmortarres]
-summary = "состояния заведений и эффекты (`dv_building_fire`)"
-parse = "нет"
-status = "partial"
-confidence = "data"
-docs = ["docs/formats/resource-types.md §8"]
+summary = "заведения города: GUID, номер, исходный владелец, город, тип, флаги, три точки и имена эффектов «Взгляда дона» (`dv_building_fire`); по нему игра находит заведение каждого `Building`"
+parse = "полный, запись: все 8 ресурсов побайтно, добавление, правка и удаление заведений (`resource::bricknmortar`, `venue`)"
+status = "known"
+confidence = "exe"
+docs = ["docs/formats/bricknmortarres.md", "docs/formats/resource-types.md §8"]
 
 [type.cec]
 summary = "раскладки управления (`basic_aiming_player.cec`)"

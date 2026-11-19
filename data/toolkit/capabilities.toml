@@ -812,6 +812,20 @@ use = ["world-grid info", "world-grid remove"]
 use = ["zone_cells", "remove_zone_cell"]
 
 [[cap]]
+id = "level.venues"
+area = "level"
+title = "Заведения города (bricknmortarres): список, новое заведение по образцу, владелец, тип, место"
+[cap.cli]
+use = ["venue list", "venue add", "venue set", "venue remove"]
+
+[[cap]]
+id = "level.copy-zone"
+area = "level"
+title = "Копия места игры на новом месте: потоки заведения с интерьером и оболочкой, свои клоны ресурсов, сдвиг, новый номер заведения с записью, ячейки мировой сетки"
+[cap.cli]
+use = ["level copy-zone"]
+
+[[cap]]
 id = "level.navgraph"
 area = "level"
 title = "Править навигационный граф (пути ИИ): узлы, связи, флаги, R-дерево"

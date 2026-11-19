@@ -14,19 +14,19 @@
 
 ## Числа
 
-Возможностей в таблице: **149**.
+Возможностей в таблице: **151**.
 
 | Поверхность | Полностью | Частично | Нет | Намеренно нет |
 |---|---|---|---|---|
-| MCP | 130 | 5 | 0 | 14 |
-| Редактор | 141 | 0 | 0 | 8 |
-| CLI | 131 | 5 | 13 | 0 |
-| Python | 52 | 1 | 96 | 0 |
+| MCP | 130 | 5 | 2 | 14 |
+| Редактор | 141 | 0 | 2 | 8 |
+| CLI | 133 | 5 | 13 | 0 |
+| Python | 52 | 1 | 98 | 0 |
 
 - Есть в MCP, нет в редакторе: **0**.
 - Есть в редакторе, нет в MCP: **0**.
 - Есть в обоих, но в редакторе частично: **0**; в MCP частично: **5**.
-- Нет ни в MCP, ни в редакторе — только командная строка: **0**.
+- Нет ни в MCP, ни в редакторе — только командная строка: **2**.
 - Строк с «намеренно нет»: **15**.
 - В редакторе только мышью: **3**.
 
@@ -97,6 +97,8 @@
 | Добавить в поток новую SimGroup: пустую или с копиями объектов другой | `add_simgroup`ᴱ | «New SimGroup», «New zone»; форма New SimGroup: пустая или копия объектов другой; мастер New zone; Content Browser → контекстное меню потока. Без рук: `ZONE=simgroup:stream=[,copy=<поток>#<ресурс>][,objects=0+1]` | `add-simgroup` | — |
 | Добавить поток в мировую сетку уровня (wgi): игра грузит его у игрока | `add_zone_cell`ᴱ | «World grid cell», «New zone»; форма World grid cell: уровень, поток, коробка, сетка, имя ZoneStreamEnable; мастер New zone, шаг World grid. Без рук: `ZONE=cell:level=,stream=,min=X/Y/Z,max=X/Y/Z[,lod=][,name=][,on_enable]` | `world-grid add` | — |
 | Мировая сетка уровня: показать ячейки, убрать ячейку потока | `zone_cells`, `remove_zone_cell`ᴱ | «World grid cell»; форма World grid cell → List the cells: ячейки уровня с кнопкой Remove у каждой. Без рук: `ZONE=remove-cell:level=,stream= (список — только в окне)` | `world-grid info`, `world-grid remove` | — |
+| Заведения города (bricknmortarres): список, новое заведение по образцу, владелец, тип, место | — | — | `venue list`, `venue add`, `venue set`, `venue remove` | — |
+| Копия места игры на новом месте: потоки заведения с интерьером и оболочкой, свои клоны ресурсов, сдвиг, новый номер заведения с записью, ячейки мировой сетки | — | — | `level copy-zone` | — |
 | Править навигационный граф (пути ИИ): узлы, связи, флаги, R-дерево | `graph_edit`ᴱ | панель Zones → Navigation graphs: Pick nodes, Add node in front, Connect selected object, панель узла (тип графа, Rebuild R-tree); перетаскивание узла. Без рук: `LEVEL=…;nav=G:N;act=nav-rtree \| act=nav-flags:<hex> (узлы и связи — только мышью и полями)` | `graph-edit`, `graph-info`, `graph-export`, `graph-import` | `navigation_graph`, `navigation_graph_bytes` |
 | Пройти по уровню и проверить маршрут из A в B по коллизии | `walk_route`; смысловой эквивалент: проверка прямого маршрута из A в B той же физикой, что у панели Walk; свободной ходьбы с клавиатуры нет | панель Zones → Walk: Walk from the camera, A here, B here, Walk from A to B, список Problems. Без рук: `LEVEL=…;walk;route=ax,ay,az,bx,by,bz` | — | — |
 | Создать точку появления в месте камеры и запустить игру в ней | `play`ᴳ; параметр position (нужен --allow-edits) | панель Zones → Play from here → Make a point here and play; контекстное меню вида | — | — |
@@ -290,7 +292,8 @@
 
 Ни сервер MCP, ни редактор этого не дают; то, чего у них не будет, — в следующем разделе.
 
-Нет.
+- **Заведения города (bricknmortarres): список, новое заведение по образцу, владелец, тип, место** (`level.venues`): `venue list`, `venue add`, `venue set`, `venue remove`.
+- **Копия места игры на новом месте: потоки заведения с интерьером и оболочкой, свои клоны ресурсов, сдвиг, новый номер заведения с записью, ячейки мировой сетки** (`level.copy-zone`): `level copy-zone`.
 
 ## Намеренно нет
 

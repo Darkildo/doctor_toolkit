@@ -1156,3 +1156,67 @@ fn a_new_zone_is_built_from_operations_on_the_staged_game() {
     ws.rollback(start).unwrap();
     assert!(ws.is_empty());
 }
+
+/// `copy_zone`: the yard of the miniature town in a new stream, moved. The
+/// copy has its own model (a clone), its object stands at the moved place
+/// and shows the clone. (The cell of the world grid is not checked here: the
+/// table of contents of the miniature game numbers its streams 0x100 + n,
+/// not by the fold of their GUIDs, so the yard's cell is not found by name;
+/// on the game's data it is, `game-bench.md` §56.)
+#[test]
+fn a_zone_is_copied_somewhere_else() {
+    use crate::level::copy_zone::{ZoneCopy, copy_zone};
+    use crate::testing as mini;
+    let dir = tempfile::tempdir().unwrap();
+    mini::write_game(dir.path()).unwrap();
+    mini::write_town(dir.path()).unwrap();
+    let disk = GameInstance::open(dir.path()).unwrap();
+    let disk_index = disk.build_index(|_| {}).0;
+    let mut ws =
+        crate::workspace::Workspace::for_game(&disk, Some(&dir.path().join("ws"))).unwrap();
+    let offset = [100.0, 1.0, -50.0];
+    let done = copy_zone(
+        &disk,
+        &disk_index,
+        &mut ws,
+        &ZoneCopy {
+            from: vec![mini::YARD.into()],
+            to: "gf2/town/yard_copy".into(),
+            parent: mini::TOWN.into(),
+            level: mini::TOWN.into(),
+            offset,
+            venue: None,
+            prefix: Some("copy_".into()),
+            also: Vec::new(),
+            owner: None,
+        },
+        &|_: &Guid| false,
+    )
+    .unwrap();
+    assert_eq!(done.groups, 1);
+    assert_eq!(done.objects, 1);
+    assert_eq!(done.moved, 1);
+
+    let game = ws.stage(&disk).unwrap();
+    let zone = game.find_stream("gf2/town/yard_copy").unwrap();
+    let stream = game.open_stream(zone).unwrap();
+    let resources = &stream.layout().resources;
+    let group_at = resources
+        .iter()
+        .position(|r| r.header.type_id == TYPE_SIMGROUP)
+        .unwrap();
+    let group = SimGroup::parse(&stream.resource_data(group_at).unwrap()).unwrap();
+    let object = &group.objects[0];
+    let m = group.transform(object).unwrap();
+    for axis in 0..3 {
+        assert_eq!(m[3][axis], mini::CRATE_POSITION[axis] + offset[axis]);
+    }
+    let model = group.model(object).unwrap();
+    assert_ne!(model, mini::CRATE_MODEL_ID, "the copy shows a clone");
+    assert!(
+        resources
+            .iter()
+            .any(|r| r.header.type_id == TYPE_METAMODEL && r.header.ids[0] == model),
+        "the clone of the model is in the new stream"
+    );
+}

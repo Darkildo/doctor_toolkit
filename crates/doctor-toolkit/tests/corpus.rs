@@ -7890,3 +7890,62 @@ fn the_longest_stream_path_is_142_characters() {
         .unwrap();
     assert_eq!(cp_326.rel_path.len(), 132);
 }
+
+/// `docs/formats/bricknmortarres.md`: every venue table is written back byte
+/// for byte, its numbers and GUIDs are unique, and a table with a venue
+/// added after one of the game still parses.
+#[test]
+fn every_venue_table_round_trips() {
+    use doctor_toolkit::resource::bricknmortar::VenueTable;
+    let count = for_each_resource("bricknmortarres", |_, data| {
+        let table = VenueTable::parse(data).map_err(|e| e.to_string())?;
+        if table.to_bytes().map_err(|e| e.to_string())? != data {
+            return Err("does not round-trip".into());
+        }
+        if let Some(problem) = table.validate().first() {
+            return Err(problem.clone());
+        }
+        let mut more = table.clone();
+        let mut copy = table.venues[0].clone();
+        copy.id = 9999;
+        copy.guid = "00112233445566778899aabbccddeeff".into();
+        more.venues.push(copy);
+        let again = VenueTable::parse(&more.to_bytes().map_err(|e| e.to_string())?)
+            .map_err(|e| e.to_string())?;
+        if again != more {
+            return Err("a table with a new venue does not parse back".into());
+        }
+        Ok(())
+    });
+    if game_dir().is_some() {
+        assert!(count >= 8, "{count} venue table(s)");
+    }
+}
+
+/// `docs/formats/bricknmortarres.md` §3: the game keeps the venues of every
+/// loaded city in one table sorted by number, so the numbers of the three
+/// cities of the single-player game never repeat (the multiplayer maps are
+/// never loaded together and share 997 and 998).
+#[test]
+fn venue_numbers_of_the_cities_are_unique() {
+    use doctor_toolkit::level::venues;
+    use doctor_toolkit::workspace::Workspace;
+    let Some(dir) = game_dir() else { return };
+    let game = GameInstance::open(&dir).unwrap();
+    let ws =
+        Workspace::for_game(&game, Some(&std::env::temp_dir().join("doctor-venues-ws"))).unwrap();
+    let tables = venues::all_venue_tables(&game, &ws).unwrap();
+    let mut seen = std::collections::HashMap::new();
+    for (name, city) in &tables {
+        if !matches!(name.as_str(), "gf2/queens" | "gf2/miami" | "gf2/cuba") {
+            continue;
+        }
+        for v in &city.table.venues {
+            if let Some(other) = seen.insert(v.id, name.clone()) {
+                panic!("venue {} is in {other} and {name}", v.id);
+            }
+        }
+    }
+    assert_eq!(seen.get(&230).map(String::as_str), Some("gf2/cuba"));
+    assert!(tables.len() >= 8, "{} venue tables", tables.len());
+}

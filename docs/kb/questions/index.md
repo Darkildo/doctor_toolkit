@@ -6,7 +6,7 @@ editions: ["1.0.789.0"]
 stages: [72]
 sources: ["docs/kb/questions"]
 tags: [index]
-updated: 2026-11-16
+updated: 2026-11-18
 ---
 # Открытые вопросы
 
@@ -14,7 +14,7 @@ updated: 2026-11-16
 
 Каждая заметка — один вопрос, на который пока нет ответа, со следующим шагом. Вопрос, на который ответ найден, получает статус `known`, `partial` или `hypothesis` и остаётся в списке.
 
-Заметок: 133 (`known` — 27, `partial` — 32, `hypothesis` — 11, `unknown` — 63).
+Заметок: 133 (`known` — 28, `partial` — 32, `hypothesis` — 11, `unknown` — 62).
 
 | Заметка | Статус | Уверенность | Этапы |
 |---|---|---|---|
@@ -106,7 +106,7 @@ updated: 2026-11-16
 | [Какой бонус кольца даёт `Reduced Law Costs` и что он умножает](reduced-law-costs.md) | unknown | data | 72, 85, 90 |
 | [Порядок команд внутри проходов кадра](render-pass-command-order.md) | partial | bench | 72, 58, 101 |
 | [Формат ресурса `auc` не разобран](resource-format-auc.md) | known | exe | 72, 73, 98, 83 |
-| [Формат ресурса `bricknmortarres` не разобран](resource-format-bricknmortarres.md) | unknown | data | 72, 85 |
+| [Формат ресурса `bricknmortarres` не разобран](resource-format-bricknmortarres.md) | known | exe | 72, 85 |
 | [Формат ресурса `cec` не разобран](resource-format-cec.md) | unknown | data | 72, 94 |
 | [Формат ресурса `grt` не разобран](resource-format-grt.md) | unknown | data | 72, 98 |
 | [Формат ресурса `ism` не разобран](resource-format-ism.md) | unknown | data | 72, 98 |

@@ -4,9 +4,9 @@ status: partial
 confidence: data
 editions: ["1.0.789.0"]
 stages: [72, 73, 23, 48, 60, 63]
-sources: ["docs/analysis/tunables.md §1, §2 «Мир», «Полиция», §3", "docs/analysis/live-link.md §13.4", "docs/analysis/queens.md §4, §8", "data/gf2/enums.toml", "data/gf2/attr_types.toml"]
+sources: ["docs/analysis/tunables.md §1, §2 «Мир», «Полиция», §3", "docs/analysis/live-link.md §13.4", "docs/analysis/queens.md §4, §8", "data/gf2/enums.toml", "data/gf2/attr_types.toml", "docs/analysis/game-bench.md §53", "docs/formats/bricknmortarres.md"]
 tags: [families, war, family, simgroup, tunables]
-updated: 2026-11-16
+updated: 2026-11-18
 ---
 # Семьи и война семей
 
@@ -23,6 +23,9 @@ updated: 2026-11-16
 - Хэш семьи `sdbm(lower(имя))` лежит в 15 атрибутах (этап 73, все значения найдены в списке семей): `Sentient` 2 у 3 433 персонажей, `GenomeFilter` 3 и 4, `Building` 4 (владелец заведения), `TestBuildingOwnership` 1, `ChangeBuildingOwnership` 2, `ChangeFamilySettings` 0, `TestFamilySettings` 0, `ChaseConfig` 0, `CrimeDefinitions` 1, `TestUpgrade` 0, `WhiteboxCar` 58 и `Family` 24–26 (другие семьи; смысл не разобран).
 - Здоровье рядовых: Кармине (`crosato_NNNN_*`) 1800, Тони (`trosato_*`) 2000, Гранадос (`granadosassoc*`) 2200 — `StandardDamageComponent` 0 у 200 шаблонов `CommonNPC` на семью; солдаты и капо Кармине — 4250 и 3500.
 - Смерть дона сообщает `StandardDamageComponent.5` его `CommonNPC` (`msg_don_killed_c_rosato` у Кармине; в данных его слушает только музыка).
+- Захват заведения: `Building.25` — сообщение, которое здание шлёт, когда заведение переходит к игроку. У точек семей (тип 9) оно пустое, но если вписать своё, работает: проверено сменой владельца из логики (`ChangeBuildingOwnership`), стенд §53.
+- Погоня `ChaseConfig` запускается своим сообщением (`ChaseConfig.4`) и вне задания. С семьёй Кармине (`ChaseConfig.0` = `529e27ee`) и её машиной `thug60_lincoln01` машины появляются, но стоят пустые (стенд §53).
+- Заведения города и их исходные владельцы — ресурс [`bricknmortarres`](../../formats/bricknmortarres.md); новое заведение требует записи в нём (`venue add`).
 - Укрепление семьи в мире: поток `homer/high/compoundstream` (Тони, заведение 51, 361 объект), появление бойцов фазами по `TriggerBox` и `TestBuildingOwnership`.
 
 ## Что неизвестно

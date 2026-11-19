@@ -72,7 +72,8 @@ impl Marquee {
 pub struct Context {
     /// The object under the pointer (it is selected).
     pub object: Option<ObjRef>,
-    /// Where "Play from here" starts: the object, or the camera.
+    /// The object's origin, or the camera: "Play from here" starts on the
+    /// ground below it.
     pub at: [f32; 3],
 }
 
@@ -672,12 +673,10 @@ impl LevelView {
             }
             ContextItem::SelectAll => self.select_all(),
             ContextItem::PlayHere => {
-                let level = self.level.as_ref()?;
-                let eye = context.map_or(self.camera.eye, |c| c.at);
-                return Some(LevelAction::PlayHere {
-                    eye,
-                    streams: level.streams.clone(),
-                });
+                // The ground below the object or the camera (the next
+                // frame, the collision may still be built).
+                self.play_here = true;
+                self.play_here_at = context.map(|c| c.at);
             }
         }
         None
@@ -811,6 +810,12 @@ impl LevelView {
     #[cfg(test)]
     pub fn camera(&self) -> super::camera::FlyCamera {
         self.camera
+    }
+
+    /// The camera, to change (tests).
+    #[cfg(test)]
+    pub fn camera_mut(&mut self) -> &mut super::camera::FlyCamera {
+        &mut self.camera
     }
 
     /// Shows a short message in the view.

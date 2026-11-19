@@ -1,24 +1,21 @@
 ---
 type: question
-status: unknown
-confidence: data
+status: known
+confidence: exe
 editions: ["1.0.789.0"]
 stages: [72, 85]
-sources: ["docs/formats/resource-types.md §8"]
+sources: ["docs/formats/resource-types.md §8", "docs/formats/bricknmortarres.md"]
 tags: [question, resource-type, format]
-updated: 2026-11-16
+updated: 2026-11-18
 ---
 # Формат ресурса `bricknmortarres` не разобран
 
-Тип `bricknmortarres`: состояния заведений и эффекты (`dv_building_fire`), 8 ресурсов. Разбора в тулките нет.
+Разобран 2026-11-18: список заведений города (записи по 0x70 байт и имена эффектов), загрузчик `0x006B1000`, запись побайтно на всех 8 ресурсах; команда `venue`. Подробно — [формат](../../formats/bricknmortarres.md).
 
-## Следующий шаг
-
-Выгрузить ресурсы (`doctor-toolkit dump <игра> --type bricknmortarres`), описать раскладку и найти загрузчик в exe.
-
-Запланировано: [Этап 85: Экономика](../research/stage-85.md).
+Новое заведение требует записи: `Building` с номером, которого нет в таблице, роняет игру (`0x006B5B87`); с записью — грузится и переходит к игроку (проверено на стенде).
 
 ## Связанное
 
+- [Формат `bricknmortarres`](../../formats/bricknmortarres.md)
 - [Тип ресурса `bricknmortarres`](../resources/bricknmortarres.md)
 - [docs/formats/resource-types.md](../../formats/resource-types.md) §8

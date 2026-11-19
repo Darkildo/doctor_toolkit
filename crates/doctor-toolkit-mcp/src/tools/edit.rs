@@ -495,14 +495,16 @@ pub fn set_attribute(kit: &Toolkit, p: SetAttributeParams) -> ToolResult<Output>
     let (at, o) = object(kit, ws, &p.object)?;
     let mut g = group(kit, ws, &at)?;
     let original = g.clone();
-    let object = g
-        .objects
-        .get(o)
-        .ok_or_else(|| ToolError(format!("the SimGroup has {} object(s)", g.objects.len())))?
-        .clone();
+    if o >= g.objects.len() {
+        return fail(format!("the SimGroup has {} object(s)", g.objects.len()));
+    }
     let schema = doctor_toolkit::resource::simgroup::Schema::gf2();
     let mut changes = Vec::new();
     for (target, text) in &p.values {
+        // read the object again for every value: a write can give it a copy of
+        // a shared packet and move the packets of the group, and the indices of
+        // the object taken before it would point at other packets
+        let object = g.objects[o].clone();
         let (class, attr) = target
             .split_once('.')
             .ok_or_else(|| ToolError(format!("`{target}`: Class.attribute expected")))?;
@@ -564,7 +566,7 @@ pub fn set_attribute(kit: &Toolkit, p: SetAttributeParams) -> ToolResult<Output>
     }
     if let Some(model) = &p.model {
         let id = parse_hex(model)?;
-        let before = g.model(&object);
+        let before = g.model(&g.objects[o].clone());
         if g.set_model(o, Some(id))? {
             changes.push(json!({
                 "attribute": "model",

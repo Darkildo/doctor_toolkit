@@ -8,6 +8,7 @@ pub mod apx;
 pub mod auc;
 pub mod audio;
 pub mod audio_encode;
+pub mod bricknmortar;
 pub mod chv;
 pub mod dds;
 pub mod delta;

@@ -124,6 +124,33 @@ fn undo(f: &mut Fixture) {
 }
 
 #[test]
+fn flying_to_an_object_looks_down_at_it() {
+    let mut f = view("focus");
+    let target = {
+        let m = f.app.levels[&f.id].object(r(1)).unwrap().transform.unwrap();
+        [m[3][0], m[3][1], m[3][2]]
+    };
+    // Looking up, the camera backed off under the ground; looking straight
+    // down, high above it.
+    for pitch in [1.2, -1.5] {
+        let level = f.app.levels.get_mut(&f.id).unwrap();
+        level.camera_mut().pitch = pitch;
+        level.focus_on(r(1));
+        let camera = level.camera();
+        assert!(
+            (-1.0..=-0.2).contains(&camera.pitch),
+            "pitch {pitch}: {}",
+            camera.pitch
+        );
+        assert!(
+            camera.eye[1] > target[1],
+            "pitch {pitch}: {:?} above {target:?}",
+            camera.eye
+        );
+    }
+}
+
+#[test]
 fn q_w_e_r_choose_the_gizmo_and_the_right_button_flies() {
     let mut f = view("keys");
     fn level(f: &Fixture) -> &crate::level_view::LevelView {
@@ -358,10 +385,8 @@ fn the_context_menu_of_the_view() {
         level.context_command(ContextItem::ShowLogic, &ctx),
         Some(LevelAction::ShowLogic { .. })
     ));
-    assert!(matches!(
-        level.context_command(ContextItem::PlayHere, &ctx),
-        Some(LevelAction::PlayHere { .. })
-    ));
+    // Play from here: the ground below the object, found in the next frame.
+    assert!(level.context_command(ContextItem::PlayHere, &ctx).is_none());
     assert!(
         level
             .context_command(ContextItem::SelectAll, &ctx)

@@ -87,6 +87,20 @@ pub fn add_zone_cell(
     level: &str,
     cell: &ZoneCell,
 ) -> Result<ZoneCellAdded> {
+    add_zone_cell_in(game, ws, level, cell, None)
+}
+
+/// As [`add_zone_cell`], into the grid that is resource `grid` of the level
+/// stream when given (an interior cell, mask `0x10`, goes into the grid of
+/// the `high` world cells, as in the game), else into the grid whose world
+/// cells have the cell's mask.
+pub fn add_zone_cell_in(
+    game: &GameInstance,
+    ws: &mut Workspace,
+    level: &str,
+    cell: &ZoneCell,
+    grid: Option<usize>,
+) -> Result<ZoneCellAdded> {
     let name = crate::workspace::key::normalize_stream(&cell.stream);
     let created = ws.new_stream(&name).cloned();
     let guid = match (&cell.guid, &created) {
@@ -116,7 +130,10 @@ pub fn add_zone_cell(
     }
     let target = grids
         .iter_mut()
-        .find(|g| g.grid.main_lod_mask() == Some(cell.lod_mask))
+        .find(|g| match grid {
+            Some(resource) => g.resource == resource,
+            None => g.grid.main_lod_mask() == Some(cell.lod_mask),
+        })
         .ok_or_else(|| {
             Error::InvalidArgument(format!(
                 "{level} has no world grid with the level-of-detail mask {:#x}",

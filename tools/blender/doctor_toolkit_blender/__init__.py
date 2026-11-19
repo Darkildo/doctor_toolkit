@@ -14,7 +14,7 @@ the extension package, or found through the "Module folder" preference.
 bl_info = {
     "name": "doctor_toolkit",
     "author": "doctor_toolkit contributors",
-    "version": (1, 0, 0),
+    "version": (1, 1, 0),
     "blender": (4, 2, 0),
     "location": "3D Viewport > Sidebar > Doctor Toolkit",
     "description": "Import and export models of The Godfather II through a doctor_toolkit workspace",

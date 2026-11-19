@@ -12,6 +12,7 @@ The Godfather 1/2, Dead Space 1/2/3, Dante's Inferno, The Simpsons Game.
 | `metamodel.md` | MetaModel (magic `MMdl`): части, состояния, свойства |
 | `logic-types.md` | variabledictionary, partsdb, `covernodetable` (`0xDF14DA75`) |
 | `treemodel.md` | Модели деревьев `treemodel` (`0xCDB9D42B`): части, полосы ствола, листья к камере, как игра их рисует |
+| `bricknmortarres.md` | Заведения города `bricknmortarres`: раскладка записи, как игра находит заведение `Building`, новое заведение |
 | `wgi.md` | Мировая сетка `wgi`: таблица потоков, ячейки зон, пул; как игра выбирает зоны для загрузки; `ZoneStreamEnable`; новая ячейка |
 | `navigation-graph.md` | Навигационный граф `graph`: заголовок, узлы, рёбра, соседние графы, свойства, R-дерево, таблица путей, видимость, флаги |
 | `lua.md` | Скрипты `lua`: формат чанка Lua 5.0 с числами float, компилятор, декомпилятор, правка |

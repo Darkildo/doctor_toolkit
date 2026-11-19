@@ -17,12 +17,14 @@ pub mod assets;
 pub mod catalog;
 pub mod collision;
 pub mod compat;
+pub mod copy_zone;
 pub mod edit;
 pub mod many;
 pub mod model;
 pub mod navgraph;
 pub mod place;
 pub mod presets;
+pub mod venues;
 #[cfg(feature = "walk")]
 pub mod walk;
 pub mod world_grid;

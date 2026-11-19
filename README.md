@@ -10,7 +10,7 @@ First supported game: **The Godfather II (PC)**.
 [![CI](https://github.com/Darkildo/doctor_toolkit/actions/workflows/ci.yml/badge.svg)](https://github.com/Darkildo/doctor_toolkit/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/Darkildo/doctor_toolkit?include_prereleases&label=release)](https://github.com/Darkildo/doctor_toolkit/releases)
 [![License: GPL-3.0](https://img.shields.io/badge/license-GPL--3.0-blue.svg)](LICENSE)
-![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20Windows%20%7C%20macOS-lightgrey)
+![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20(source)-lightgrey)
 [![Discord](https://img.shields.io/badge/Discord-join%20the%20community-5865F2?logo=discord&logoColor=white)](https://discord.gg/MatbKKdFR)
 
 <img src="docs/images/level-details.png" alt="The level editor: Havana in 3D, a selected object with its gizmo, the Outliner and Details with transform and model" width="900">
@@ -87,16 +87,13 @@ documentation of this tool only.
 
 ## Quick start
 
-1. Download the package for your system from the
-   [latest release](https://github.com/Darkildo/doctor_toolkit/releases)
-   (Linux x86_64, Windows x86_64, macOS) or
-   [build from source](#building-from-source).
-2. Unpack it and start the editor with the folder of your game:
-
-   ```sh
-   tar xzf doctor_toolkit-1.0.0-linux-x86_64.tar.gz && cd doctor_toolkit-1.0.0-linux-x86_64
-   ./doctor-toolkit-gui "/path/to/The Godfather II"
-   ```
+1. Download `doctor_toolkit-1.1.0-windows-x86_64.zip` from the
+   [latest release](https://github.com/Darkildo/doctor_toolkit/releases).
+   Releases are built for Windows x86_64 only; on Linux and macOS
+   [build from source](#building-from-source) (Linux:
+   [Install (Linux)](#install-linux)).
+2. Unpack it and start the editor, `doctor-toolkit-gui.exe`, then choose the
+   folder of your game (or pass it as the argument).
 
 3. Read the [user guide](docs/guide/README.md) (Russian) — installation,
    browsing, editing, mods, Play, dialogues, logic, cut-scenes and more.
@@ -294,11 +291,13 @@ Back up your game folder before writing into it.
 
 ## Install (Linux)
 
-Download `doctor_toolkit-<version>-linux-x86_64.tar.gz` from the releases,
-unpack it anywhere and run the programs from that folder:
+Since 1.0.0 the releases carry no Linux archive: build it from the sources
+([Building from source](#building-from-source)) with `tools/release.sh`,
+which puts `dist/doctor_toolkit-<version>-linux-x86_64.tar.gz`, then unpack
+it anywhere and run the programs from that folder:
 
 ```sh
-tar xzf doctor_toolkit-1.0.0-linux-x86_64.tar.gz && cd doctor_toolkit-1.0.0-linux-x86_64
+tar xzf doctor_toolkit-1.1.0-linux-x86_64.tar.gz && cd doctor_toolkit-1.1.0-linux-x86_64
 ./doctor-toolkit-gui "/path/to/The Godfather II"     # the editor
 ./open-mod-manager "/path/to/The Godfather II"       # Open Mod Manager, for players
 ./doctor-toolkit --help                              # the command line
@@ -868,9 +867,8 @@ dependencies (the C library, and `libasound.so.2` for the editor); with
 `tools/package.sh` builds the Windows and macOS packages. CI
 (`.github/workflows/`): every change to the code runs fmt, clippy and the
 tests on Linux and the Python bindings (`ci.yml`); the fuzz targets run
-weekly (`fuzz.yml`); a `v*` tag builds the packages for Linux, Windows and
-macOS and the live-link module and puts them on a draft release
-(`release.yml`).
+weekly (`fuzz.yml`); a `v*` tag builds the Windows package and the in-game
+modules and puts them on a draft release (`release.yml`).
 
 Documentation of the file formats is in `docs/formats/` (Russian).
 

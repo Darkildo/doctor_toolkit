@@ -103,6 +103,49 @@ pub enum LevelCommand {
         #[command(flatten)]
         mode: EditMode,
     },
+    /// Copy a place of the game somewhere else: every resource and object of
+    /// the streams `--from` into the new stream TO, moved by `--offset`
+    ///
+    /// Resources are cloned under new ids (models, collision, materials and
+    /// textures of the copy are its own), objects get new GUIDs and the
+    /// cloned models, navigation graphs and cover points move with them.
+    /// Messages sent and heard inside the copy get `--prefix`; `--venue
+    /// OLD:NEW` gives the copy another venue number. The new stream gets a
+    /// cell of the world grid of `--level` around the moved cells of the
+    /// sources (loaded by distance).
+    CopyZone {
+        game_dir: PathBuf,
+        /// The new stream, e.g. `gf2/queens/doctor/bank_copy`
+        to: String,
+        /// A stream to copy (repeatable), e.g. `gf2/queens/local/hank/high/venue_026`
+        #[arg(long = "from", required = true)]
+        from: Vec<String>,
+        /// The stream the new one depends on
+        #[arg(long)]
+        parent: String,
+        /// The level whose world grid gets the cell, e.g. `gf2/queens`
+        #[arg(long)]
+        level: String,
+        /// `X,Y,Z` to move everything by
+        #[arg(long, value_name = "X,Y,Z", allow_hyphen_values = true)]
+        offset: String,
+        /// `OLD:NEW` venue number
+        #[arg(long, value_name = "OLD:NEW")]
+        venue: Option<String>,
+        /// Prefix of the messages of the copy
+        #[arg(long)]
+        prefix: Option<String>,
+        /// An object of another stream to copy along, `STREAM#RESOURCE:OBJECT`
+        /// (repeatable), with its model: a venue's shell in the `medium` zone
+        /// of its district (a `ZoneRenderLOD` with the venue's number)
+        #[arg(long = "also", value_name = "STREAM#RESOURCE:OBJECT")]
+        also: Vec<String>,
+        /// Owner of the new venue (family name, e.g. `rosato_carmine`) [default: the original's]
+        #[arg(long, requires = "venue")]
+        owner: Option<String>,
+        #[command(flatten)]
+        mode: EditMode,
+    },
     /// Add an object: a copy of a template object with another model and position
     ///
     /// The model is an existing metamodel (`--model`, it must be in the
@@ -205,6 +248,73 @@ pub fn run(command: LevelCommand) -> Result<()> {
             )?;
             out!("object {} duplicated as {copy} ({guid})", object.object);
             workspace_cmd::finish_edit(&game, &mut ws, &mode, vec![object.stream.clone()])
+        }
+        LevelCommand::CopyZone {
+            game_dir,
+            to,
+            from,
+            parent,
+            level,
+            offset,
+            venue,
+            prefix,
+            also,
+            owner,
+            mode,
+        } => {
+            let o = parse_floats(&offset)?;
+            let venue = venue
+                .as_deref()
+                .map(|v| -> Result<(i32, i32)> {
+                    let (a, b) = v
+                        .split_once(':')
+                        .ok_or_else(|| anyhow::anyhow!("--venue OLD:NEW, not {v}"))?;
+                    Ok((a.trim().parse()?, b.trim().parse()?))
+                })
+                .transpose()?;
+            let (game, index) = open_index_with(&game_dir, mode.workspace_dir.as_deref())?;
+            let mut ws = workspace_cmd::open_for_edit(&game, &mode)?;
+            let taken = all_guids(&game, &index);
+            let done = doctor_toolkit::level::copy_zone::copy_zone(
+                &game,
+                &index,
+                &mut ws,
+                &doctor_toolkit::level::copy_zone::ZoneCopy {
+                    from,
+                    to: to.clone(),
+                    parent,
+                    level,
+                    offset: o,
+                    venue,
+                    prefix,
+                    also,
+                    owner: owner
+                        .as_deref()
+                        .map(doctor_toolkit::level::venues::family_hash),
+                },
+                &|g: &Guid| taken.contains(g),
+            )?;
+            out!(
+                "{}: {} resource(s), {} SimGroup(s) with {} object(s) ({} moved), {} graph(s), {} cover point(s), {} venue attribute(s)",
+                done.stream,
+                done.resources,
+                done.groups,
+                done.objects,
+                done.moved,
+                done.graphs,
+                done.points,
+                done.venues
+            );
+            for (old, new) in &done.messages {
+                out!("message {old} -> {new}");
+            }
+            if let Some((lo, hi)) = done.cell {
+                out!("world grid cell {lo:?} .. {hi:?}");
+            }
+            if let Some(guid) = &done.venue_guid {
+                out!("venue record {guid} (Building.5 of the copied buildings)");
+            }
+            workspace_cmd::finish_edit(&game, &mut ws, &mode, vec![to])
         }
         LevelCommand::Remove { object, mode } => {
             let (game, _, group) = open_group(&object, &mode)?;

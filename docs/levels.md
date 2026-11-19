@@ -369,6 +369,8 @@ doctor-toolkit level remove GAME STREAM RESOURCE OBJECT
 doctor-toolkit level add GAME STREAM RESOURCE TEMPLATE --model 08334a16 --position -400,-18,510
 doctor-toolkit level add GAME STREAM RESOURCE TEMPLATE --clone-model gf2/…/terrain010:61
 doctor-toolkit add-simgroup GAME STREAM [--copy-of STREAM#RESOURCE [--object N]…]   # новая SimGroup
+doctor-toolkit level copy-zone GAME НОВЫЙ_ПОТОК --from ПОТОК [--from ПОТОК…] --parent РОДИТЕЛЬ \
+    --level gf2/queens --offset=X,Y,Z [--venue СТАРЫЙ:НОВЫЙ] [--prefix ПРИСТАВКА]   # копия места (§7.1)
 ```
 
 Потоки, созданные рабочим пространством (`add-stream`), команды `level …`
@@ -380,6 +382,49 @@ doctor-toolkit add-simgroup GAME STREAM [--copy-of STREAM#RESOURCE [--object N]�
 
 Правки — как у остальных команд: в рабочее пространство, `--direct` сразу в
 игру. Перемещение и поворот — `simgroup-set --position/--rotation`.
+
+### 7.1 Копия места: `level copy-zone`
+
+Копия нескольких потоков игры — заведения с интерьером, например — на новом
+месте, сдвинутая на `--offset` (`level::copy_zone`). Как устроено заведение
+и почему копия устроена так, проверено на стенде (`game-bench.md` §56):
+
+| Часть заведения | Где у игры | В копии |
+|---|---|---|
+| Оболочка вблизи: стены, колонны, башня; мебель, двери, сейф, телефон, логика | поток заведения (`…/high/venue_026`), объекты `ZoneRenderLOD` с номером заведения в `ZoneRenderLOD.1` | первый новый поток, ячейка вида 0 |
+| Интерьер: пол, стойки, перегородки, план на мини-карте | поток интерьера (`…/interior/venue_026`), ячейка вида 5 с именем `venue_026`, маска LOD `0x10` | свой поток с такой же ячейкой `venue_NNN` и объём `ZoneStreamEnable` с этим именем: ячейку нового заведения игра сама не включает |
+| Оболочка издали | `medium/zoneN` района: два `ZoneRenderLOD` с номером заведения (`--also`) | свой поток с ячейкой средней детализации; модели — с их коллизией (ссылка типа `hka` на `hkx` того же id) |
+| Здание `Building` | `medium/zoneN` (`--also`) | в первый поток: из другого потока у интерьера нет коллизии |
+| Коллизия интерьера | ставится по записи заведения `bricknmortarres` | запись нового номера по образцу старой, сдвинутая (`--venue СТАРЫЙ:НОВЫЙ`, `--owner`) |
+
+Остальное:
+- все ресурсы, кроме SimGroup, клонируются под новыми id (`clone_resources`):
+  у копии свои модели, коллизии, материалы и текстуры;
+- объекты получают новые GUID (ссылки между копиями следуют за ними),
+  сдвигаются и указывают на клоны ресурсов;
+- сообщения, которые и шлются, и слушаются внутри копии, получают
+  `--prefix`; остальные (музыка, сообщения движка, то, что шлёт код игры)
+  остаются;
+- номер заведения меняется в атрибутах типа `Enum<venue>`; `Building.5`
+  нового здания — GUID новой записи;
+- навигационные графы сдвигаются с узлами и получают GUID своего
+  заголовка, их связи в графы исходного места отбрасываются; точки
+  `covernodetable` сдвигаются и получают новые GUID.
+
+Пример — банк Liberty Banking (26) как заведение 301:
+
+```sh
+doctor-toolkit level copy-zone GAME gf2/queens/cw/cw_safehouse \
+    --from gf2/queens/local/hank/high/venue_026 --from gf2/queens/local/hank/interior/venue_026 \
+    --also 'gf2/queens/local/hank/medium/zone4#285:4' --also 'gf2/queens/local/hank/medium/zone4#285:5' \
+    --also 'gf2/queens/local/hank/medium/zone4#285:6' \
+    --parent gf2/queens/local --level gf2/queens --offset=-62.5,-1.7,378.5 \
+    --venue 26:301 --owner rosato_carmine --prefix cwsafe_
+```
+
+Место под копию должно быть ровным, пустым и без дорог: реквизит и деревья
+вокруг торчат сквозь копию, земля выше её пола видна сквозь пол, а машины
+едут по своему графу сквозь здание. Пол копии ставится чуть выше земли.
 
 ## 8. Производительность (2026-11-12)
 

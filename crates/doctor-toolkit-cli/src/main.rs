@@ -34,6 +34,7 @@ mod sound_cmd;
 mod text_cmd;
 mod tunables_cmd;
 mod types_cmd;
+mod venue_cmd;
 mod video_cmd;
 mod voice_cmd;
 mod workspace_cmd;
@@ -126,6 +127,11 @@ enum Command {
     /// position of the player; add a new stream to them
     #[command(subcommand)]
     WorldGrid(create_cmd::WorldGridCommand),
+
+    /// The venues of a city (`bricknmortarres`): list them, add a new venue
+    /// made after one of the game, change its owner, type or position
+    #[command(subcommand)]
+    Venue(venue_cmd::VenueCommand),
 
     /// Check that metamodel, simgroup, mesh and material references of streams resolve
     ///
@@ -989,6 +995,7 @@ fn run(command: Command) -> Result<()> {
         Command::CollisionExport(args) => collision_cmd::collision_export(args),
         Command::RemoveStream(args) => create_cmd::remove_stream(args),
         Command::WorldGrid(command) => create_cmd::world_grid(command),
+        Command::Venue(command) => venue_cmd::venue(command),
         Command::CheckRefs(args) => create_cmd::check_refs(args),
         Command::CheckEdits(args) => create_cmd::check_edits(args),
         Command::Skeletons { game_dir, output } => formats::skeletons(&game_dir, &output),
