@@ -17,6 +17,8 @@ use doctor_toolkit::game::{GameInstance, StreamFile};
 use doctor_toolkit::resource::names::type_tags;
 use doctor_toolkit::toc::Toc;
 
+#[path = "corpus/copies.rs"]
+mod copies;
 #[path = "corpus/crew.rs"]
 mod crew;
 #[path = "corpus/delta.rs"]
@@ -35,6 +37,8 @@ mod resources_in_memory;
 mod story;
 #[path = "corpus/types.rs"]
 mod types;
+#[path = "corpus/whole_game.rs"]
+mod whole_game;
 
 fn game_dir() -> Option<PathBuf> {
     let dir = PathBuf::from(std::env::var_os("EARS_GF2_DIR")?);

@@ -1065,6 +1065,8 @@ impl BrowserApp {
 
     /// Writes the settings and the layout if they changed.
     fn save_settings(&mut self) {
+        // Open Mod Manager writes DXVK and the graphics into the same file.
+        self.pull_shared_launch_all();
         let state = self.persisted_state();
         self.saved.0 = Instant::now();
         if state == self.saved.1 {

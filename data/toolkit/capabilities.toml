@@ -1861,6 +1861,7 @@ use = ["play"]
 at = "size, render, fps, fov, fxaa, sharpen, draw_merge, laa, dxvk, vulkan_driver"
 [cap.editor]
 use = ["cmd.play_options"]
+at = "Open Mod Manager → Launch settings…: DXVK и графика, те же значения (общий settings.toml)"
 input = "form"
 [cap.cli]
 use = ["play", "render config", "render install", "render uninstall", "render log"]

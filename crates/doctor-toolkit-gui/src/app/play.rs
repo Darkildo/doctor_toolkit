@@ -44,6 +44,9 @@ pub struct PlayState {
     /// The Mods window imports the old toolkit's patches once it is ready.
     import_old_queued: bool,
     pub(super) options_open: bool,
+    /// The open Play options took DXVK and the graphics from the settings
+    /// file (Open Mod Manager shares them).
+    options_synced: bool,
     /// The game shown in a tab (stage 33).
     pub(super) game_view: crate::game_view::GameView,
     /// Start the game again once it exited (the game tab's Restart).
@@ -65,27 +68,10 @@ pub struct PlayState {
 }
 
 /// [`play::dxvk::check`] for one launch method.
-pub(super) type DxvkCheck = Result<play::dxvk::Dxvk, play::dxvk::Problem>;
+pub(super) type DxvkCheck = doctor_toolkit_mods::launch::DxvkCheck;
 
-/// The text of why DXVK cannot be used.
-pub(super) fn dxvk_problem(problem: &play::dxvk::Problem) -> String {
-    use play::dxvk::Problem;
-    match problem {
-        Problem::NotLinux => tr("dxvk.not_linux").to_owned(),
-        Problem::ProtonHasIt => tr("dxvk.proton").to_owned(),
-        Problem::Method(kind) => trf("dxvk.method", &[("method", kind)]),
-        Problem::NoDxvk => tr("dxvk.no_dxvk").to_owned(),
-        Problem::NoLoader => tr("dxvk.no_loader").to_owned(),
-        Problem::NoDriver { software_only } => {
-            let mut text = tr("dxvk.no_driver").to_owned();
-            if *software_only {
-                text += tr("dxvk.software_only");
-            }
-            text
-        }
-        Problem::Occupied(path) => trf("dxvk.occupied", &[("file", &path.display().to_string())]),
-    }
-}
+pub(super) use doctor_toolkit_mods::launch::dxvk_problem;
+use doctor_toolkit_mods::launch::{dxvk_ui, graphics_ui, remove_dxvk_env};
 
 struct AfterExit {
     root: PathBuf,
@@ -166,6 +152,7 @@ impl PlayState {
             tasks: Vec::new(),
             import_old_queued: false,
             options_open: false,
+            options_synced: false,
             game_view: crate::game_view::GameView::default(),
             restart: false,
             last_exit: None,
@@ -513,6 +500,7 @@ impl BrowserApp {
         if self.refuse_write() {
             return;
         }
+        self.pull_shared_launch(game.root());
         let settings = self.settings.game(game.root());
         let config = settings.play;
         let method = self.play_method();
@@ -954,6 +942,10 @@ impl BrowserApp {
         let Some(game) = self.game.clone() else {
             return;
         };
+        if !self.play.options_synced {
+            self.pull_shared_launch(game.root());
+            self.play.options_synced = true;
+        }
         let mut open = true;
         let settings = self.settings.game(game.root());
         let mut config = settings.play;
@@ -1116,7 +1108,49 @@ impl BrowserApp {
         }
         if !open {
             self.play.options_open = false;
+            self.play.options_synced = false;
+            self.push_shared_launch(game.root());
             self.save_settings();
+        }
+    }
+
+    /// Takes DXVK and the graphics of the game in `root` from the settings
+    /// file: Open Mod Manager may have changed them
+    /// ([`doctor_toolkit_mods::launch`]).
+    pub(super) fn pull_shared_launch(&mut self, root: &Path) {
+        let Some(dir) = self.store.dir.clone() else {
+            return;
+        };
+        if let Some(shared) = doctor_toolkit_mods::launch::load_shared(&dir, root) {
+            shared.put_into(&mut self.settings.game_mut(root).play);
+        }
+    }
+
+    /// Writes DXVK and the graphics of the game in `root` into the settings
+    /// file at once, for Open Mod Manager.
+    fn push_shared_launch(&mut self, root: &Path) {
+        let Some(dir) = self.store.dir.clone() else {
+            return;
+        };
+        let shared = doctor_toolkit_mods::launch::Shared::of(&self.settings.game(root).play);
+        if let Err(error) = doctor_toolkit_mods::launch::save_shared(&dir, root, &shared) {
+            self.notify(
+                Level::Warning,
+                trf("app.cannot_save_settings", &[("error", &error)]),
+            );
+        }
+    }
+
+    /// Before the settings are written: DXVK and the graphics of every game
+    /// as the file has them, unless the Play options are open and hold the
+    /// editor's own edit.
+    pub(super) fn pull_shared_launch_all(&mut self) {
+        if self.play.options_open {
+            return;
+        }
+        let roots: Vec<PathBuf> = self.settings.games.keys().map(PathBuf::from).collect();
+        for root in roots {
+            self.pull_shared_launch(&root);
         }
     }
 
@@ -1487,151 +1521,9 @@ fn method_editor(ui: &mut egui::Ui, method: &mut LaunchMethod, root: &Path, inst
     }
 }
 
-/// The state of DXVK under its check box; returns whether it can be used.
-/// The section "Graphics" of the Play options (stage 59).
-fn graphics_ui(
-    ui: &mut egui::Ui,
-    g: &mut play::render::GraphicsOptions,
-    method: &LaunchMethod,
-    root: &std::path::Path,
-    dxvk: bool,
-) {
-    ui.strong(tr("graphics.title"));
-    ui.checkbox(&mut g.module, tr("graphics.module"))
-        .on_hover_text(tr("graphics.module_hint"));
-    if g.module {
-        ui.indent("graphics_module", |ui| {
-            if play::render::permanent(root) {
-                ui.label(RichText::new(tr("graphics.permanent")).weak());
-            } else if play::render::module_binary().is_none() {
-                ui.colored_label(doctor_toolkit_mods::WARN, tr("graphics.not_built"));
-            }
-            ui.checkbox(&mut g.time_of_day, tr("graphics.time_of_day"))
-                .on_hover_text(tr("graphics.time_of_day_hint"));
-            ui.checkbox(&mut g.vsync_one, tr("graphics.vsync_one"));
-            ui.checkbox(&mut g.limiter_sleep, tr("graphics.limiter_sleep"));
-            ui.horizontal(|ui| {
-                ui.label(tr("graphics.fps"))
-                    .on_hover_text(tr("graphics.fps_hint"));
-                ui.add(egui::DragValue::new(&mut g.fps).range(0..=1000).speed(1.0));
-            });
-            ui.horizontal(|ui| {
-                ui.label(tr("graphics.fov"))
-                    .on_hover_text(tr("graphics.fov_hint"));
-                ui.add(egui::DragValue::new(&mut g.fov).range(0..=120).speed(1.0));
-            });
-            ui.checkbox(&mut g.fxaa, tr("graphics.fxaa"))
-                .on_hover_text(tr("graphics.post_hint"));
-            ui.horizontal(|ui| {
-                ui.label(tr("graphics.sharpen"))
-                    .on_hover_text(tr("graphics.post_hint"));
-                ui.add(egui::Slider::new(&mut g.sharpen, 0..=100));
-            });
-            ui.checkbox(&mut g.draw_merge, tr("graphics.draw_merge"))
-                .on_hover_text(tr("graphics.draw_merge_hint"));
-        });
-    }
-    ui.checkbox(&mut g.laa, tr("graphics.laa"))
-        .on_hover_text(tr("graphics.laa_hint"));
-    if g.laa
-        && let Some(why) = play::render::laa_problem(method)
-    {
-        ui.colored_label(
-            doctor_toolkit_mods::WARN,
-            trf("graphics.laa_problem", &[("reason", &why)]),
-        );
-    }
-    if dxvk {
-        ui.horizontal(|ui| {
-            ui.label(tr("graphics.vulkan_driver"))
-                .on_hover_text(tr("graphics.vulkan_driver_hint"));
-            let name = |v: &str| match v {
-                "" | "all" => tr("graphics.vulkan_all").to_owned(),
-                "auto" => tr("graphics.vulkan_auto").to_owned(),
-                other => other.to_owned(),
-            };
-            egui::ComboBox::from_id_salt("play_vulkan_driver")
-                .selected_text(name(&g.vulkan_driver))
-                .show_ui(ui, |ui| {
-                    for v in ["", "auto", "nvidia", "radeon", "intel"] {
-                        ui.selectable_value(&mut g.vulkan_driver, v.to_owned(), name(v));
-                    }
-                });
-        });
-    }
-}
-
-fn dxvk_ui(ui: &mut egui::Ui, enabled: bool, check: &DxvkCheck) -> bool {
-    match check {
-        Ok(found) => {
-            if enabled {
-                ui.label(
-                    RichText::new(trf("dxvk.found", &[("source", &found.source)]))
-                        .weak()
-                        .small(),
-                );
-            }
-            true
-        }
-        Err(problem) => {
-            if enabled {
-                ui.colored_label(doctor_toolkit_mods::WARN, dxvk_problem(problem));
-            }
-            false
-        }
-    }
-}
-
-/// Takes the DXVK variables of [`play::dxvk::apply_env`] out of a plan
-/// again (DXVK could not be installed after all).
-fn remove_dxvk_env(plan: &mut play::LaunchPlan) {
-    plan.env.retain(|(k, _)| !k.starts_with("DXVK_"));
-    for (key, value) in &mut plan.env {
-        if key == "WINEDLLOVERRIDES" {
-            let kept: Vec<String> = value
-                .to_string_lossy()
-                .split(';')
-                .filter(|p| !p.is_empty() && *p != "d3d9=n,b")
-                .map(str::to_owned)
-                .collect();
-            *value = kept.join(";").into();
-        }
-    }
-    plan.env
-        .retain(|(k, v)| !(k == "WINEDLLOVERRIDES" && v.is_empty()));
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn a_failed_dxvk_install_leaves_the_asi_loader_override() {
-        let root = std::path::Path::new("/game");
-        let mut plan = play::LaunchPlan {
-            program: "wine".into(),
-            args: vec![],
-            env: vec![("WINEDLLOVERRIDES".into(), "dinput8=n,b".into())],
-            dir: root.into(),
-            detached: false,
-        };
-        play::dxvk::apply_env(&mut plan, root);
-        remove_dxvk_env(&mut plan);
-        assert_eq!(
-            plan.env,
-            [("WINEDLLOVERRIDES".to_owned(), "dinput8=n,b".into())]
-        );
-        // Without the loader nothing is left.
-        let mut plan = play::LaunchPlan {
-            env: vec![],
-            ..plan
-        };
-        play::dxvk::apply_env(&mut plan, root);
-        remove_dxvk_env(&mut plan);
-        if std::env::var_os("WINEDLLOVERRIDES").is_none() {
-            assert!(plan.env.is_empty(), "{:?}", plan.env);
-        }
-    }
 
     #[test]
     fn first_run_offers_follow_the_game_files() {

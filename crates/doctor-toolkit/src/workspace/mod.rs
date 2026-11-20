@@ -40,7 +40,7 @@ pub mod rebase;
 pub mod stage;
 pub mod store;
 
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -576,6 +576,10 @@ pub struct Workspace {
     /// written by its first operation, so that a command that records
     /// nothing leaves no workspace behind.
     saved: bool,
+    /// A batch is open ([`Self::begin_batch`]): operations stay in memory
+    /// and the log and manifest are written once when it ends; `Some(true)`
+    /// once something was recorded in it.
+    batch: Option<bool>,
 }
 
 impl Workspace {
@@ -629,6 +633,7 @@ impl Workspace {
             },
             applied: Deployment::default(),
             saved: false,
+            batch: None,
         })
     }
 
@@ -724,6 +729,7 @@ impl Workspace {
             log,
             applied,
             saved: true,
+            batch: None,
         };
         Ok(workspace)
     }
@@ -1779,23 +1785,37 @@ impl Workspace {
         let mut edits: Vec<Edit> = Vec::new();
         let mut stream_edits: Vec<StreamEdit> = Vec::new();
         let mut file_edits: Vec<FileEdit> = Vec::new();
+        // Where each key's edit is, so that thousands of operations join in
+        // linear time.
+        let mut at: HashMap<&ResourceKey, usize> = HashMap::new();
+        let mut stream_at: HashMap<&str, usize> = HashMap::new();
+        let mut file_at: HashMap<&FileKey, usize> = HashMap::new();
         for op in ops {
             for edit in &op.edits {
-                match edits.iter_mut().find(|e| e.key == edit.key) {
-                    Some(e) => e.after = edit.after.clone(),
-                    None => edits.push(edit.clone()),
+                match at.get(&edit.key) {
+                    Some(&i) => edits[i].after = edit.after.clone(),
+                    None => {
+                        at.insert(&edit.key, edits.len());
+                        edits.push(edit.clone());
+                    }
                 }
             }
             for edit in &op.stream_edits {
-                match stream_edits.iter_mut().find(|e| e.name == edit.name) {
-                    Some(e) => e.after = edit.after.clone(),
-                    None => stream_edits.push(edit.clone()),
+                match stream_at.get(edit.name.as_str()) {
+                    Some(&i) => stream_edits[i].after = edit.after.clone(),
+                    None => {
+                        stream_at.insert(&edit.name, stream_edits.len());
+                        stream_edits.push(edit.clone());
+                    }
                 }
             }
             for edit in &op.file_edits {
-                match file_edits.iter_mut().find(|e| e.key == edit.key) {
-                    Some(e) => e.after = edit.after.clone(),
-                    None => file_edits.push(edit.clone()),
+                match file_at.get(&edit.key) {
+                    Some(&i) => file_edits[i].after = edit.after.clone(),
+                    None => {
+                        file_at.insert(&edit.key, file_edits.len());
+                        file_edits.push(edit.clone());
+                    }
                 }
             }
         }
@@ -1897,6 +1917,29 @@ impl Workspace {
         Ok(true)
     }
 
+    /// Opens a batch: the operations recorded until [`Self::end_batch`]
+    /// are kept in memory and written with one write of the log and the
+    /// manifest instead of one per operation (a build of a project of
+    /// thousands of files). Payloads are written as usual; when the batch
+    /// never ends (an error, a crash), the workspace on disk stays as it was
+    /// before the batch and the payloads it wrote are collected as garbage
+    /// later.
+    pub fn begin_batch(&mut self) -> Result<()> {
+        if self.saved {
+            self.check_not_changed_on_disk()?;
+        }
+        self.batch = Some(false);
+        Ok(())
+    }
+
+    /// Ends the batch of [`Self::begin_batch`] and writes what it recorded.
+    pub fn end_batch(&mut self) -> Result<()> {
+        if self.batch.take() == Some(true) {
+            self.save()?;
+        }
+        Ok(())
+    }
+
     fn commit(
         &mut self,
         label: &str,
@@ -1969,6 +2012,10 @@ impl Workspace {
     }
 
     fn check_not_changed_on_disk(&self) -> Result<()> {
+        // Checked when the batch began; the batch holds the workspace.
+        if self.batch.is_some() {
+            return Ok(());
+        }
         let path = self.dir.join(MANIFEST_FILE);
         let on_disk: Manifest = read_json(&path)?;
         if on_disk.revision != self.manifest.revision {
@@ -1980,8 +2027,12 @@ impl Workspace {
         Ok(())
     }
 
-    /// Writes the log, then the manifest.
+    /// Writes the log, then the manifest (once a batch ends, when one is open).
     fn save(&mut self) -> Result<()> {
+        if let Some(dirty) = &mut self.batch {
+            *dirty = true;
+            return Ok(());
+        }
         write_json(&self.dir.join(LOG_FILE), &self.log)?;
         self.manifest.revision += 1;
         self.manifest.log_seq = self

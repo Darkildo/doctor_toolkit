@@ -4,13 +4,13 @@ status: known
 confidence: exe
 editions: ["1.0.789.0"]
 stages: [72, 5, 32, 100]
-sources: ["docs/analysis/new-resources.md §1.1", "docs/analysis/new-resources.md §1.2", "docs/analysis/launch-flags.md §3.4", "docs/analysis/gf2-pc-verification.md §3", "docs/analysis/live-link.md §14.5", "docs/analysis/resources-in-memory.md §8.1", "crates/doctor-toolkit-live/src/addr.rs", "crates/doctor-toolkit-live/src/edition.rs"]
+sources: ["docs/analysis/new-resources.md §1.1", "docs/analysis/new-resources.md §1.2", "docs/analysis/launch-flags.md §3.4", "docs/analysis/gf2-pc-verification.md §3", "docs/analysis/live-link.md §14.5", "docs/analysis/resources-in-memory.md §8.1", "crates/doctor-toolkit-live/src/addr.rs", "crates/doctor-toolkit-live/src/edition.rs", "docs/analysis/resource-copies.md §1.1", "godfather2.exe 0x004D0DB0, 0x00421550, 0x00420F20, 0x00421040"]
 tags: [exe, resources, loading]
-updated: 2026-11-16
+updated: 2026-11-20
 ---
 # Загрузчик ресурсов и таблица загруженных по GUID
 
-Адреса — виртуальные, издание PC 1.0.789.0. Ресурс блока `SHDR` регистрируется в глобальной таблице по 128-битному GUID; тип в ключ не входит. Повторный GUID не грузится заново: растёт счётчик ссылок, данные пропускаются.
+Адреса — виртуальные, издание PC 1.0.789.0. Ресурс блока `SHDR` регистрируется в глобальной таблице по 128-битному GUID; тип в ключ не входит. Повторный GUID не грузится заново: растёт счётчик ссылок, данные пропускаются, но ресурс привязывается и к этому потоку; выгрузка потока снимает по ссылке с каждого привязанного ресурса, и ресурс живёт, пока загружен хоть один поток с его копией.
 
 | Адрес | Что это | Источник |
 |---|---|---|
@@ -26,7 +26,10 @@ updated: 2026-11-16
 | `0x01206B20` | данные: таблица распределителей (политик памяти) | new-resources.md §1.1 |
 | `0x00421550` | регистрация ресурса под его GUID (виртуальный метод) | new-resources.md §1.1; launch-flags.md §3.4 |
 | `0x00E30B84` | данные: таблица методов, в которой стоит `0x00421550` | launch-flags.md §3.4 |
-| `0x004212B0` | привязка ресурса к текущему потоку для выгрузки | new-resources.md §1.1; launch-flags.md §3.4 |
+| `0x004212B0` | привязка ресурса к текущему потоку для выгрузки: запись потока (по его id `+0x1C`) в таблице `0x012053B0`, в её список — узел с ресурсом, маска раздела `+0xC` | new-resources.md §1.1; launch-flags.md §3.4; resource-copies.md §1.1 |
+| `0x012053B0` | данные: таблица привязок «поток → список ресурсов» `{корзины, число корзин, число записей}`; запись — `+0` id потока, `+4` список, `+8` длина, `+0xC` маска разделов, `+0x10` следующая | resource-copies.md §1.1 |
+| `0x00420F20` | выгрузка привязок потока: находит его запись, снимает ресурсы раздела (`0x00421040`), пустую запись убирает (`0x004217C0`) | resource-copies.md §1.1 |
+| `0x00421040` | у каждого ресурса списка потока счётчик ссылок −1; на нуле — снять с таблицы загруженных (`0x004218D0`), выгрузка обработчиком типа, освобождение | resource-copies.md §1.1 |
 | `0x0067E140` | регистрация пяти политик памяти | new-resources.md §1.2 |
 | `0x004211E0` | поиск ресурса по GUID (скрипт Lua, `meshvolatile`) | live-link.md §12.3; mission-logic.md §3 |
 

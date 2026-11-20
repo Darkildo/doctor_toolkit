@@ -117,15 +117,25 @@ pub fn action_button(ui: &mut Ui, enabled: bool, text: &str, prominence: Promine
     })
     .min_size(Vec2::new(0.0, 32.0))
     .corner_radius(CornerRadius::same(4));
+    // In Open Mod Manager the main action is the rust of the game's panels.
+    let gf2 = crate::skin::active(ui.ctx());
+    let (fill, hover) = if gf2 {
+        (crate::skin::RUST, crate::skin::OXBLOOD)
+    } else {
+        (crate::theme::PLAY, crate::theme::PLAY_HOVER)
+    };
     if prominence == Prominence::Main && enabled {
-        button = button.fill(crate::theme::PLAY);
+        button = button.fill(fill);
+        if gf2 {
+            button = button.corner_radius(CornerRadius::ZERO);
+        }
     }
     let response = ui.add_enabled(enabled, button);
     if prominence == Prominence::Main && enabled && response.hovered() {
         ui.painter().rect_stroke(
             response.rect,
-            CornerRadius::same(4),
-            Stroke::new(1.0, crate::theme::PLAY_HOVER),
+            CornerRadius::same(if gf2 { 0 } else { 4 }),
+            Stroke::new(1.0, hover),
             StrokeKind::Inside,
         );
     }

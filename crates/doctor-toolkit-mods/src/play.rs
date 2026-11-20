@@ -5,8 +5,13 @@
 //! changed files; after the game exits the module and the copy are taken
 //! away. When the module cannot be used, a window says what is missing and
 //! offers to write the mods into the game instead.
+//!
+//! The launch method, DXVK and the graphics (the graphics module, Large
+//! Address Aware, the Vulkan driver) come from the settings shared with the
+//! editor ([`crate::launch`]), and are put in the same order as the editor's
+//! Play does.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, channel};
 
@@ -15,7 +20,7 @@ use egui::RichText;
 use doctor_toolkit::game::GameInstance;
 use doctor_toolkit::live;
 use doctor_toolkit::play::overlay::{self, Overlay, Source, Streams};
-use doctor_toolkit::play::{self, Session, SessionState};
+use doctor_toolkit::play::{self, PlayConfig, Session, SessionState};
 
 use crate::i18n::{tr, trf};
 use crate::widgets::{Prominence, action_button};
@@ -38,13 +43,32 @@ pub fn obstacle(root: &Path) -> Option<String> {
 /// A launched game and what goes away after it.
 struct Launched {
     session: Session,
+    root: PathBuf,
     module: Option<live::ModuleInstall>,
     overlay: Option<Overlay>,
+    dxvk: Option<play::dxvk::DxvkInstall>,
+    graphics: Option<play::render::GraphicsLaunch>,
+    /// What the launch could not do (DXVK, graphics), for the player.
+    notes: Vec<String>,
 }
 
 impl Launched {
-    /// Takes the module and the staged copy away.
+    /// Takes DXVK, the graphics, the module and the staged copy away.
     fn clean_up(&mut self) {
+        if let Some(install) = self.dxvk.take()
+            && let Err(error) = install.restore()
+        {
+            doctor_toolkit::report::log(&format!("d3d9.dll not taken away: {error}"));
+        }
+        // Before the live module: the LAA mirror hands its logs back.
+        if let Some(g) = self.graphics.take() {
+            match g.finish(&self.root) {
+                Ok(lines) => lines.iter().for_each(|l| doctor_toolkit::report::log(l)),
+                Err(error) => {
+                    doctor_toolkit::report::log(&format!("graphics not taken away: {error}"))
+                }
+            }
+        }
         if let Some(module) = self.module.take()
             && let Err(error) = module.restore()
         {
@@ -77,6 +101,9 @@ pub struct Player {
     /// Whether the resources of the mods are put into the game's streams
     /// in memory (stage 100) instead of rebuilding the streams.
     pub in_memory: bool,
+    /// The settings folder: the launch settings shared with the editor
+    /// ([`crate::launch`]); `None` — the defaults.
+    pub config: Option<PathBuf>,
 }
 
 impl Player {
@@ -121,8 +148,13 @@ impl Player {
         let (tx, rx) = channel();
         let ctx = ctx.clone();
         let streams = Streams::in_memory(self.in_memory);
+        let config = self
+            .config
+            .as_deref()
+            .map(|c| crate::launch::load(c, game.root()))
+            .unwrap_or_default();
         std::thread::spawn(move || {
-            let _ = tx.send(launch(&game, staged, streams).map_err(|e| e.to_string()));
+            let _ = tx.send(launch(&game, staged, streams, &config).map_err(|e| e.to_string()));
             ctx.request_repaint();
         });
         self.starting = Some(rx);
@@ -137,8 +169,13 @@ impl Player {
             self.starting = None;
             match result {
                 Ok(launched) => {
+                    let mut text = tr("play_mods.started").to_owned();
+                    for note in &launched.notes {
+                        text.push('\n');
+                        text.push_str(note);
+                    }
                     self.launched = Some(launched);
-                    self.message = Some((tr("play_mods.started").to_owned(), false));
+                    self.message = Some((text, false));
                 }
                 Err(error) => {
                     self.message = Some((trf("play_mods.failed", &[("error", &error)]), true));
@@ -211,12 +248,25 @@ impl Drop for Player {
             if let Some(o) = launched.overlay.take() {
                 o.keep();
             }
+            // DXVK and the graphics module stay as well; the next launch of
+            // a toolkit program takes them away (`restore_stale`).
+            if let Some(install) = launched.dxvk.take() {
+                std::mem::forget(install);
+            }
+            if let Some(g) = launched.graphics.take() {
+                std::mem::forget(g);
+            }
         }
     }
 }
 
 /// Stages the mods (when `staged`), installs the module and starts the game.
-fn launch(game: &GameInstance, staged: bool, streams: Streams) -> doctor_toolkit::Result<Launched> {
+fn launch(
+    game: &GameInstance,
+    staged: bool,
+    streams: Streams,
+    config: &PlayConfig,
+) -> doctor_toolkit::Result<Launched> {
     let root = game.root();
     let running = play::game_processes();
     if !running.is_empty() {
@@ -231,8 +281,28 @@ fn launch(game: &GameInstance, staged: bool, streams: Streams) -> doctor_toolkit
         doctor_toolkit::report::log(&note);
     }
     let installs = doctor_toolkit::install::detect(&crate::games::search_roots());
-    let method = play::auto_method(root, &installs);
-    let plan = play::plan(&method, root)?;
+    let method = crate::launch::method(config, root, &installs);
+    let mut plan = play::plan(&method, root)?;
+    let mut notes = Vec::new();
+    // Hardware rendering under Wine; when it cannot be used the game still
+    // starts, with a word why.
+    let dxvk_found = if config.dxvk {
+        match play::dxvk::check(&method, root) {
+            Ok(found) => {
+                play::dxvk::apply_env(&mut plan, root);
+                Some(found)
+            }
+            Err(problem) => {
+                notes.push(trf(
+                    "dxvk.not_used",
+                    &[("reason", &crate::launch::dxvk_problem(&problem))],
+                ));
+                None
+            }
+        }
+    } else {
+        None
+    };
     play::start::restore_stale(root)?;
     live::restore_stale(root)?;
     overlay::remove_stale(root)?;
@@ -261,6 +331,18 @@ fn launch(game: &GameInstance, staged: bool, streams: Streams) -> doctor_toolkit
     } else {
         (None, None)
     };
+    play::dxvk::restore_stale(root)?;
+    let dxvk = match dxvk_found.map(|found| play::dxvk::DxvkInstall::write(root, &found)) {
+        None => None,
+        Some(Ok(install)) => Some(install),
+        Some(Err(error)) => {
+            notes.push(trf("dxvk.not_used", &[("reason", &error)]));
+            // The override alone would make Wine look for a d3d9.dll that
+            // is not there: start without it.
+            crate::launch::remove_dxvk_env(&mut plan);
+            None
+        }
+    };
     // The crash module and the list of mods for its reports (stage 99).
     for note in doctor_toolkit::crash::prepare(
         game,
@@ -274,6 +356,15 @@ fn launch(game: &GameInstance, staged: bool, streams: Streams) -> doctor_toolkit
     ) {
         doctor_toolkit::report::log(&note);
     }
+    // Graphics last (stage 59): with LAA the mirror links everything put
+    // into the game folder above.
+    let vulkan = dxvk.as_ref().map(|_| play::dxvk::vulkan32());
+    let graphics =
+        play::render::prepare(game, &method, &mut plan, &config.graphics, vulkan.as_ref())?;
+    for note in &graphics.notes {
+        doctor_toolkit::report::log(note);
+    }
+    notes.extend(graphics.notes.iter().cloned());
     let session = Session::start(&plan)?;
     doctor_toolkit::report::log(&format!(
         "play with mods: {} ({})",
@@ -286,8 +377,12 @@ fn launch(game: &GameInstance, staged: bool, streams: Streams) -> doctor_toolkit
     ));
     Ok(Launched {
         session,
+        root: root.to_path_buf(),
         module,
         overlay,
+        dxvk,
+        graphics: (!graphics.is_empty()).then_some(graphics),
+        notes,
     })
 }
 

@@ -213,7 +213,7 @@
 | Возможность | MCP | Редактор | CLI | Python |
 |---|---|---|---|---|
 | Запустить игру с правками (обычно или сразу в потоке уровня у точки появления) и остановить | `play`ᴳ, `stop`ᴳ | «Play», «Play options»; вкладка Game: Play, Stop, Restart; панель Zones → Play from here. Без рук: `SHELL=play только открывает окно параметров` | `play` | — |
-| Параметры запуска: способ (Steam, Proton, своя команда), графический модуль, окно | `play`ᴳ; size, render, fps, fov, fxaa, sharpen, draw_merge, laa, dxvk, vulkan_driver | «Play options» | `play`, `render config`, `render install`, `render uninstall`, `render log` | — |
+| Параметры запуска: способ (Steam, Proton, своя команда), графический модуль, окно | `play`ᴳ; size, render, fps, fov, fxaa, sharpen, draw_merge, laa, dxvk, vulkan_driver | «Play options»; Open Mod Manager → Launch settings…: DXVK и графика, те же значения (общий settings.toml) | `play`, `render config`, `render install`, `render uninstall`, `render log` | — |
 | Снимок кадра запущенной игры | `screenshot`ᴳ | вкладка Game → Screenshot (игра во вкладке) | — | — |
 | Отчёты о падениях игры: список, показать, состояние модуля, адрес по базе знаний | `crash_reports`, `kb_search` | «Crash reports»; Tools → Crash reports: список отчётов (новые сверху), текст отчёта с именами сообщений, состояние модуля, папка; Play options → Last crash. Без рук: `SHELL=crashes[=<номер или имя отчёта>]` | `crash-report show`, `crash-report list`, `crash-report status`, `crash-report log`, `crash-report lookup` | — |
 

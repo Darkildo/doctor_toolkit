@@ -16,7 +16,9 @@ pub mod games;
 pub mod guard;
 pub mod i18n;
 pub mod icon;
+pub mod launch;
 pub mod play;
+pub mod skin;
 pub mod state;
 pub mod theme;
 pub mod widgets;
@@ -26,6 +28,7 @@ mod cards;
 mod details;
 mod dialogs;
 mod native;
+mod standalone;
 
 pub use build::RelationsForm;
 
@@ -244,6 +247,17 @@ pub struct ModsPanel {
     /// The questions about executable code already shown (mod and hashes):
     /// each opens by itself once.
     code_asked: HashSet<String>,
+    /// Open Mod Manager: the search over the list of mods.
+    search: String,
+    filter: standalone::Filter,
+    /// The pictures of the game's interface ([`skin::read_art`]).
+    art: skin::ArtLoader,
+    /// Names of the mods lit while the sign of a conflict is hovered.
+    highlight: Option<Vec<String>>,
+    /// The note shown in the corner and since when.
+    note_shown: Option<(String, std::time::Instant)>,
+    /// The edition of the game (version, whether it is the target one).
+    edition: Option<(String, bool)>,
 }
 
 impl Default for ModsPanel {
@@ -282,6 +296,12 @@ impl ModsPanel {
             dialog: None,
             crash: None,
             code_asked: HashSet::new(),
+            search: String::new(),
+            filter: standalone::Filter::All,
+            art: skin::ArtLoader::default(),
+            highlight: None,
+            note_shown: None,
+            edition: None,
         }
     }
 
@@ -330,6 +350,19 @@ impl ModsPanel {
         self.message = None;
         self.dialog = None;
         self.crash = self.game.as_ref().map(|g| crash::CrashWatch::new(g.root()));
+        self.search.clear();
+        self.filter = standalone::Filter::All;
+        self.edition = self.game.as_ref().map(|g| {
+            let edition = doctor_toolkit::edition::Edition::identify(g.root());
+            let version = edition
+                .known_edition()
+                .map(|k| k.version().to_owned())
+                .or_else(|| edition.executable.as_ref().and_then(|e| e.version.clone()))
+                .unwrap_or_else(|| "?".to_owned());
+            let target =
+                edition.known.as_deref() == doctor_toolkit::edition::KNOWN.first().map(|k| k.id);
+            (format!("PC {version}"), target)
+        });
         let Some(game) = &self.game else { return };
         match ModManager::open(game) {
             Ok(manager) => {
@@ -1254,6 +1287,13 @@ impl ModsPanel {
             return self.pending_event.take();
         }
         let area = ui.max_rect();
+        if self.standalone {
+            self.show_standalone(ui);
+            self.keys(ui.ctx());
+            self.drop_overlay(ui, area);
+            self.dialogs(ui.ctx());
+            return self.pending_event.take();
+        }
         self.action_bar(ui);
         ui.add_space(4.0);
         self.status_line(ui);

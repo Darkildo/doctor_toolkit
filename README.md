@@ -87,7 +87,7 @@ documentation of this tool only.
 
 ## Quick start
 
-1. Download `doctor_toolkit-1.2.0-windows-x86_64.zip` from the
+1. Download `doctor_toolkit-1.3.0-windows-x86_64.zip` from the
    [latest release](https://github.com/Darkildo/doctor_toolkit/releases).
    Releases are built for Windows x86_64 only; on Linux and macOS
    [build from source](#building-from-source) (Linux:
@@ -297,7 +297,7 @@ which puts `dist/doctor_toolkit-<version>-linux-x86_64.tar.gz`, then unpack
 it anywhere and run the programs from that folder:
 
 ```sh
-tar xzf doctor_toolkit-1.2.0-linux-x86_64.tar.gz && cd doctor_toolkit-1.2.0-linux-x86_64
+tar xzf doctor_toolkit-1.3.0-linux-x86_64.tar.gz && cd doctor_toolkit-1.3.0-linux-x86_64
 ./doctor-toolkit-gui "/path/to/The Godfather II"     # the editor
 ./open-mod-manager "/path/to/The Godfather II"       # Open Mod Manager, for players
 ./doctor-toolkit --help                              # the command line
@@ -549,14 +549,14 @@ For players there is a separate program with only the mod manager,
 `open-mod-manager-<version>-<system>.zip` / `.tar.gz`; `open-mod-manager`, `open-mod-manager.exe` on Windows;
 "Powered by Doctor": it is part of doctor_toolkit). It finds the installed
 game by itself, installs mod files dropped on its window or opened from the
-system, shows each mod as a card with its picture and its state in words
+system, shows the mods in load order with their pictures and states in words
 (ready, in conflict with another mod, not fitting this version of the game,
 not written to the game yet), reorders them by dragging, keeps named sets
 of mods, undoes the last change, and plays the mods without writing them
 into the game ("Play with mods", through the live module) or writes them in
 for good:
 
-<img src="docs/images/mod-manager.png" alt="Open Mod Manager: mod cards, Play with mods, Write to game, Restore originals" width="900">
+<img src="docs/images/mod-manager.png" alt="Open Mod Manager in the look of the game's menus: the logo, Play, the mods in load order, the chosen mod on the right" width="900">
 
 ```sh
 cargo run --release -p doctor-toolkit-mods --bin open-mod-manager -- "$GAME"

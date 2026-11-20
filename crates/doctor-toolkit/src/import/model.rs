@@ -1064,7 +1064,7 @@ const WEIGHT_WARNING: &str = "the import makes ";
 ///
 /// A mesh of the game is often in several streams under the same ids: a
 /// prop in every zone that shows it, the parts of a car in each of its
-/// assemblies (1 315 of 7 132 meshes, up to 197 streams). The game keeps
+/// assemblies (1 315 of 7 128 meshes, up to 197 streams). The game keeps
 /// one resource per ids and takes it from whichever stream loaded it, so a
 /// replacement made in one stream only shows where that stream is the one
 /// loaded — the editor shows it, the game in most places not. Every copy

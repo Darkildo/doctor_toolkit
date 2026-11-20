@@ -6,7 +6,7 @@ editions: ["1.0.789.0"]
 stages: [72]
 sources: ["docs/kb/questions"]
 tags: [index]
-updated: 2026-11-18
+updated: 2026-11-20
 ---
 # Открытые вопросы
 
@@ -14,7 +14,7 @@ updated: 2026-11-18
 
 Каждая заметка — один вопрос, на который пока нет ответа, со следующим шагом. Вопрос, на который ответ найден, получает статус `known`, `partial` или `hypothesis` и остаётся в списке.
 
-Заметок: 133 (`known` — 28, `partial` — 32, `hypothesis` — 11, `unknown` — 62).
+Заметок: 134 (`known` — 28, `partial` — 33, `hypothesis` — 11, `unknown` — 62).
 
 | Заметка | Статус | Уверенность | Этапы |
 |---|---|---|---|
@@ -119,6 +119,7 @@ updated: 2026-11-18
 | [Формат ресурса `shk` не разобран](resource-format-shk.md) | unknown | data | 72, 95 |
 | [Формат ресурса `trb` не разобран](resource-format-trb.md) | unknown | data | 72, 98 |
 | [Формат ресурса `vfx` не разобран](resource-format-vfx.md) | unknown | data | 72, 95 |
+| [По какому правилу ресурс лежит в нескольких потоках](resource-placement-rule.md) | partial | data | 84 |
 | [Подмена ресурсов в памяти на Windows и с большими модами](resources-in-memory-on-windows.md) | unknown | bench | 100 |
 | [Входы хэшей рига и наборов костей; 82 неизвестных имени костей](rig-hash-inputs-and-bone-names.md) | unknown | data | 72, 93 |
 | [Какую точку возврата игрока хранит сохранение](save-player-position.md) | partial | bench | 76, 24, 63 |

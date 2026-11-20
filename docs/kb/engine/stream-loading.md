@@ -4,9 +4,9 @@ status: partial
 confidence: exe
 editions: ["1.0.789.0"]
 stages: [72, 5, 24, 32, 39, 45, 46, 48, 84, 100]
-sources: ["docs/formats/stream.md §6", "docs/formats/toc.md §3", "docs/analysis/new-resources.md §1", "docs/analysis/new-resources.md §3", "docs/analysis/gf2-pc-verification.md §2", "docs/analysis/live-link.md §4", "docs/analysis/live-link.md §13.3", "docs/analysis/live-link.md §14", "docs/analysis/queens.md §3", "docs/analysis/queens.md §8", "docs/analysis/live-link.md §12.3", "docs/analysis/performance.md §4", "godfather2.exe 0x00401F40, 0x004A82B0", "docs/formats/wgi.md §4", "docs/analysis/game-bench.md §33", "docs/formats/simgroup.md §1.1", "docs/analysis/resources-in-memory.md §2", "docs/analysis/resources-in-memory.md §3", "docs/analysis/game-bench.md §42"]
-tags: [stream, toc, loading, guid, redirect]
-updated: 2026-11-16
+sources: ["docs/formats/stream.md §6", "docs/formats/toc.md §3", "docs/analysis/new-resources.md §1", "docs/analysis/new-resources.md §3", "docs/analysis/gf2-pc-verification.md §2", "docs/analysis/live-link.md §4", "docs/analysis/live-link.md §13.3", "docs/analysis/live-link.md §14", "docs/analysis/queens.md §3", "docs/analysis/queens.md §8", "docs/analysis/live-link.md §12.3", "docs/analysis/performance.md §4", "godfather2.exe 0x00401F40, 0x004A82B0", "docs/formats/wgi.md §4", "docs/analysis/game-bench.md §33", "docs/formats/simgroup.md §1.1", "docs/analysis/resources-in-memory.md §2", "docs/analysis/resources-in-memory.md §3", "docs/analysis/game-bench.md §42", "docs/analysis/resource-copies.md §3"]
+tags: [stream, toc, loading, guid, redirect, copies]
+updated: 2026-11-20
 ---
 # Потоки `.str` и их загрузка
 
@@ -25,6 +25,7 @@ updated: 2026-11-16
 - Дочерний поток **без** бита `0x4` (`0,0,1,0` в списке детей родителя; `add-stream --with-parent --auto-load`) игра открывает при каждой загрузке родителя и выгружает с ним — проверено в игре на этапе 84 ([опыт](../experiments/world-grid-new-zone.md)).
 - Хэш группы SimGroup (поле 0x10) — хэш её потока в TOC; `EnableDisableStreams` с хэшем, которого нет в TOC, включает и выключает группу с таким хэшем (`0x00447AB0`).
 - GUID потоков игра берёт из данных: `wgi` (ячейки зон и таблица потоков уровня) — 1 868 хэшей TOC из 2 287, SimGroup (`StreamSet`, `InterestingObject.8`, `Animated.4`, `Door.23` и др.) — 766. См. [зоны](zones.md).
+- Копии: у 13 020 ключей ресурс лежит в нескольких потоках (164 550 лишних копий, 55 % распакованных данных). Внутри уровня копии одинаковы, ключ без типа однозначен, поток не держит копию, которую даёт его предпосылка (кроме `globals_global`) — см. [копии ресурсов](../../analysis/resource-copies.md) и [вопрос о правиле раскладки](../questions/resource-placement-rule.md).
 - Выгрузка `0x00404C40` → `0x004048C0`: счётчики ссылок (`+0x54`, бит `0x20` в `+0x50` — «загружен явно»), рекурсивно зависимости, сообщения `iMsgStreamBeginUnload/Unloading/UnloadComplete`. Классы `LoadStream`/`UnloadStream` (`0x008139D0`, `0x00813BC0`) в SimGroup игры не используются.
 - Чтение — на отдельном потоке кусками по 128 КБ (`ReadFile` из `0x00ABEC29`), открытие — `CreateFileW` из `0x00AC0BDF` (см. [файлы](file-system.md)). На старте `-stream gf2 cuba` через 5 с загружен 61 поток.
 - Два запроса подряд роняют игру (этап 32): [модуль связи](live-module.md) держит очередь из одного запроса. Для незнакомого имени игра заводит запись «запрошен» навсегда.

@@ -83,7 +83,12 @@ pub(crate) fn relation_words(r: &Relation) -> (String, Color32) {
 /// does not work with, the rules of its order, the mods that need it, the
 /// editions and the mod manager it is made for. Returns whether a button
 /// to turn on what it needs was pressed.
-fn dependencies(ui: &mut egui::Ui, manager: &ModManager, m: &InstalledMod, idle: bool) -> bool {
+pub(crate) fn dependencies(
+    ui: &mut egui::Ui,
+    manager: &ModManager,
+    m: &InstalledMod,
+    idle: bool,
+) -> bool {
     let relations = manager.relations(&m.id);
     let editions = &m.manifest.game.editions;
     let required = m.manifest.requires_manager.as_deref();
@@ -133,6 +138,12 @@ fn dependencies(ui: &mut egui::Ui, manager: &ModManager, m: &InstalledMod, idle:
 impl ModsPanel {
     pub(crate) fn details(&mut self, ui: &mut egui::Ui) {
         self.selected_mod(ui);
+        self.technical_sections(ui);
+    }
+
+    /// The folded "Details": streams and resources of the chosen mod,
+    /// conflicts by resource, the files of the integrity check.
+    pub(crate) fn technical_sections(&mut self, ui: &mut egui::Ui) {
         let title = tr("mods.details");
         egui::CollapsingHeader::new(RichText::new(title).strong())
             .id_salt("mods-details")

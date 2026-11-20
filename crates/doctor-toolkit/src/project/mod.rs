@@ -553,6 +553,26 @@ impl Project {
         ws: &mut Workspace,
         options: &BuildOptions,
     ) -> Result<BuildReport> {
+        if options.dry_run {
+            return self.build_entries(game, ws, options);
+        }
+        // One write of the workspace's log and manifest for the whole build,
+        // not one per entry: a project of the whole game has a hundred
+        // thousand entries (`docs/project.md` §7).
+        ws.begin_batch()?;
+        let built = self.build_entries(game, ws, options);
+        let ended = ws.end_batch();
+        let report = built?;
+        ended?;
+        Ok(report)
+    }
+
+    fn build_entries(
+        &self,
+        game: &GameInstance,
+        ws: &mut Workspace,
+        options: &BuildOptions,
+    ) -> Result<BuildReport> {
         let mut cache = BuildCache::read(&self.root);
         let status = self.status_with(ws, &mut cache)?;
         let mut report = BuildReport {

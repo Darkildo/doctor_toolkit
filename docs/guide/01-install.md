@@ -18,9 +18,9 @@ SHA-256. Распакуйте архив куда угодно и запусти
 `dist/doctor_toolkit-<версия>-linux-x86_64.tar.gz`, файл с SHA-256 рядом.
 
 ```sh
-sha256sum -c doctor_toolkit-1.2.0-linux-x86_64.tar.gz.sha256
-tar xzf doctor_toolkit-1.2.0-linux-x86_64.tar.gz
-cd doctor_toolkit-1.2.0-linux-x86_64
+sha256sum -c doctor_toolkit-1.3.0-linux-x86_64.tar.gz.sha256
+tar xzf doctor_toolkit-1.3.0-linux-x86_64.tar.gz
+cd doctor_toolkit-1.3.0-linux-x86_64
 ./doctor-toolkit --version
 ./doctor-toolkit-gui
 ```
