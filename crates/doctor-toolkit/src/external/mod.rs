@@ -548,6 +548,7 @@ pub fn import(
                     retarget: options.retarget.clone(),
                     format: None,
                     collision: None,
+                    this_stream_only: false,
                 },
             )?;
             let s = &plan.summary;

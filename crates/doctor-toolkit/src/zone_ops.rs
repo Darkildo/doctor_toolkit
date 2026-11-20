@@ -724,6 +724,7 @@ pub fn plan_model_import(
             retarget: p.retarget.clone(),
             format: p.format,
             collision: parse_collision(p.collision.as_deref())?,
+            this_stream_only: false,
         },
     )?;
     if let Some(into) = &into {

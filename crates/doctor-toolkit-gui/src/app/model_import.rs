@@ -235,6 +235,7 @@ impl BrowserApp {
                     return;
                 }
             },
+            this_stream_only: false,
         };
         let into =
             (state.as_new && !state.into.trim().is_empty()).then(|| state.into.trim().to_owned());

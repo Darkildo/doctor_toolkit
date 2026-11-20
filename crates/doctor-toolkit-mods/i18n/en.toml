@@ -822,6 +822,7 @@ plan_head = "{parts}, {records}; materials: {reused} from the game, {new} new; {
 plan_skeleton = "Skeleton {skeleton}: {bones} mapped"
 plan_part = "{name}: {kind}, {vertices}, {triangles}, material {material}"
 plan_collision = "New collision: {kind}, {triangles}"
+plan_copies = "Also replaced in {count} other stream(s) with a copy of the model (the game takes it from whichever it loads): {streams}"
 summary_target = "Model: {model}"
 summary_file = "File: {file}"
 no_change = "No change: the workspace already has this model."

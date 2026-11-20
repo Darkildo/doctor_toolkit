@@ -7949,3 +7949,178 @@ fn venue_numbers_of_the_cities_are_unique() {
     assert_eq!(seen.get(&230).map(String::as_str), Some("gf2/cuba"));
     assert!(tables.len() >= 8, "{} venue tables", tables.len());
 }
+
+/// A mesh of the game in two streams under the same ids (the van of two
+/// assemblies of `vehicle_shared`): replacing it in one replaces the copy
+/// too, with the new material and texture in both streams; the game takes
+/// the mesh from whichever stream it loaded. `this_stream_only` leaves the
+/// copy as it was.
+#[test]
+fn model_import_replaces_every_copy_of_a_mesh() {
+    use doctor_toolkit::create;
+    use doctor_toolkit::export::gltf as export;
+    use doctor_toolkit::game::GameAssets;
+    use doctor_toolkit::import::{gltf as import, model};
+    use doctor_toolkit::resource::mesh::{self, TYPE_MESH};
+    use doctor_toolkit::workspace::{ApplyOptions, Workspace};
+
+    let Some(dir) = game_dir() else { return };
+    let real = GameInstance::open(&dir).unwrap();
+    let names = [
+        "gf2/globalfolder/vehicles/assembly/vehicle_shared/van60_01",
+        "gf2/globalfolder/vehicles/assembly/vehicle_shared/van60_02",
+    ];
+    let mut files: Vec<String> = Vec::new();
+    for name in names {
+        files.push(
+            real.streams()[real.find_stream(name).unwrap()]
+                .rel_path
+                .clone(),
+        );
+        for ancestor in real.stream_ancestors(name).unwrap() {
+            if let Some(i) = real.find_stream(&ancestor) {
+                let rel = real.streams()[i].rel_path.clone();
+                if !files.contains(&rel) {
+                    files.push(rel);
+                }
+            }
+        }
+    }
+    for toc in real.tocs() {
+        files.push(toc.rel_path.clone());
+    }
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    for rel in &files {
+        std::fs::create_dir_all(root.join(rel).parent().unwrap()).unwrap();
+        std::fs::copy(dir.join(rel), root.join(rel)).unwrap();
+    }
+    let game = std::sync::Arc::new(GameInstance::open(root).unwrap());
+    let (a, b) = (
+        game.find_stream(names[0]).unwrap(),
+        game.find_stream(names[1]).unwrap(),
+    );
+    let (index, _) = game.build_index(|_| {});
+    let mut assets = GameAssets::new(game.clone(), &index);
+    let baseline = |s: usize| -> std::collections::BTreeSet<_> {
+        create::check_references(&game, s)
+            .unwrap()
+            .into_iter()
+            .map(|u| u.target)
+            .collect()
+    };
+    let (base_a, base_b) = (baseline(a), baseline(b));
+
+    // A mesh of the first stream the second has too.
+    let (mesh_a, ids) = {
+        let sa = game.open_stream(a).unwrap();
+        let sb = game.open_stream(b).unwrap();
+        sa.layout()
+            .resources
+            .iter()
+            .enumerate()
+            .filter(|(_, r)| r.header.type_id == TYPE_MESH)
+            .find(|(_, r)| {
+                sb.layout()
+                    .resources
+                    .iter()
+                    .any(|x| x.header.type_id == TYPE_MESH && x.header.ids == r.header.ids)
+            })
+            .map(|(i, r)| (i, r.header.ids))
+            .expect("the two assemblies share a mesh")
+    };
+    let original = mesh::load(&game.open_stream(a).unwrap(), mesh_a).unwrap();
+    let glb = export::model_to_glb(&original, &mut assets).unwrap();
+    let mut gltf = import::read(&glb, None).unwrap();
+    // Recoloured: a new material with a new texture.
+    let red: Vec<u8> = (0..64 * 64).flat_map(|_| [200, 20, 20, 255]).collect();
+    let png = doctor_toolkit::resource::pixels::encode_png(64, 64, &red).unwrap();
+    let material = gltf.parts[0].material.expect("the export has materials");
+    gltf.materials[material].base_color = Some(import::GltfImage {
+        name: "red".into(),
+        mime_type: "image/png".into(),
+        bytes: png,
+    });
+
+    // Only this stream: nothing for the copy.
+    let mut ws = Workspace::for_game(&game, None).unwrap();
+    let only = model::plan(
+        &game,
+        &ws,
+        &index,
+        &mut assets,
+        a,
+        mesh_a,
+        &gltf,
+        &model::ImportOptions {
+            this_stream_only: true,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert!(only.summary.copies.is_empty(), "{:?}", only.summary);
+
+    let plan = model::plan(
+        &game,
+        &ws,
+        &index,
+        &mut assets,
+        a,
+        mesh_a,
+        &gltf,
+        &model::ImportOptions::default(),
+    )
+    .unwrap();
+    assert_eq!(
+        plan.summary.copies,
+        vec![names[1].to_owned()],
+        "{:?}",
+        plan.summary
+    );
+    assert_eq!(plan.summary.materials_new, 1, "{:?}", plan.summary);
+    plan.commit(&mut ws, &game).unwrap().unwrap();
+    ws.apply(&game, ApplyOptions::default()).unwrap();
+
+    // Both streams hold the same new mesh, and what it names resolves.
+    let mesh_data = |s: usize| {
+        let file = game.open_stream(s).unwrap();
+        let i = file
+            .layout()
+            .resources
+            .iter()
+            .position(|r| r.header.type_id == TYPE_MESH && r.header.ids == ids)
+            .unwrap();
+        (
+            file.resource_data(i).unwrap(),
+            mesh::load(&file, i).unwrap(),
+        )
+    };
+    let ((data_a, new_a), (data_b, new_b)) = (mesh_data(a), mesh_data(b));
+    assert_eq!(data_a, data_b);
+    assert_ne!(new_a.records.len(), 0);
+    for record in &new_b.records {
+        new_b.vertices(record).unwrap();
+        new_b.triangles(record).unwrap();
+    }
+    for (s, base) in [(a, &base_a), (b, &base_b)] {
+        let after = baseline(s);
+        assert!(
+            after.is_subset(base),
+            "{}: new unresolved {:?}",
+            game.streams()[s].stream_name(),
+            after.difference(base)
+        );
+    }
+
+    // Undone and unapplied: the original files again.
+    ws.undo().unwrap().unwrap();
+    ws.apply(&game, ApplyOptions::default()).unwrap();
+    ws.unapply(&game, false).unwrap();
+    for rel in &files {
+        assert_eq!(
+            std::fs::read(root.join(rel)).unwrap(),
+            std::fs::read(dir.join(rel)).unwrap(),
+            "{rel}"
+        );
+    }
+}

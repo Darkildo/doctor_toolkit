@@ -97,6 +97,17 @@ pub(super) fn plan_lines(plan: &ImportPlan) -> Vec<String> {
             ],
         ));
     }
+    if !s.copies.is_empty() {
+        const SHOWN: usize = 4;
+        let mut streams = s.copies[..s.copies.len().min(SHOWN)].join(", ");
+        if s.copies.len() > SHOWN {
+            streams.push_str(", …");
+        }
+        out.push(trf(
+            "wizard.model.plan_copies",
+            &[("count", &s.copies.len()), ("streams", &streams)],
+        ));
+    }
     let mut keys: Vec<&String> = Vec::new();
     for m in s.meshes.iter().chain(&s.added).chain(&s.retargeted) {
         if !keys.contains(&m) {

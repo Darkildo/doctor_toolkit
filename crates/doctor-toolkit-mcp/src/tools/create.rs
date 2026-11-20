@@ -200,6 +200,12 @@ pub struct ImportModelParams {
     /// (indices: SimGroup, metamodel) to point at the new model.
     #[serde(default)]
     pub retarget: Vec<usize>,
+    /// Without `name`: replace the model only in the template's stream. By
+    /// default every stream with a copy of a replaced mesh (the same ids)
+    /// gets the new one too, since the game takes the mesh from whichever
+    /// of them it loaded; the answer lists them (`copies`).
+    #[serde(default)]
+    pub this_stream_only: bool,
     /// Float parameters of the new materials the import makes (it makes one
     /// for each material of the file with a texture of its own), by
     /// material name and parameter name: tint colours of new clothes,
@@ -729,6 +735,7 @@ pub fn import_model(kit: &Toolkit, p: ImportModelParams) -> ToolResult<Output> {
             retarget: p.retarget.clone(),
             format: p.format,
             collision,
+            this_stream_only: p.this_stream_only,
         },
     )?;
     if let Some(into) = &into {

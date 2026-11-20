@@ -56,6 +56,11 @@ pub struct ModelImport {
     /// metamodel at it: `mesh` (triangles with MOPP), `hull` or `box`
     #[arg(long, value_name = "KIND")]
     collision: Option<CollisionKind>,
+    /// Replace the model only in this stream. By default every stream with
+    /// a copy of a replaced mesh (the same ids) gets the new one too: the
+    /// game takes the mesh from whichever of them it loaded
+    #[arg(long, conflicts_with = "new")]
+    this_stream_only: bool,
     /// Print what would be done without recording anything
     #[arg(long)]
     dry_run: bool,
@@ -92,6 +97,7 @@ pub fn model_import(args: ModelImport) -> Result<()> {
             retarget: args.retarget.clone(),
             format: args.format,
             collision: args.collision,
+            this_stream_only: args.this_stream_only,
         },
     )?;
     if let Some(to) = &args.to {
@@ -129,6 +135,15 @@ pub fn model_import(args: ModelImport) -> Result<()> {
         );
         for m in &s.meshes {
             out!("  mesh {m}");
+        }
+        if !s.copies.is_empty() {
+            out!(
+                "  also in {} other stream(s) with a copy of the model:",
+                s.copies.len()
+            );
+            for c in &s.copies {
+                out!("    {c}");
+            }
         }
         for a in &s.added {
             out!("  add {a}");

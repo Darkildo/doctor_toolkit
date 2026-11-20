@@ -430,6 +430,7 @@ impl Workspace {
                         retarget,
                         format: None,
                         collision: None,
+                        this_stream_only: false,
                     },
                 )?;
                 if !dry_run {

@@ -816,6 +816,7 @@ plan_head = "{parts}, {records}; материалы: из игры — {reused},
 plan_skeleton = "Скелет {skeleton}, сопоставлено: {bones}"
 plan_part = "{name}: {kind}, {vertices}, {triangles}, материал {material}"
 plan_collision = "Новые столкновения: {kind}, {triangles}"
+plan_copies = "Заменяется и в других потоках с копией модели ({count}): игра берёт её из того, что загрузила первым. {streams}"
 summary_target = "Модель: {model}"
 summary_file = "Файл: {file}"
 no_change = "Изменений нет: в рабочем пространстве уже эта модель."

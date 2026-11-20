@@ -65,6 +65,11 @@ pub struct ImportOptions {
     /// point the metamodel at it (needs a metamodel target with a
     /// `CollisionHavok4Part`; see [`crate::import::collision`]).
     pub collision: Option<CollisionKind>,
+    /// Replace the target only in its own stream. By default a replaced
+    /// mesh is replaced in every stream that has a copy of it (the same
+    /// ids): the game takes a resource from whichever stream loaded it, so
+    /// a copy left old shows the old model there ([`ImportSummary::copies`]).
+    pub this_stream_only: bool,
 }
 
 /// One part of the import, for the summary.
@@ -104,6 +109,10 @@ pub struct ImportSummary {
     pub retargeted: Vec<String>,
     /// New collision, when asked for.
     pub collision: Option<CollisionSummary>,
+    /// Other streams whose copies of the replaced meshes (the same ids) get
+    /// the new geometry too, with the new materials and textures they need.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub copies: Vec<String>,
     pub warnings: Vec<String>,
 }
 
@@ -532,6 +541,7 @@ pub fn plan(
         .map(|r| new_edit(&target.stream_name, r, first_mesh_place.clone()))
         .collect();
     let mut edits: Vec<ResourceEdit> = Vec::new();
+    let mut copy_edits: Vec<(usize, Vec<ResourceEdit>)> = Vec::new();
     match &options.new_name {
         None => {
             for ((mesh, volatile), image) in target.meshes.iter().zip(&built) {
@@ -601,6 +611,25 @@ pub fn plan(
                         .warnings
                         .push("collision needs a metamodel target; none was built".into());
                 }
+            }
+            if !options.this_stream_only {
+                let copies = Copies {
+                    target: &target,
+                    layout,
+                    built: &built,
+                    additions: &additions,
+                };
+                copies.plan(
+                    game,
+                    workspace,
+                    index,
+                    &mut checker,
+                    stream,
+                    &mut copy_edits,
+                    &mut new_edits,
+                    &mut updates,
+                    &mut summary,
+                )?;
             }
         }
         Some(name) => {
@@ -717,7 +746,11 @@ pub fn plan(
         .iter()
         .map(|r| u64::from(r.header.data_size))
         .sum();
-    let grown: u64 = new_edits.iter().map(|e| e.data.len() as u64).sum::<u64>()
+    let grown: u64 = new_edits
+        .iter()
+        .filter(|e| e.stream == target.stream_name)
+        .map(|e| e.data.len() as u64)
+        .sum::<u64>()
         + edits
             .iter()
             .map(|e| {
@@ -727,6 +760,7 @@ pub fn plan(
             .sum::<u64>()
         + updates
             .iter()
+            .filter(|(k, _)| k.stream == target.stream_name)
             .map(|(k, d)| {
                 let old = workspace.data(k).ok().flatten().map_or(0, |d| d.len());
                 (d.as_ref().map_or(0, Vec::len) as u64).saturating_sub(old as u64)
@@ -753,6 +787,7 @@ pub fn plan(
     // A clone of a mesh with a volatile companion has its volatile right after it.
     summary.added = new_edits
         .iter()
+        .filter(|e| e.stream == target.stream_name)
         .map(|e| {
             ResourceKey {
                 stream: e.stream.clone(),
@@ -778,9 +813,9 @@ pub fn plan(
         mesh: first,
         label,
         edits: if edits.is_empty() {
-            Vec::new()
+            copy_edits
         } else {
-            vec![(stream, edits)]
+            std::iter::once((stream, edits)).chain(copy_edits).collect()
         },
         additions: new_edits,
         updates,
@@ -1025,6 +1060,162 @@ const WEIGHT_WARNING: &str = "the import makes ";
 
 /// A warning when an import adds `grown` bytes to a stream of `weight`
 /// bytes and that is both more than 1 MiB and more than half of the stream:
+/// The copies of a replaced model in other streams.
+///
+/// A mesh of the game is often in several streams under the same ids: a
+/// prop in every zone that shows it, the parts of a car in each of its
+/// assemblies (1 315 of 7 132 meshes, up to 197 streams). The game keeps
+/// one resource per ids and takes it from whichever stream loaded it, so a
+/// replacement made in one stream only shows where that stream is the one
+/// loaded — the editor shows it, the game in most places not. Every copy
+/// gets the new mesh, and its stream the new materials and textures (unless
+/// it has them or a stream loaded with it provides them), before its first
+/// replaced mesh like in the target's stream.
+struct Copies<'a> {
+    target: &'a Target,
+    layout: &'a StreamLayout,
+    built: &'a [MeshImage],
+    additions: &'a [NewResource],
+}
+
+impl Copies<'_> {
+    #[allow(clippy::too_many_arguments)]
+    fn plan(
+        &self,
+        game: &GameInstance,
+        workspace: &Workspace,
+        index: &ResourceIndex,
+        checker: &mut ReferenceChecker<'_>,
+        stream: usize,
+        edits: &mut Vec<(usize, Vec<ResourceEdit>)>,
+        new_edits: &mut Vec<NewResourceEdit>,
+        updates: &mut Vec<(ResourceKey, Option<Vec<u8>>)>,
+        summary: &mut ImportSummary,
+    ) -> Result<()> {
+        let ids: Vec<[u32; 4]> = self
+            .target
+            .meshes
+            .iter()
+            .map(|m| self.layout.resources[m.0].header.ids)
+            .collect();
+        let streams: std::collections::BTreeSet<usize> = index
+            .entries
+            .iter()
+            .filter(|e| e.header.type_id == TYPE_MESH && ids.contains(&e.header.ids))
+            .map(|e| e.stream as usize)
+            .filter(|&s| s != stream)
+            .collect();
+        let encoded: Vec<(Vec<u8>, Vec<u8>)> = self
+            .built
+            .iter()
+            .map(MeshImage::encode)
+            .collect::<Result<_>>()?;
+        // New data of materials an earlier import added to the target's
+        // stream: that import added them to the copies' streams as well.
+        let updated: Vec<(ResourceKey, Option<Vec<u8>>)> = updates
+            .iter()
+            .filter(|(k, _)| k.stream == self.target.stream_name)
+            .cloned()
+            .collect();
+        for s in streams {
+            let file = game.open_stream(s)?;
+            let layout = file.layout();
+            let name = game.streams()[s].stream_name();
+            let key_of = |i: usize| ResourceKey::new(&name, &layout.resources[i].header);
+            let original = {
+                let path = game.original_path(&game.streams()[s]);
+                let data = std::fs::read(&path).map_err(|e| Error::io(&path, e))?;
+                StreamLayout::parse(&data)?
+            };
+            let place_from = |from: usize| -> Option<ResourceKey> {
+                (from..layout.resources.len())
+                    .map(key_of)
+                    .find(|k| k.find_in(&original).is_some())
+            };
+            let mut stream_edits = Vec::new();
+            let mut first: Option<usize> = None;
+            for (mesh_ids, (data, vol)) in ids.iter().zip(&encoded) {
+                let Some(mesh) = layout
+                    .resources
+                    .iter()
+                    .position(|r| r.header.type_id == TYPE_MESH && r.header.ids == *mesh_ids)
+                else {
+                    continue;
+                };
+                stream_edits.push(ResourceEdit {
+                    index: mesh,
+                    data: data.clone(),
+                    storage: StorageChoice::Keep,
+                });
+                match crate::resource::mesh::volatile_for(layout, mesh) {
+                    Some(v) => stream_edits.push(ResourceEdit {
+                        index: v,
+                        data: vol.clone(),
+                        storage: StorageChoice::Keep,
+                    }),
+                    None => {
+                        let resource = NewResource::new(
+                            TYPE_MESH_VOLATILE,
+                            mesh_ids.map(|i| !i),
+                            vol.clone(),
+                            Storage::Raw,
+                        )?;
+                        new_edits.push(new_edit(&name, &resource, place_from(mesh + 1)));
+                    }
+                }
+                first = Some(first.map_or(mesh, |f| f.min(mesh)));
+            }
+            let Some(first) = first else { continue };
+            let before = place_from(first);
+            for addition in self.additions {
+                let header = addition.header;
+                let key = ResourceKey {
+                    stream: name.clone(),
+                    type_id: header.type_id,
+                    ids: header.ids,
+                };
+                let there = layout
+                    .resources
+                    .iter()
+                    .any(|r| r.header.type_id == header.type_id && r.header.ids == header.ids)
+                    || workspace.change(&key).is_some_and(Change::is_added);
+                let provided = match header.type_id {
+                    TYPE_MATERIAL => match addition.data.get(8..12) {
+                        Some(b) => checker.provides(
+                            s,
+                            &RefTarget::Material(u32::from_le_bytes(
+                                b.try_into().expect("4 bytes"),
+                            )),
+                        )?,
+                        None => false,
+                    },
+                    TYPE_TG4H | TYPE_TG4D => {
+                        checker.provides(s, &RefTarget::Texture(header.ids[3]))?
+                    }
+                    _ => false,
+                };
+                if !there && !provided {
+                    new_edits.push(new_edit(&name, addition, before.clone()));
+                }
+            }
+            for (key, data) in &updated {
+                let copy = ResourceKey {
+                    stream: name.clone(),
+                    ..key.clone()
+                };
+                if workspace.change(&copy).is_some_and(Change::is_added)
+                    && !updates.iter().any(|(k, _)| *k == copy)
+                {
+                    updates.push((copy, data.clone()));
+                }
+            }
+            edits.push((s, stream_edits));
+            summary.copies.push(name);
+        }
+        Ok(())
+    }
+}
+
 /// zones of the world grid share the budget of their partition (25 MB for
 /// the high detail of a city), and the game stops loading zones at the
 /// first one that does not fit.
