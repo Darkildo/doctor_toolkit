@@ -583,7 +583,22 @@ where
     let tangents: Option<Vec<[f32; 4]>> = reader.read_tangents().map(Iterator::collect);
     let uv0 = reader.read_tex_coords(0).map(|t| t.into_f32().collect());
     let uv1 = reader.read_tex_coords(1).map(|t| t.into_f32().collect());
-    let colors = reader.read_colors(0).map(|c| c.into_rgba_u8().collect());
+    let colors: Option<Vec<[u8; 4]>> = reader.read_colors(0).map(|c| c.into_rgba_u8().collect());
+    // Every attribute of a primitive has one value per vertex (glTF 2.0
+    // §3.7.2.1); a file whose counts differ is not read.
+    let len = positions.len();
+    let lengths = [
+        normals.as_ref().map(Vec::len),
+        tangents.as_ref().map(Vec::len),
+        uv0.as_ref().map(|v: &Vec<[f32; 2]>| v.len()),
+        uv1.as_ref().map(|v: &Vec<[f32; 2]>| v.len()),
+        colors.as_ref().map(Vec::len),
+    ];
+    if lengths.iter().flatten().any(|&l| l != len) {
+        return Err(invalid(format!(
+            "part `{name}`: an attribute has another number of values than POSITION"
+        )));
+    }
     let skin = match skin_joints {
         Some(map) => {
             let joints: Option<Vec<[u16; 4]>> =
@@ -933,5 +948,36 @@ mod tests {
         let external = text.replacen("data:application/octet-stream;base64,", "../", 1);
         assert!(read(external.as_bytes(), None).is_err());
         assert!(read(external.as_bytes(), Some(std::path::Path::new("/tmp"))).is_err());
+    }
+
+    /// Found by the fuzzer: two normals for four positions made a part whose
+    /// scene did not validate.
+    #[test]
+    fn attributes_must_have_a_value_for_every_vertex() {
+        let text = String::from_utf8(sample(false)).unwrap();
+        let short = text
+            .replacen(
+                r#"{"POSITION": 0}, "mode": 4"#,
+                r#"{"POSITION": 0, "NORMAL": 6}, "mode": 4"#,
+                1,
+            )
+            .replacen(
+                r#""count": 4, "type": "VEC4"}
+  ],"#,
+                r#""count": 4, "type": "VEC4"},
+    {"bufferView": 0, "componentType": 5126, "count": 2, "type": "VEC3"}
+  ],"#,
+                1,
+            );
+        assert!(short.contains(r#""NORMAL": 6"#) && short.contains(r#""count": 2"#));
+        let error = read(short.as_bytes(), None).unwrap_err().to_string();
+        assert!(error.contains("another number of values"), "{error}");
+        let full = short.replacen(
+            r#""count": 2, "type": "VEC3""#,
+            r#""count": 4, "type": "VEC3""#,
+            1,
+        );
+        let model = read(full.as_bytes(), None).unwrap();
+        model.validate().unwrap();
     }
 }

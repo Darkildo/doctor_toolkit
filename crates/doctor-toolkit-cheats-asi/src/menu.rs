@@ -21,7 +21,9 @@ pub enum What {
     NoRecoil,
     NpcDamage,
     GiveWeapon,
-    CrewSkills,
+    CrewPlace,
+    /// A specialty of the chosen place (its bit, `crew_specialty`).
+    Specialty(u32),
     CrewLicence,
     CrewSlot,
     CrewEscort,
@@ -175,9 +177,30 @@ pub fn pages() -> Vec<Page> {
         },
         self::Page {
             title: T::Crew,
+            // The place is chosen here (owner's decision 16); the items
+            // below act on it and show what the game has. Dimmed until the bench
+            // has checked them (stage 122).
             items: vec![
-                item(T::CrewSkills, CrewSkills, Action, false, true),
-                item(T::CrewLicence, CrewLicence, Action, false, true),
+                item(
+                    T::CrewPlace,
+                    CrewPlace,
+                    number(1.0, 1.0, 7.0, 1.0),
+                    false,
+                    false,
+                ),
+                item(T::Demolition, Specialty(0x04), Toggle(false), false, true),
+                item(T::Arsonist, Specialty(0x08), Toggle(false), false, true),
+                item(T::SafeCracker, Specialty(0x10), Toggle(false), false, true),
+                item(T::Engineer, Specialty(0x20), Toggle(false), false, true),
+                item(T::Medic, Specialty(0x40), Toggle(false), false, true),
+                item(T::Bruiser, Specialty(0x80), Toggle(false), false, true),
+                item(
+                    T::CrewLicence,
+                    CrewLicence,
+                    number(1.0, 1.0, 4.0, 1.0),
+                    false,
+                    true,
+                ),
                 item(T::CrewSlot, CrewSlot, Action, false, true),
                 item(
                     T::CrewEscort,

@@ -236,6 +236,79 @@ pub fn teleport(to: [f32; 3]) -> Result<(), &'static str> {
     Ok(())
 }
 
+/// The game's physics: a pointer whose `+0x24` is the Havok world
+/// (`hkpWorld`), as the character proxy (`0x00550CD1`) and the ground snap
+/// of the game (`0x007080F0`) read it.
+const PHYSICS: u32 = 0x0122_3480;
+const PHYSICS_WORLD: u32 = 0x24;
+/// The game's builder of a ray query (thiscall on the input, `RET 0x18`):
+/// from, to, then the filter of the game (`2, 0x80000000, 0, 0` is the
+/// ground the game snaps points to).
+const RAY_INPUT: u32 = 0x0054_25D0;
+const RAY_INPUT_CODE: [u8; 6] = [0x8B, 0x54, 0x24, 0x0C, 0x8B, 0xC1];
+/// `hkpWorld::castRay(input, output)`, thiscall on the world, `RET 8`.
+const CAST_RAY: u32 = 0x009E_69D0;
+const CAST_RAY_CODE: [u8; 9] = [0x55, 0x8B, 0xEC, 0x83, 0xE4, 0xF0, 0x83, 0xEC, 0x40];
+/// The output: the fraction of the way at `+0x10`, the body hit at `+0x50`.
+const RAY_FRACTION: usize = 0x10 / 4;
+const RAY_HIT: usize = 0x50 / 4;
+
+/// A ray query or its output, aligned as Havok's vectors are.
+#[repr(C, align(16))]
+struct Ray([u32; 32]);
+
+/// Whether the game's ray query is the one this module calls.
+pub fn ray_ready() -> bool {
+    code_is(RAY_INPUT, &RAY_INPUT_CODE) && code_is(CAST_RAY, &CAST_RAY_CODE)
+}
+
+/// The height of the first ground the game's physics has under `x, z`,
+/// going down from `top` to `bottom`: a roof, a street or a hill, as the
+/// game snaps points to the ground (`0x007080F0`). `None` where the physics
+/// has nothing loaded there yet.
+pub fn ground(x: f32, z: f32, top: f32, bottom: f32) -> Option<f32> {
+    if !ray_ready() || top <= bottom {
+        return None;
+    }
+    // SAFETY: the game's physics, checked for null; its builder of a ray
+    // query and `castRay` (checked above), with buffers larger than the
+    // game's own (0x5C and 0x60 bytes) and aligned as the game aligns them;
+    // on the main thread inside the frame (the tick), as the game queries.
+    unsafe {
+        let world = word(word(PHYSICS) + PHYSICS_WORLD);
+        if world == 0 {
+            return None;
+        }
+        let from = [x, top, z, 0.0f32];
+        let to = [x, bottom, z, 0.0f32];
+        let mut input = Ray([0; 32]);
+        let build: extern "thiscall" fn(
+            *mut Ray,
+            *const [f32; 4],
+            *const [f32; 4],
+            u32,
+            u32,
+            u32,
+            u32,
+        ) = std::mem::transmute(RAY_INPUT as usize);
+        build(&mut input, &from, &to, 2, 0x8000_0000, 0, 0);
+        let mut output = Ray([0; 32]);
+        output.0[RAY_FRACTION] = 1.0f32.to_bits();
+        output.0[RAY_FRACTION + 1] = u32::MAX;
+        output.0[0x20 / 4] = u32::MAX;
+        let cast: extern "thiscall" fn(u32, *const Ray, *mut Ray) =
+            std::mem::transmute(CAST_RAY as usize);
+        cast(world, &input, &mut output);
+        if output.0[RAY_HIT] == 0 {
+            return None;
+        }
+        let fraction = f32::from_bits(output.0[RAY_FRACTION]);
+        (0.0..=1.0)
+            .contains(&fraction)
+            .then_some(top - fraction * (top - bottom))
+    }
+}
+
 /// The hour of the game's clock.
 pub fn hour() -> Option<u32> {
     // SAFETY: the TimeOfDayManager of the level.
@@ -368,4 +441,258 @@ pub fn code_is(address: u32, bytes: &[u8]) -> bool {
     // SAFETY: code of the game's image.
     let here = unsafe { std::slice::from_raw_parts(address as usize as *const u8, bytes.len()) };
     here == bytes
+}
+
+/// The player's crew (pointer, `doctor_toolkit_live::addr::CREW`): the
+/// level of the tree `+0x14`, seven places of 0x24 bytes from `+0x18`.
+const CREW: u32 = doctor_toolkit_live::addr::CREW;
+const CREW_LEVEL: u32 = 0x14;
+const CREW_PLACES: u32 = 0x18;
+const PLACE_SIZE: u32 = 0x24;
+pub const PLACES: usize = 7;
+/// In a place: flags (bit 0 open, bit 1 taken), rank, the member's handle
+/// (`SimNpc + 0x48`), specialties.
+const PLACE_RANK: u32 = 4;
+const PLACE_MEMBER: u32 = 8;
+const PLACE_SPECIALTIES: u32 = 0x10;
+const HANDLE_OFFSET: u32 = 0x48;
+/// The level of the tree that opens each place (`0x0090B480`).
+const PLACE_LEVEL: [u32; PLACES] = [1, 2, 3, 5, 4, 7, 8];
+/// Opens the places of the tree's level (fastcall on the crew).
+const OPEN_PLACES: u32 = 0x0090_B480;
+const OPEN_PLACES_CODE: [u8; 8] = [0x8B, 0x41, 0x14, 0x83, 0xC0, 0xFF, 0x83, 0xF8];
+/// A member: his GUID (`+0x20`, 16 bytes) and the hash of his name's text
+/// (`+0xC4`, the key of the game's string tables; `0x009263E8`).
+const MEMBER_GUID: u32 = 0x20;
+const MEMBER_NAME: u32 = 0xC4;
+/// Merits and licences (pointer): `+8` entries of 0x2C bytes, `+0xC` their
+/// number; in an entry the member's GUID `+0x18`, the licence `+0x28` (1–4).
+const HONORS: u32 = 0x0112_9908;
+const HONOR_SIZE: u32 = 0x2C;
+const HONOR_GUID: u32 = 0x18;
+const HONOR_LICENCE: u32 = 0x28;
+/// The game's strings (pointer, `0x0097F8E0`): `+0x30` tables, `+0x34` their
+/// number, searched from the last (`0x006039D0`); an entry has its table at
+/// `+4` and "UTF-16" at `+8`; a table has the number of strings `+0x10`, the
+/// sorted hashes `+0x18`, the strings `+0x1C` (`0x00605D00`).
+const STRINGS: u32 = 0x0122_34A4;
+/// The escort component (packet `0xE851E4F3`): its index among the
+/// components of an object (`0x0068A980`), its method table; the number of
+/// men the player may take at `+0x34` (attribute 1, 3 by default).
+const ESCORT_INDEX: u32 = 0x0113_0FA0;
+const ESCORT_VTABLE: u32 = 0x00D9_31A8;
+const ESCORT_COUNT: u32 = 0x34;
+
+/// A place of the player's crew.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Place {
+    pub open: bool,
+    pub taken: bool,
+    /// 3 soldier, 4 capo, 5 underboss.
+    pub rank: u32,
+    /// The member (`SimNpc`) when the place is taken.
+    pub member: Option<u32>,
+    pub specialties: u32,
+}
+
+fn place_address(i: usize) -> Option<u32> {
+    if i >= PLACES || !in_level() {
+        return None;
+    }
+    // SAFETY: the crew pointer of the game.
+    let crew = unsafe { word(CREW) };
+    (crew != 0).then_some(crew + CREW_PLACES + i as u32 * PLACE_SIZE)
+}
+
+/// Place `i` (0–6) of the crew.
+pub fn place(i: usize) -> Option<Place> {
+    let at = place_address(i)?;
+    // SAFETY: the place of the crew and its member.
+    unsafe {
+        let flags = word(at);
+        let taken = flags & 2 != 0;
+        let handle = word(at + PLACE_MEMBER);
+        let member = (taken && handle > HANDLE_OFFSET + 0x1_0000).then(|| handle - HANDLE_OFFSET);
+        Some(Place {
+            open: flags & 1 != 0,
+            taken,
+            rank: word(at + PLACE_RANK),
+            member,
+            specialties: word(at + PLACE_SPECIALTIES),
+        })
+    }
+}
+
+/// Writes the specialties of a taken place; the member in the world takes
+/// them when he is made again (`0x0090A5C5`).
+pub fn set_specialties(i: usize, bits: u32) -> bool {
+    let Some(at) = place_address(i) else {
+        return false;
+    };
+    // SAFETY: the place of the crew.
+    unsafe {
+        if word(at) & 2 == 0 {
+            return false;
+        }
+        let old = word(at + PLACE_SPECIALTIES);
+        *((at + PLACE_SPECIALTIES) as usize as *mut u32) = (old & !0xFC) | (bits & 0xFC);
+    }
+    true
+}
+
+/// Opens place `i` as the game does: the level of the tree goes up to the
+/// one that opens it (it never goes down and goes into the save), then the
+/// game opens the places of that level.
+pub fn open_place(i: usize) -> bool {
+    if i >= PLACES || !code_is(OPEN_PLACES, &OPEN_PLACES_CODE) {
+        return false;
+    }
+    // SAFETY: the crew of the game and its function that opens the places of
+    // the level (fastcall, the crew in ECX); on the main thread.
+    unsafe {
+        let crew = word(CREW);
+        if crew == 0 || !in_level() {
+            return false;
+        }
+        let level = (crew + CREW_LEVEL) as usize as *mut u32;
+        if *level < PLACE_LEVEL[i] {
+            *level = PLACE_LEVEL[i];
+        }
+        let open: extern "fastcall" fn(u32) = std::mem::transmute(OPEN_PLACES as usize);
+        open(crew);
+        word(crew + CREW_PLACES + i as u32 * PLACE_SIZE) & 1 != 0
+    }
+}
+
+/// The text of the game's strings with this hash, in the game's language.
+pub fn game_text(hash: u32) -> Option<String> {
+    // SAFETY: the string tables of the game, read only.
+    unsafe {
+        let strings = word(STRINGS);
+        let tables = word(strings + 0x30);
+        let count = word(strings + 0x34);
+        if tables == 0 || count > 64 {
+            return None;
+        }
+        for t in (0..count).rev() {
+            let entry = word(tables + t * 4);
+            let table = word(entry + 4);
+            let n = word(table + 0x10);
+            let hashes = word(table + 0x18);
+            if table == 0 || hashes == 0 || n > 1_000_000 {
+                continue;
+            }
+            let (mut lo, mut hi) = (0u32, n);
+            while lo < hi {
+                let mid = (lo + hi) / 2;
+                let h = word(hashes + mid * 4);
+                if h == hash {
+                    let text = word(word(table + 0x1C) + mid * 4);
+                    let wide = *((entry + 8) as usize as *const u8) != 0;
+                    return read_text(text, wide);
+                }
+                if h < hash {
+                    lo = mid + 1;
+                } else {
+                    hi = mid;
+                }
+            }
+        }
+        None
+    }
+}
+
+/// A zero-terminated string of the game, UTF-8 or UTF-16, at most 120
+/// characters.
+///
+/// # Safety
+/// `at` is 0 or a string the game keeps.
+unsafe fn read_text(at: u32, wide: bool) -> Option<String> {
+    if at < 0x1_0000 {
+        return None;
+    }
+    // SAFETY: the caller's promise; reading stops at the terminator.
+    unsafe {
+        if wide {
+            let p = at as usize as *const u16;
+            let len = (0..120).find(|&k| *p.add(k) == 0)?;
+            Some(String::from_utf16_lossy(std::slice::from_raw_parts(p, len)))
+        } else {
+            let p = at as usize as *const u8;
+            let len = (0..240).find(|&k| *p.add(k) == 0)?;
+            Some(String::from_utf8_lossy(std::slice::from_raw_parts(p, len)).into_owned())
+        }
+    }
+}
+
+/// The name of a member, from the game's strings.
+pub fn member_name(member: u32) -> Option<String> {
+    // SAFETY: the member's field.
+    let hash = unsafe { word(member + MEMBER_NAME) };
+    game_text(hash).filter(|t| !t.trim().is_empty())
+}
+
+/// The licence byte of a member in the game's merits (1–4).
+fn licence_address(member: u32) -> Option<u32> {
+    // SAFETY: the member's GUID and the merits of the game, read only.
+    unsafe {
+        let guid = std::slice::from_raw_parts((member + MEMBER_GUID) as usize as *const u8, 16);
+        let honors = word(HONORS);
+        let entries = word(honors + 8);
+        let count = word(honors + 0xC);
+        if entries == 0 || count > 4096 {
+            return None;
+        }
+        (0..count)
+            .map(|k| entries + k * HONOR_SIZE)
+            .find(|&e| {
+                std::slice::from_raw_parts((e + HONOR_GUID) as usize as *const u8, 16) == guid
+            })
+            .map(|e| e + HONOR_LICENCE)
+    }
+}
+
+/// The weapon licence of a member (1–4); 1 when the game has no record.
+pub fn licence(member: u32) -> u32 {
+    // SAFETY: the licence byte of the record.
+    licence_address(member).map_or(1, |a| unsafe { *(a as usize as *const u8) } as u32)
+}
+
+/// Sets the weapon licence of a member who has a record.
+pub fn set_licence(member: u32, level: u32) -> bool {
+    let Some(at) = licence_address(member) else {
+        return false;
+    };
+    // SAFETY: the licence byte of the record.
+    unsafe { *(at as usize as *mut u8) = level.clamp(1, 4) as u8 };
+    true
+}
+
+/// The player's escort component (checked by its method table).
+pub fn escort() -> Option<u32> {
+    let p = player()?;
+    // SAFETY: the component table of the player (`0x0043B870`): `+0x38`
+    // components, `+0x34` the indices of the kinds.
+    unsafe {
+        let index = word(ESCORT_INDEX);
+        let components = word(p + 0x38);
+        let indices = word(p + 0x34);
+        if components == 0 || indices == 0 || index > 0x400 {
+            return None;
+        }
+        let slot = *((indices + 0xE + index * 2) as usize as *const u16) as u32;
+        let c = word(components + slot * 4);
+        (c != 0 && word(c) == ESCORT_VTABLE).then_some(c)
+    }
+}
+
+/// How many men the player may take with him.
+pub fn escort_count(c: u32) -> u32 {
+    // SAFETY: the field of the escort component.
+    unsafe { word(c + ESCORT_COUNT) }
+}
+
+pub fn set_escort_count(c: u32, n: u32) {
+    // SAFETY: the field of the escort component.
+    unsafe { *((c + ESCORT_COUNT) as usize as *mut u32) = n }
 }

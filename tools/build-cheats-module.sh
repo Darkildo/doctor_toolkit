@@ -55,7 +55,7 @@ ws=$tmp/workspace
 version=$(sed -n 's/^version = "\(.*\)"/\1/p' crates/doctor-toolkit-cheats-asi/Cargo.toml | head -1)
 "$t" mods build "$game" -o "$mod" --name "Doctor: developer menu" --id doctor-cheats \
     --mod-version "$version" --edition 1.0.789.0 \
-    --description "A developer menu in the game (key ~ or Back + RB). Player: money, god mode, one hit and down, the interface hidden, the hour of the day. Weapons: infinite ammo, no reload, damage, rate of fire and spread, no camera kick, the damage enemies deal. Crew and families come in later versions. Fonts: Oswald and Podkova, SIL Open Font License (the licences are inside the module)." \
+    --description "A developer menu in the game (key ~ or Back + RB). Player: money, god mode, one hit and down, teleport to the waypoint of Don's view, the interface hidden, the hour of the day. Weapons: infinite ammo, no reload, damage, rate of fire and spread, no camera kick, the damage enemies deal. Crew and families come in later versions. Fonts: Oswald and Podkova, SIL Open Font License (the licences are inside the module)." \
     --native "doctor_cheats.asi=$out" \
     --dir "$ws"
 echo "$mod"

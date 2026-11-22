@@ -163,7 +163,11 @@ pub fn draw(
                     (false, false) => BONE_DIM,
                 },
             )),
-            Kind::Number { value, .. } => Some((number(value), if chosen { INK } else { BONE })),
+            // A number the game names (a place of the tree) shows the name.
+            Kind::Number { value, .. } => Some((
+                info(item.what).unwrap_or_else(|| number(value)),
+                if chosen { INK } else { BONE },
+            )),
             Kind::Info => info(item.what).map(|t| (t, if chosen { INK } else { BONE_DIM })),
         };
         if let Some((text, color)) = value {

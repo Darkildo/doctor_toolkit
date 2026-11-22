@@ -20,9 +20,9 @@ README, лицензия, документация, `BUILD-INFO.txt`), отде�
 `dist/doctor_toolkit-<версия>-linux-x86_64.tar.gz`, файл с SHA-256 рядом.
 
 ```sh
-sha256sum -c doctor_toolkit-1.4.0-linux-x86_64.tar.gz.sha256
-tar xzf doctor_toolkit-1.4.0-linux-x86_64.tar.gz
-cd doctor_toolkit-1.4.0-linux-x86_64
+sha256sum -c doctor_toolkit-1.4.1-linux-x86_64.tar.gz.sha256
+tar xzf doctor_toolkit-1.4.1-linux-x86_64.tar.gz
+cd doctor_toolkit-1.4.1-linux-x86_64
 ./doctor-toolkit --version
 ./doctor-toolkit-gui
 ```

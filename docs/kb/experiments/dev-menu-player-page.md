@@ -66,3 +66,4 @@ HUD после катсцены; геймпад.
 - [«Взгляд дона» и HUD](../exe/don-view.md)
 - [Меню разработчика `doctor_cheats` (этап 119)](dev-menu-cheats-mod.md)
 - [Игрок: список, матрица, телепорт](../exe/player-teleport.md)
+- [Телепорт к метке по лучу физики игры (этап 120б)](dev-menu-teleport-ground.md)

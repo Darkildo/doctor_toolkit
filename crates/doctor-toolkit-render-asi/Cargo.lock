@@ -4,11 +4,11 @@ version = 4
 
 [[package]]
 name = "doctor-toolkit-live"
-version = "1.4.0"
+version = "1.4.1"
 
 [[package]]
 name = "doctor-toolkit-render-asi"
-version = "1.4.0"
+version = "1.4.1"
 dependencies = [
  "doctor-toolkit-live",
 ]

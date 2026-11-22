@@ -30,6 +30,10 @@ struct State {
     keep: Keep,
     /// The player's position, for the item Coordinates.
     coords: Option<[f32; 3]>,
+    /// The chosen place of the crew as the menu shows it, and the member
+    /// whose name it holds.
+    place_label: Option<String>,
+    place_name: Option<(u32, Option<String>)>,
     /// `doctor_cheats.cfg` next to the module.
     config_path: Option<PathBuf>,
 }
@@ -44,8 +48,8 @@ struct Keep {
     one_hit: Option<(u32, f32)>,
     /// The HUD the mod has hidden.
     hud: Option<u32>,
-    /// A teleport waiting for the game to go on.
-    teleport: Option<[f32; 3]>,
+    /// A teleport waiting for the game to go on, then for the ground.
+    teleport: Option<Teleport>,
     /// The mod holds the game's pause while the menu is open.
     paused: bool,
     /// Guns the mod gave infinite ammunition, with the bits they had.
@@ -56,6 +60,45 @@ struct Keep {
     /// Guns whose camera at a shot the mod has calmed, with what it was.
     camera: HashMap<u32, [f32; 2]>,
 }
+
+/// A teleport to the waypoint: its `x, z`, where the player was, when it
+/// began, and its step.
+#[derive(Clone, Copy)]
+struct Teleport {
+    x: f32,
+    z: f32,
+    from: Option<[f32; 3]>,
+    started: Option<Instant>,
+    step: Step,
+}
+
+#[derive(Clone, Copy)]
+enum Step {
+    /// Looking for the ground under the waypoint.
+    Find,
+    /// The player hangs above the waypoint (since then) while the game
+    /// loads the ground there.
+    Hang(Instant),
+    /// The player goes here (nowhere for NaN), then the menu says this; the
+    /// game refuses while its own teleport runs (bench §69), so it is tried
+    /// again on the next tick.
+    Move([f32; 3], T),
+}
+
+/// The ray for the ground under the waypoint goes from this height down to
+/// the next; the player waits for the ground at least this high.
+const RAY_TOP: f32 = 400.0;
+const RAY_BOTTOM: f32 = -100.0;
+const HANG: f32 = 40.0;
+/// How long the player waits above the waypoint, and how long the whole
+/// teleport may take, in seconds.
+const HANG_SECONDS: f32 = 15.0;
+const TELEPORT_SECONDS: f32 = 25.0;
+/// Above the ground the feet go, as the game's ground snap (`0x007080F0`).
+const ABOVE_GROUND: f32 = 0.1;
+/// The ray does not see water: ground below this is the sea floor, where
+/// the player drowns (bench §69).
+const SEA_FLOOR: f32 = -0.5;
 
 /// The mode of the frame tick in which the world moves.
 const RUNNING: u32 = abi::TICK_RUNNING;
@@ -86,6 +129,13 @@ const KEY_NUMPAD_ENTER: u8 = 0x9C;
 
 fn log(p: &Platform, text: &str) {
     p.log(&CString::new(text).unwrap_or_default());
+}
+
+/// A line in the platform's log, when the platform is there.
+fn note(text: &str) {
+    if let Some(p) = Platform::get() {
+        log(&p, text);
+    }
 }
 
 unsafe extern "system" {
@@ -250,12 +300,30 @@ fn run(state: &mut State, what: What) {
             ),
             None => T::NotHere.get(lang).to_owned(),
         },
+        What::CrewSlot => {
+            let i = chosen_place(state);
+            match game::place(i) {
+                None => T::NotHere,
+                Some(p) if p.open => T::PlaceWasOpen,
+                Some(_) if game::open_place(i) => T::PlaceOpened,
+                Some(_) => T::NotHere,
+            }
+            .get(lang)
+            .to_owned()
+        }
         What::Teleport => match game::waypoint() {
             None if game::player().is_none() => T::NotHere.get(lang).to_owned(),
             None => T::NoWaypoint.get(lang).to_owned(),
             Some(to) => {
-                // Half a metre up: the feet above the ground of the mark.
-                state.keep.teleport = Some([to[0], to[1] + 0.5, to[2]]);
+                // The height of the waypoint is always 0: the game's physics
+                // gives the ground under it (stage 120b).
+                state.keep.teleport = Some(Teleport {
+                    x: to[0],
+                    z: to[2],
+                    from: game::position(),
+                    started: None,
+                    step: Step::Find,
+                });
                 T::TeleportLater.get(lang).to_owned()
             }
         },
@@ -288,6 +356,13 @@ fn changed(state: &mut State, what: What) {
         remember(state);
         return;
     }
+    if matches!(
+        what,
+        What::CrewPlace | What::Specialty(_) | What::CrewLicence | What::CrewEscort
+    ) {
+        crew_changed(state, what);
+        return;
+    }
     if what == What::Hour {
         let hour = state.menu.value(What::Hour).unwrap_or(12.0) as u32;
         let text = if game::set_hour(hour) {
@@ -297,6 +372,110 @@ fn changed(state: &mut State, what: What) {
         };
         set_status(state, text);
     }
+}
+
+/// The specialties of the crew, as the items of the page.
+const SPECIALTIES: [u32; 6] = [0x04, 0x08, 0x10, 0x20, 0x40, 0x80];
+
+/// The place (0–6) chosen on the Crew page.
+fn chosen_place(state: &State) -> usize {
+    (state.menu.value(What::CrewPlace).unwrap_or(1.0) as usize).clamp(1, game::PLACES) - 1
+}
+
+/// The Crew page shows what the game has for the chosen place: its rank
+/// and member, his specialties and licence, and the escort of the player.
+fn crew(state: &mut State) {
+    let lang = state.lang;
+    // Nothing is read from the game while the page is not ready.
+    if !state.menu.item(What::CrewPlace).is_some_and(|i| i.ready) {
+        state.place_label = None;
+        return;
+    }
+    let i = chosen_place(state);
+    let Some(place) = game::place(i) else {
+        state.place_label = None;
+        return;
+    };
+    let rank = match place.rank {
+        3 => T::Soldier.get(lang),
+        4 => T::Capo.get(lang),
+        5 => T::Underboss.get(lang),
+        _ => "-",
+    };
+    let who = match place.member {
+        Some(m) => {
+            if state.place_name.as_ref().map(|(k, _)| *k) != Some(m) {
+                state.place_name = Some((m, game::member_name(m)));
+            }
+            state
+                .place_name
+                .as_ref()
+                .and_then(|(_, n)| n.clone())
+                .unwrap_or_else(|| "?".to_owned())
+        }
+        None if place.open => T::PlaceFree.get(lang).to_owned(),
+        None => T::PlaceClosed.get(lang).to_owned(),
+    };
+    state.place_label = Some(format!("{}: {rank}, {who}", i + 1));
+    for bit in SPECIALTIES {
+        let on = place.member.is_some() && place.specialties & bit != 0;
+        state.menu.set_toggle(What::Specialty(bit), on);
+    }
+    if let Some(m) = place.member {
+        state
+            .menu
+            .set_value(What::CrewLicence, game::licence(m) as f32);
+    }
+    if let Some(c) = game::escort() {
+        state
+            .menu
+            .set_value(What::CrewEscort, game::escort_count(c) as f32);
+    }
+}
+
+/// A change on the Crew page goes into the game; what the game refuses is
+/// shown back by [`crew`] on the next tick.
+fn crew_changed(state: &mut State, what: What) {
+    let lang = state.lang;
+    let i = chosen_place(state);
+    let member = game::place(i).and_then(|p| p.member);
+    let text = match what {
+        What::CrewPlace => {
+            state.place_name = None;
+            return;
+        }
+        What::Specialty(_) => {
+            let bits = SPECIALTIES
+                .iter()
+                .filter(|&&b| state.menu.on(What::Specialty(b)))
+                .fold(0, |acc, b| acc | b);
+            if member.is_some() && game::set_specialties(i, bits) {
+                T::SpecialtiesLater.get(lang).to_owned()
+            } else {
+                T::NoMember.get(lang).to_owned()
+            }
+        }
+        What::CrewLicence => {
+            let level = state.menu.value(What::CrewLicence).unwrap_or(1.0) as u32;
+            match member {
+                None => T::NoMember.get(lang).to_owned(),
+                Some(m) if game::set_licence(m, level) => {
+                    format!("{}{level}", T::LicenceSet.get(lang))
+                }
+                Some(_) => T::NoLicence.get(lang).to_owned(),
+            }
+        }
+        What::CrewEscort => match game::escort() {
+            Some(c) => {
+                let n = state.menu.value(What::CrewEscort).unwrap_or(3.0) as u32;
+                game::set_escort_count(c, n);
+                format!("{}: {n}", T::CrewEscort.get(lang))
+            }
+            None => T::NoEscort.get(lang).to_owned(),
+        },
+        _ => return,
+    };
+    set_status(state, text);
 }
 
 /// The weapon items, on the gun in the player's hands only: a gun the
@@ -457,18 +636,93 @@ fn keep(state: &mut State, mode: u32) {
     }
     weapons(state);
     // A teleport waits for the world to move.
-    if let Some(to) = state.keep.teleport
+    if let Some(t) = state.keep.teleport
         && mode == RUNNING
     {
-        state.keep.teleport = None;
-        let text = match game::teleport(to) {
-            Ok(()) => T::Teleported,
-            Err(_) => T::NoTeleport,
-        }
-        .get(state.lang)
-        .to_owned();
-        set_status(state, text);
+        teleport(state, t);
     }
+}
+
+/// The ground under the waypoint from the game's physics: the player goes
+/// there at once when the physics has it; otherwise the player hangs above
+/// the waypoint (the game does not drop a teleported player) while the game
+/// loads the zones around, and goes down when the ray finds the ground.
+fn teleport(state: &mut State, mut t: Teleport) {
+    let done = |state: &mut State, text: T| {
+        state.keep.teleport = None;
+        let text = text.get(state.lang).to_owned();
+        set_status(state, text);
+    };
+    let started = *t.started.get_or_insert_with(Instant::now);
+    if started.elapsed().as_secs_f32() > TELEPORT_SECONDS {
+        note("teleport: the game did not move the player in time");
+        return done(state, T::NoTeleport);
+    }
+    // Back where the player was when the mod has moved him, else nowhere.
+    let from = t.from;
+    let back = |hung: bool, text: T| match (hung, from) {
+        (true, Some(at)) => Step::Move(at, text),
+        _ => Step::Move([f32::NAN; 3], text),
+    };
+    t.step = match t.step {
+        Step::Find | Step::Hang(_) => {
+            let hung = matches!(t.step, Step::Hang(_));
+            match game::ground(t.x, t.z, RAY_TOP, RAY_BOTTOM) {
+                Some(y) if y < SEA_FLOOR => {
+                    note(&format!(
+                        "teleport: water under {:.1}, {:.1} (floor {y:.2})",
+                        t.x, t.z
+                    ));
+                    back(hung, T::Water)
+                }
+                Some(y) => {
+                    note(&format!(
+                        "teleport: ground at {y:.2} under {:.1}, {:.1}",
+                        t.x, t.z
+                    ));
+                    Step::Move([t.x, y + ABOVE_GROUND, t.z], T::Teleported)
+                }
+                None => match t.step {
+                    Step::Hang(since) if since.elapsed().as_secs_f32() > HANG_SECONDS => {
+                        note("teleport: no ground under the waypoint");
+                        back(true, T::NoGround)
+                    }
+                    Step::Hang(since) => Step::Hang(since),
+                    _ => {
+                        let y = game::position().map_or(HANG, |p| p[1].max(HANG));
+                        if game::teleport([t.x, y, t.z]).is_ok() {
+                            note(&format!(
+                                "teleport: no ground yet under {:.1}, {:.1}; waiting at {y:.1}",
+                                t.x, t.z
+                            ));
+                            let text = T::TeleportWait.get(state.lang).to_owned();
+                            set_status(state, text);
+                            Step::Hang(Instant::now())
+                        } else {
+                            Step::Find
+                        }
+                    }
+                },
+            }
+        }
+        Step::Move(to, text) => {
+            if to[0].is_nan() {
+                return done(state, text);
+            }
+            match game::teleport(to) {
+                Ok(()) => {
+                    note(&format!(
+                        "teleport: moved to {:.1}, {:.2}, {:.1}",
+                        to[0], to[1], to[2]
+                    ));
+                    return done(state, text);
+                }
+                // The game's own teleport still runs: next tick.
+                Err(_) => Step::Move(to, text),
+            }
+        }
+    };
+    state.keep.teleport = Some(t);
 }
 
 unsafe extern "C" fn on_tick(_: *mut c_void, mode: u32) {
@@ -505,6 +759,7 @@ unsafe extern "C" fn on_tick(_: *mut c_void, mode: u32) {
         return;
     }
     state.coords = game::position();
+    crew(state);
     let now = ms(state);
     let keys = held(&input, state.config.pad);
     for key in state.repeat.feed(&keys, now) {
@@ -547,6 +802,7 @@ unsafe extern "C" fn on_overlay(_: *mut c_void, overlay: *const abi::Overlay) {
     let coords = state.coords;
     let info = |what: What| match what {
         What::Coords => coords.map(view::coords),
+        What::CrewPlace => state.place_label.clone(),
         _ => None,
     };
     view::draw(&mut frame, &state.menu, state.lang, status, &info);
@@ -590,6 +846,7 @@ pub unsafe extern "C" fn doctor_mod_init(api: *const Api) -> i32 {
                 let mut menu = Menu::default();
                 menu.set_ready(What::NoReload, no_reload);
                 menu.set_ready(What::NpcDamage, enemy_damage);
+                menu.set_ready(What::Teleport, game::ray_ready());
                 if config.remember {
                     menu.restore(&config.values);
                     menu.set_toggle(What::Remember, true);
@@ -603,6 +860,8 @@ pub unsafe extern "C" fn doctor_mod_init(api: *const Api) -> i32 {
             started: Instant::now(),
             keep: Keep::default(),
             coords: None,
+            place_label: None,
+            place_name: None,
             config_path: dir.as_ref().map(|d| d.join(config::FILE)),
         });
     }

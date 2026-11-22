@@ -19,7 +19,7 @@ dependencies = [
 
 [[package]]
 name = "doctor-example-class"
-version = "1.4.0"
+version = "1.4.1"
 dependencies = [
  "doctor-toolkit-overlay",
  "doctor-toolkit-sdk",
@@ -27,7 +27,7 @@ dependencies = [
 
 [[package]]
 name = "doctor-toolkit-overlay"
-version = "1.4.0"
+version = "1.4.1"
 dependencies = [
  "doctor-toolkit-sdk",
  "fontdue",
@@ -35,7 +35,7 @@ dependencies = [
 
 [[package]]
 name = "doctor-toolkit-sdk"
-version = "1.4.0"
+version = "1.4.1"
 
 [[package]]
 name = "equivalent"

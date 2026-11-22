@@ -6,7 +6,7 @@ editions: ["1.0.789.0"]
 stages: [72]
 sources: ["docs/kb/experiments"]
 tags: [index]
-updated: 2026-11-21
+updated: 2026-11-22
 ---
 # Опыты на стенде
 
@@ -14,7 +14,7 @@ updated: 2026-11-21
 
 Опыты в запущенной игре на стенде: что проверяли и что получилось.
 
-Заметок: 75 (`known` — 48, `partial` — 27).
+Заметок: 76 (`known` — 48, `partial` — 28).
 
 | Заметка | Статус | Уверенность | Этапы |
 |---|---|---|---|
@@ -36,6 +36,7 @@ updated: 2026-11-21
 | [Меню разработчика `doctor_cheats` на стенде (этап 119)](dev-menu-cheats-mod.md) | partial | bench | 119 |
 | [Такт на паузе, реестр устройства и шрифты в памяти (этап 114)](dev-menu-infrastructure.md) | partial | bench | 114 |
 | [Страница «Игрок» меню `doctor_cheats` на стенде (этап 120)](dev-menu-player-page.md) | partial | bench | 120 |
+| [Телепорт к метке по лучу физики игры на стенде (этап 120б)](dev-menu-teleport-ground.md) | partial | bench | 120 |
 | [Страница «Оружие» и «Запомнить настройки» меню `doctor_cheats` на стенде (этап 121)](dev-menu-weapons-page.md) | partial | bench | 121 |
 | [Объединение вызовов отрисовки: опыт на стенде (этап 101)](draw-call-merging.md) | partial | bench | 101 |
 | [DXVK и 32-битный Vulkan: частота кадров на стенде](dxvk-frame-rate.md) | known | bench | 72, 33 |

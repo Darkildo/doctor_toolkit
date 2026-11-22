@@ -1,7 +1,7 @@
 [package]
 name = "doctor-toolkit-cheats-asi"
 description = "doctor_cheats.asi: a developer menu in the game for the player of The Godfather II (PC 1.0.789.0) — a native mod on doctor_platform.asi"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 license = "GPL-3.0-only"
 publish = false

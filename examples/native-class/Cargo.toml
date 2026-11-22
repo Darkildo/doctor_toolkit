@@ -1,7 +1,7 @@
 [package]
 name = "doctor-example-class"
 description = "Example of a native mod of The Godfather II (PC 1.0.789.0): a new SimGroup class, Lua functions, a listener, a filter and a hook through doctor_platform.asi"
-version = "1.4.0"
+version = "1.4.1"
 edition = "2024"
 license = "GPL-3.0-only"
 publish = false

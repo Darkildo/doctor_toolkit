@@ -94,7 +94,7 @@ documentation of this tool only.
 
 ## Quick start
 
-1. Download `doctor_toolkit-1.4.0-windows-x86_64.zip` from the
+1. Download `doctor_toolkit-1.4.1-windows-x86_64.zip` from the
    [latest release](https://github.com/Darkildo/doctor_toolkit/releases).
    Releases are built for Windows x86_64 only; on Linux and macOS
    [build from source](#building-from-source) (Linux:
@@ -304,7 +304,7 @@ which puts `dist/doctor_toolkit-<version>-linux-x86_64.tar.gz`, then unpack
 it anywhere and run the programs from that folder:
 
 ```sh
-tar xzf doctor_toolkit-1.4.0-linux-x86_64.tar.gz && cd doctor_toolkit-1.4.0-linux-x86_64
+tar xzf doctor_toolkit-1.4.1-linux-x86_64.tar.gz && cd doctor_toolkit-1.4.1-linux-x86_64
 ./doctor-toolkit-gui "/path/to/The Godfather II"     # the editor
 ./open-mod-manager "/path/to/The Godfather II"       # Open Mod Manager, for players
 ./doctor-toolkit --help                              # the command line

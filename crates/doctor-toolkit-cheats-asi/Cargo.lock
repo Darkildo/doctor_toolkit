@@ -19,7 +19,7 @@ dependencies = [
 
 [[package]]
 name = "doctor-toolkit-cheats-asi"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "doctor-toolkit-live",
  "doctor-toolkit-overlay",
@@ -28,11 +28,11 @@ dependencies = [
 
 [[package]]
 name = "doctor-toolkit-live"
-version = "1.4.0"
+version = "1.4.1"
 
 [[package]]
 name = "doctor-toolkit-overlay"
-version = "1.4.0"
+version = "1.4.1"
 dependencies = [
  "doctor-toolkit-sdk",
  "fontdue",
@@ -40,7 +40,7 @@ dependencies = [
 
 [[package]]
 name = "doctor-toolkit-sdk"
-version = "1.4.0"
+version = "1.4.1"
 
 [[package]]
 name = "equivalent"

@@ -4,9 +4,9 @@ status: partial
 confidence: bench
 editions: ["1.0.789.0"]
 stages: [121]
-sources: ["docs/analysis/game-bench.md §67", "PLAN-cheats.md §4, §6", "crates/doctor-toolkit-cheats-asi/src/game.rs", "crates/doctor-toolkit-cheats-asi/src/hooks.rs", "crates/doctor-toolkit-cheats-asi/src/module.rs", "crates/doctor-toolkit-cheats-asi/src/config.rs"]
+sources: ["docs/analysis/game-bench.md §67", "docs/analysis/game-bench.md §68", "PLAN-cheats.md §4, §6", "crates/doctor-toolkit-cheats-asi/src/game.rs", "crates/doctor-toolkit-cheats-asi/src/hooks.rs", "crates/doctor-toolkit-cheats-asi/src/module.rs", "crates/doctor-toolkit-cheats-asi/src/config.rs"]
 tags: [bench, native-mods, weapons, gun, damage, hooks, settings]
-updated: 2026-11-21
+updated: 2026-11-22
 ---
 # Страница «Оружие» и «Запомнить настройки» меню `doctor_cheats` на стенде (этап 121)
 
@@ -18,11 +18,12 @@ updated: 2026-11-21
 модов. Оружие игроку — мод «торговец» (`examples/trader/build.sh`) и `live send doctor_trader_buy_a` /
 `_buy_b`: пистолет 8-8, автомат 40-60 в руке.
 
-- **Ошибка собранного модуля:** обе ловушки встают («hooks: no reload true, enemy damage true»), но ствол
+- **Ошибка первой сборки (§67), исправлена в `470b4fb`:** обе ловушки встают («hooks: no reload true, enemy damage true»), но ствол
   игрока мод не находит: `game.rs:315` сравнивает с 1 слово `+0x1A8`, а там байты `01 01 01 00` (пистолет),
   `01 02 02 00` (автомат); игра сравнивает байт (`0x00800AB2 cmp byte ptr [edx+0x1A8], 1`). Без правки
   патроны, урон и «без перезарядки» не действуют (три выстрела — магазин 8 → 5).
-- Всё ниже — проверочная сборка с одной правкой (`& 0xFF`), код в репозитории не менялся.
+- Ниже — проверочная сборка §67 с правкой `& 0xFF`; сборка из репозитория (`470b4fb`: байт `+0x1A8` и бит 10
+  `Player+0x8E0`) перепроверена в §68 — те же результаты (пункты ниже), строка журнала та же.
 - **Бесконечные патроны:** флаги `0xC` → `0x6C`, на экране запас «∞», перезарядка запас не берёт (8 → 8);
   выключение — `0x1C` (бит 4 ставит игра после выстрела), перезарядка взяла 8 → 0.
 - **Без перезарядки:** при запасе 0 десять выстрелов — магазин 8 → 8.
@@ -41,8 +42,13 @@ updated: 2026-11-21
 - **Запомнить настройки:** ON — «Settings kept in doctor_cheats.cfg», файл: строка-подсказка, `remember = on`
   и десять значений; патроны ON и урон ×2 при закрытии меню — `ammo = on`, `damage = 2`. Перезапуск — журнал
   «remembered true», пистолет сразу `0x6C` и 1400, на странице ON и 2. OFF — в файле `remember = off`.
-- Мелочи: после «ранения» руки пусты, а `Player+0x74C` всё ещё автомат — мод пишет в убранный ствол;
-  словари `Keep` держат освобождённые стволы.
+- **Без оружия в руках** (§68): после «ранения» `+0x8E0` = 0, а `Player+0x74C` всё ещё автомат; сборка
+  `470b4fb` в него не пишет (патроны OFF, урон ×10, без тряски ON — поля не меняются), падений нет; на
+  ствол, снова взятый колесом, всё ложится сразу (7000 / 2350, камера 0). В §67 (до проверки бита 10) мод
+  писал в убранный ствол.
+- **Урон врагов ×2 в одной драке** (§68): шаги −300 при ×1 и −616…−619 при ×2 — вдвое; ×0 — 25 с под
+  огнём без единого шага, и после перезапуска из `doctor_cheats.cfg` тоже.
+- Мелочь: словари `Keep` держат освобождённые стволы (не проверялось).
 - Исключений, ошибок Lua и отчётов о падении нет.
 
 Не проверено: какой конец разброса «прицельный»; `+0x4A4` и `+0x4A8` по отдельности; магазины стволов NPC при
@@ -50,7 +56,7 @@ updated: 2026-11-21
 
 ## Подробнее
 
-- [Стенд](../../analysis/game-bench.md) §67
+- [Стенд](../../analysis/game-bench.md) §67, §68
 - [Оружие: объект `Gun` в памяти](../exe/weapons-gun.md)
 - [Таблица Cheat Engine → мод](../../analysis/dev-menu-cheat-table.md) §2
 - [Выдача из логики и торговец с меню на стенде (этап 75)](trader-handing-out.md)
