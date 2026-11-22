@@ -1,34 +1,45 @@
 //! The check of the workspace's edits before they are written into the
 //! game (stage 103): every changed resource is read by its parser, objects
-//! can show their models, references an edit adds resolve, conflicts with
-//! the game files, messages of the changed SimGroups, the project.
+//! can show their models, references an edit adds resolve (by the rule of
+//! `navigation::placement`, with the streams a copy is needed in when not),
+//! materials come before the meshes of their stream, copies of a changed
+//! resource left with other data (`docs/analysis/resource-placement.md`
+//! §6.1), conflicts with the game files, messages of the changed
+//! SimGroups, the project.
 //!
 //! One function for every surface: the MCP tool `validate`, the command
 //! `doctor-toolkit check-edits` and the editor's "Check edits".
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-use crate::create::{self, Provided, ReferenceChecker, TYPE_METAMODEL, TYPE_SIMGROUP, Target};
+use crate::create::{
+    self, OrderItem, Provided, ReferenceChecker, TYPE_MATERIAL, TYPE_MESH,
+    TYPE_MESHVOLATILE as TYPE_MESH_VOLATILE, TYPE_METAMODEL, TYPE_SIMGROUP, Target,
+};
 use crate::error::Result;
-use crate::game::{GameInstance, ResourceIndex};
+use crate::game::{GameInstance, ResourceIndex, StreamFile};
 use crate::logic_graph::check::{ProblemKind, Severity};
+use crate::navigation::placement;
 use crate::project::{EntryState, Project};
 use crate::resource::graph::{Graph, TYPE_GRAPH};
 use crate::resource::lh2::StringTable;
 use crate::resource::metamodel::MetaModel;
 use crate::resource::simgroup::SimGroup;
 use crate::text::TYPE_LH2;
+use crate::workspace::store::Blob;
 use crate::workspace::{ChangeState, ResourceKey, StreamState, Workspace};
 
 /// What the check does, in words (part of the report).
-pub const CHECKS: [&str; 7] = [
+pub const CHECKS: [&str; 9] = [
     "every changed resource is read by its parser (SimGroup, string table, navigation graph, metamodel, Lua, dialogue)",
     "SimGroup objects can show their models (the game crashes otherwise)",
     "navigation graphs: what the file cannot hold or the game cannot use",
-    "references an edit adds resolve in the stream or the streams loaded before it",
+    "references an edit adds resolve in the stream or the streams loaded with it (its prerequisites and the streams their SimGroup data loads); for one that does not, where the game has it and the streams a copy is needed in",
+    "the materials of a mesh in a stream the workspace changes come before the mesh when only that stream holds them (the game binds materials when the mesh loads)",
+    "copies of a changed resource (a material: the same name hash; else the same type and ids) left with other data in other streams (warnings: the game takes the copy it loads first)",
     "conflicts with the game files, streams changed outside the workspace",
     "messages of changed SimGroups: a new name with the hash of a game message (error), heard but never sent and sent but never heard (warnings)",
     "the project: entries to build, missing files",
@@ -132,11 +143,7 @@ fn hex(v: u32) -> String {
 
 /// A reference target in words: `material 0000abcd`.
 pub fn target_text(t: &Target) -> String {
-    match t {
-        Target::Guid(g) => format!("resource {}", g.map(hex).join(".")),
-        Target::Material(h) => format!("material {}", hex(*h)),
-        Target::Texture(h) => format!("texture {}", hex(*h)),
-    }
+    t.text()
 }
 
 /// What the data of a changed resource says about itself: it is read by
@@ -265,13 +272,11 @@ pub fn validate(
         .map(|e| e.header.ids[3])
         .collect();
     let parents = game.stream_parents().unwrap_or_default();
+    let mut unresolved: Vec<(ResourceKey, Target)> = Vec::new();
     let mut checked = 0usize;
     for change in ws.changes() {
         let key = &change.key;
-        if filter
-            .as_deref()
-            .is_some_and(|f| !key.to_string().to_ascii_lowercase().contains(f))
-        {
+        if !passes(filter.as_deref(), key) {
             continue;
         }
         checked += 1;
@@ -287,16 +292,21 @@ pub fn validate(
         for problem in check_data(game, index, ws, key, &data, original.as_deref()) {
             errors.push(Finding::key(key, problem));
         }
-        // References resolve in the stream or a stream loaded before it: a
-        // stream the workspace creates is loaded after its parents.
-        let scope = ws.load_scope(&parents, &key.stream);
-        let game_streams: Vec<usize> = scope.iter().filter_map(|s| game.find_stream(s)).collect();
+        // References resolve in the stream or a stream loaded with it: its
+        // prerequisites (a stream the workspace creates is loaded after its
+        // parents) and the streams their data loads.
+        let prerequisites = ws.load_scope(&parents, &key.stream);
+        let game_streams: Vec<usize> = prerequisites
+            .iter()
+            .filter_map(|s| game.find_stream(s))
+            .collect();
         if game_streams.is_empty() {
             continue;
         }
         let Ok(targets) = create::references(key.type_id, &data) else {
             continue;
         };
+        let scope = load_scope(game, &mut checker, prerequisites, &game_streams);
         // Only what the edit adds: the game's own SimGroups name resources
         // of streams loaded apart from theirs, and that works in the game.
         let had: Vec<Target> = original
@@ -316,15 +326,19 @@ pub fn validate(
             if by_workspace || by_game || by_engine {
                 continue;
             }
-            errors.push(Finding::key(
-                key,
-                format!(
-                    "unresolved reference: {} is in no stream loaded with it",
-                    target_text(&t)
-                ),
-            ));
+            unresolved.push((key.clone(), t));
         }
     }
+    errors.extend(unresolved_findings(game, index, ws, &parents, &unresolved));
+    errors.extend(order_findings(
+        game,
+        ws,
+        &mut checker,
+        &parents,
+        &added,
+        filter.as_deref(),
+    )?);
+    warnings.extend(copy_findings(game, index, ws, filter.as_deref())?);
     let mut project_notes = Vec::new();
     if let Some(dir) = &params.project
         && let Ok(project) = Project::open(dir)
@@ -387,4 +401,412 @@ pub fn validate(
         game_running: !running.is_empty(),
         checks: CHECKS.to_vec(),
     })
+}
+
+/// Whether `key` passes the filter of [`Params::filter`] (lower case).
+fn passes(filter: Option<&str>, key: &ResourceKey) -> bool {
+    filter.is_none_or(|f| key.to_string().to_ascii_lowercase().contains(f))
+}
+
+/// The streams loaded with a stream: its `prerequisites`
+/// ([`Workspace::load_scope`], the stream first) and what the game streams
+/// among them (`game_streams`) reach ([`ReferenceChecker::reach`]: the
+/// streams their data loads).
+fn load_scope(
+    game: &GameInstance,
+    checker: &mut ReferenceChecker<'_>,
+    mut scope: Vec<String>,
+    game_streams: &[usize],
+) -> Vec<String> {
+    for &s in game_streams {
+        for r in checker.reach(s).unwrap_or_default() {
+            let name = game.streams()[r].stream_name();
+            if !scope.contains(&name) {
+                scope.push(name);
+            }
+        }
+    }
+    scope
+}
+
+/// A few stream names: the first three and how many more.
+fn some_streams(streams: &[String]) -> String {
+    match streams.len() {
+        0..=3 => streams.join(", "),
+        n => format!("{} and {} more", streams[..3].join(", "), n - 3),
+    }
+}
+
+/// The findings of references an edit adds that no stream loaded with
+/// their stream satisfies: where the game has the target, and the streams
+/// a copy is needed in — the rule of [`placement::place`]: every stream
+/// that refers to it, except one under another such stream.
+fn unresolved_findings(
+    game: &GameInstance,
+    index: &ResourceIndex,
+    ws: &Workspace,
+    parents: &HashMap<String, Vec<String>>,
+    unresolved: &[(ResourceKey, Target)],
+) -> Vec<Finding> {
+    if unresolved.is_empty() {
+        return Vec::new();
+    }
+    let mut users: BTreeMap<Target, Vec<String>> = BTreeMap::new();
+    for (key, t) in unresolved {
+        let list = users.entry(*t).or_default();
+        if !list.contains(&key.stream) {
+            list.push(key.stream.clone());
+        }
+    }
+    let ancestors: HashMap<String, Vec<String>> = users
+        .values()
+        .flatten()
+        .map(|u| {
+            let mut a = ws.load_scope(parents, u);
+            a.retain(|s| s != u);
+            (u.clone(), a)
+        })
+        .collect();
+    let materials = users
+        .keys()
+        .any(|t| matches!(t, Target::Material(_)))
+        .then(|| crate::resource::material::game_copies(game));
+    let name = |s: u32| game.streams()[s as usize].stream_name();
+    let mut out = Vec::new();
+    for (t, list) in &users {
+        let mut holders: Vec<String> = match t {
+            Target::Guid(ids) => index
+                .entries
+                .iter()
+                .filter(|e| e.header.ids == *ids && e.header.type_id != TYPE_MESH_VOLATILE)
+                .map(|e| name(e.stream))
+                .collect(),
+            Target::Texture(h) => index
+                .entries
+                .iter()
+                .filter(|e| {
+                    e.header.type_id == crate::resource::texture::TYPE_TG4H && e.header.ids[3] == *h
+                })
+                .map(|e| name(e.stream))
+                .collect(),
+            Target::Material(h) => materials
+                .as_ref()
+                .and_then(|m| m.get(h))
+                .map(|l| l.iter().map(|&(s, _)| name(s as u32)).collect())
+                .unwrap_or_default(),
+        };
+        for c in ws.changes().filter(|c| c.is_added()) {
+            let header = c
+                .added
+                .as_ref()
+                .expect("added")
+                .header(&c.key, c.payload.size);
+            let data = ws.data(&c.key).ok().flatten();
+            let mut provided = Provided::default();
+            provided.add(&header, data.as_deref());
+            if provided.provides(t) {
+                holders.push(c.key.stream.clone());
+            }
+        }
+        holders.dedup();
+        let copies = placement::place_by(list, |u| ancestors[u].as_slice());
+        let what = if holders.is_empty() {
+            format!(
+                "unresolved reference: {} is in no stream loaded with it, nor in any stream of the game or the workspace",
+                target_text(t)
+            )
+        } else {
+            format!(
+                "unresolved reference: {} is in no stream loaded with it; it is in {}: a copy is needed in {}",
+                target_text(t),
+                some_streams(&holders),
+                copies.join(", ")
+            )
+        };
+        for (key, _) in unresolved.iter().filter(|(_, u)| u == t) {
+            out.push(Finding::key(key, what.clone()));
+        }
+    }
+    out
+}
+
+/// The resources of stream `name` in the order the workspace writes them:
+/// the original stream with the added resources at their places (a stream
+/// the workspace creates: its resources in file order), each with its
+/// data as the workspace leaves it when it is a mesh or a material.
+fn written_order(
+    game: &GameInstance,
+    ws: &Workspace,
+    name: &str,
+) -> Result<Vec<(ResourceKey, Option<Vec<u8>>)>> {
+    let wanted = |t: u32| t == TYPE_MESH || t == TYPE_MATERIAL;
+    let Some(stream) = game
+        .find_stream(name)
+        .filter(|_| ws.new_stream(name).is_none())
+    else {
+        return ws
+            .new_stream_resources(name)
+            .into_iter()
+            .map(|c| {
+                let data = if wanted(c.key.type_id) {
+                    ws.data(&c.key)?
+                } else {
+                    None
+                };
+                Ok((c.key.clone(), data))
+            })
+            .collect();
+    };
+    let original = StreamFile::open(game.original_path(&game.streams()[stream]))?;
+    let layout = original.layout();
+    // (place, after the additions there, order among them)
+    let mut list: Vec<((usize, bool, u64), ResourceKey)> = layout
+        .resources
+        .iter()
+        .enumerate()
+        .map(|(i, r)| ((i, true, 0), ResourceKey::new(name, &r.header)))
+        .collect();
+    for c in ws.changes().filter(|c| c.key.stream == name) {
+        let Some(added) = &c.added else { continue };
+        let at = added
+            .before
+            .as_ref()
+            .and_then(|b| b.find_in(layout))
+            .unwrap_or(layout.resources.len());
+        list.push(((at, false, added.order), c.key.clone()));
+    }
+    list.sort_by_key(|(place, _)| *place);
+    list.into_iter()
+        .map(|((at, original_resource, _), key)| {
+            let data = if !wanted(key.type_id) {
+                None
+            } else if ws.change(&key).is_some() {
+                ws.data(&key)?
+            } else if original_resource {
+                Some(original.resource_data(at)?)
+            } else {
+                None
+            };
+            Ok((key, data))
+        })
+        .collect()
+}
+
+/// Meshes the workspace leaves before their material in streams it changes
+/// (added resources, their places, changed meshes and materials): the game
+/// binds the materials of a mesh when the mesh loads, so a material only
+/// its own stream holds must come before the mesh
+/// ([`create::materials_after_meshes`]).
+fn order_findings(
+    game: &GameInstance,
+    ws: &Workspace,
+    checker: &mut ReferenceChecker<'_>,
+    parents: &HashMap<String, Vec<String>>,
+    added: &HashMap<String, Provided>,
+    filter: Option<&str>,
+) -> Result<Vec<Finding>> {
+    let streams: BTreeSet<String> = ws
+        .changes()
+        .filter(|c| passes(filter, &c.key))
+        .filter(|c| c.is_added() || matches!(c.key.type_id, TYPE_MESH | TYPE_MATERIAL))
+        .map(|c| c.key.stream.clone())
+        .collect();
+    let mut out = Vec::new();
+    for name in streams {
+        let order = written_order(game, ws, &name)?;
+        let items: Vec<OrderItem> = order
+            .iter()
+            .map(|(key, data)| match (key.type_id, data) {
+                (TYPE_MATERIAL, Some(d)) => crate::io::read_u32(d, 8, crate::io::Endian::Little)
+                    .map_or(OrderItem::Other, OrderItem::Material),
+                (TYPE_MESH, Some(d)) => create::references(TYPE_MESH, d)
+                    .map_or(OrderItem::Other, |t| {
+                        OrderItem::Mesh(create::material_targets(&t))
+                    }),
+                _ => OrderItem::Other,
+            })
+            .collect();
+        if !items.iter().any(|i| matches!(i, OrderItem::Mesh(_))) {
+            continue;
+        }
+        // Streams loaded with this one, without it.
+        let prerequisites = ws.load_scope(parents, &name);
+        let own = game
+            .find_stream(&name)
+            .filter(|_| ws.new_stream(&name).is_none());
+        let others: Vec<usize> = prerequisites
+            .iter()
+            .filter(|s| **s != name)
+            .filter_map(|s| game.find_stream(s))
+            .collect();
+        let mut game_streams = others.clone();
+        game_streams.extend(own);
+        let scope = load_scope(game, checker, prerequisites, &game_streams);
+        let found = create::materials_after_meshes(&items, |hash| {
+            let t = Target::Material(hash);
+            scope
+                .iter()
+                .filter(|s| **s != name)
+                .any(|s| added.get(s).is_some_and(|p| p.provides(&t)))
+                || own.is_some_and(|s| checker.provided_elsewhere(s, &t).unwrap_or(true))
+                || others
+                    .iter()
+                    .any(|&s| checker.provides(s, &t).unwrap_or(true))
+        });
+        for f in found {
+            out.push(Finding::key(
+                &order[f.mesh].0,
+                format!(
+                    "material {:08x} comes after the mesh in the stream ({}): the game binds \
+                     materials when the mesh loads; the material must come before the mesh",
+                    f.material, order[f.at].0
+                ),
+            ));
+        }
+    }
+    Ok(out)
+}
+
+/// `(stream, resource)` of resources of the game.
+type Places = Vec<(usize, usize)>;
+
+/// How copies of a resource are found: a material by the name hash in its
+/// data (the game keeps materials by it), anything else by type and ids.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+enum CopyGroup {
+    Material(u32),
+    Key(u32, [u32; 4]),
+}
+
+/// Copies of a resource the workspace changes or adds that it leaves with
+/// other data in other streams (warnings): the game uses the copy it loads
+/// first, so which data shows depends on the order the streams load.
+/// Copies whose data differed in the game already are left out.
+fn copy_findings(
+    game: &GameInstance,
+    index: &ResourceIndex,
+    ws: &Workspace,
+    filter: Option<&str>,
+) -> Result<Vec<Finding>> {
+    let group_of = |c: &crate::workspace::Change| -> Option<CopyGroup> {
+        if c.key.type_id == TYPE_MATERIAL {
+            let data = ws.data(&c.key).ok().flatten()?;
+            crate::io::read_u32(&data, 8, crate::io::Endian::Little)
+                .ok()
+                .map(CopyGroup::Material)
+        } else {
+            // SimGroups are not copies of each other; a texture's data and a
+            // mesh's vertices go with the header and the mesh: one warning
+            // for the pair.
+            let paired = [
+                TYPE_SIMGROUP,
+                crate::resource::texture::TYPE_TG4D,
+                TYPE_MESH_VOLATILE,
+            ];
+            (c.key.ids != [0; 4] && !paired.contains(&c.key.type_id))
+                .then_some(CopyGroup::Key(c.key.type_id, c.key.ids))
+        }
+    };
+    // Changes by group, in the order of the workspace.
+    let mut groups: BTreeMap<CopyGroup, Vec<&crate::workspace::Change>> = BTreeMap::new();
+    for c in ws.changes() {
+        if let Some(g) = group_of(c) {
+            groups.entry(g).or_default().push(c);
+        }
+    }
+    groups.retain(|_, list| list.iter().any(|c| passes(filter, &c.key)));
+    if groups.is_empty() {
+        return Ok(Vec::new());
+    }
+    let materials = groups
+        .keys()
+        .any(|g| matches!(g, CopyGroup::Material(_)))
+        .then(|| crate::resource::material::game_copies(game));
+    // `(stream, resource)` of the game's copies of each key.
+    let mut keys: HashMap<(u32, [u32; 4]), Places> = groups
+        .keys()
+        .filter_map(|g| match g {
+            CopyGroup::Key(t, ids) => Some(((*t, *ids), Vec::new())),
+            CopyGroup::Material(_) => None,
+        })
+        .collect();
+    for e in &index.entries {
+        if let Some(list) = keys.get_mut(&(e.header.type_id, e.header.ids)) {
+            list.push((e.stream as usize, e.resource as usize));
+        }
+    }
+    let mut out = Vec::new();
+    for (group, changes) in &groups {
+        let in_game: &[(usize, usize)] = match group {
+            CopyGroup::Material(h) => materials
+                .as_ref()
+                .and_then(|m| m.get(h))
+                .map_or(&[], Vec::as_slice),
+            CopyGroup::Key(t, ids) => keys.get(&(*t, *ids)).map_or(&[], Vec::as_slice),
+        };
+        // Every copy: key, data now, data in the game (`None`: added).
+        let mut copies: Vec<(ResourceKey, Blob, Option<Blob>)> = Vec::new();
+        for &(s, r) in in_game {
+            let file = game.open_stream(s)?;
+            let Some(header) = file.layout().resources.get(r).map(|r| r.header) else {
+                continue;
+            };
+            let key = ResourceKey::new(&game.streams()[s].stream_name(), &header);
+            if let Some(c) = ws.change(&key) {
+                if !c.is_added() && group_of(c) == Some(*group) {
+                    copies.push((key, c.payload.clone(), Some(c.made_on().clone())));
+                }
+                continue;
+            }
+            let data = Blob::of(&ws.current_data(game, s, r)?);
+            copies.push((key, data.clone(), Some(data)));
+        }
+        for c in changes.iter().filter(|c| c.is_added()) {
+            copies.push((c.key.clone(), c.payload.clone(), None));
+        }
+        let Some(first) = changes.iter().find(|c| passes(filter, &c.key)) else {
+            continue;
+        };
+        let Some((_, now, base)) = copies.iter().find(|(k, ..)| k == &first.key).cloned() else {
+            continue;
+        };
+        let mut differ: Vec<String> = copies
+            .iter()
+            .filter(|(k, n, b)| {
+                k != &first.key && *n != now && (base.is_none() || b.is_none() || *b == base)
+            })
+            .map(|(k, ..)| k.stream.clone())
+            .collect();
+        differ.dedup();
+        if differ.is_empty() {
+            continue;
+        }
+        let what = match group {
+            CopyGroup::Material(h) => {
+                let name = ws
+                    .data(&first.key)
+                    .ok()
+                    .flatten()
+                    .and_then(|d| crate::resource::material::Material::parse(&d).ok())
+                    .map_or_else(|| format!("{h:08x}"), |m| m.name);
+                format!("material {name}")
+            }
+            CopyGroup::Key(t, ids) => format!(
+                "{} {}",
+                crate::resource::names::type_tags().display(*t),
+                ids.map(hex).join(".")
+            ),
+        };
+        out.push(Finding::key(
+            &first.key,
+            format!(
+                "copies of {what} are left with other data in {} of {} stream(s): {}; the game \
+                 takes whichever copy it loads first",
+                differ.len(),
+                copies.len(),
+                some_streams(&differ)
+            ),
+        ));
+    }
+    Ok(out)
 }

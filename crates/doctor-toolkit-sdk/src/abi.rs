@@ -129,6 +129,115 @@ pub type FilterFn =
     unsafe extern "C" fn(user: *mut c_void, message: *mut Message, force: u32) -> u32;
 /// A function of Lua: returns the number of its results.
 pub type LuaFn = unsafe extern "C" fn(state: *mut LuaState) -> i32;
+/// A listener of the frame tick: called on the main thread once a frame,
+/// after the game's own tick messages, in a level, in its pause menu, in
+/// Don's view and in the main menu. `mode` is [`TICK_PAUSED`],
+/// [`TICK_RUNNING`] or another value of the game.
+pub type TickFn = unsafe extern "C" fn(user: *mut c_void, mode: u32);
+/// A listener of the Direct3D device: [`DEVICE_LOST`] before `Reset` (free
+/// the resources of `D3DPOOL_DEFAULT`), [`DEVICE_RESET`] after it.
+pub type DeviceFn = unsafe extern "C" fn(user: *mut c_void, event: u32);
+
+/// What an overlay listener gets (stage 116): the game's device, its back
+/// buffer as the render target 0 (no depth, viewport over the whole
+/// buffer, inside `BeginScene`), its size, and where the call is.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct Overlay {
+    /// `size_of::<Overlay>()`.
+    pub size: u32,
+    /// `IDirect3DDevice9*` of the game.
+    pub device: *mut c_void,
+    /// Size of the back buffer, pixels.
+    pub width: u32,
+    pub height: u32,
+    /// Frames the platform has drawn overlays in, from 1.
+    pub frame: u32,
+    /// 1 when the call is on the main thread of the game (screens it draws
+    /// itself, e.g. loading), 0 on the thread that presents the frames.
+    pub main_thread: u32,
+}
+
+/// An overlay listener: draws with the device; whatever state it sets is
+/// put back by the platform.
+pub type OverlayFn = unsafe extern "C" fn(user: *mut c_void, overlay: *const Overlay);
+
+/// One XInput pad as the game polled it (`XINPUT_GAMEPAD`).
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Pad {
+    /// `XINPUT_GAMEPAD_*` bits.
+    pub buttons: u16,
+    pub left_trigger: u8,
+    pub right_trigger: u8,
+    pub left_x: i16,
+    pub left_y: i16,
+    pub right_x: i16,
+    pub right_y: i16,
+}
+
+/// The real state of the input devices at the game's last poll (stage
+/// 117) — what the player pressed, also while the game's input is closed.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct Input {
+    /// `size_of::<Input>()`; a mod sets it before `input_read`.
+    pub size: u32,
+    /// Devices read since the game started; changes when anything was read.
+    pub serial: u32,
+    /// Keyboard by DirectInput scan code (`DIK_*`): bit 7 — pressed.
+    pub keys: [u8; 256],
+    /// Mouse movement and wheel of the last poll, buttons (bit 7 — pressed).
+    pub mouse_dx: i32,
+    pub mouse_dy: i32,
+    pub mouse_wheel: i32,
+    pub mouse_buttons: [u8; 4],
+    /// Bits 0..3: XInput pads that answered.
+    pub pads: u32,
+    pub pad: [Pad; 4],
+    /// 1 when a DirectInput joystick answered.
+    pub joystick: u32,
+    /// Its axes as the device gives them (0..65535, 32767 in the middle).
+    pub joystick_x: i32,
+    pub joystick_y: i32,
+    /// Its first hat: hundredths of a degree, `u32::MAX` in the middle.
+    pub joystick_pov: u32,
+    /// Its first 32 buttons (bit 7 — pressed).
+    pub joystick_buttons: [u8; 32],
+    /// How many captures close the game's input now (`input_capture`).
+    pub captured: u32,
+}
+
+impl Default for Input {
+    fn default() -> Self {
+        // SAFETY: every field is a number or an array of numbers.
+        let mut input: Self = unsafe { core::mem::zeroed() };
+        input.size = core::mem::size_of::<Self>() as u32;
+        input
+    }
+}
+
+/// DirectInput scan codes of a few keys (`DIK_*`).
+pub const KEY_ESCAPE: u8 = 0x01;
+pub const KEY_RETURN: u8 = 0x1C;
+pub const KEY_GRAVE: u8 = 0x29;
+pub const KEY_UP: u8 = 0xC8;
+pub const KEY_LEFT: u8 = 0xCB;
+pub const KEY_RIGHT: u8 = 0xCD;
+pub const KEY_DOWN: u8 = 0xD0;
+
+/// The game is paused (its pause menu): the world does not move.
+pub const TICK_PAUSED: u32 = 1;
+/// The game runs.
+pub const TICK_RUNNING: u32 = 2;
+/// The device is about to be reset.
+pub const DEVICE_LOST: u32 = 1;
+/// The device has been reset.
+pub const DEVICE_RESET: u32 = 2;
+/// Size of the table of the first platform (stage 80): `size`, `abi` and
+/// the 32 functions up to `hook_call`. A platform gives at least this; a
+/// function after it is there when `size` covers it.
+pub const API_SIZE_V1: u32 = 8 + 32 * 4;
 
 macro_rules! api {
     ($( $(#[$doc:meta])* $name:ident : fn($($arg:ident : $ty:ty),*) $(-> $ret:ty)? ;)*) => {
@@ -230,6 +339,44 @@ api! {
     /// Points the `call` at `address` (5 bytes, 32-bit offset) to `target`
     /// and gives what it called.
     hook_call: fn(address: u32, target: *const c_void, original: *mut *const c_void) -> i32;
+
+    /// Subscribes a function to the frame tick (stage 115); an identifier
+    /// above 0 or an error. At most 64.
+    tick_listen: fn(listener: TickFn, user: *mut c_void) -> i32;
+    /// Ends a subscription made by `tick_listen`.
+    tick_unlisten: fn(id: i32) -> i32;
+    /// Subscribes a function to the loss and reset of the Direct3D device
+    /// (stage 115); an identifier above 0 or an error. At most 64.
+    device_listen: fn(listener: DeviceFn, user: *mut c_void) -> i32;
+    /// Ends a subscription made by `device_listen`.
+    device_unlisten: fn(id: i32) -> i32;
+
+    /// Subscribes a function that draws over the frame (stage 116), after
+    /// the game's interface and the post-effects, before `Present`, in
+    /// the order of `order` (lower first). Shown at once; an identifier
+    /// above 0 or an error. At most 16. Called on the thread that presents
+    /// the frame, or on the main thread while the game draws screens
+    /// itself.
+    overlay_listen: fn(listener: OverlayFn, user: *mut c_void, order: i32) -> i32;
+    /// Shows (1) or hides (0) an overlay listener: while none is shown the
+    /// platform does nothing in the frame.
+    overlay_show: fn(id: i32, on: u32) -> i32;
+    /// Ends a subscription made by `overlay_listen`.
+    overlay_unlisten: fn(id: i32) -> i32;
+
+    /// The real state of the devices at the game's last poll (stage 117);
+    /// `out.size` set by the mod. Any thread.
+    input_read: fn(out: *mut Input) -> i32;
+    /// Closes (1) or opens (0) the game's input: while one capture or more
+    /// is held, the game and its menus see nothing pressed; after the last
+    /// is let go, what was held stays hidden from the game until it is
+    /// released. Returns the number of captures held. Any thread.
+    input_capture: fn(on: u32) -> i32;
+    /// Hides (1) or shows again (0) a key of the keyboard (`DIK_*`) from
+    /// the game for good, captured or not — the key that opens a mod's
+    /// menu, which the game would otherwise see in the frame the mod
+    /// notices it. Counted per key. Any thread.
+    input_reserve: fn(key: u32, on: u32) -> i32;
 }
 
 /// The entry of a mod: `int doctor_mod_init(const DoctorApi*)`. Returns

@@ -58,6 +58,16 @@ extern "C" {
  * higher number is called earlier. */
 #define DOCTOR_PRIORITY_DEFAULT 0x8000
 
+/* The mode of the frame tick (stage 115). */
+#define DOCTOR_TICK_PAUSED 1
+#define DOCTOR_TICK_RUNNING 2
+/* Events of the Direct3D device (stage 115). */
+#define DOCTOR_DEVICE_LOST 1
+#define DOCTOR_DEVICE_RESET 2
+/* Size of the table of the first platform (stage 80), up to hook_call; a
+ * function after it is there when api->size covers it. */
+#define DOCTOR_API_SIZE_V1 136
+
 /* An object of the game (a Base of the engine) and a Lua state: opaque. */
 typedef struct DoctorObject DoctorObject;
 typedef struct DoctorLuaState DoctorLuaState;
@@ -105,6 +115,66 @@ typedef void (*DoctorMessageFn)(void *user, uint32_t msg, uint32_t word);
 typedef uint32_t (*DoctorFilterFn)(void *user, DoctorMessage *message, uint32_t force);
 /* A function of Lua: returns the number of its results. */
 typedef int (*DoctorLuaFn)(DoctorLuaState *state);
+/* A listener of the frame tick: on the main thread once a frame, after the
+ * game's tick messages, also while paused and in the main menu; mode is
+ * DOCTOR_TICK_PAUSED, DOCTOR_TICK_RUNNING or another value of the game. */
+typedef void (*DoctorTickFn)(void *user, uint32_t mode);
+/* A listener of the Direct3D device: DOCTOR_DEVICE_LOST before Reset (free
+ * the resources of D3DPOOL_DEFAULT), DOCTOR_DEVICE_RESET after it. */
+typedef void (*DoctorDeviceFn)(void *user, uint32_t event);
+
+/* What an overlay listener gets (stage 116): the game's device with its
+ * back buffer as render target 0 (no depth, the whole buffer as the
+ * viewport, inside BeginScene). */
+typedef struct DoctorOverlay {
+    uint32_t size;        /* sizeof(DoctorOverlay) */
+    void *device;         /* IDirect3DDevice9* of the game */
+    uint32_t width;       /* back buffer, pixels */
+    uint32_t height;
+    uint32_t frame;       /* frames with overlays, from 1 */
+    uint32_t main_thread; /* 1 on the main thread (screens the game draws itself) */
+} DoctorOverlay;
+/* Draws over the frame; the platform puts back whatever state it sets. */
+typedef void (*DoctorOverlayFn)(void *user, const DoctorOverlay *overlay);
+
+/* One XInput pad as the game polled it (XINPUT_GAMEPAD). */
+typedef struct DoctorPad {
+    uint16_t buttons;
+    uint8_t left_trigger;
+    uint8_t right_trigger;
+    int16_t left_x;
+    int16_t left_y;
+    int16_t right_x;
+    int16_t right_y;
+} DoctorPad;
+
+/* The real state of the devices at the game's last poll (stage 117). */
+typedef struct DoctorInput {
+    uint32_t size;          /* sizeof(DoctorInput), set by the mod */
+    uint32_t serial;        /* changes when a device was read */
+    uint8_t keys[256];      /* DIK_* scan codes, bit 7 pressed */
+    int32_t mouse_dx;
+    int32_t mouse_dy;
+    int32_t mouse_wheel;
+    uint8_t mouse_buttons[4];
+    uint32_t pads;          /* bits 0..3: XInput pads that answered */
+    DoctorPad pad[4];
+    uint32_t joystick;      /* 1: a DirectInput joystick answered */
+    int32_t joystick_x;     /* 0..65535, 32767 in the middle */
+    int32_t joystick_y;
+    uint32_t joystick_pov;  /* hundredths of a degree, 0xFFFFFFFF in the middle */
+    uint8_t joystick_buttons[32];
+    uint32_t captured;      /* captures closing the game's input now */
+} DoctorInput;
+
+/* DirectInput scan codes of a few keys. */
+#define DOCTOR_KEY_ESCAPE 0x01
+#define DOCTOR_KEY_RETURN 0x1C
+#define DOCTOR_KEY_GRAVE 0x29
+#define DOCTOR_KEY_UP 0xC8
+#define DOCTOR_KEY_LEFT 0xCB
+#define DOCTOR_KEY_RIGHT 0xCD
+#define DOCTOR_KEY_DOWN 0xD0
 
 typedef struct DoctorApi {
     uint32_t size; /* size of the table of this platform, bytes */
@@ -174,6 +244,31 @@ typedef struct DoctorApi {
     /* Points the call at address (5 bytes, 32-bit offset) to target and
      * gives what it called. */
     int (*hook_call)(uint32_t address, const void *target, const void **original);
+
+    /* Stage 115 on; a function is there when api->size covers it. */
+    /* Subscribes a function to the frame tick; an id above 0 or an error. */
+    int (*tick_listen)(DoctorTickFn listener, void *user);
+    int (*tick_unlisten)(int id);
+    /* Subscribes a function to the loss and reset of the device. */
+    int (*device_listen)(DoctorDeviceFn listener, void *user);
+    int (*device_unlisten)(int id);
+
+    /* Stage 116. Draws over the frame after the interface and the
+     * post-effects, before Present, lower order first; shown at once. */
+    int (*overlay_listen)(DoctorOverlayFn listener, void *user, int32_t order);
+    /* Shows (1) or hides (0); with none shown the frame is left alone. */
+    int (*overlay_show)(int id, uint32_t on);
+    int (*overlay_unlisten)(int id);
+
+    /* Stage 117. The real state of the devices at the last poll; any
+     * thread. */
+    int (*input_read)(DoctorInput *out);
+    /* Closes (1) or opens (0) the game's input; returns the captures held.
+     * After the last one, what was held stays hidden until released. */
+    int (*input_capture)(uint32_t on);
+    /* Hides (1) or shows again (0) a key (DIK_*) from the game for good:
+     * the key that opens a mod's menu. Counted per key. */
+    int (*input_reserve)(uint32_t key, uint32_t on);
 } DoctorApi;
 
 /* The entry of a mod. */
@@ -201,7 +296,10 @@ static inline uint32_t doctor_hash(const char *name) {
 #endif
 #if UINTPTR_MAX == 0xFFFFFFFFu
 /* The layout of the 32-bit build, the only one the game has. */
-DOCTOR_STATIC_ASSERT(sizeof(DoctorApi) == 136, "DoctorApi");
+DOCTOR_STATIC_ASSERT(sizeof(DoctorApi) == 176, "DoctorApi");
+DOCTOR_STATIC_ASSERT(sizeof(DoctorPad) == 12, "DoctorPad");
+DOCTOR_STATIC_ASSERT(sizeof(DoctorInput) == 384, "DoctorInput");
+DOCTOR_STATIC_ASSERT(sizeof(DoctorOverlay) == 24, "DoctorOverlay");
 DOCTOR_STATIC_ASSERT(sizeof(DoctorClass) == 32, "DoctorClass");
 DOCTOR_STATIC_ASSERT(sizeof(DoctorAttr) == 16, "DoctorAttr");
 DOCTOR_STATIC_ASSERT(sizeof(DoctorMessage) == 12, "DoctorMessage");

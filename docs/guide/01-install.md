@@ -8,8 +8,10 @@
 README, лицензия, документация, `BUILD-INFO.txt`), отдельный Open Mod Manager
 (`open-mod-manager-<версия>-windows-x86_64.zip`) и модули для ASI-загрузчика
 игры (`doctor_live.asi`, `doctor_render.asi`, `doctor_crash.asi`,
-`doctor_platform.asi`, `doctor_loader.dll`); у каждого файла рядом его
-SHA-256. Распакуйте архив куда угодно и запустите `doctor-toolkit-gui.exe`.
+`doctor_platform.asi`, `doctor_cheats.asi`, `doctor_loader.dll`); у каждого
+файла рядом его SHA-256. Меню разработчика идёт ещё и готовым модом
+`doctor-cheats-<версия>.zip`: поставьте его в Open Mod Manager и разрешите
+его код. Распакуйте архив куда угодно и запустите `doctor-toolkit-gui.exe`.
 
 ## 1.1a Архив для Linux
 
@@ -18,9 +20,9 @@ SHA-256. Распакуйте архив куда угодно и запусти
 `dist/doctor_toolkit-<версия>-linux-x86_64.tar.gz`, файл с SHA-256 рядом.
 
 ```sh
-sha256sum -c doctor_toolkit-1.3.0-linux-x86_64.tar.gz.sha256
-tar xzf doctor_toolkit-1.3.0-linux-x86_64.tar.gz
-cd doctor_toolkit-1.3.0-linux-x86_64
+sha256sum -c doctor_toolkit-1.4.0-linux-x86_64.tar.gz.sha256
+tar xzf doctor_toolkit-1.4.0-linux-x86_64.tar.gz
+cd doctor_toolkit-1.4.0-linux-x86_64
 ./doctor-toolkit --version
 ./doctor-toolkit-gui
 ```

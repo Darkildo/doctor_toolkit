@@ -548,8 +548,10 @@ impl Server {
     #[tool(
         description = "Check that references of game streams resolve: every resource a \
                        metamodel, mesh, material or SimGroup names is in its stream or in a \
-                       stream loaded before it. Give streams or prefixes (`gf2/cuba`). For the \
-                       workspace's edits and new streams use validate.",
+                       stream loaded with it (prerequisites, streams their SimGroup data loads), \
+                       and a material only the stream holds comes before its meshes. Give \
+                       streams or prefixes (`gf2/cuba`). For the workspace's edits and new \
+                       streams use validate.",
         annotations(
             read_only_hint = true,
             destructive_hint = false,

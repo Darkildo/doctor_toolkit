@@ -3,10 +3,10 @@ type: exe
 status: known
 confidence: exe
 editions: ["1.0.789.0"]
-stages: [72, 45]
-sources: ["docs/analysis/live-link.md §5.1", "docs/analysis/game-bench.md §20.1", "docs/analysis/launch-flags.md §3", "docs/analysis/performance.md §3", "crates/doctor-toolkit-live/src/addr.rs", "crates/doctor-toolkit-live/src/edition.rs"]
+stages: [72, 45, 114]
+sources: ["docs/analysis/live-link.md §5.1", "docs/analysis/game-bench.md §20.1", "docs/analysis/launch-flags.md §3", "docs/analysis/performance.md §3", "crates/doctor-toolkit-live/src/addr.rs", "crates/doctor-toolkit-live/src/edition.rs", "docs/analysis/dev-menu-overlay.md §2.1", "docs/analysis/dev-menu-overlay.md §2.3"]
 tags: [exe, input, player]
-updated: 2026-11-16
+updated: 2026-11-20
 ---
 # Ввод: порт контроллера и карты действий
 
@@ -37,8 +37,15 @@ updated: 2026-11-16
 | `0x0040FF6F` | место оконной процедуры, читающее `0x0120524A` | launch-flags.md §3 |
 | `0x00B9513F`, `0x00B9519F`, `0x00B95223`, `0x0040FE3A` | опрос устройств ввода на главном потоке (метод `+0x64` — `Poll`) | performance.md §3; live-link.md §16.6 |
 | `0x0069D71F`, `0x0069D75B` | `PeekMessageW` на главном потоке | performance.md §3; live-link.md §16.6 |
+| `0x0068BC12` | единственный опрос устройств: метод `+4` объекта ввода `*0x012233B4` (`0x0040FAB0`) с `iMsgRunningTick` → `0x0040FD70` → `0x00B95BE0` → `0x00B950E0`; идёт и на паузе | dev-menu-overlay.md §2.1 |
+| `0x00B94170` | опрос XInput: подключённые порты — каждый раз, неподключённый — по одному раз в 250 мс | dev-menu-overlay.md §2.1 |
+| `0x00B941EB` | `call 0x00D37316` (`XInputGetState` через IAT `0x00D55470`), 5 байт | dev-menu-overlay.md §2.3 |
+| `0x00B9518C` | `8B 4A 24 83 C4 08` перед `GetDeviceState` клавиатуры (`call ecx` по `0x00B9519D`) | dev-menu-overlay.md §2.3 |
+| `0x00B9521E` | `8B 41 24 FF D0` — `GetDeviceState` мыши (0x14 байт — `DIMOUSESTATE2`: три оси и 8 кнопок); шлюз ввода платформы ставит сюда переход (этап 117) | dev-menu-overlay.md §2.3; asi-platform.md §7 |
+| `0x00B952B1` | `8B 4A 24 8D 44 24 2C` перед `GetDeviceState` джойстика (`DIJOYSTATE2`, `call ecx` по `0x00B952BF`) | dev-menu-overlay.md §2.3 |
 
 ## Подробнее
 
 - [Живая связь](../../analysis/live-link.md) §5.1 «Управление после старта сразу в уровень»
 - [Стенд](../../analysis/game-bench.md) §20.1
+- [Оверлей мода читов](../../analysis/dev-menu-overlay.md) §2 «Ввод»

@@ -3,10 +3,10 @@ type: exe
 status: known
 confidence: exe
 editions: ["1.0.789.0"]
-stages: [72, 58, 59]
-sources: ["docs/analysis/renderer.md §2", "docs/analysis/renderer.md §8", "docs/analysis/performance.md §10.4", "docs/analysis/live-link.md §12.3", "crates/doctor-toolkit-live/src/render.rs"]
+stages: [72, 58, 59, 114]
+sources: ["docs/analysis/renderer.md §2", "docs/analysis/renderer.md §8", "docs/analysis/performance.md §10.4", "docs/analysis/live-link.md §12.3", "crates/doctor-toolkit-live/src/render.rs", "docs/analysis/dev-menu-overlay.md §1.4"]
 tags: [exe, render, d3d9, device]
-updated: 2026-11-16
+updated: 2026-11-20
 ---
 # Устройство Direct3D 9: создание, сброс, цели кадра
 
@@ -35,6 +35,10 @@ updated: 2026-11-16
 | `0x00608250` | `Reset` устройства с теми же параметрами | renderer.md §2; crates/doctor-toolkit-live/src/render.rs |
 | `0x00608257` | `call 0x00607E10` в `Reset`; перехват модуля рендера (сначала свои ресурсы `DEFAULT`) | performance.md §10; crates/doctor-toolkit-live/src/render.rs |
 | `0x00607E10` | освобождает цели в пуле `DEFAULT` перед `Reset` | renderer.md §2; crates/doctor-toolkit-live/src/render.rs |
+| `0x00607CA0` | `cdecl Register(on_lost, on_reset, u8 приоритет)`: реестр обработчиков устройства `0x01222328` (записи по 12 байт, число `0x012224A8`, ёмкость 32; лишняя запись молча теряется); 0 — в начало, `0xFF` — в конец | dev-menu-overlay.md §1.4 |
+| `0x00607D50` | `cdecl Unregister(on_lost, on_reset)` | dev-menu-overlay.md §1.4 |
+| `0x00607DD0` | вызов всех `on_reset(arg)` после `Reset` (из `0x006080A0`); `on_lost` зовёт `0x00607E10` в обратном порядке | dev-menu-overlay.md §1.4 |
+| `0x00609F70` | создание общих буферов: сбрасывает кэш состояний, регистрирует `{0x00609E20, 0x00609E40}` с приоритетом `0x80` | dev-menu-overlay.md §1.4 |
 | `0x0060827A` | место `Reset`: байт `0x0120575A` после сброса (сверяется при проверке издания модуля рендера) | crates/doctor-toolkit-live/src/render.rs |
 | `0x006082C0` | функция настроек, пишущая `0x00F15A48` | crates/doctor-toolkit-live/src/render.rs |
 | `0x00608F10` | цели рендера кадра (создаются через `0x00606C80`) | renderer.md §2 |
@@ -42,9 +46,11 @@ updated: 2026-11-16
 | `0x012058A8` | данные: цель глубины D24S8 w×h | renderer.md §2 |
 | `0x012058AC` | данные: цель D24S8 1024×1024 (тень) | renderer.md §2 |
 | `0x0119DA5E` | данные: байт «устройство потеряно» (`D3DERR_DEVICELOST` из `Present`) | renderer.md §2 |
-| `0x011F39D8`, `0x011F3DD8` | данные: кэш состояний устройства | performance.md §10.4 |
+| `0x011F39D8`, `0x011F3DD8` | данные: кэш состояний устройства — желаемые и выставленные состояния рендера (по 256 `u32`); отличия в грязных диапазонах шлёт `0x006102C0` | performance.md §10.4; dev-menu-overlay.md §1.4 |
+| `0x006102C0` | `SetRenderState` (слот 57) для отличий `0x011F39D8` от `0x011F3DD8` в диапазонах `[*0x00F15988, *0x012058D0]`, `[*0x00F1598C, *0x012058D4]` | dev-menu-overlay.md §1.4 |
+| `0x00608620`, `0x00608930` | начало и конец сцены (команды потока рендера `0x0040D930`, `0x0040DF10`): снимают текстуры, потоки, индексы, шейдер, объявление и сбрасывают их кэши (`0x011DA7F0`, `0x011D97F0`, `0x011EA8F0`) | dev-menu-overlay.md §1.4 |
 | `0x011F38F0` | данные: кэш целей рендера | performance.md §10.4 |
-| `0x006080A0` | сбрасывает кэш состояний после `Reset` | performance.md §10.4 |
+| `0x006080A0` | после `Reset`: цели кадра, `on_reset`, второй `Present` (`0x00608192`) и сброс кэша состояний (`0x006081AC…0x006081F4`); отдельной функции «только сбросить кэш» в игре нет | performance.md §10.4; dev-menu-overlay.md §1.4 |
 | `0x0060F380` | флаг `-codepath`: пишет путь шейдеров в `0x00F15A18` | launch-flags.md §3 |
 | `0x00F15A18` | данные: путь шейдеров (вместо выбора по возможностям видеокарты) | launch-flags.md §3 |
 | `0x0060F280` | выбор пути шейдеров по возможностям видеокарты | launch-flags.md §3 |
@@ -53,3 +59,4 @@ updated: 2026-11-16
 
 - [Рендер](../../analysis/renderer.md) §2 «Устройство и показ кадра», §8
 - [Производительность](../../analysis/performance.md) §10.4
+- [Оверлей мода читов](../../analysis/dev-menu-overlay.md) §1.4

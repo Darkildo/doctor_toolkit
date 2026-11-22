@@ -114,6 +114,11 @@ pub struct SetMaterialParams {
     /// parameter holds (`resource_json` of the material shows them):
     /// `{"g_TintColor0": [0.8, 0.1, 0.1, 1.0]}`.
     pub params: BTreeMap<String, Vec<f32>>,
+    /// Change only this resource. By default every copy of the material
+    /// (every material of the game and the workspace with the same name
+    /// hash) gets the edit: the game uses the copy it loads first.
+    #[serde(default)]
+    pub this_stream_only: bool,
 }
 
 // ------------------------------------------------------------ helpers
@@ -301,12 +306,23 @@ pub fn set_material(kit: &Toolkit, p: SetMaterialParams) -> ToolResult<Output> {
     let ws = &mut access.ws;
     let key = resource_key(kit, ws, &p.material)?;
     let since = ws.head();
-    let (changes, label) =
-        doctor_toolkit::retexture::set_material_params(&kit.game, ws, &key, &p.params)?;
+    let done = doctor_toolkit::retexture::set_material_params(
+        &kit.game,
+        ws,
+        &key,
+        &p.params,
+        !p.this_stream_only,
+    )?;
     finish(
         ws,
         since,
-        label.as_deref().unwrap_or_default(),
-        json!({ "material": key.to_string(), "changed": changes }),
+        done.label.as_deref().unwrap_or_default(),
+        json!({
+            "material": key.to_string(),
+            "changed": done.changes,
+            "copies": done.copies.len(),
+            "changed_copies": done.changed_copies,
+            "skipped": done.skipped,
+        }),
     )
 }

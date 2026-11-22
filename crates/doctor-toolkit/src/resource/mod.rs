@@ -23,6 +23,7 @@ pub mod logic;
 pub mod logic_import;
 pub mod lua;
 pub mod material;
+pub mod material_swap;
 pub mod mesh;
 pub mod mesh_build;
 pub mod mesh_grid;

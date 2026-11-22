@@ -227,11 +227,20 @@ impl BrowserApp {
         let Some(game) = self.game.clone() else {
             return;
         };
-        let result = self
-            .workspace_mut()
-            .and_then(|ws| run(&game, ws).map_err(|e| e.to_string()));
+        // The label the edit recorded when it recorded one: it can say more
+        // than the view knew (the copies of a material it changed).
+        let result = self.workspace_mut().and_then(|ws| {
+            let head = ws.head();
+            run(&game, ws).map_err(|e| e.to_string())?;
+            Ok((ws.head() != head)
+                .then(|| ws.undo_label().map(str::to_owned))
+                .flatten())
+        });
         match result {
-            Ok(()) => self.status = trf("edits.recorded", &[("label", &label)]),
+            Ok(recorded) => {
+                let label = recorded.as_deref().unwrap_or(label);
+                self.status = trf("edits.recorded", &[("label", &label)]);
+            }
             Err(error) => self.notify(
                 Level::Error,
                 trf(

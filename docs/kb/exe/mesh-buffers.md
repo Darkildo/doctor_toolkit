@@ -3,10 +3,10 @@ type: exe
 status: partial
 confidence: exe
 editions: ["1.0.789.0"]
-stages: [72, 35]
-sources: ["docs/analysis/live-link.md §12.3", "docs/formats/geometry.md §5"]
+stages: [72, 35, 84]
+sources: ["docs/analysis/live-link.md §12.3", "docs/formats/geometry.md §5", "docs/analysis/resource-placement.md §5.5"]
 tags: [exe, meshes, render]
-updated: 2026-11-16
+updated: 2026-11-20
 ---
 # Модели: загрузчик мешей и буферы
 
@@ -18,7 +18,7 @@ updated: 2026-11-16
 | `0x00E31B00` | данные: таблица методов загрузчика мешей | live-link.md §12.3 |
 | `0x0045A560` | загрузчик мешей: загрузка | live-link.md §12.3 |
 | `0x0045A820` | загрузчик мешей: выгрузка | live-link.md §12.3 |
-| `0x0045A2B0` | создание буферов меша | live-link.md §12.3 |
+| `0x0045A2B0` | создание буферов меша и привязка материалов записей отрисовки по хэшу имени ([таблица материалов](material-table.md)); материала нет — запись не рисуется | live-link.md §12.3; resource-placement.md §5.5 |
 | `0x0060B620`, `0x0060B3B0` | вершинные буферы (`CreateVertexBuffer`, `+0x68`) | live-link.md §12.3 |
 | `0x0060C080`, `0x0060BE80` | индексные буферы (`CreateIndexBuffer`, `+0x6C`, `INDEX16`) | live-link.md §12.3 |
 | `0x011286C8` | данные: объявления вершин Direct3D (форматы вершин) | geometry.md §5 |

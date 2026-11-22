@@ -132,6 +132,14 @@ if "$root/tools/build-platform-module.sh" "$stage/$name/doctor_platform.asi" >/d
 else
     echo "warning: the platform module was not built (see tools/build-platform-module.sh)" >&2
 fi
+# The developer menu (PLAN-cheats.md), a native mod on that platform; its
+# mod for the mod manager is built from a copy of the game
+# (tools/build-cheats-module.sh OUT.asi GAME MOD.zip), outside this script.
+if "$root/tools/build-cheats-module.sh" "$stage/$name/doctor_cheats.asi" >/dev/null; then
+    echo "developer menu: doctor_cheats.asi"
+else
+    echo "warning: the developer menu was not built (see tools/build-cheats-module.sh)" >&2
+fi
 if "$root/tools/build-loader.sh" "$stage/$name/doctor_loader.dll" >/dev/null; then
     echo "ASI loader: doctor_loader.dll"
 else

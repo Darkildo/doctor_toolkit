@@ -49,7 +49,7 @@ cat >"$stage/$name/BUILD-INFO.txt" <<EOF
 doctor_toolkit $version for $os $arch
 commit: $commit
 rustc: $(rustc --version)
-The in-game modules (doctor_live.asi: the live link; doctor_render.asi: graphics; doctor_crash.asi: crash reports; doctor_platform.asi: the platform of native mods; doctor_loader.dll: the ASI loader the mod manager installs as dinput8.dll) are separate files of the release: put them next to the programs.
+The in-game modules (doctor_live.asi: the live link; doctor_render.asi: graphics; doctor_crash.asi: crash reports; doctor_platform.asi: the platform of native mods; doctor_cheats.asi: the developer menu; doctor_loader.dll: the ASI loader the mod manager installs as dinput8.dll) are separate files of the release: put them next to the programs.
 EOF
 if [[ $os == macos ]]; then
     cat >>"$stage/$name/BUILD-INFO.txt" <<EOF

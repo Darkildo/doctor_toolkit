@@ -4,9 +4,9 @@ status: known
 confidence: bench
 editions: ["1.0.789.0"]
 stages: [72, 16, 28, 34, 38, 45, 49, 74]
-sources: ["docs/formats/lua.md §1", "docs/formats/mission-logic.md §2", "docs/formats/mission-logic.md §3", "docs/scripts.md §1", "docs/analysis/live-link.md §5", "docs/analysis/live-link.md §11.1", "docs/analysis/live-link.md §11.2", "docs/logic-graph.md §9.3", "docs/analysis/lua-api.md §1", "docs/analysis/game-bench.md §35", "data/gf2/lua_api.toml"]
+sources: ["docs/formats/lua.md §1", "docs/formats/lua.md §3", "docs/formats/mission-logic.md §2", "docs/formats/mission-logic.md §3", "docs/scripts.md §1", "docs/analysis/live-link.md §5", "docs/analysis/live-link.md §11.1", "docs/analysis/live-link.md §11.2", "docs/logic-graph.md §9.3", "docs/analysis/lua-api.md §1", "docs/analysis/game-bench.md §35", "data/gf2/lua_api.toml"]
 tags: [lua, scripts, bytecode, audio]
-updated: 2026-11-16
+updated: 2026-11-20
 ---
 # Lua в игре
 
@@ -27,7 +27,7 @@ Lua 5.0.2 вкомпилирован в `godfather2.exe` и служит тол�
 - Запуск: объекты класса `LuaAudioScript` (хэш `0x07B6C269`, 29 в `globals_global`): атрибут 0 — флаги (бит 0 — запустить при загрузке), 1 — стартовое сообщение, 2 — стоповое, 3 — GUID ресурса `lua`. Чанк выполняется в `0x004CB0C0`, затем вызывается `startup`; стоп и деструктор зовут `shutdown`. С битом 0 скрипт идёт прямо при чтении атрибутов (`0x00480D01` → `0x00480D90`): объекты после него ещё не созданы.
 - `print` — своя функция `0x0046BCE0`: зовёт указатель `0x0110A6C0` `(скрипт, строка, what, текст)`, в выпущенной сборке там пустая `0x0046BFC0` — вывод теряется.
 - Ошибки: все вызовы скриптов идут через `pcall` без обработчика и только сравнивают код с нулём — ошибки не видны, игра не падает, скрипт перестаёт работать с места ошибки. Коды: 1 выполнение, 3 синтаксис, 4 память, 5 ошибка обработчика. [Модуль связи](live-module.md) перехватывает три вызова `luaD_rawrunprotected` и `luaG_errormsg` и пишет ошибки со стеком; его `live lua` выполняет строку в состоянии `+0x18`.
-- Тулкит: компилятор — перенос Lua 5.0.3 на Rust (чанк побайтно как у `luac` с `float`); декомпилятор — 27 из 30 скриптов перекомпилируются побайтно, у 3 отличаются только номера строк; ВМ Lua 5.0 (`resource/lua/vm.rs`, с сопрограммами) с макетом API игры (`script::sim`) — для прогона логики без игры.
+- Тулкит: компилятор — перенос Lua 5.0.3 на Rust (чанк побайтно как у `luac` с `float`); декомпилятор — все 30 скриптов перекомпилируются побайтно, со строками отладочной информации; ВМ Lua 5.0 (`resource/lua/vm.rs`, с сопрограммами) с макетом API игры (`script::sim`) — для прогона логики без игры.
 
 ## Что неизвестно
 

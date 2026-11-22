@@ -103,66 +103,283 @@ pub struct ParamsEdited {
     /// The material resource (its workspace key).
     pub resource: String,
     pub material: String,
-    /// False when the material already had these values.
+    /// False when no copy changed: they already had these values.
     pub changed: bool,
     pub label: String,
+    /// Every copy the edit went to (workspace keys), the given resource
+    /// first; only that one with `this_stream_only`.
+    pub copies: Vec<String>,
+    /// The copies whose data changed.
+    pub changed_copies: Vec<String>,
+    /// Copies the edit does not fit (they lack a parameter), with the
+    /// reason; they keep their data.
+    pub skipped: Vec<String>,
 }
 
-/// Gives the material `target` (a material of the game, or one the
-/// workspace added) the values of `edits` and records one undoable
-/// operation named `label`. Returns the name of the material and whether
-/// anything changed (nothing is recorded when not). The one place that
-/// writes material parameters: the editor, the `material` command and the
-/// MCP tool `set_material` ([`crate::retexture::set_material_params`]) go
-/// through it.
+/// What [`apply_params`] recorded.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct Applied {
+    /// Name of the material.
+    pub material: String,
+    /// Label of the operation (also when nothing was recorded).
+    pub label: String,
+    /// The targets whose data changed (workspace keys).
+    pub changed: Vec<String>,
+    /// Targets the edit does not fit, with the reason.
+    pub skipped: Vec<String>,
+}
+
+/// Every copy of the material with name hash `hash` (CRC-32 of the
+/// lower-case name, word `+0x08` of the data): the `material` resources of
+/// the game with that hash, as the workspace has them, and the materials
+/// the workspace added with it. The game keeps the first of them it loads
+/// and binds every mesh to that one (`docs/analysis/resource-placement.md`
+/// §5.5), so an edit of one copy may not show. In stream order, added ones
+/// last.
+pub fn copies(
+    game: &crate::game::GameInstance,
+    ws: &crate::workspace::Workspace,
+    hash: u32,
+) -> Result<Vec<crate::import::file::FileTarget>> {
+    use crate::import::file::FileTarget;
+    use crate::workspace::ResourceKey;
+
+    let name_hash = |data: &[u8]| io::read_u32(data, 8, Endian::Little).ok();
+    let found: Vec<(usize, usize, ResourceKey)> = scan(game, |h| h == hash)
+        .into_iter()
+        .map(|(_, s, r, header)| {
+            let name = game.streams()[s].stream_name();
+            (s, r, ResourceKey::new(&name, &header))
+        })
+        .collect();
+    let mut out: Vec<FileTarget> = Vec::new();
+    for (stream, resource, key) in found {
+        // A resource the workspace added and applied is in the file too.
+        if ws.change(&key).is_some_and(|c| c.is_added()) {
+            continue;
+        }
+        out.push(FileTarget::Game {
+            stream,
+            resource,
+            key,
+        });
+    }
+    // What the workspace changed: its data decides.
+    for change in ws.changes() {
+        if change.key.type_id != TYPE_MATERIAL {
+            continue;
+        }
+        let Some(data) = ws.data(&change.key)? else {
+            continue;
+        };
+        let same = name_hash(&data) == Some(hash);
+        if change.is_added() {
+            if same {
+                out.push(FileTarget::Added(change.key.clone()));
+            }
+            continue;
+        }
+        let known = out.iter().position(|t| t.key() == &change.key);
+        match (same, known) {
+            (false, Some(at)) => {
+                out.remove(at);
+            }
+            (true, None) => {
+                if let Some(stream) = game.find_stream(&change.key.stream)
+                    && let Ok(file) = game.open_stream(stream)
+                    && let Some(resource) = change.key.find_in(file.layout())
+                {
+                    out.push(FileTarget::Game {
+                        stream,
+                        resource,
+                        key: change.key.clone(),
+                    });
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(out)
+}
+
+/// Every `material` resource of the game files by name hash:
+/// `(stream, resource)` in stream order. Reads the data of every material
+/// of the game (in parallel), without the workspace.
+pub fn game_copies(
+    game: &crate::game::GameInstance,
+) -> std::collections::HashMap<u32, Vec<(usize, usize)>> {
+    let mut out: std::collections::HashMap<u32, Vec<(usize, usize)>> = Default::default();
+    for (hash, s, r, _) in scan(game, |_| true) {
+        out.entry(hash).or_default().push((s, r));
+    }
+    out
+}
+
+/// `(name hash, stream, resource, header)` of the materials of the game
+/// files whose name hash passes `keep`, in stream order.
+fn scan(
+    game: &crate::game::GameInstance,
+    keep: impl Fn(u32) -> bool + Sync,
+) -> Vec<(u32, usize, usize, crate::container::ustream::ResourceHeader)> {
+    use rayon::prelude::*;
+    (0..game.streams().len())
+        .into_par_iter()
+        .flat_map_iter(|s| {
+            let Ok(stream) = game.open_stream(s) else {
+                return Vec::new();
+            };
+            let layout = stream.layout();
+            (0..layout.resources.len())
+                .filter(|&r| layout.resources[r].header.type_id == TYPE_MATERIAL)
+                .filter_map(|r| {
+                    let data = stream.resource_data(r).ok()?;
+                    let hash = io::read_u32(&data, 8, Endian::Little).ok()?;
+                    keep(hash).then_some((hash, s, r, layout.resources[r].header))
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect()
+}
+
+/// The resources an edit of the material `target` goes to: `target`
+/// alone, or with `all_copies` every copy of the material ([`copies`]),
+/// `target` first.
+pub fn edit_targets(
+    game: &crate::game::GameInstance,
+    ws: &crate::workspace::Workspace,
+    target: crate::import::file::FileTarget,
+    all_copies: bool,
+) -> Result<Vec<crate::import::file::FileTarget>> {
+    if !all_copies || target.key().type_id != TYPE_MATERIAL {
+        return Ok(vec![target]);
+    }
+    let data = target.current(game, ws)?;
+    let hash = Material::parse(&data)?.name_hash;
+    let mut out = vec![target];
+    for copy in copies(game, ws, hash)? {
+        if copy.key() != out[0].key() {
+            out.push(copy);
+        }
+    }
+    Ok(out)
+}
+
+/// Gives the materials `targets` (materials of the game or ones the
+/// workspace added; the first decides the name and must take the edit)
+/// the values of `edits` and records one undoable operation named by
+/// `label` (from the first material and the number of targets that
+/// change). A target that lacks a parameter keeps its data and is listed
+/// in [`Applied::skipped`]; nothing is recorded when no target changes. The
+/// one place that writes material parameters: the editor, the `material`
+/// command and the MCP tool `set_material`
+/// ([`crate::retexture::set_material_params`]) go through it.
 pub fn apply_params(
     game: &crate::game::GameInstance,
     ws: &mut crate::workspace::Workspace,
-    target: &crate::import::file::FileTarget,
+    targets: &[crate::import::file::FileTarget],
     edits: &[ParamEdit],
-    label: impl FnOnce(&Material) -> String,
-) -> Result<(String, bool, String)> {
-    let key = target.key();
-    if key.type_id != TYPE_MATERIAL {
-        return Err(Error::InvalidArgument(format!("{key} is not a material")));
+    label: impl FnOnce(&Material, usize) -> String,
+) -> Result<Applied> {
+    use crate::import::file::FileTarget;
+    use crate::workspace::{ResourceEdit, ResourceKey, StorageChoice};
+
+    let first = targets
+        .first()
+        .ok_or_else(|| Error::InvalidArgument("no material to edit".into()))?;
+    for target in targets {
+        let key = target.key();
+        if key.type_id != TYPE_MATERIAL {
+            return Err(Error::InvalidArgument(format!("{key} is not a material")));
+        }
     }
     if edits.is_empty() {
         return Err(Error::InvalidArgument(
             "give at least one parameter with its values".into(),
         ));
     }
-    let data = target.current(game, ws)?;
+    let data = first.current(game, ws)?;
     let material = Material::parse(&data)?;
-    let new = Material::edit(&data, edits)?;
-    let label = label(&material);
-    let changed = new != data;
-    if changed {
-        target.record(game, ws, new, &label)?;
+    // The first target must take the edit: its errors are the caller's.
+    Material::edit(&data, edits)?;
+    let mut by_stream: std::collections::BTreeMap<usize, Vec<ResourceEdit>> = Default::default();
+    let mut added: Vec<(ResourceKey, Option<Vec<u8>>)> = Vec::new();
+    let mut applied = Applied {
+        material: material.name.clone(),
+        ..Applied::default()
+    };
+    for target in targets {
+        let data = target.current(game, ws)?;
+        let new = match Material::edit(&data, edits) {
+            Ok(new) => new,
+            Err(e) => {
+                applied.skipped.push(format!("{}: {e}", target.key()));
+                continue;
+            }
+        };
+        if new == data {
+            continue;
+        }
+        applied.changed.push(target.key().to_string());
+        match target {
+            FileTarget::Game {
+                stream, resource, ..
+            } => by_stream.entry(*stream).or_default().push(ResourceEdit {
+                index: *resource,
+                data: new,
+                storage: StorageChoice::Keep,
+            }),
+            FileTarget::Added(key) => added.push((key.clone(), Some(new))),
+        }
     }
-    Ok((material.name, changed, label))
+    applied.label = label(&material, applied.changed.len());
+    if !applied.changed.is_empty() {
+        let by_stream: Vec<(usize, Vec<ResourceEdit>)> = by_stream.into_iter().collect();
+        ws.change_resources_and_added(game, &applied.label, &by_stream, &[], &added)?;
+    }
+    Ok(applied)
 }
 
 /// Sets parameters of the material resource `resource` of stream `stream`
-/// (as the workspace has it) and records one undoable operation. The
-/// material is shared by every model that names it.
+/// (as the workspace has it) and records one undoable operation. With
+/// `all_copies` the same edit goes to every copy of the material in the
+/// game and the workspace ([`copies`]): the game uses the copy it loads
+/// first, whichever stream that is. The material is shared by every model
+/// that names it.
 pub fn set_params(
     game: &crate::game::GameInstance,
     ws: &mut crate::workspace::Workspace,
     stream: usize,
     resource: usize,
     edits: &[ParamEdit],
+    all_copies: bool,
 ) -> Result<ParamsEdited> {
     let target = crate::import::file::FileTarget::game(game, stream, resource)?;
+    let targets = edit_targets(game, ws, target, all_copies)?;
     let names: Vec<&str> = edits.iter().map(|e| e.name.as_str()).collect();
-    let (material, changed, label) = apply_params(game, ws, &target, edits, |m| {
-        format!("Set {} of material {}", names.join(", "), m.name)
+    let applied = apply_params(game, ws, &targets, edits, |m, changed| {
+        copies_label(
+            format!("Set {} of material {}", names.join(", "), m.name),
+            changed,
+        )
     })?;
     Ok(ParamsEdited {
-        resource: target.key().to_string(),
-        material,
-        changed,
-        label,
+        resource: targets[0].key().to_string(),
+        material: applied.material,
+        changed: !applied.changed.is_empty(),
+        label: applied.label,
+        copies: targets.iter().map(|t| t.key().to_string()).collect(),
+        changed_copies: applied.changed,
+        skipped: applied.skipped,
     })
+}
+
+/// `label`, with the number of copies when more than one changes.
+pub fn copies_label(label: String, changed: usize) -> String {
+    if changed > 1 {
+        format!("{label} ({changed} copies)")
+    } else {
+        label
+    }
 }
 
 /// Role of a texture, derived from the sampler name.
@@ -508,6 +725,84 @@ mod edit_tests {
         );
         for bad in ["g_TintColor0", "=1", "a=", "a=x", "a=tex:wall"] {
             assert!(ParamEdit::parse(bad).is_err(), "{bad}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod copy_tests {
+    use super::*;
+    use crate::game::GameInstance;
+    use crate::testing::{self, GLOBALS, LEVEL, MATERIAL, MATERIAL_NAME};
+    use crate::workspace::{NewResourceEdit, StorageChoice, Workspace};
+
+    /// A copy of the material of the test game in another stream, added
+    /// by the workspace: an edit reaches both unless it is for one stream,
+    /// and the check of the edits warns when the copies differ.
+    #[test]
+    fn an_edit_reaches_the_copies_of_a_material() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("game");
+        testing::write_game(&root).unwrap();
+        testing::write_extra_streams(&root).unwrap();
+        let game = GameInstance::open(&root).unwrap();
+        let (index, _) = game.build_index(|_| {});
+        let level = game.find_stream(LEVEL).unwrap();
+        let file = game.open_stream(level).unwrap();
+        let data = file.resource_data(MATERIAL).unwrap();
+        let hash = Material::parse(&data).unwrap().name_hash;
+        let header = file.layout().resources[MATERIAL].header;
+        let edit = ParamEdit::parse("g_Color=0.5,0.25,0.125,1").unwrap();
+        let has_it = |d: &[u8]| {
+            Material::parse(d).unwrap().floats("g_Color") == Some(&[0.5, 0.25, 0.125, 1.0][..])
+        };
+
+        for all in [true, false] {
+            let mut ws = Workspace::create(dir.path().join(format!("ws{all}")), &game).unwrap();
+            ws.add_resources(
+                &game,
+                "a copy",
+                &[NewResourceEdit {
+                    stream: GLOBALS.into(),
+                    header: crate::container::ustream::ResourceHeader {
+                        ids: [0xc0, 0x9e, 0x5, hash],
+                        ..header
+                    },
+                    data: data.clone(),
+                    storage: StorageChoice::Raw,
+                    before: None,
+                }],
+            )
+            .unwrap();
+            let copies = copies(&game, &ws, hash).unwrap();
+            assert_eq!(copies.len(), 2, "{copies:?}");
+            let done = set_params(
+                &game,
+                &mut ws,
+                level,
+                MATERIAL,
+                std::slice::from_ref(&edit),
+                all,
+            )
+            .unwrap();
+            assert_eq!(done.material, MATERIAL_NAME);
+            assert_eq!(done.copies.len(), if all { 2 } else { 1 });
+            assert_eq!(done.changed_copies.len(), done.copies.len());
+            assert_eq!(ws.operations().len(), 2, "the copy, then one edit");
+            assert_eq!(done.label.ends_with("(2 copies)"), all, "{}", done.label);
+            let changed = copies
+                .iter()
+                .filter(|t| has_it(&t.current(&game, &ws).unwrap()))
+                .count();
+            assert_eq!(changed, if all { 2 } else { 1 });
+            let report =
+                crate::validate::validate(&game, &index, &ws, &crate::validate::Params::default())
+                    .unwrap();
+            let warned = report.warnings.iter().any(|w| {
+                w.what
+                    .starts_with(&format!("copies of material {MATERIAL_NAME}"))
+            });
+            assert_eq!(warned, !all, "{:?}", report.warnings);
         }
     }
 }

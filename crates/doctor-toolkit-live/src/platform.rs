@@ -140,6 +140,87 @@ pub mod addr {
     /// values are 8 bytes, `{type, value}`.
     pub const LUA_TOP: u32 = 0x08;
     pub const LUA_BASE: u32 = 0x0C;
+
+    /// `call 0x0040EBB0` in the frame of both main loops (`0x0068BBE0`,
+    /// after the poll of input): the tick (stage 115). It runs while the
+    /// game is paused, in Don's view and in the main menu
+    /// (`docs/analysis/game-bench.md` §57).
+    pub const TICK_CALL: u32 = 0x0068_BC15;
+    /// The tick, cdecl without arguments: sends the pre-tick, tick and
+    /// post-tick messages of the mode (`iMsgRunning*` or `iMsgPaused*`).
+    pub const TICK_CALLEE: u32 = 0x0040_EBB0;
+    /// The mode of the tick: 1 paused, 2 running.
+    pub const TICK_MODE: u32 = 0x0120_5258;
+
+    /// `void Register(OnLost, OnReset, u8 priority)`, cdecl: an entry of the
+    /// game's registry of device handlers; priority 0xFF appends. A full
+    /// registry (32 entries) drops the call silently.
+    pub const DEVICE_REGISTER: u32 = 0x0060_7CA0;
+    /// The number of entries; the registry is emptied by a static
+    /// initialiser of the game (`0x00609B20`), so the module registers
+    /// only after the start, not from `DllMain`.
+    pub const DEVICE_COUNT: u32 = 0x0122_24A8;
+    pub const DEVICE_CAPACITY: u32 = 0x20;
+    /// Priority that appends an entry.
+    pub const DEVICE_APPEND: u8 = 0xFF;
+
+    /// `mov eax, [0x01205750]` in the copy and `Present` of the frame
+    /// `0x00608E90`, after the copy of the scene into the back buffer (and
+    /// the post-effects of doctor_render), right before `Present`: the
+    /// overlay of the mods (stage 116). Five bytes, nothing jumps into
+    /// them; the jump is made when the first mod asks for the overlay.
+    pub const OVERLAY_HOOK: u32 = 0x0060_8E9E;
+    pub const OVERLAY_HOOK_LEN: u32 = 5;
+    /// Where the copy goes on: `mov ecx, [eax]` before `Present`.
+    pub const OVERLAY_RESUME: u32 = 0x0060_8EA3;
+    /// The device of the game (`IDirect3DDevice9*`).
+    pub const DEVICE: u32 = 0x0120_5750;
+    /// A byte the frame sets to 1 when `Present` says the device is lost.
+    pub const DEVICE_LOST_FLAG: u32 = 0x0119_DA5E;
+
+    // The input gate (stage 117): the poll of the devices `0x00B950E0`,
+    // once a frame on the main thread (`0x0068BC12`), in both loops.
+    /// `call 0x00D37316` (`XInputGetState`, stdcall `(port, XINPUT_STATE*)`)
+    /// in the poll of the XInput ports `0x00B94170`.
+    pub const XINPUT_CALL: u32 = 0x00B9_41EB;
+    /// The stub `jmp [0x00D55470]` it calls.
+    pub const XINPUT_GET_STATE: u32 = 0x00D3_7316;
+    /// `mov ecx, [edx+0x24]; add esp, 8` before `GetDeviceState(256)` of a
+    /// keyboard (`call ecx` at `0x00B9519D`); 6 bytes; the code after them
+    /// addresses `[esp+0x2C]`, so the gate jumps, not calls.
+    pub const INPUT_KEYBOARD: u32 = 0x00B9_518C;
+    pub const INPUT_KEYBOARD_LEN: u32 = 6;
+    pub const INPUT_KEYBOARD_RESUME: u32 = 0x00B9_5192;
+    /// `mov eax, [ecx+0x24]; call eax` — `GetDeviceState(0x14)` of a mouse;
+    /// 5 bytes.
+    pub const INPUT_MOUSE: u32 = 0x00B9_521E;
+    pub const INPUT_MOUSE_LEN: u32 = 5;
+    pub const INPUT_MOUSE_RESUME: u32 = 0x00B9_5223;
+    /// `mov ecx, [edx+0x24]; lea eax, [esp+0x2C]` before
+    /// `GetDeviceState(0x110)` of a joystick (`call ecx` at `0x00B952BF`);
+    /// 7 bytes.
+    pub const INPUT_JOYSTICK: u32 = 0x00B9_52B1;
+    pub const INPUT_JOYSTICK_LEN: u32 = 7;
+    pub const INPUT_JOYSTICK_RESUME: u32 = 0x00B9_52B8;
+    /// `call [0x00D55304]` — `GetCursorPos` (stdcall, `POINT*`), the only
+    /// call of it in the game: the cursor of the game's menus (followed by
+    /// `ScreenToClient`, and `SetCursorPos` back to the middle when it left
+    /// the window). Six bytes; the gate makes it `call rel32; nop`.
+    pub const CURSOR_CALL: u32 = 0x0069_E6AF;
+    pub const CURSOR_CALL_LEN: u32 = 6;
+    /// The import slot of `GetCursorPos`.
+    pub const GET_CURSOR_POS_IMPORT: u32 = 0x00D5_5304;
+    /// `void Delta(float out[2])`, cdecl: the movement of the cursor of the
+    /// game's menus since the last call — the window's `WM_MOUSEMOVE`
+    /// handler adds it up in `CURSOR_DX`/`CURSOR_DY` (`0x0069EDF7`,
+    /// `0x0069EE0D`); this gives it as floats and sets both to 0. The game
+    /// calls it through the pointer `*0x0120545C` (`0x0049632E`). The gate
+    /// replaces the whole function (42 bytes, no jump into it) with a jump
+    /// to its own, which gives nothing while a capture is held.
+    pub const CURSOR_DELTA: u32 = 0x0069_EB00;
+    pub const CURSOR_DELTA_LEN: u32 = 5;
+    pub const CURSOR_DX: u32 = 0x0112_A04C;
+    pub const CURSOR_DY: u32 = 0x0112_A050;
 }
 
 /// Who patches a place.
@@ -199,6 +280,14 @@ pub const PATCHES: &[(u32, u32)] = &[
     (addr::START_CALL + 1, 4),
     (addr::LUA_MANAGER_CALL + 1, 4),
     (addr::FILTER_HOOK, addr::FILTER_HOOK_LEN),
+    (addr::TICK_CALL + 1, 4),
+    (addr::OVERLAY_HOOK, addr::OVERLAY_HOOK_LEN),
+    (addr::XINPUT_CALL + 1, 4),
+    (addr::INPUT_KEYBOARD, addr::INPUT_KEYBOARD_LEN),
+    (addr::INPUT_MOUSE, addr::INPUT_MOUSE_LEN),
+    (addr::INPUT_JOYSTICK, addr::INPUT_JOYSTICK_LEN),
+    (addr::CURSOR_CALL, addr::CURSOR_CALL_LEN),
+    (addr::CURSOR_DELTA, addr::CURSOR_DELTA_LEN),
 ];
 
 /// Every place the modules of the toolkit write to in the game: no two may
@@ -269,6 +358,14 @@ pub const CLAIMS: &[Claim] = &{
         code(Platform, addr::START_CALL + 1, 4),
         code(Platform, addr::LUA_MANAGER_CALL + 1, 4),
         code(Platform, addr::FILTER_HOOK, addr::FILTER_HOOK_LEN),
+        code(Platform, addr::TICK_CALL + 1, 4),
+        code(Platform, addr::OVERLAY_HOOK, addr::OVERLAY_HOOK_LEN),
+        code(Platform, addr::XINPUT_CALL + 1, 4),
+        code(Platform, addr::INPUT_KEYBOARD, addr::INPUT_KEYBOARD_LEN),
+        code(Platform, addr::INPUT_MOUSE, addr::INPUT_MOUSE_LEN),
+        code(Platform, addr::INPUT_JOYSTICK, addr::INPUT_JOYSTICK_LEN),
+        code(Platform, addr::CURSOR_CALL, addr::CURSOR_CALL_LEN),
+        code(Platform, addr::CURSOR_DELTA, addr::CURSOR_DELTA_LEN),
     ]
 };
 
@@ -630,6 +727,109 @@ pub const CHECKS: &[Check] = &[
         what: "third method table of Base: destructor",
         bytes: &[0x70, 0xC7, 0x46, 0x00],
     },
+    Check {
+        address: 0x0068BC15,
+        what: "frame of both main loops: call 0x0040EBB0, the tick (the tick hook replaces this call)",
+        bytes: &[0xE8, 0x96, 0x2F, 0xD8, 0xFF],
+    },
+    Check {
+        address: 0x0040EBB0,
+        what: "the tick (cdecl, no arguments): the tick mode 0x01205258, then the pre-tick, tick and post-tick messages",
+        bytes: &[
+            0xA1, 0x54, 0x52, 0x20, 0x01, 0x83, 0xEC, 0x0C, 0x3B, 0x05, 0x58, 0x52, 0x20, 0x01,
+            0x74, 0x05,
+        ],
+    },
+    Check {
+        address: 0x00607CA0,
+        what: "device registry: register (cdecl: on_lost, on_reset, u8 priority; 0xFF appends)",
+        bytes: &[
+            0x83, 0xEC, 0x0C, 0x8B, 0x4C, 0x24, 0x14, 0x8B, 0x44, 0x24, 0x10, 0x89, 0x4C, 0x24,
+            0x04, 0x8A,
+        ],
+    },
+    Check {
+        address: 0x00607DD0,
+        what: "device registry: after Reset, on_reset(arg) of every entry, count at 0x012224A8",
+        bytes: &[
+            0x53, 0x8B, 0x5C, 0x24, 0x08, 0x56, 0x33, 0xF6, 0x39, 0x35, 0xA8, 0x24, 0x22, 0x01,
+            0x76, 0x21,
+        ],
+    },
+    Check {
+        address: 0x00607FCE,
+        what: "device registry: before Reset, on_lost(arg) of every entry from the last",
+        bytes: &[
+            0xA1, 0xA8, 0x24, 0x22, 0x01, 0x3B, 0xC3, 0x74, 0x2B, 0x8D, 0x70, 0xFF, 0x3B, 0xF3,
+            0x7C, 0x24,
+        ],
+    },
+    Check {
+        address: 0x00607FDE,
+        what: "device registry: the entries at 0x01222328, 12 bytes each",
+        bytes: &[0x8D, 0x3C, 0x76, 0x8D, 0x3C, 0xBD, 0x28, 0x23, 0x22, 0x01],
+    },
+    Check {
+        address: 0x00608E9E,
+        what: "frame: `mov eax,[0x01205750]` before Present (the overlay hook replaces these 5 bytes), Present, the lost flag 0x0119DA5E",
+        bytes: &[
+            0xA1, 0x50, 0x57, 0x20, 0x01, 0x8B, 0x08, 0x8B, 0x51, 0x44, 0x6A, 0x00, 0x6A, 0x00,
+            0x6A, 0x00, 0x6A, 0x00, 0x50, 0xFF, 0xD2, 0x3D, 0x68, 0x08, 0x76, 0x88, 0x75, 0x07,
+            0xC6, 0x05, 0x5E, 0xDA, 0x19, 0x01, 0x01,
+        ],
+    },
+    Check {
+        address: 0x00B941E5,
+        what: "XInput poll: push the state and the port, call 0x00D37316 XInputGetState (the gate replaces this call)",
+        bytes: &[
+            0x8D, 0x44, 0x24, 0x38, 0x50, 0x55, 0xE8, 0x26, 0x31, 0x1A, 0x00,
+        ],
+    },
+    Check {
+        address: 0x00D37316,
+        what: "XInputGetState: jmp [0x00D55470], the import",
+        bytes: &[0xFF, 0x25, 0x70, 0x54, 0xD5, 0x00],
+    },
+    Check {
+        address: 0x00B9518C,
+        what: "keyboard: mov ecx,[edx+0x24]; add esp,8 (the gate replaces these 6 bytes), GetDeviceState(256, [esp+0x2C])",
+        bytes: &[
+            0x8B, 0x4A, 0x24, 0x83, 0xC4, 0x08, 0x8D, 0x44, 0x24, 0x2C, 0x50, 0x68, 0x00, 0x01,
+            0x00, 0x00, 0x57, 0xFF, 0xD1,
+        ],
+    },
+    Check {
+        address: 0x00B95216,
+        what: "mouse: GetDeviceState(0x14, [esp+0x18]): mov eax,[ecx+0x24]; call eax (the gate replaces these 5 bytes)",
+        bytes: &[
+            0x8D, 0x54, 0x24, 0x18, 0x52, 0x6A, 0x14, 0x50, 0x8B, 0x41, 0x24, 0xFF, 0xD0,
+        ],
+    },
+    Check {
+        address: 0x00B952B1,
+        what: "joystick: mov ecx,[edx+0x24]; lea eax,[esp+0x2C] (the gate replaces these 7 bytes), GetDeviceState(0x110)",
+        bytes: &[
+            0x8B, 0x4A, 0x24, 0x8D, 0x44, 0x24, 0x2C, 0x50, 0x68, 0x10, 0x01, 0x00, 0x00, 0x57,
+            0xFF, 0xD1,
+        ],
+    },
+    Check {
+        address: 0x0069E6A9,
+        what: "menu cursor: GetCursorPos call [0x00D55304] (the gate replaces these 6 bytes), then ScreenToClient call [0x00D55308]",
+        bytes: &[
+            0x56, 0x8D, 0x44, 0x24, 0x10, 0x50, 0xFF, 0x15, 0x04, 0x53, 0xD5, 0x00, 0x8D, 0x4C,
+            0x24, 0x10, 0x51, 0x57,
+        ],
+    },
+    Check {
+        address: 0x0069EB00,
+        what: "menu cursor: the movement since the last call, 0x0112A04C/0x0112A050 as floats, then 0 (the gate replaces this function)",
+        bytes: &[
+            0xF3, 0x0F, 0x2A, 0x05, 0x4C, 0xA0, 0x12, 0x01, 0x8B, 0x44, 0x24, 0x04, 0xF3, 0x0F,
+            0x11, 0x00, 0xF3, 0x0F, 0x2A, 0x05, 0x50, 0xA0, 0x12, 0x01, 0xF3, 0x0F, 0x11, 0x40,
+            0x04, 0x33, 0xC0, 0xA3, 0x4C, 0xA0, 0x12, 0x01, 0xA3, 0x50, 0xA0, 0x12, 0x01, 0xC3,
+        ],
+    },
 ];
 
 #[cfg(test)]
@@ -766,10 +966,16 @@ mod tests {
         for (site, callee) in [
             (addr::START_CALL, addr::START_CALLEE),
             (addr::LUA_MANAGER_CALL, addr::LUA_MANAGER_CTOR),
+            (addr::TICK_CALL, addr::TICK_CALLEE),
+            (addr::XINPUT_CALL, addr::XINPUT_GET_STATE),
         ] {
-            let c = CHECKS.iter().find(|c| c.address == site).unwrap();
-            assert_eq!(c.bytes[0], 0xE8);
-            let rel = i32::from_le_bytes([c.bytes[1], c.bytes[2], c.bytes[3], c.bytes[4]]);
+            let c = CHECKS
+                .iter()
+                .find(|c| c.address <= site && site + 5 <= c.address + c.bytes.len() as u32)
+                .unwrap();
+            let b = &c.bytes[(site - c.address) as usize..];
+            assert_eq!(b[0], 0xE8);
+            let rel = i32::from_le_bytes([b[1], b[2], b[3], b[4]]);
             assert_eq!((site as i64 + 5 + rel as i64) as u32, callee);
         }
     }

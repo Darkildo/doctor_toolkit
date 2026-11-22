@@ -36,6 +36,7 @@ unsafe extern "system" {
     pub fn FlushInstructionCache(process: Handle, address: *const c_void, size: usize) -> i32;
     pub fn GetCurrentProcess() -> Handle;
     pub fn GetTickCount() -> u32;
+    pub fn GetCurrentThreadId() -> u32;
     pub fn DisableThreadLibraryCalls(module: Handle) -> i32;
     pub fn GetModuleFileNameW(module: Handle, name: *mut u16, size: u32) -> u32;
     pub fn GetProcAddress(module: Handle, name: *const u8) -> *mut c_void;

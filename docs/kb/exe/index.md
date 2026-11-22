@@ -6,7 +6,7 @@ editions: ["1.0.789.0"]
 stages: [72]
 sources: ["docs/kb/exe"]
 tags: [index]
-updated: 2026-11-16
+updated: 2026-11-22
 ---
 # Исполняемый файл: функции и адреса
 
@@ -14,7 +14,7 @@ updated: 2026-11-16
 
 Функции и данные `godfather2.exe` по темам. Адреса — виртуальные, издание PC 1.0.789.0.
 
-Заметок: 59 (`known` — 47, `partial` — 12).
+Заметок: 64 (`known` — 48, `partial` — 16).
 
 | Заметка | Статус | Уверенность | Этапы |
 |---|---|---|---|
@@ -27,22 +27,24 @@ updated: 2026-11-16
 | [Части коллизии Havok у объектов мира](collision-parts.md) | known | exe | 72, 47 |
 | [Перехват падений: фильтр исключений и места модуля](crash-handler.md) | known | bench | 99 |
 | [Ролики: секвенсор Trinity](cutscenes-sequencer.md) | partial | exe | 72, 29, 61 |
-| [Устройство Direct3D 9: создание, сброс, цели кадра](d3d-device.md) | known | exe | 72, 58, 59 |
+| [Устройство Direct3D 9: создание, сброс, цели кадра](d3d-device.md) | known | exe | 72, 58, 59, 114 |
 | [Отладочные средства выпущенной сборки](debug-leftovers.md) | known | exe | 72, 32 |
 | [Диалоги: загрузчики dlg и chv, узлы](dialogues.md) | partial | exe | 72, 75 |
+| [«Взгляд дона» и HUD](don-view.md) | partial | exe | 114, 120 |
 | [Вызовы отрисовки: кто зовёт `DrawIndexedPrimitive`](draw-calls.md) | partial | exe | 101 |
 | [Проверка издания: что сверяется](edition-check.md) | known | exe | 72, 34, 46, 58, 59, 99 |
 | [Entity: матрица, видимость, экземпляр модели](entity-matrix.md) | known | exe | 72, 47, 34 |
-| [Семьи и деньги](family-money.md) | known | exe | 72, 48 |
+| [Семьи: люди, вендетта, заведения, услуги](family-members.md) | partial | exe | 114 |
+| [Семьи и деньги](family-money.md) | known | exe | 72, 48, 114 |
 | [Файловое устройство игры: чтение, переход, размер, закрытие](file-device.md) | known | bench | 100 |
 | [Перехват открытия файлов: CreateFile и GetFileAttributes](file-open-hooks.md) | known | exe | 72, 46 |
 | [Перехват чтения файлов: ReadFile](file-read-hooks.md) | known | exe | 72, 58 |
 | [Прочие загрузчики форматов: строки, Havok, деревья](format-loaders.md) | known | exe | 72, 18 |
-| [Показ кадра: цепочка Present](frame-present.md) | known | exe | 72, 58, 59 |
+| [Показ кадра: цепочка Present](frame-present.md) | known | exe | 72, 58, 59, 114 |
 | [Часы игры: такт, шаг кадра, время симуляции](game-clock.md) | known | exe | 72, 58, 59, 78 |
 | [Файловая система игры, архивы и cmd.txt](game-filesystem.md) | known | exe | 72, 32, 46 |
 | [Журнал игры: отладочная печать и Lua print](game-journal-print.md) | known | exe | 72, 49 |
-| [Ввод: порт контроллера и карты действий](input-ports.md) | known | exe | 72, 45 |
+| [Ввод: порт контроллера и карты действий](input-ports.md) | known | exe | 72, 45, 114 |
 | [Выдача предметов, денег и улучшений: реле, подбор, адаптеры](items-and-money.md) | partial | exe | 75 |
 | [Известные падения: адреса](known-crashes.md) | known | bench | 72, 32, 14, 28, 63, 99, 74, 77 |
 | [Флаги запуска: места разбора](launch-flags.md) | known | exe | 72, 32 |
@@ -51,15 +53,17 @@ updated: 2026-11-16
 | [Ошибки Lua: защищённые вызовы и стек](lua-errors.md) | known | exe | 72, 49, 99 |
 | [Функции и таблицы Lua из exe: полный список](lua-functions.md) | known | exe | 74 |
 | [Lua 5.0 в exe: состояние, загрузка и вызов](lua-runtime.md) | known | exe | 72, 16, 34, 74, 80 |
-| [Главный цикл и точки перехвата кадра](main-loop.md) | known | exe | 72, 34, 32, 58 |
-| [Модели: загрузчик мешей и буферы](mesh-buffers.md) | partial | exe | 72, 35 |
+| [Главный цикл и точки перехвата кадра](main-loop.md) | known | exe | 72, 34, 32, 58, 114 |
+| [Материалы: общая таблица по хэшу имени](material-table.md) | known | exe | 84 |
+| [Модели: загрузчик мешей и буферы](mesh-buffers.md) | partial | exe | 72, 35, 84 |
 | [Шина сообщений: имена, подписка, отправка](message-bus.md) | known | exe | 72, 34, 49, 16, 99, 78, 80 |
 | [Чекпоинты миссий и переменные сюжета](missions-variables.md) | known | exe | 72, 48, 28, 76, 77 |
-| [Платформа нативных модов: что она зовёт и патчит в exe](native-mods.md) | known | exe | 80 |
+| [Платформа нативных модов: что она зовёт и патчит в exe](native-mods.md) | known | exe | 80, 115, 116, 117 |
 | [Навигационный граф: загрузка и обход](navigation-graph.md) | known | exe | 72, 45 |
-| [Команда игрока](player-crew.md) | known | exe | 72, 48, 82 |
+| [Команда игрока](player-crew.md) | known | exe | 72, 48, 82, 114 |
+| [Урон и здоровье: компонент урона, неуязвимость](player-damage.md) | partial | exe | 114, 120 |
 | [Точка появления игрока: глобальный GUID](player-spawn-guid.md) | known | exe | 72, 32 |
-| [Игрок: список, матрица, телепорт](player-teleport.md) | known | exe | 72, 34, 24 |
+| [Игрок: список, матрица, телепорт](player-teleport.md) | known | exe | 72, 34, 24, 114 |
 | [Профиль: где стоят потоки](profile-hotspots.md) | partial | bench | 72, 58 |
 | [Поток рендера и буферы команд кадра](render-thread.md) | known | exe | 72, 58, 35 |
 | [Загрузчик ресурсов и таблица загруженных по GUID](resource-loader.md) | known | exe | 72, 5, 32, 100 |
@@ -75,6 +79,7 @@ updated: 2026-11-16
 | [Время суток: TimeOfDayManager](time-of-day.md) | known | exe | 72, 48, 58, 59 |
 | [Видео: проигрыватель роликов vp6](video-player.md) | known | exe | 72, 31 |
 | [Вертикальная синхронизация и ограничитель частоты](vsync-limiter.md) | known | exe | 72, 58, 59 |
+| [Оружие: объект `Gun` в памяти](weapons-gun.md) | partial | exe | 114, 121 |
 | [Погода: WeatherManager (дождь)](weather.md) | known | exe | 72, 48 |
 | [Мировая сетка: функции и данные](world-grid.md) | known | exe | 84 |
 

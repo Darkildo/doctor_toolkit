@@ -356,7 +356,9 @@ impl Server {
         description = "Set float parameters of a material by name (tint colours \
                        `g_TintColor0`..2 and any other number parameter resource_json shows): a \
                        material of the game, or one the workspace added with an imported model. \
-                       One undoable operation with its diff.",
+                       Every copy of the material (same name hash, any stream) gets the edit, \
+                       since the game uses the copy it loads first; `this_stream_only` limits it \
+                       to the given resource. One undoable operation with its diff.",
         annotations(
             read_only_hint = false,
             destructive_hint = false,

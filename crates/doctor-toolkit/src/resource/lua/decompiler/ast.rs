@@ -278,6 +278,9 @@ pub struct Printer {
     float: bool,
     /// Right after a keyword that opens a block (no statement yet).
     fresh: bool,
+    /// Line of the last token of the block being printed, for its last
+    /// statement (0 if unknown).
+    last_token: u32,
 }
 
 impl Printer {
@@ -288,6 +291,7 @@ impl Printer {
             indent: 0,
             float,
             fresh: false,
+            last_token: 0,
         }
     }
 
@@ -336,10 +340,19 @@ impl Printer {
 
     /// Prints a block after its opening keyword; true if it stayed on that line.
     pub fn block(&mut self, block: &Block) -> bool {
+        self.block_ending(block, 0)
+    }
+
+    /// Prints a block whose last token is known to be on line `last`
+    /// (0 if unknown): an `if` that ends the block closes there.
+    fn block_ending(&mut self, block: &Block, last: u32) -> bool {
         let start = self.line;
         self.indent += 1;
         self.fresh = true;
-        for s in &block.stats {
+        for (k, s) in block.stats.iter().enumerate() {
+            if k + 1 == block.stats.len() {
+                self.last_token = last;
+            }
             self.stat(s);
         }
         self.indent -= 1;
@@ -396,6 +409,8 @@ impl Printer {
     }
 
     pub fn stat(&mut self, s: &Line) {
+        // The line of the token that ends this statement, if the code knows it.
+        let last = std::mem::take(&mut self.last_token);
         self.stat_start(s.line);
         match &s.stat {
             Stat::Local { names, values } => {
@@ -460,10 +475,15 @@ impl Printer {
                 then,
                 otherwise,
             } => {
+                // The jump over the `else` part has the line of the last
+                // token before `else`/`elseif` (`lastline` in `luaK_code`):
+                // an `if` that ends the `then` part closes on that line.
+                let escape =
+                    |then: &Block, otherwise: bool| if otherwise { then.end_line } else { 0 };
                 self.out.push_str("if ");
                 self.expr(cond, 0);
                 self.out.push_str(" then");
-                let mut inline = self.block(then);
+                let mut inline = self.block_ending(then, escape(then, otherwise.is_some()));
                 let mut otherwise = otherwise.as_ref();
                 while let Some(block) = otherwise {
                     if let [
@@ -481,7 +501,7 @@ impl Printer {
                         self.close("elseif ", *line);
                         self.expr(cond, 0);
                         self.out.push_str(" then");
-                        inline = self.block(then);
+                        inline = self.block_ending(then, escape(then, next.is_some()));
                         otherwise = next.as_ref();
                     } else {
                         let first = block.stats.first().map_or(0, |s| s.line);
@@ -495,7 +515,7 @@ impl Printer {
                         otherwise = None;
                     }
                 }
-                self.close_block("end", 0, inline);
+                self.close_block("end", last, inline);
             }
             Stat::NumFor {
                 var,

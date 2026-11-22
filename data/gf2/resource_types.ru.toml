@@ -159,11 +159,11 @@ confidence = "data"
 docs = ["docs/formats/geometry.md §6", "docs/formats/characters.md"]
 
 [type.materialswaplistresource]
-summary = "списки замены материалов (хэши)"
-parse = "нет: раскладка не разобрана"
+summary = "списки замены материалов модели одного объекта SimGroup: пары «материал → замена» по CRC-32 имени; ids ресурса — GUID объекта"
+parse = "списки и пары (все 188 файлов, `resource::material_swap`); смысл третьего слова пары не известен"
 status = "partial"
 confidence = "data"
-docs = ["docs/formats/resource-types.md §8", "docs/navigation.md §7"]
+docs = ["docs/analysis/resource-placement.md §3", "docs/formats/resource-types.md §8", "docs/navigation.md §7"]
 
 [type.mesh]
 summary = "геометрия (заголовок `MGAE`): буферы, записи отрисовки, форматы вершин"

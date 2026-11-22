@@ -15,7 +15,7 @@ use std::time::{Instant, SystemTime};
 use doctor_toolkit::game::GameInstance;
 use doctor_toolkit::navigation::{GameIndex, unpack};
 use doctor_toolkit::project::{self, BuildOptions, CreateOptions, Kind};
-use doctor_toolkit::workspace::Workspace;
+use doctor_toolkit::workspace::{ResourceKey, Workspace};
 
 #[derive(Default)]
 struct Row {
@@ -136,6 +136,29 @@ fn the_whole_game_builds_back_from_a_project() {
         writeln!(out, "  error: {e:?}").unwrap();
     }
 
+    // Each resource is written by one entry.
+    let mut writers: std::collections::HashMap<&ResourceKey, usize> =
+        std::collections::HashMap::new();
+    for built in &full.built {
+        for key in &built.changed {
+            *writers.entry(key).or_default() += 1;
+        }
+    }
+    let twice: Vec<String> = writers
+        .iter()
+        .filter(|(_, n)| **n > 1)
+        .map(|(k, n)| format!("{k} ({n})"))
+        .collect();
+    writeln!(
+        out,
+        "resources written by more than one entry: {}",
+        twice.len()
+    )
+    .unwrap();
+    for k in twice.iter().take(20) {
+        writeln!(out, "  {k}").unwrap();
+    }
+
     let mut rows: BTreeMap<String, Row> = BTreeMap::new();
     let mut changed_samples: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for built in &full.built {
@@ -210,17 +233,15 @@ fn the_whole_game_builds_back_from_a_project() {
         report.notes.is_empty(),
         "no conversion fell back to raw data"
     );
-    // Known on 2026-11-20 (docs/analysis/whole-game-project.md §3): ten
-    // shared shadow meshes, three Lua scripts. Anything else is new.
-    assert!(full.errors.len() <= 10, "{:#?}", full.errors);
-    let lossless_changed: usize = changed_samples
-        .iter()
-        .filter(|(k, _)| k.as_str() != "Script lua")
-        .map(|(_, v)| v.len())
-        .sum();
+    // Every entry builds: the ten shared shadow meshes that did not
+    // (docs/analysis/whole-game-project.md §3.2) build since a model entry
+    // leaves the copies of its mesh that entries of the project build.
+    assert!(full.errors.is_empty(), "{:#?}", full.errors);
+    assert!(twice.is_empty(), "{twice:#?}");
+    let lossless_changed: usize = changed_samples.values().map(Vec::len).sum();
     assert_eq!(lossless_changed, 0, "{changed_samples:#?}");
     assert!(
         rows.get("Script lua")
-            .is_none_or(|r| r.entries - r.unchanged <= 3)
+            .is_none_or(|r| r.entries == r.unchanged)
     );
 }

@@ -1432,11 +1432,21 @@ impl Writer<'_> {
             Kind::Script => {
                 let chunk = Chunk::parse(&data[0])?;
                 let round = lua::round_trip(&chunk);
+                // Only a script whose source compiles back byte for byte
+                // (line information included) becomes source: a build of
+                // the unchanged project gives the game's data.
                 let converted = match round.comparison {
-                    Comparison::Identical | Comparison::SameCode => Converted::new(
+                    Comparison::Identical => Converted::new(
                         Kind::Script,
                         one("lua", round.decompiled.source.into_bytes()),
                     ),
+                    Comparison::SameCode => {
+                        return Err(Error::InvalidArgument(
+                            "the decompiled script compiles to the same code \
+                             with other debug information"
+                                .into(),
+                        ));
+                    }
                     Comparison::Different(why) => {
                         return Err(Error::InvalidArgument(format!(
                             "the decompiled script does not compile to the same code ({why})"

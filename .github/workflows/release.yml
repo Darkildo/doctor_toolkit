@@ -52,7 +52,7 @@ jobs:
       - run: tools/release.sh
       - name: The in-game modules as files of their own
         run: |
-          for module in doctor_live.asi doctor_render.asi doctor_crash.asi doctor_platform.asi doctor_loader.dll; do
+          for module in doctor_live.asi doctor_render.asi doctor_crash.asi doctor_platform.asi doctor_cheats.asi doctor_loader.dll; do
             tar -xzOf dist/doctor_toolkit-*-linux-x86_64.tar.gz --wildcards "*/$module" > "dist/$module"
             (cd dist && sha256sum "$module" > "$module.sha256")
           done
@@ -98,4 +98,4 @@ jobs:
           ls -l dist
           gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" --draft \
             --title "doctor_toolkit $GITHUB_REF_NAME" \
-            --notes "Packages for Windows x86_64, Open Mod Manager alone (open-mod-manager-*), and the in-game modules: live link (doctor_live.asi), graphics (doctor_render.asi), crash reports (doctor_crash.asi), the platform of native mods (doctor_platform.asi) and the ASI loader of the mod manager (doctor_loader.dll). See README.md and docs/guide (Russian)."
+            --notes "Packages for Windows x86_64, Open Mod Manager alone (open-mod-manager-*), and the in-game modules: live link (doctor_live.asi), graphics (doctor_render.asi), crash reports (doctor_crash.asi), the platform of native mods (doctor_platform.asi), the developer menu (doctor_cheats.asi) and the ASI loader of the mod manager (doctor_loader.dll). See README.md and docs/guide (Russian)."

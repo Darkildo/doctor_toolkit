@@ -6,7 +6,7 @@ editions: ["1.0.789.0"]
 stages: [72]
 sources: ["docs/kb/engine"]
 tags: [index]
-updated: 2026-11-16
+updated: 2026-11-20
 ---
 # Движок: подсистемы
 
@@ -27,13 +27,13 @@ updated: 2026-11-16
 | [Флаги запуска и `cmd.txt`](launch-flags.md) | known | bench | 72, 32, 45 |
 | [Модуль в игре `doctor_live` (живая связь)](live-module.md) | known | bench | 72, 34, 35, 45, 46, 47, 48, 49, 58, 78, 100, 80 |
 | [Lua в игре](lua.md) | known | bench | 72, 16, 28, 34, 38, 45, 49, 74 |
-| [Главный цикл](main-loop.md) | partial | exe | 72, 32, 34, 35, 58, 59 |
+| [Главный цикл](main-loop.md) | partial | exe | 72, 32, 34, 35, 58, 59, 114 |
 | [Память](memory.md) | partial | bench | 72, 5, 58, 59 |
 | [Шина сообщений](message-bus.md) | partial | exe | 72, 73, 16, 27, 35, 38, 49, 78 |
 | [Данные сообщения](message-data.md) | partial | exe | 78 |
 | [Доставка одному слушателю и очередь задержки](message-delivery.md) | known | exe | 78 |
 | [Как менеджер модов ставит код мода](native-mod-install.md) | known | bench | 81 |
-| [Платформа нативных модов (`doctor_platform.asi`)](native-mods.md) | partial | bench | 80, 81 |
+| [Платформа нативных модов (`doctor_platform.asi`)](native-mods.md) | partial | bench | 80, 81, 115, 116, 117, 118 |
 | [Навигационный граф и укрытия](navigation-graph.md) | partial | data | 72, 39, 40, 42, 45 |
 | [Физика: Havok и коллизии](physics.md) | partial | data | 72, 18, 37, 47, 60 |
 | [Рендер](render.md) | partial | exe | 72, 35, 58, 59, 66, 69, 70, 101 |
@@ -41,7 +41,7 @@ updated: 2026-11-16
 | [Объектная модель: SimGroup, классы, GUID](simgroup-objects.md) | partial | exe | 72, 27, 34, 39, 47, 49, 84 |
 | [Потоки `.str` и их загрузка](stream-loading.md) | partial | exe | 72, 5, 24, 32, 39, 45, 46, 48, 84, 100 |
 | [Время суток, свет и погода](time-of-day.md) | partial | bench | 72, 48, 58, 59, 66, 70 |
-| [Интерфейс: APX (Apt), шрифты, строки](ui-apt.md) | partial | data | 72, 18, 40, 58 |
+| [Интерфейс: APX (Apt), шрифты, строки](ui-apt.md) | partial | data | 72, 18, 40, 58, 114 |
 | [Видео: ролики `.vp6`](video.md) | known | exe | 72, 31 |
 | [Зоны мира и их подгрузка](zones.md) | known | bench | 72, 5, 24, 45, 48, 58, 60, 63, 84 |
 

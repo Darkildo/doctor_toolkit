@@ -236,6 +236,7 @@ impl BrowserApp {
                 }
             },
             this_stream_only: false,
+            keep_copies: Vec::new(),
         };
         let into =
             (state.as_new && !state.into.trim().is_empty()).then(|| state.into.trim().to_owned());

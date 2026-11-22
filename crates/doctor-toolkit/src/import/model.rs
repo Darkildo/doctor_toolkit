@@ -70,6 +70,11 @@ pub struct ImportOptions {
     /// ids): the game takes a resource from whichever stream loaded it, so
     /// a copy left old shows the old model there ([`ImportSummary::copies`]).
     pub this_stream_only: bool,
+    /// Copies (mesh keys of other streams) the replacement leaves as they
+    /// are, when it reaches copies: a project builds the meshes of its
+    /// entries from those entries (`docs/project.md`), so the build of one
+    /// entry does not write into the meshes of another.
+    pub keep_copies: Vec<ResourceKey>,
 }
 
 /// One part of the import, for the summary.
@@ -618,6 +623,7 @@ pub fn plan(
                     layout,
                     built: &built,
                     additions: &additions,
+                    kept: &options.keep_copies,
                 };
                 copies.plan(
                     game,
@@ -1076,6 +1082,8 @@ struct Copies<'a> {
     layout: &'a StreamLayout,
     built: &'a [MeshImage],
     additions: &'a [NewResource],
+    /// Copies left as they are ([`ImportOptions::keep_copies`]).
+    kept: &'a [ResourceKey],
 }
 
 impl Copies<'_> {
@@ -1142,6 +1150,9 @@ impl Copies<'_> {
                 else {
                     continue;
                 };
+                if self.kept.contains(&key_of(mesh)) {
+                    continue;
+                }
                 stream_edits.push(ResourceEdit {
                     index: mesh,
                     data: data.clone(),

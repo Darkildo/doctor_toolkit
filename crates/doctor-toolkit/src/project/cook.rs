@@ -8,6 +8,7 @@
 //! way for both; only what it is made over differs: the game's resource, or
 //! the data kept with the sources (`base`, `template`).
 
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::Arc;
 
@@ -21,6 +22,7 @@ use crate::resource::lh2::StringTable;
 use crate::resource::logic::TYPE_SIMGROUP;
 use crate::resource::logic_import;
 use crate::resource::lua::{self, Chunk};
+use crate::resource::mesh::TYPE_MESH;
 use crate::resource::simgroup::SimGroup;
 use crate::resource::texture::{self, TexturePair};
 use crate::resource::tg4::Tg4Header;
@@ -41,6 +43,14 @@ pub(super) struct Cook<'a> {
     /// Mod id of the project, for the GUIDs of new objects.
     pub project_id: &'a str,
     models: Option<(ResourceIndex, GameAssets)>,
+    /// The meshes of the game the entries of the project build, by ids: a
+    /// model entry replaces the copies of its mesh in other streams, but
+    /// not these ([`ImportOptions::keep_copies`]).
+    meshes: HashMap<[u32; 4], Vec<ResourceKey>>,
+    /// Ids of meshes whose copies outside the project an entry built
+    /// already replaced: another entry with those ids (other data, other
+    /// streams) builds only its own keys.
+    copied: HashSet<[u32; 4]>,
 }
 
 /// Where one key of an entry is built into.
@@ -87,13 +97,42 @@ impl Target<'_> {
 }
 
 impl<'a> Cook<'a> {
-    pub fn new(game: &'a GameInstance, root: &'a Path, project_id: &'a str) -> Self {
+    /// A build of entries whose keys are `keys` (all entries of the
+    /// project, built now or not).
+    pub fn new<'k>(
+        game: &'a GameInstance,
+        root: &'a Path,
+        project_id: &'a str,
+        keys: impl IntoIterator<Item = &'k ResourceKey>,
+    ) -> Self {
+        let mut meshes: HashMap<[u32; 4], Vec<ResourceKey>> = HashMap::new();
+        for key in keys.into_iter().filter(|k| k.type_id == TYPE_MESH) {
+            meshes.entry(key.ids).or_default().push(key.clone());
+        }
         Self {
             game,
             root,
             project_id,
             models: None,
+            meshes,
+            copied: HashSet::new(),
         }
+    }
+
+    /// The copies of the meshes of `entry` that entries of the project
+    /// build: its own keys in other streams among them.
+    fn kept_copies(&self, entry: &Entry) -> Vec<ResourceKey> {
+        let mut kept: Vec<ResourceKey> = entry
+            .keys
+            .iter()
+            .filter(|k| k.type_id == TYPE_MESH)
+            .filter_map(|k| self.meshes.get(&k.ids))
+            .flatten()
+            .cloned()
+            .collect();
+        kept.sort();
+        kept.dedup();
+        kept
     }
 
     /// The targets of `entry`, one per stream: where each key is built into.
@@ -370,10 +409,31 @@ impl<'a> Cook<'a> {
                     return Ok(notes);
                 }
                 let model = scene::read_file(&folder.join(&entry.files[0]))?;
+                // Each resource is written once. The copies of the mesh in
+                // other streams that entries of the project build (the
+                // other targets of a shared entry, say) are theirs; the
+                // copies outside the project get the mesh from the first
+                // target only (an entry's targets have the same data), and
+                // from the first entry with these ids a build builds.
+                let ids: Vec<[u32; 4]> = entry
+                    .keys
+                    .iter()
+                    .filter(|k| k.type_id == TYPE_MESH)
+                    .map(|k| k.ids)
+                    .collect();
+                let first = ImportOptions {
+                    keep_copies: self.kept_copies(entry),
+                    this_stream_only: ids.iter().any(|i| self.copied.contains(i)),
+                    ..ImportOptions::default()
+                };
+                let others = ImportOptions {
+                    this_stream_only: true,
+                    ..ImportOptions::default()
+                };
                 let (index, assets) = self.models();
                 // Every target is planned before anything is recorded.
                 let mut plans = Vec::new();
-                for t in &targets {
+                for (n, t) in targets.iter().enumerate() {
                     // The mesh; its volatile data may be one a build adds.
                     let (Some((_, Slot::Game(mesh, _))), Some(stream)) =
                         (t.slots.first(), t.stream)
@@ -384,21 +444,16 @@ impl<'a> Cook<'a> {
                                 .into(),
                         ));
                     };
+                    let options = if n == 0 { &first } else { &others };
                     plans.push(model::plan(
-                        game,
-                        ws,
-                        index,
-                        assets,
-                        stream,
-                        *mesh,
-                        &model,
-                        &ImportOptions::default(),
+                        game, ws, index, assets, stream, *mesh, &model, options,
                     )?);
                 }
                 for plan in plans {
                     notes.extend(plan.summary.warnings.iter().cloned());
                     plan.commit(ws, game)?;
                 }
+                self.copied.extend(ids);
             }
             Kind::Animations => {
                 let data = read(&entry.files[0])?;

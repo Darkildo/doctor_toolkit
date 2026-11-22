@@ -153,13 +153,14 @@ impl BrowserApp {
         self.report(tr("resource.collision_what"), result, Some(loc.stream))
     }
 
-    /// Sets parameters of the material resource `loc`.
+    /// Sets parameters of the material resource `loc`, in every copy of
+    /// the material.
     pub(crate) fn set_material_params(&mut self, loc: Location, edits: &[ParamEdit]) -> bool {
         let Some(game) = self.game.clone() else {
             return false;
         };
         let result = self.workspace_mut().and_then(|ws| {
-            material::set_params(&game, ws, loc.stream, loc.resource, edits)
+            material::set_params(&game, ws, loc.stream, loc.resource, edits, true)
                 .map_err(|e| e.to_string())
         });
         let result = result.map(|done| {

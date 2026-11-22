@@ -1,20 +1,21 @@
 [workspace]
 resolver = "3"
-members = ["crates/doctor-toolkit", "crates/doctor-toolkit-cli", "crates/doctor-toolkit-gui", "crates/doctor-toolkit-live", "crates/doctor-toolkit-mcp", "crates/doctor-toolkit-mods", "crates/doctor-toolkit-py", "crates/doctor-toolkit-sdk", "crates/doctor-toolkit-unify"]
+members = ["crates/doctor-toolkit", "crates/doctor-toolkit-cli", "crates/doctor-toolkit-gui", "crates/doctor-toolkit-live", "crates/doctor-toolkit-mcp", "crates/doctor-toolkit-mods", "crates/doctor-toolkit-overlay", "crates/doctor-toolkit-py", "crates/doctor-toolkit-sdk", "crates/doctor-toolkit-unify"]
 # The Python module is built with maturin (see crates/doctor-toolkit-py); plain
 # `cargo build` and `cargo test` leave it out, `--workspace` builds it too.
-default-members = ["crates/doctor-toolkit", "crates/doctor-toolkit-cli", "crates/doctor-toolkit-gui", "crates/doctor-toolkit-live", "crates/doctor-toolkit-mcp", "crates/doctor-toolkit-mods", "crates/doctor-toolkit-sdk", "crates/doctor-toolkit-unify"]
+default-members = ["crates/doctor-toolkit", "crates/doctor-toolkit-cli", "crates/doctor-toolkit-gui", "crates/doctor-toolkit-live", "crates/doctor-toolkit-mcp", "crates/doctor-toolkit-mods", "crates/doctor-toolkit-overlay", "crates/doctor-toolkit-sdk", "crates/doctor-toolkit-unify"]
 # The in-game modules are Windows DLLs (i686-pc-windows-gnu) built on their
 # own: tools/build-live-module.sh (docs/analysis/live-link.md),
 # tools/build-render-module.sh, tools/build-crash-module.sh
 # (docs/analysis/crash-reports.md), tools/build-platform-module.sh
-# (docs/analysis/asi-platform.md), tools/build-loader.sh (the ASI loader the
+# (docs/analysis/asi-platform.md), tools/build-cheats-module.sh (the
+# developer menu doctor_cheats.asi, PLAN-cheats.md), tools/build-loader.sh (the ASI loader the
 # mod manager installs, docs/mods.md §1.6); the example of a native mod is
 # built by examples/native-class/build.sh.
-exclude = ["fuzz", "crates/doctor-toolkit-live-asi", "crates/doctor-toolkit-render-asi", "crates/doctor-toolkit-crash-asi", "crates/doctor-toolkit-platform-asi", "crates/doctor-toolkit-loader", "examples/native-class"]
+exclude = ["fuzz", "crates/doctor-toolkit-live-asi", "crates/doctor-toolkit-render-asi", "crates/doctor-toolkit-crash-asi", "crates/doctor-toolkit-platform-asi", "crates/doctor-toolkit-cheats-asi", "crates/doctor-toolkit-loader", "examples/native-class"]
 
 [workspace.package]
-version = "1.3.0"
+version = "1.4.0"
 edition = "2024"
 rust-version = "1.90"
 license = "GPL-3.0-only"

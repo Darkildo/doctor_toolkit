@@ -1,0 +1,19 @@
+[package]
+name = "doctor-toolkit-overlay"
+description = "2D drawing over the frame of The Godfather II (PC 1.0.789.0) for native mods: rectangles and text through the platform's overlay (Direct3D 9 fixed function), with fonts of its own (Oswald Medium, Podkova ExtraBold — OFL) that cover Latin and Cyrillic"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lib]
+name = "doctor_overlay"
+path = "src/lib.rs"
+
+# The text and the atlas are tested on the host; the drawing calls the
+# game's device through its vtable only inside a mod (i686-pc-windows-gnu).
+[dependencies]
+doctor-toolkit-sdk = { path = "../doctor-toolkit-sdk" }
+fontdue = "=0.9.5"

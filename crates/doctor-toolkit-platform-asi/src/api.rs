@@ -5,11 +5,13 @@
 
 use std::ffi::{CStr, c_char, c_void};
 
-use doctor_sdk::abi::{self, Api, Class, FilterFn, LuaFn, MessageFn, Object};
+use doctor_sdk::abi::{
+    self, Api, Class, DeviceFn, FilterFn, Input, LuaFn, MessageFn, Object, OverlayFn, TickFn,
+};
 use doctor_toolkit_live::edition;
 use doctor_toolkit_live::platform::addr;
 
-use crate::{bus, classes, hooks, lua};
+use crate::{bus, classes, frame, hooks, input, lua, overlay};
 
 /// Runs `f`; a panic becomes `ERR_ENGINE`.
 fn guard(f: impl FnOnce() -> i32 + std::panic::UnwindSafe) -> i32 {
@@ -210,6 +212,50 @@ unsafe extern "C" fn hook_call(
     })
 }
 
+unsafe extern "C" fn tick_listen(listener: TickFn, user: *mut c_void) -> i32 {
+    let user = user as usize;
+    guard(move || frame::tick_listen(listener, user as *mut c_void))
+}
+
+unsafe extern "C" fn tick_unlisten(id: i32) -> i32 {
+    guard(move || frame::tick_unlisten(id))
+}
+
+unsafe extern "C" fn device_listen(listener: DeviceFn, user: *mut c_void) -> i32 {
+    let user = user as usize;
+    guard(move || frame::device_listen(listener, user as *mut c_void))
+}
+
+unsafe extern "C" fn device_unlisten(id: i32) -> i32 {
+    guard(move || frame::device_unlisten(id))
+}
+
+unsafe extern "C" fn overlay_listen(listener: OverlayFn, user: *mut c_void, order: i32) -> i32 {
+    let user = user as usize;
+    guard(move || overlay::listen(listener, user as *mut c_void, order))
+}
+
+unsafe extern "C" fn overlay_show(id: i32, on: u32) -> i32 {
+    guard(move || overlay::show(id, on))
+}
+
+unsafe extern "C" fn overlay_unlisten(id: i32) -> i32 {
+    guard(move || overlay::unlisten(id))
+}
+
+unsafe extern "C" fn input_read(out: *mut Input) -> i32 {
+    let out = out as usize;
+    guard(move || input::read(out as *mut Input))
+}
+
+unsafe extern "C" fn input_capture(on: u32) -> i32 {
+    guard(move || input::capture(on))
+}
+
+unsafe extern "C" fn input_reserve(key: u32, on: u32) -> i32 {
+    guard(move || input::reserve(key, on))
+}
+
 /// The table.
 pub static API: Api = Api {
     size: std::mem::size_of::<Api>() as u32,
@@ -246,4 +292,14 @@ pub static API: Api = Api {
     hook_check,
     hook_jump,
     hook_call,
+    tick_listen,
+    tick_unlisten,
+    device_listen,
+    device_unlisten,
+    overlay_listen,
+    overlay_show,
+    overlay_unlisten,
+    input_read,
+    input_capture,
+    input_reserve,
 };

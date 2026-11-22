@@ -59,6 +59,23 @@ PLACES = [
     (0x00E3280C, 28, "method table of Base: destructor, reader, five more"),
     (0x00E32828, 16, "listener method table of Base: destructor, handler, switch off, switch on"),
     (0x00E32838, 4, "third method table of Base: destructor"),
+    # Stage 115: the frame tick and the device registry.
+    (0x0068BC15, 5, "frame of both main loops: call 0x0040EBB0, the tick (the tick hook replaces this call)"),
+    (0x0040EBB0, 16, "the tick (cdecl, no arguments): the tick mode 0x01205258, then the pre-tick, tick and post-tick messages"),
+    (0x00607CA0, 16, "device registry: register (cdecl: on_lost, on_reset, u8 priority; 0xFF appends)"),
+    (0x00607DD0, 16, "device registry: after Reset, on_reset(arg) of every entry, count at 0x012224A8"),
+    (0x00607FCE, 16, "device registry: before Reset, on_lost(arg) of every entry from the last"),
+    (0x00607FDE, 10, "device registry: the entries at 0x01222328, 12 bytes each"),
+    # Stage 116: the overlay.
+    (0x00608E9E, 35, "frame: `mov eax,[0x01205750]` before Present (the overlay hook replaces these 5 bytes), Present, the lost flag 0x0119DA5E"),
+    # Stage 117: the input gate.
+    (0x00B941E5, 11, "XInput poll: push the state and the port, call 0x00D37316 XInputGetState (the gate replaces this call)"),
+    (0x00D37316, 6, "XInputGetState: jmp [0x00D55470], the import"),
+    (0x00B9518C, 19, "keyboard: mov ecx,[edx+0x24]; add esp,8 (the gate replaces these 6 bytes), GetDeviceState(256, [esp+0x2C])"),
+    (0x00B95216, 13, "mouse: GetDeviceState(0x14, [esp+0x18]): mov eax,[ecx+0x24]; call eax (the gate replaces these 5 bytes)"),
+    (0x00B952B1, 16, "joystick: mov ecx,[edx+0x24]; lea eax,[esp+0x2C] (the gate replaces these 7 bytes), GetDeviceState(0x110)"),
+    (0x0069E6A9, 18, "menu cursor: GetCursorPos call [0x00D55304] (the gate replaces these 6 bytes), then ScreenToClient call [0x00D55308]"),
+    (0x0069EB00, 42, "menu cursor: the movement since the last call, 0x0112A04C/0x0112A050 as floats, then 0 (the gate replaces this function)"),
 ]
 
 

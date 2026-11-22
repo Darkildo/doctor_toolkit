@@ -6,7 +6,7 @@ editions: ["1.0.789.0"]
 stages: [72]
 sources: ["docs/kb/experiments"]
 tags: [index]
-updated: 2026-11-16
+updated: 2026-11-21
 ---
 # Опыты на стенде
 
@@ -14,7 +14,7 @@ updated: 2026-11-16
 
 Опыты в запущенной игре на стенде: что проверяли и что получилось.
 
-Заметок: 67 (`known` — 47, `partial` — 20).
+Заметок: 75 (`known` — 48, `partial` — 27).
 
 | Заметка | Статус | Уверенность | Этапы |
 |---|---|---|---|
@@ -33,9 +33,14 @@ updated: 2026-11-16
 | [Ролик igc16: субтитр, фокусное расстояние и угол обзора](cutscene-igc16-subtitle-fov.md) | known | bench | 72, 29, 45, 59 |
 | [Что на стенде отложено и не проверено](deferred-and-unverified.md) | partial | bench | 72, 24, 45, 58, 59, 60, 63 |
 | [Destructible с metamodel без состояний роняет игру](destructible-without-states-crash.md) | known | bench | 72, 14, 21 |
+| [Меню разработчика `doctor_cheats` на стенде (этап 119)](dev-menu-cheats-mod.md) | partial | bench | 119 |
+| [Такт на паузе, реестр устройства и шрифты в памяти (этап 114)](dev-menu-infrastructure.md) | partial | bench | 114 |
+| [Страница «Игрок» меню `doctor_cheats` на стенде (этап 120)](dev-menu-player-page.md) | partial | bench | 120 |
+| [Страница «Оружие» и «Запомнить настройки» меню `doctor_cheats` на стенде (этап 121)](dev-menu-weapons-page.md) | partial | bench | 121 |
 | [Объединение вызовов отрисовки: опыт на стенде (этап 101)](draw-call-merging.md) | partial | bench | 101 |
 | [DXVK и 32-битный Vulkan: частота кадров на стенде](dxvk-frame-rate.md) | known | bench | 72, 33 |
 | [Профиль кадра: где игра тратит время (этап 58)](frame-profile.md) | known | bench | 72, 58 |
+| [Такт кадра и события устройства у нативного мода (этап 115)](frame-tick-and-device-events.md) | known | bench | 115 |
 | [Падения игры, найденные на стенде](game-crashes.md) | partial | bench | 72, 6, 14, 28, 32, 34, 49, 58, 59, 63, 99 |
 | [Журнал игры и все объекты (этап 49)](game-journal-and-all-objects.md) | known | bench | 72, 49 |
 | [Темп игры и частота кадров: замеры на стенде](game-pace-and-frame-rate.md) | partial | bench | 72, 58, 59 |
@@ -64,6 +69,9 @@ updated: 2026-11-16
 | [Новая строка находится игрой по имени из интерфейса](new-string-by-name.md) | known | bench | 72, 18 |
 | [Новая голосовая реплика с новым событием звучит в игре](new-voice-line.md) | known | bench | 83 |
 | [Новая зона через MCP: стены с коллизией вокруг игрока (этап 57)](new-zone-via-mcp.md) | known | bench | 72, 57 |
+| [Шлюз ввода платформы нативных модов (этап 117)](platform-input-gate.md) | partial | bench | 117 |
+| [Рисование и шрифты оверлея нативных модов (этап 118)](platform-overlay-painter.md) | partial | bench | 118 |
+| [Оверлей платформы нативных модов (этап 116)](platform-overlay.md) | partial | bench | 116 |
 | [«Играть» с записью и откатом на стенде](play-apply-revert-on-bench.md) | known | bench | 72, 21, 24 |
 | [Игрок не ходит после -stream: причина и исправление](player-not-walking-after-stream.md) | known | bench | 72, 33, 45 |
 | [Координаты игрока: чтение памяти игры стендом](player-position-memory-read.md) | known | bench | 72, 24 |

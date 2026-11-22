@@ -324,7 +324,7 @@ pub struct GameIndex {
 }
 
 /// Version of the harvested data; bump when [`harvest`] changes what it reads.
-pub(crate) const HARVEST_VERSION: u32 = 4;
+pub(crate) const HARVEST_VERSION: u32 = 5;
 
 /// CRC-32 of the name lists the harvested labels and names come from (type
 /// tags, bones, SimGroup classes and attributes, shaders): a cache written
@@ -794,7 +794,7 @@ fn prefer_stream(
 }
 
 /// `(hash, stream path)` of the names of every table of contents.
-fn toc_names(game: &GameInstance) -> Vec<(u32, String)> {
+pub(crate) fn toc_names(game: &GameInstance) -> Vec<(u32, String)> {
     let mut names: Vec<(u32, String)> = (0..game.tocs().len())
         .filter_map(|i| game.load_toc(i).ok())
         .flat_map(|toc| {

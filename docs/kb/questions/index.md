@@ -14,12 +14,13 @@ updated: 2026-11-20
 
 Каждая заметка — один вопрос, на который пока нет ответа, со следующим шагом. Вопрос, на который ответ найден, получает статус `known`, `partial` или `hypothesis` и остаётся в списке.
 
-Заметок: 134 (`known` — 28, `partial` — 33, `hypothesis` — 11, `unknown` — 62).
+Заметок: 135 (`known` — 28, `partial` — 33, `hypothesis` — 11, `unknown` — 63).
 
 | Заметка | Статус | Уверенность | Этапы |
 |---|---|---|---|
 | [Параметры ИИ: `GlobalAIValueTuner`, `NPCCombatConstants`, `TargetingWeights`](ai-constants.md) | unknown | data | 72, 88 |
 | [Граф анимации: данные ребёнка узла 8 и включение части узла 9](anim-graph-node-8-and-9.md) | unknown | exe | 72, 93 |
+| [Свой пункт в меню паузы (APT)](apt-menu-entry.md) | unknown | data | 114 |
 | [Типы `Bool` и `Money` у атрибутов — догадки](attr-bool-and-money-types.md) | partial | exe | 73, 79 |
 | [Имена атрибутов и классов SimGroup не восстановлены](attribute-and-class-names.md) | partial | exe | 72, 79 |
 | [Ссылки на звук в атрибутах: id не найдены среди ресурсов](audio-reference-ids.md) | unknown | data | 73, 83 |

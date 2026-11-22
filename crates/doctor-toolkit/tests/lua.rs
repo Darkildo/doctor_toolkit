@@ -70,8 +70,18 @@ fn small_programs_round_trip_byte_identical() {
         "while x do\n  x = x - 1\nend\n",
         "repeat\n  y = y + 1\nuntil y > 10\n",
         "local s = a == b\nlocal n = not s\n",
+        // The jump over `elseif`/`else` has the line of the inner `end`
+        // (aud_pc_car.lua, mus_underscore.lua of the game).
+        "if a then\n  if b then\n    x = 0\n\n  end\nelseif c then\n  y = 1\nend\n",
+        "if a then\n  if b then\n    x = 1\n  else\n    x = 2\n\n  end\nelse\nend\nz = 3\n",
     ];
-    for source in programs {
+    // The flush of 32 items is coded at the comma after the 32nd: the 33rd
+    // item stays on its own line (mus_underscore_content_mia.lua).
+    let long_table = format!(
+        "t = {{\n{}}}\n",
+        (1..=40).map(|i| format!("  {i}0,\n")).collect::<String>()
+    );
+    for source in programs.into_iter().chain([long_table.as_str()]) {
         let chunk = compile(source.as_bytes(), b"=test", 4).unwrap();
         let out = decompile(&chunk);
         assert!(out.errors.is_empty(), "{source}: {:?}", out.errors);

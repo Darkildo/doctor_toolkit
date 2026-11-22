@@ -277,7 +277,9 @@ impl<'a> FnDec<'a> {
     }
 
     fn finish_table(&self, t: TableBuild) -> TableExpr {
-        finish_table_items(t, |from, to| self.span_line(from, to))
+        let reg = ins::a(self.p.code[t.start]);
+        let is_flush = |pc: usize| matches!(self.code(pc), Some((Op::SetList | Op::SetListO, i)) if ins::a(i) == reg);
+        finish_table_items(t, is_flush, |from, to| self.span_line(from, to))
     }
 
     /// `LOADBOOL r 0 1; LOADBOOL r 1 0` at `pc`: the value of a comparison.
@@ -1749,7 +1751,11 @@ fn simplify(e: Expr) -> Expr {
     }
 }
 
-fn finish_table_items(mut t: TableBuild, line_of: impl Fn(usize, usize) -> u32) -> TableExpr {
+fn finish_table_items(
+    mut t: TableBuild,
+    is_flush: impl Fn(usize) -> bool,
+    line_of: impl Fn(usize, usize) -> u32,
+) -> TableExpr {
     t.items.sort_by_key(|(_, pc, _)| *pc);
     // `NEWTABLE C` counts the `name = value` items: write the rest as `["name"] = value`.
     let named = t
@@ -1781,11 +1787,18 @@ fn finish_table_items(mut t: TableBuild, line_of: impl Fn(usize, usize) -> u32) 
     }
     // An item starts at the first line of the code after the previous item;
     // the `NEWTABLE` of a nested table has the line of the token before it.
+    // A `SETLIST` right after the previous item is the flush of the 32 items
+    // before (`closelistfield`, coded at the comma after the last of them):
+    // it belongs to the previous item, not to this one.
     let mut prev = t.start;
     let mut items = Vec::with_capacity(t.items.len());
     for (item, pc, _) in t.items {
+        let mut from = prev + 1;
+        while from < pc && is_flush(from) {
+            from += 1;
+        }
         let skip = matches!(item, TableItem::Positional(Expr::Table(_))) as usize;
-        items.push((item, line_of(prev + 1 + skip, pc)));
+        items.push((item, line_of(from + skip, pc)));
         prev = pc;
     }
     TableExpr {

@@ -6,7 +6,7 @@ editions: ["1.0.789.0"]
 stages: [72]
 sources: ["data/gf2/type_tags.txt", "data/gf2/resource_types.ru.toml", "docs/formats/resource-types.md §8"]
 tags: [index, resource-type]
-updated: 2026-11-18
+updated: 2026-11-20
 ---
 # Типы ресурсов
 
@@ -37,7 +37,7 @@ updated: 2026-11-18
 | [`lighttoc`](lighttoc.md) | `0x759940f2` | списки источников света (`earslight_point`) | нет | partial |
 | [`lua`](lua.md) | `0x35a3a798` | байт-код Lua 5.0 (звуковые и музыкальные скрипты) | полный: декомпиляция и компиляция | known |
 | [`material`](material.md) | `0x59490267` | материал (`0x0AA0DEED`, версия 19): шейдеры, параметры, текстуры | все 77 643 материала разбираются | known |
-| [`materialswaplistresource`](materialswaplistresource.md) | `0xffb235e6` | списки замены материалов (хэши) | нет: раскладка не разобрана | partial |
+| [`materialswaplistresource`](materialswaplistresource.md) | `0xffb235e6` | списки замены материалов модели одного объекта SimGroup: пары «материал → замена» по CRC-32 имени; ids ресурса — GUID объекта | списки и пары (все 188 файлов, `resource::material_swap`); смысл третьего слова пары не известен | partial |
 | [`mesh`](mesh.md) | `0x01961bed` | геометрия (заголовок `MGAE`): буферы, записи отрисовки, форматы вершин | полный, запись мешей | known |
 | [`meshvolatile`](meshvolatile.md) | `0xe2ba6d49` | вторая часть геометрии: данные буферов меша; следующий ресурс потока с идентификатором `~id` меша | полный, вместе с `mesh` | known |
 | [`metamodel`](metamodel.md) | `0xf3f21004` | MetaModel (magic `MMdl`): части, состояния, свойства — шаблон объекта мира | чтение; правка значений заплатками, полная запись не реализована | partial |

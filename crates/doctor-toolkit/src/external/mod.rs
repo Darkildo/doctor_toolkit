@@ -549,6 +549,7 @@ pub fn import(
                     format: None,
                     collision: None,
                     this_stream_only: false,
+                    keep_copies: Vec::new(),
                 },
             )?;
             let s = &plan.summary;

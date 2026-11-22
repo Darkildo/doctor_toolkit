@@ -442,6 +442,173 @@ fn shared_resources_are_written_once() {
     );
 }
 
+/// A mesh without meshvolatile (like the shadow meshes of the game): the
+/// quad of the miniature game moved by `offset`, all its vertex data in the
+/// mesh.
+fn mesh_without_volatile(offset: f32) -> Vec<u8> {
+    use crate::resource::mesh_build::{self, PartGeometry};
+    use crate::resource::mesh_image::FLAG_VOLATILE;
+    let part = PartGeometry {
+        name: "shadow".into(),
+        material_hash: crate::hash::crc32(testing::MATERIAL_NAME.as_bytes()),
+        positions: vec![
+            [offset, 0.0, 0.0],
+            [offset + 1.0, 0.0, 0.0],
+            [offset, 1.0, 0.0],
+            [offset + 1.0, 1.0, 0.0],
+        ],
+        uv0: Some(vec![[0.0, 0.0], [1.0, 0.0], [0.0, 1.0], [1.0, 1.0]]),
+        triangles: vec![[0, 1, 2], [2, 1, 3]],
+        ..Default::default()
+    };
+    let options = mesh_build::BuildOptions {
+        name: "shadow".into(),
+        ..Default::default()
+    };
+    let (mut image, _) = mesh_build::build(&[part], &options).unwrap();
+    image.has_volatile = false;
+    for buffer in &mut image.vertex_buffers {
+        buffer.flags &= !FLAG_VOLATILE;
+    }
+    let (mesh, volatile) = image.encode().unwrap();
+    assert!(volatile.is_empty());
+    mesh
+}
+
+/// The shadow meshes of the game: the same mesh in several streams (an
+/// entry of `shared/`) and, under the same ids, another one in a third
+/// stream (an entry of its own), none with a meshvolatile; a fourth stream
+/// with a copy is not in the project. A forced build writes each resource
+/// from one entry: an entry does not replace the copies of its mesh that
+/// other entries (or its own other keys) build, and the copy outside the
+/// project gets the mesh of one entry.
+#[test]
+fn shared_meshes_without_volatile_are_built_once() {
+    use crate::container::ustream::{
+        FileHeader, ResourceHeader, Storage, StreamLayout, StreamWriter,
+    };
+    use crate::resource::mesh::{TYPE_MESH, TYPE_MESH_VOLATILE};
+    let dir = tempfile::tempdir().unwrap();
+    let game_dir = dir.path().join("game");
+    std::fs::create_dir_all(&game_dir).unwrap();
+    testing::write_game(&game_dir).unwrap();
+    // The texture and the material of the level, and a mesh after them.
+    let level = std::fs::read(game_dir.join("gf2/level.str")).unwrap();
+    let layout = StreamLayout::parse(&level).unwrap();
+    let write = |name: &str, mesh: &[u8]| {
+        let mut out = StreamWriter::new(&FileHeader::GF2_PC, crate::io::Endian::Little);
+        for r in [testing::TEX_HEADER, testing::TEX_DATA, testing::MATERIAL] {
+            let header = layout.resources[r].header;
+            let data = layout.resource_data(&level, r).unwrap();
+            out.push_resource(&header, &data, Storage::Raw).unwrap();
+        }
+        let header = ResourceHeader {
+            mem_policy: crate::hash::sdbm(b"geometry"),
+            alignment: 0x80,
+            type_id: TYPE_MESH,
+            ids: [0x5151; 4],
+            data_size: 0,
+        };
+        out.push_resource(&header, mesh, Storage::RefPack).unwrap();
+        std::fs::write(game_dir.join(format!("gf2/{name}.str")), out.finish()).unwrap();
+    };
+    let shadow = mesh_without_volatile(0.0);
+    write("car_a", &shadow);
+    write("car_b", &shadow);
+    write("car_c", &mesh_without_volatile(5.0));
+    write("car_d", &shadow);
+    let game = GameInstance::open(&game_dir).unwrap();
+    let mut ws = Workspace::for_game(&game, None).unwrap();
+    let selection = ["gf2/car_a", "gf2/car_b", "gf2/car_c"]
+        .iter()
+        .map(|s| {
+            let s = game.find_stream(s).unwrap();
+            let mesh = game.open_stream(s).unwrap().layout().resources.len() - 1;
+            (s, vec![mesh])
+        })
+        .collect();
+    let (project, _) = create(
+        &game,
+        &ws,
+        None,
+        &dir.path().join("p"),
+        &CreateOptions {
+            name: "Shadows".into(),
+            id: None,
+            author: String::new(),
+            selection,
+            settings: Default::default(),
+        },
+        &|_, _| {},
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    let entries: Vec<(String, Entry)> = project
+        .entries()
+        .map(|(id, e, _)| (id, e.clone()))
+        .collect();
+    assert_eq!(entries.len(), 2, "{entries:?}");
+    let (shared_id, shared) = entries
+        .iter()
+        .find(|(id, _)| id.starts_with(SHARED_DIR))
+        .unwrap();
+    assert_eq!(shared.kind, Kind::Model);
+    assert_eq!(shared.keys.len(), 2, "the mesh in car_a and car_b");
+
+    let report = project
+        .build(
+            &game,
+            &mut ws,
+            &BuildOptions {
+                force: true,
+                ..BuildOptions::default()
+            },
+        )
+        .unwrap();
+    assert!(report.errors.is_empty(), "{:?}", report.errors);
+    assert_eq!(report.built.len(), 2);
+    let changed = |id: &str| -> Vec<String> {
+        let built = report.built.iter().find(|b| b.id == id).unwrap();
+        built
+            .changed
+            .iter()
+            .map(|k| format!("{}:{:x}", k.stream, k.type_id))
+            .filter(|k| !k.starts_with("gf2/car_d:"))
+            .collect()
+    };
+    // Each entry writes its meshes and the meshvolatile each gets (the
+    // builder keeps the second vertex stream there), in its own streams.
+    let (mesh, volatile) = (TYPE_MESH, TYPE_MESH_VOLATILE);
+    assert_eq!(
+        changed(shared_id),
+        [
+            format!("gf2/car_a:{mesh:x}"),
+            format!("gf2/car_a:{volatile:x}"),
+            format!("gf2/car_b:{mesh:x}"),
+            format!("gf2/car_b:{volatile:x}"),
+        ]
+    );
+    let own = entries.iter().find(|(id, _)| id != shared_id).unwrap();
+    assert_eq!(
+        changed(&own.0),
+        [
+            format!("gf2/car_c:{mesh:x}"),
+            format!("gf2/car_c:{volatile:x}")
+        ]
+    );
+    // The copy outside the project: from one entry, mesh and meshvolatile.
+    let outside: Vec<(&str, u32)> = report
+        .built
+        .iter()
+        .flat_map(|b| b.changed.iter().map(move |k| (b.id.as_str(), k)))
+        .filter(|(_, k)| k.stream == "gf2/car_d")
+        .map(|(id, k)| (id, k.type_id))
+        .collect();
+    assert_eq!(outside.len(), 2, "{outside:?}");
+    assert_eq!(outside[0].0, outside[1].0, "{outside:?}");
+    assert_eq!([outside[0].1, outside[1].1], [mesh, volatile]);
+}
+
 /// A game in a temporary folder and one edited string of its workspace in
 /// `ws_dir` (the game's own when `None`).
 fn game_with_an_edit(dir: &Path, ws_dir: Option<&Path>) -> (GameInstance, Workspace) {

@@ -31,6 +31,11 @@ pub struct MaterialArgs {
     /// the name hash of a texture; may be repeated (one operation)
     #[arg(long, value_name = "NAME=VALUE")]
     set: Vec<String>,
+    /// Change the material only in this stream. By default every copy of
+    /// the material (every material of the game with the same name hash)
+    /// gets the edit: the game uses the copy it loaded first
+    #[arg(long, requires = "set")]
+    this_stream_only: bool,
     #[command(flatten)]
     mode: EditMode,
 }
@@ -86,17 +91,40 @@ pub fn material(args: MaterialArgs) -> Result<()> {
             .iter()
             .map(|s| ParamEdit::parse(s))
             .collect::<doctor_toolkit::Result<Vec<_>>>()?;
-        let done = material::set_params(&game, &mut ws, stream, index, &edits)?;
+        let done = material::set_params(
+            &game,
+            &mut ws,
+            stream,
+            index,
+            &edits,
+            !args.this_stream_only,
+        )?;
+        for skipped in &done.skipped {
+            out!("warning: copy left as it is: {skipped}");
+        }
         if !done.changed {
             out!(
-                "nothing changed: {} already has these values",
-                done.material
+                "nothing changed: {} already has these values ({} cop(y/ies))",
+                done.material,
+                done.copies.len()
             );
             return Ok(());
         }
         out!("{} ({})", done.label, done.resource);
-        let name = game.streams()[stream].stream_name();
-        return workspace_cmd::finish_edit(&game, &mut ws, &args.mode, vec![name]);
+        out!(
+            "{} of {} cop(y/ies) of the material changed",
+            done.changed_copies.len(),
+            done.copies.len()
+        );
+        let mut streams: Vec<String> = done
+            .changed_copies
+            .iter()
+            .filter_map(|k| k.parse::<doctor_toolkit::workspace::ResourceKey>().ok())
+            .map(|k| k.stream)
+            .collect();
+        streams.sort();
+        streams.dedup();
+        return workspace_cmd::finish_edit(&game, &mut ws, &args.mode, streams);
     }
     let m = Material::parse(&ws.current_data(&game, stream, index)?)?;
     out!(

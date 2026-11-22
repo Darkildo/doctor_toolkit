@@ -713,7 +713,12 @@ impl Project {
                 .any(|f| f.dir == *dir && f.manifest.new.is_some())
                 || status.removed_streams.iter().any(|(d, _)| d == dir)
         });
-        let mut cook = cook::Cook::new(game, &self.root, &self.config.project.id);
+        let mut cook = cook::Cook::new(
+            game,
+            &self.root,
+            &self.config.project.id,
+            self.entries().flat_map(|(_, e, _)| e.keys.iter()),
+        );
         let mut removed: Vec<String> = Vec::new();
         for status_entry in work {
             let (entry, dir) = self

@@ -98,6 +98,7 @@ pub fn model_import(args: ModelImport) -> Result<()> {
             format: args.format,
             collision: args.collision,
             this_stream_only: args.this_stream_only,
+            keep_copies: Vec::new(),
         },
     )?;
     if let Some(to) = &args.to {

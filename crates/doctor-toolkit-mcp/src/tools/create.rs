@@ -690,6 +690,7 @@ pub fn check_refs(kit: &Toolkit, p: CheckRefsParams) -> ToolResult<Output> {
                     "resource": problem.resource,
                     "type": type_tags().display(problem.type_id),
                     "unresolved": format!("{:?}", problem.target),
+                    "what": problem.what(),
                 }));
             }
         }
@@ -699,7 +700,9 @@ pub fn check_refs(kit: &Toolkit, p: CheckRefsParams) -> ToolResult<Output> {
         "unresolved": total,
         "problems": problems,
         "note": "references of the game files: a resource must be in the stream or in a stream \
-                 loaded before it; `validate` checks the workspace's edits and new streams",
+                 loaded with it (its prerequisites and the streams their SimGroup data loads), and \
+                 a material only the stream holds must come before its meshes; `validate` checks \
+                 the workspace's edits and new streams",
     })))
 }
 
@@ -736,6 +739,7 @@ pub fn import_model(kit: &Toolkit, p: ImportModelParams) -> ToolResult<Output> {
             format: p.format,
             collision,
             this_stream_only: p.this_stream_only,
+            keep_copies: Vec::new(),
         },
     )?;
     if let Some(into) = &into {

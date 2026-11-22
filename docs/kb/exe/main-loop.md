@@ -3,10 +3,10 @@ type: exe
 status: known
 confidence: exe
 editions: ["1.0.789.0"]
-stages: [72, 34, 32, 58]
-sources: ["docs/analysis/live-link.md §2", "docs/analysis/launch-flags.md §3.1", "docs/analysis/launch-flags.md §3.4", "crates/doctor-toolkit-live/src/addr.rs", "crates/doctor-toolkit-live/src/edition.rs"]
+stages: [72, 34, 32, 58, 114]
+sources: ["docs/analysis/live-link.md §2", "docs/analysis/launch-flags.md §3.1", "docs/analysis/launch-flags.md §3.4", "crates/doctor-toolkit-live/src/addr.rs", "crates/doctor-toolkit-live/src/edition.rs", "docs/analysis/dev-menu-overlay.md §2.3", "docs/analysis/dev-menu-overlay.md §5"]
 tags: [exe, main-loop, hooks]
-updated: 2026-11-16
+updated: 2026-11-20
 ---
 # Главный цикл и точки перехвата кадра
 
@@ -35,6 +35,15 @@ updated: 2026-11-16
 | `0x0068BBE0` | из обновления: рассылает такты и зовёт отрисовку уровня `0x0040E1F0` | live-link.md §12.2 |
 | `0x0040EBB0` | рассылка тактов (из `0x0068BBE0`) | live-link.md §12.2 |
 | `0x0068BC75`, `0x0068BC8A` | места вызова отрисовки уровня `0x0040E1F0` в `0x0068BBE0` | live-link.md §12.2 |
+| `0x0067C690` | обновление `FrontendMainLoop` (слот таблицы `0x00D57758`): первым зовёт `0x0068BBE0` | dev-menu-overlay.md §2.3 |
+| `0x0068BC15` | `call 0x0040EBB0` (`E8 96 2F D8 FF`) в `0x0068BBE0`: после опроса ввода, до рассылки тактов; идёт в меню, в уровне и на паузе; место такта `frame` платформы (план) | dev-menu-overlay.md §5 |
+| `0x0068B06B` | `call 0x00683450` (`E8 E0 83 FF FF`) в главном цикле, когда `0x00439FA0` вернул «да»; место такта `pass` платформы (план) | dev-menu-overlay.md §5 |
+| `0x0040E940` | выбор тройки тактов по режиму `0x01205258`: 2 — `iMsgRunning…`, 1 — `iMsgPaused…`, 3 — нет | dev-menu-overlay.md §2.3 |
+| `0x01205258` | данные: режим тактов (1 — пауза, 2 — ход, 3 — нет) | dev-menu-overlay.md §2.3 |
+| `0x0110ACCB` | данные: байт «рассылать такты» (`0x0040EBA0`) | dev-menu-overlay.md §2.3 |
+| `0x0040EAC0`, `0x0040EAF0` | пауза тактов по маске: счётчики `0x01205260…` +1 (режим 1) / −1 (режим 2, когда все нули); игра берёт биты 1 и 8 | dev-menu-overlay.md §2.3 |
+| `0x0040EAA0`, `0x0040EA60` | пауза тактов флагами `0x0120525C`: поставить (режим 1) / снять | dev-menu-overlay.md §2.3 |
+| `0x00911FD0` | открытие меню паузы (объект `*0x0112981C`, счётчик `+0x5C`): в `GameMainLoop` прячет HUD и зовёт `0x0040EAC0(1)`; снимает паузу `0x00912060` | dev-menu-overlay.md §2.3 |
 | `0x00683280` | диспетчер: имя состояния → номер | launch-flags.md §3.1 |
 | `0x006833D0` | диспетчер: номер → состояние (метод `+0x14` — следующее состояние) | launch-flags.md §3.1 |
 | `0x0067CC50` | вход `InitOnceMainLoop` (там же разбор флагов `cmd.txt`) | launch-flags.md §3.1 |
@@ -58,3 +67,4 @@ updated: 2026-11-16
 
 - [Живая связь](../../analysis/live-link.md) §2 «Точки входа в главный цикл»
 - [Флаги запуска](../../analysis/launch-flags.md) §3.1, §3.4
+- [Оверлей мода читов](../../analysis/dev-menu-overlay.md) §2.3 «Пауза», §5 «Потоки»

@@ -17,8 +17,8 @@ use crate::resource::logic::{
 use crate::resource::mesh::{TYPE_MESH, TYPE_MESH_VOLATILE};
 use crate::resource::texture::{TYPE_TG4D, TYPE_TG4H};
 use crate::resource::{
-    anim, apx, audio, ffn, graph, hkx, lh2, lua, material, mesh, metamodel, partsdb, rcb, simgroup,
-    tg4, variabledictionary,
+    anim, apx, audio, ffn, graph, hkx, lh2, lua, material, material_swap, mesh, metamodel, partsdb,
+    rcb, simgroup, tg4, treemodel, variabledictionary,
 };
 
 use super::index::{Anchor, Chunk, HashKind, NameKind, Record, Ref, Stamp, Target, TextEntry};
@@ -345,7 +345,31 @@ fn harvest(
                 .hashes
                 .extend(table.hashes.iter().map(|&h| (HashKind::StringEntry, h)));
         }
+        material_swap::TYPE_MATERIAL_SWAP_LIST => {
+            // The ids are the GUID of the SimGroup object whose model the
+            // swaps apply to; the object does not refer to the list.
+            let list = material_swap::MaterialSwapList::parse(data)?;
+            for swap in list.lists.iter().flatten() {
+                record.refs.push(Ref {
+                    label: "swap from".into(),
+                    target: Target::Material(swap.from),
+                });
+                record.refs.push(Ref {
+                    label: "swap to".into(),
+                    target: Target::Material(swap.to),
+                });
+            }
+        }
         _ => {
+            if type_id == treemodel::TYPE_TREE {
+                let tree = treemodel::TreeModel::parse(data)?;
+                for part in &tree.parts {
+                    record.refs.push(Ref {
+                        label: tree.part_name(part).to_owned(),
+                        target: Target::Material(part.material_hash),
+                    });
+                }
+            }
             let strings = loose_strings(data);
             if type_id == TYPE_VFX
                 && let Some(first) = strings.first()
@@ -408,7 +432,7 @@ fn simgroup_record(data: &[u8], record: &mut Record) -> crate::Result<()> {
                 Value::String(text) if attr.name != Some("CMD_SetName") => {
                     record.names.push((NameKind::Text, text.clone()));
                 }
-                Value::Guid(guid) => {
+                Value::Guid(_) => {
                     if let Some(id) = attr.resource.map(|h| h.0) {
                         let type_id = TYPED_ATTRIBUTES
                             .iter()
@@ -418,10 +442,10 @@ fn simgroup_record(data: &[u8], record: &mut Record) -> crate::Result<()> {
                             label: label(),
                             target: Target::Resource { type_id, id },
                         });
-                    } else if !guid.is_nil() && !own.contains(&guid.0) {
+                    } else if let Some(guid) = super::placement::guid_reference(attr, &own) {
                         record.refs.push(Ref {
                             label: label(),
-                            target: Target::Guid(guid.0),
+                            target: Target::Guid(guid),
                         });
                     }
                 }

@@ -135,16 +135,22 @@ enum Command {
 
     /// Check that metamodel, simgroup, mesh and material references of streams resolve
     ///
-    /// A reference resolves when the stream itself or a stream loaded before
-    /// it (table-of-contents prerequisites) holds the target.
+    /// A reference resolves when the stream itself or a stream loaded with
+    /// it holds the target: its table-of-contents prerequisites and the
+    /// streams their SimGroup data loads (`StreamSet`, `InterestingObject`
+    /// animations, …). A material only the stream holds must also come
+    /// before the meshes that name it: the game binds materials when a mesh
+    /// loads.
     CheckRefs(create_cmd::CheckRefs),
 
     /// Check the workspace's edits before they are written into the game
     ///
     /// Every changed resource is read by its parser, objects can show their
-    /// models, references an edit adds resolve, conflicts with the game
-    /// files, messages of changed SimGroups, the project. Fails when there
-    /// are errors (warnings do not count).
+    /// models, references an edit adds resolve (with the streams a copy is
+    /// needed in when not), materials come before the meshes that need
+    /// them, copies left with other data in other streams (warnings),
+    /// conflicts with the game files, messages of changed SimGroups, the
+    /// project. Fails when there are errors (warnings do not count).
     CheckEdits(create_cmd::CheckEdits),
 
     /// List the resources of a stream

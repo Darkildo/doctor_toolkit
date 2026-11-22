@@ -2,7 +2,9 @@
 //! parameter — numbers and colours in fields, textures by name hash. Apply
 //! records the changed parameters as one operation
 //! (`doctor_toolkit::resource::material::set_params`, the function behind
-//! the `material` command of the command line).
+//! the `material` command of the command line), in every copy of the
+//! material in the game unless "This stream only" is set: the game uses
+//! the copy it loads first.
 //!
 //! The material panel of the model and character views leads here with
 //! "Edit material…" ([`ask_edit`]).
@@ -57,6 +59,8 @@ pub struct MaterialView {
     fields: Vec<Field>,
     /// Stream and resource of the material in the game.
     at: (usize, usize),
+    /// Apply changes only this resource, not every copy of the material.
+    this_stream_only: bool,
 }
 
 pub const VIEW: ViewEntry = ViewEntry {
@@ -128,6 +132,7 @@ impl MaterialView {
             shown,
             fields,
             at,
+            this_stream_only: false,
         }
     }
 
@@ -176,10 +181,11 @@ impl MaterialView {
             return None;
         }
         let (stream, resource) = self.at;
+        let all_copies = !self.this_stream_only;
         Some(ViewAction::Apply {
             label: trf("material.edit_label", &[("name", &material.name)]),
             run: Box::new(move |game, ws| {
-                material::set_params(game, ws, stream, resource, &edits).map(|_| ())
+                material::set_params(game, ws, stream, resource, &edits, all_copies).map(|_| ())
             }),
         })
     }
@@ -237,6 +243,8 @@ impl ResourceViewer for MaterialView {
             {
                 reset = true;
             }
+            ui.checkbox(&mut self.this_stream_only, tr("material.this_stream_only"))
+                .on_hover_text(tr("material.this_stream_only_hint"));
         });
         let material = self.material.as_ref().ok()?;
         egui::Grid::new(("material editor", self.at))

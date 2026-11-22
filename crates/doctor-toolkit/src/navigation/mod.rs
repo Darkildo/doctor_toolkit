@@ -21,6 +21,7 @@ mod cache;
 pub mod dictionary;
 mod harvest;
 pub mod index;
+pub mod placement;
 pub mod search;
 pub mod unpack;
 
@@ -32,4 +33,5 @@ pub use index::{
     Anchor, GameIndex, HashKind, NameKind, OpenReport, Record, RecordId, Ref, ResolveStats, Target,
     TextEntry,
 };
+pub use placement::Placement;
 pub use search::{Hit, Query, SearchResult};

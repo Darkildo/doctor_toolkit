@@ -280,15 +280,19 @@ pub fn replace_all_copies(
 
 /// Sets float parameters of the material `key` (a tint colour
 /// `g_TintColor0` holds four values): a material of the game files, or one
-/// the workspace added (a new material of an imported model). One undoable
-/// operation; returns `(parameter, old values, new values)` of what changed
-/// and the label of the operation (`None` when nothing changed).
+/// the workspace added (a new material of an imported model). With
+/// `all_copies` the edit goes to every copy of the material
+/// ([`material::copies`]): the game uses the copy it loads first. One
+/// undoable operation; returns what changed in `key` (parameter, old
+/// values, new values), the label of the operation (`None` when nothing
+/// changed) and the copies.
 pub fn set_material_params(
     game: &GameInstance,
     ws: &mut Workspace,
     key: &crate::workspace::ResourceKey,
     params: &std::collections::BTreeMap<String, Vec<f32>>,
-) -> Result<(Vec<MaterialChange>, Option<String>)> {
+    all_copies: bool,
+) -> Result<MaterialEdited> {
     use crate::import::file::FileTarget;
     use crate::resource::material::{self, Material, ParamEdit, ParamEditValue};
 
@@ -322,11 +326,40 @@ pub fn set_material_params(
             value: ParamEditValue::Floats(values.clone()),
         })
         .collect();
-    let names: Vec<&str> = changes.iter().map(|c| c.param.as_str()).collect();
-    let (_, changed, label) = material::apply_params(game, ws, &target, &edits, |m| {
-        format!("Material {}: {}", m.name, names.join(", "))
+    let targets = material::edit_targets(game, ws, target, all_copies)?;
+    let names: Vec<String> = if changes.is_empty() {
+        params.keys().cloned().collect()
+    } else {
+        changes.iter().map(|c| c.param.clone()).collect()
+    };
+    let applied = material::apply_params(game, ws, &targets, &edits, |m, changed| {
+        material::copies_label(
+            format!("Material {}: {}", m.name, names.join(", ")),
+            changed,
+        )
     })?;
-    Ok((changes, changed.then_some(label)))
+    Ok(MaterialEdited {
+        changes,
+        label: (!applied.changed.is_empty()).then_some(applied.label),
+        copies: targets.iter().map(|t| t.key().to_string()).collect(),
+        changed_copies: applied.changed,
+        skipped: applied.skipped,
+    })
+}
+
+/// What [`set_material_params`] did.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct MaterialEdited {
+    /// The parameters that change in the given material.
+    pub changes: Vec<MaterialChange>,
+    /// Label of the recorded operation; `None` when nothing changed.
+    pub label: Option<String>,
+    /// Every copy the edit went to (workspace keys), the given one first.
+    pub copies: Vec<String>,
+    /// The copies whose data changed.
+    pub changed_copies: Vec<String>,
+    /// Copies the edit does not fit, with the reason; they keep their data.
+    pub skipped: Vec<String>,
 }
 
 /// One parameter [`set_material_params`] changed.

@@ -60,11 +60,18 @@ original files are never lost.
   start the game Large Address Aware — all without writing into the game.
 - **Native mods:** the platform module `doctor_platform.asi` lets a mod's
   DLL add new classes of level objects, new Lua functions, listeners and
-  hooks, with an SDK for Rust and C and an example
+  hooks, run code every frame, draw over the frame and take the keyboard,
+  mouse and gamepad from the game, with an SDK for Rust and C and an example
   (`examples/native-class`, `docs/analysis/asi-platform.md`). Such a mod
   travels as one mod file; the mod manager installs its code only after
   the player has seen the files and their hashes and agreed, only into the
   edition 1.0.789.0, and takes it away with the mod (`docs/mods.md` §1.6).
+- **Developer menu:** the mod `doctor-cheats` (`doctor_cheats.asi`, a
+  native mod) opens a menu over the game with `~` or Back + RB: money, god
+  mode, one hit and down, the interface hidden, the hour of the day; infinite
+  ammo, no reload, damage, rate of fire, spread and the damage enemies deal.
+  The world stands while the menu is open; "Remember settings" keeps the
+  choices for the next start. Crew and families come in later versions.
 - **AI assistants:** `doctor-toolkit mcp` lets Claude Code, Claude Desktop or
   any MCP client search the game, read resources as JSON and follow the
   logic of missions; with flags it also edits through the workspace (each
@@ -87,7 +94,7 @@ documentation of this tool only.
 
 ## Quick start
 
-1. Download `doctor_toolkit-1.3.0-windows-x86_64.zip` from the
+1. Download `doctor_toolkit-1.4.0-windows-x86_64.zip` from the
    [latest release](https://github.com/Darkildo/doctor_toolkit/releases).
    Releases are built for Windows x86_64 only; on Linux and macOS
    [build from source](#building-from-source) (Linux:
@@ -297,7 +304,7 @@ which puts `dist/doctor_toolkit-<version>-linux-x86_64.tar.gz`, then unpack
 it anywhere and run the programs from that folder:
 
 ```sh
-tar xzf doctor_toolkit-1.3.0-linux-x86_64.tar.gz && cd doctor_toolkit-1.3.0-linux-x86_64
+tar xzf doctor_toolkit-1.4.0-linux-x86_64.tar.gz && cd doctor_toolkit-1.4.0-linux-x86_64
 ./doctor-toolkit-gui "/path/to/The Godfather II"     # the editor
 ./open-mod-manager "/path/to/The Godfather II"       # Open Mod Manager, for players
 ./doctor-toolkit --help                              # the command line

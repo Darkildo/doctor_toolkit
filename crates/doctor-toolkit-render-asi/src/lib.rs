@@ -135,6 +135,22 @@ unsafe extern "system" fn start(_: *mut c_void) -> u32 {
     0
 }
 
+/// For doctor_platform's overlay (stage 116): it is about to make its own
+/// state block (1) or has made it (0) — not a block of the game, so the
+/// draw filter and the merge of draws keep working.
+#[unsafe(no_mangle)]
+pub extern "C" fn doctor_render_own_state_block(on: i32) {
+    draws::OWN_STATE_BLOCK.store(on != 0, Ordering::Relaxed);
+}
+
+/// For doctor_platform's overlay (stage 116): it has applied its state
+/// block behind the hooks of the device; the draw filter forgets what it
+/// knew of the state. From any thread.
+#[unsafe(no_mangle)]
+pub extern "C" fn doctor_render_state_changed() {
+    draws::forget();
+}
+
 /// Entry point of the DLL.
 #[unsafe(no_mangle)]
 pub unsafe extern "system" fn DllMain(module: *mut c_void, reason: u32, _: *mut c_void) -> i32 {

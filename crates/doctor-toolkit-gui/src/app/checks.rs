@@ -128,10 +128,7 @@ fn check_refs(game: &GameInstance, streams: &[usize]) -> RefsResult {
                     p.resource,
                     type_tags().display(p.type_id)
                 ),
-                what: format!(
-                    "unresolved reference: {} is in no stream loaded with it",
-                    validate::target_text(&p.target)
-                ),
+                what: p.what(),
                 key: None,
                 at: Some(Location {
                     stream,

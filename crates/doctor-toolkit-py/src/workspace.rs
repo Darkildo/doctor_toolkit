@@ -431,6 +431,7 @@ impl Workspace {
                         format: None,
                         collision: None,
                         this_stream_only: false,
+                        keep_copies: Vec::new(),
                     },
                 )?;
                 if !dry_run {

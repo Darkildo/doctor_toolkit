@@ -3,10 +3,10 @@ type: engine
 status: partial
 confidence: data
 editions: ["1.0.789.0"]
-stages: [72, 18, 40, 58]
-sources: ["docs/formats/resource-types.md §4", "docs/formats/resource-types.md §5", "docs/formats/resource-types.md §11", "docs/analysis/gf2-pc-verification.md §5", "docs/analysis/renderer.md §5", "docs/analysis/renderer.md §8", "docs/analysis/live-link.md §11.1", "data/gf2/engine_messages.txt", "docs/analysis/launch-flags.md §3.1", "docs/logic-graph.md §2", "docs/analysis/queens.md §4"]
+stages: [72, 18, 40, 58, 114]
+sources: ["docs/formats/resource-types.md §4", "docs/formats/resource-types.md §5", "docs/formats/resource-types.md §11", "docs/analysis/gf2-pc-verification.md §5", "docs/analysis/renderer.md §5", "docs/analysis/renderer.md §8", "docs/analysis/live-link.md §11.1", "data/gf2/engine_messages.txt", "docs/analysis/launch-flags.md §3.1", "docs/logic-graph.md §2", "docs/analysis/queens.md §4", "docs/analysis/game-bench.md §57"]
 tags: [ui, apt, apx, fonts, strings, hud]
-updated: 2026-11-16
+updated: 2026-11-20
 ---
 # Интерфейс: APX (Apt), шрифты, строки
 
@@ -20,7 +20,7 @@ updated: 2026-11-16
 - Строки: таблицы `lh2` (`LCH2`, 21 таблица, UTF-8). Хэш записи — SDBM имени в нижнем регистре (`0x004DB060`). Основные тексты — потоки `gf2/text/<hash>.str`, по языку на поток; ресурс `lhr` — список «код языка, поток, хэш потока».
 - Поиск строки (`0x00603330` → `0x006039D0`): двоичный поиск хэша (`0x00605D00`) по всем загруженным таблицам, начиная с последней загруженной; первая найденная выигрывает. Форматирование (`0x00603610`): `$имя` — строка записи, `#n` — число, `{x:…}` — параметры.
 - Ссылки на строки: в `apx` — `$имя` в блоках `apti` и `cons` (981 имя); в SimGroup — атрибуты-хэши (`NPC.18`, `UIHudObjective.2/3`, `UIHudTutorial.2` и др.; 3 981 хэш); в `dlg` — имена; в коде игры — 682 имени.
-- Шрифты `ffn` (`TNOF`, версия 7): три шрифта по две копии (`frontend` и `globals_global`) — `buttons` (80 глифов), `impact_lt_std` (241), `aachen_std_bold` (252); атлас — текстура того же потока с именем шрифта (512×512, DXT5). Глиф — 24 байта; страницы по старшему байту UTF-16 заполняет игра. Кириллицы (U+04xx) нет ни в одном шрифте.
+- Шрифты `ffn` (`TNOF`, версия 7): три шрифта по две копии (`frontend` и `globals_global`) — `buttons` (80 глифов), `impact_lt_std` (241), `aachen_std_bold` (252); атлас — текстура того же потока с именем шрифта, DXT5: `aachen_std_bold` — 1024×512 (11 уровней), `impact_lt_std` и `buttons` — 512×512 (10 уровней). Глиф — 24 байта; страницы по старшему байту UTF-16 заполняет игра. После загрузки в `ffn` вместо `TNOF` стоит `sdbm` имени шрифта, смещения страниц заменены указателями, таблица глифов — как в файле (стенд, этап 114). В главном меню загружен только `frontend` (не `globals_global`), в уровне — только `globals_global`; id ресурсов шрифтов у копий одинаковы. Кириллицы (U+04xx) нет ни в одном шрифте.
 - HUD (APT) рисуется у углов экрана и на 16:9 и 21:9 не растягивается; интерфейс рисуется в ту же цель, что сцена, до копии кадра (см. [рендер](render.md)).
 - В списке сообщений движка есть `iMsgAptScreenShown` и `iMsgAptScreenHidden`; отладочная печать `APTCallback_AssertFail:%s` в выпущенной сборке — пустая функция.
 - В `-stream gf2 frontend` интерфейс меню в игровом цикле не работает (чёрный экран). Классы интерфейса в SimGroup: `UIHudObjective`, `UIHudTutorial`, `UIFanfare`, `UIHudMiniMapMarker` и др.
@@ -28,7 +28,7 @@ updated: 2026-11-16
 
 ## Что неизвестно
 
-- Блок `rubi`; внутренний формат `.apt` и `.const` тулкит не разбирает (заменяет целиком).
+- Блок `rubi`; внутренний формат `.apt` и `.const` тулкит не разбирает (заменяет целиком). Из-за этого нельзя добавить свой пункт в меню паузы — см. [вопрос](../questions/apt-menu-entry.md).
 - Три метрики шрифта `ffn` и раскладка кернинга.
 - Место в буфере кадра между сценой и интерфейсом.
 - Откуда логотип титульного экрана (не из `frontend.apx`; вероятно, в видеоролике).

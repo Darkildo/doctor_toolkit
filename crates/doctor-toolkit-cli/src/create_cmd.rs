@@ -331,11 +331,11 @@ pub fn check_refs(args: CheckRefs) -> Result<()> {
         let problems = checker.check(index)?;
         for p in &problems {
             out!(
-                "{}#{} ({}): unresolved {:?}",
+                "{}#{} ({}): {}",
                 p.stream,
                 p.resource,
                 type_tags().display(p.type_id),
-                p.target
+                p.what()
             );
         }
         total += problems.len();

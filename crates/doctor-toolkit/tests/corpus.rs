@@ -25,14 +25,20 @@ mod crew;
 mod delta;
 #[path = "corpus/lua_api.rs"]
 mod lua_api;
+#[path = "corpus/material_copies.rs"]
+mod material_copies;
 #[path = "corpus/mod_deltas.rs"]
 mod mod_deltas;
+#[path = "corpus/placement.rs"]
+mod placement;
 #[path = "corpus/project.rs"]
 mod project;
 #[path = "corpus/rebase.rs"]
 mod rebase;
 #[path = "corpus/resources_in_memory.rs"]
 mod resources_in_memory;
+#[path = "corpus/shadow_meshes.rs"]
+mod shadow_meshes;
 #[path = "corpus/story.rs"]
 mod story;
 #[path = "corpus/types.rs"]
@@ -1881,12 +1887,11 @@ fn every_tob_parses() {
 }
 
 /// Every script: the chunk writes back byte for byte, and its decompiled
-/// source compiles to the same instructions (most to the same bytes).
+/// source compiles to the same bytes, line information included (what the
+/// project needs to keep a script as source, `docs/project.md` §4).
 #[test]
 fn every_lua_script_decompiles_and_compiles_back() {
-    use doctor_toolkit::resource::lua::{Chunk, Comparison, round_trip};
-    use std::sync::atomic::{AtomicUsize, Ordering};
-    let identical = AtomicUsize::new(0);
+    use doctor_toolkit::resource::lua::{Chunk, Comparison, compile_for_game, round_trip};
     let count = for_each_resource("lua", |_, data| {
         let chunk = Chunk::parse(data).map_err(|e| e.to_string())?;
         if chunk.to_bytes() != data {
@@ -1896,23 +1901,22 @@ fn every_lua_script_decompiles_and_compiles_back() {
         if !rt.decompiled.errors.is_empty() {
             return Err(rt.decompiled.errors.join("; "));
         }
-        match rt.comparison {
-            Comparison::Identical => {
-                identical.fetch_add(1, Ordering::Relaxed);
-                Ok(())
-            }
-            Comparison::SameCode => Ok(()),
-            Comparison::Different(why) => Err(why),
+        if rt.comparison != Comparison::Identical {
+            return Err(rt.comparison.to_string());
         }
+        // The build of a project: the source file as written, float numbers
+        // and the chunk name of the game's script.
+        let name = chunk.main.source.clone().unwrap_or_default();
+        let built =
+            compile_for_game(rt.decompiled.source.as_bytes(), &name).map_err(|e| e.to_string())?;
+        if built != data {
+            return Err("the build of the source differs".into());
+        }
+        Ok(())
     });
     if game_dir().is_some() {
-        let identical = identical.into_inner();
-        eprintln!("{count} scripts: {identical} recompile byte-identical, all to the same code");
+        eprintln!("{count} scripts: all recompile byte-identical");
         assert_eq!(count, 30);
-        assert!(
-            identical >= 27,
-            "only {identical} scripts recompile byte-identical"
-        );
     }
 }
 
@@ -3419,8 +3423,11 @@ fn old_toolkit_patches_install_as_mods_on_copies() {
 }
 
 /// References between resources resolve in the stream or in the streams the
-/// game loads before it (table-of-contents prerequisites): every metamodel
-/// and mesh reference does; material textures except 26 engine textures.
+/// game loads with it (table-of-contents prerequisites and the streams
+/// their SimGroup data loads): every metamodel, mesh and SimGroup reference
+/// does; material textures except 5 engine textures (26 textures and 70
+/// SimGroup models with prerequisites alone; `material_copies` has the
+/// exact numbers).
 #[test]
 fn references_resolve_in_the_stream_or_its_ancestors() {
     use doctor_toolkit::create::{ReferenceChecker, TYPE_MATERIAL, Target};
@@ -3442,8 +3449,8 @@ fn references_resolve_in_the_stream_or_its_ancestors() {
             _ => panic!("unexpected unresolved reference {problem:?}"),
         }
     }
-    assert!(textures.len() <= 26, "{} texture hashes", textures.len());
-    assert!(models <= 70, "{models} simgroup models");
+    assert!(textures.len() <= 5, "{} texture hashes", textures.len());
+    assert_eq!(models, 0, "simgroup models");
 }
 
 /// Clones a model (metamodel, meshes, materials, textures) inside copies of
@@ -3840,6 +3847,10 @@ fn game_index_covers_every_resource_and_resolves_references() {
     // The rest are a few placeholder textures (`g_materialSpecMap` e9930443, …)
     // that are in no stream.
     assert!(rate("material") > 0.79);
+    // Tree parts and material swap lists name materials by name hash.
+    let trees = rate("treemodel");
+    let swaps = rate("materialswaplistresource");
+    assert!(trees > 0.9 && swaps > 0.9, "{trees} {swaps}");
     // All types together: a reference that stops resolving is a regression.
     let stats = index.resolve_stats();
     let refs: usize = stats.iter().map(|s| s.refs).sum();
@@ -3848,8 +3859,8 @@ fn game_index_covers_every_resource_and_resolves_references() {
         "all: {refs} references, {resolved} resolved ({:.1}%)",
         resolved as f64 * 100.0 / refs as f64
     );
-    assert_eq!(refs, 492_214);
-    assert!(resolved >= 432_949, "{resolved} resolved");
+    assert_eq!(refs, 501_185);
+    assert!(resolved >= 441_772, "{resolved} resolved");
 
     // The cache gives the same index.
     let temp = tempfile::tempdir().unwrap();

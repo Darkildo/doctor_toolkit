@@ -114,7 +114,10 @@ pub struct Platform(&'static abi::Api);
 
 impl Platform {
     /// Checks the table a mod got in `doctor_mod_init`: `None` when it is
-    /// null, of another [`ABI_VERSION`] or shorter than this crate knows.
+    /// null, of another [`ABI_VERSION`] or shorter than the table of the
+    /// first platform ([`abi::API_SIZE_V1`]). A function added later is
+    /// called only when the table has it ([`Self::has`]); otherwise its
+    /// wrapper returns [`abi::ERR_STATE`].
     ///
     /// # Safety
     /// `api` must be the pointer the platform gave (it stays valid while
@@ -125,7 +128,7 @@ impl Platform {
         }
         // SAFETY: `size` and `abi` are the first two words of every table.
         let (size, version) = unsafe { ((*api).size, (*api).abi) };
-        if version != ABI_VERSION || (size as usize) < core::mem::size_of::<abi::Api>() {
+        if version != ABI_VERSION || size < abi::API_SIZE_V1 {
             return None;
         }
         API.store(api.cast_mut(), Ordering::Relaxed);
@@ -141,9 +144,119 @@ impl Platform {
         (!api.is_null()).then(|| Self(unsafe { &*api }))
     }
 
-    /// The raw table.
+    /// The raw table. Fields past [`abi::API_SIZE_V1`] may be beyond the
+    /// table of an older platform: check [`Self::has`] first.
     pub fn api(&self) -> &'static abi::Api {
         self.0
+    }
+
+    /// Whether the table has the function at byte `offset` (use
+    /// `core::mem::offset_of!(abi::Api, name)`).
+    pub fn has(&self, offset: usize) -> bool {
+        offset + core::mem::size_of::<usize>() <= self.0.size as usize
+    }
+
+    /// Subscribes a function to the frame tick (stage 115): on the main
+    /// thread once a frame, also while paused and in the main menu. An
+    /// identifier above 0 or an error; [`abi::ERR_STATE`] on a platform
+    /// without the tick.
+    #[allow(clippy::not_unsafe_ptr_arg_deref)]
+    pub fn tick_listen(&self, listener: abi::TickFn, user: *mut c_void) -> i32 {
+        if !self.has(core::mem::offset_of!(abi::Api, tick_listen)) {
+            return abi::ERR_STATE;
+        }
+        // SAFETY: the table has the function; `user` is only handed back.
+        unsafe { (self.0.tick_listen)(listener, user) }
+    }
+
+    /// Ends a subscription made by [`Self::tick_listen`].
+    pub fn tick_unlisten(&self, id: i32) -> i32 {
+        if !self.has(core::mem::offset_of!(abi::Api, tick_unlisten)) {
+            return abi::ERR_STATE;
+        }
+        // SAFETY: the table has the function.
+        unsafe { (self.0.tick_unlisten)(id) }
+    }
+
+    /// Subscribes a function to the loss ([`abi::DEVICE_LOST`]) and reset
+    /// ([`abi::DEVICE_RESET`]) of the Direct3D device (stage 115).
+    #[allow(clippy::not_unsafe_ptr_arg_deref)]
+    pub fn device_listen(&self, listener: abi::DeviceFn, user: *mut c_void) -> i32 {
+        if !self.has(core::mem::offset_of!(abi::Api, device_listen)) {
+            return abi::ERR_STATE;
+        }
+        // SAFETY: the table has the function; `user` is only handed back.
+        unsafe { (self.0.device_listen)(listener, user) }
+    }
+
+    /// Subscribes a function that draws over the frame (stage 116), lower
+    /// `order` first; shown at once. [`abi::ERR_STATE`] on a platform
+    /// without the overlay.
+    #[allow(clippy::not_unsafe_ptr_arg_deref)]
+    pub fn overlay_listen(&self, listener: abi::OverlayFn, user: *mut c_void, order: i32) -> i32 {
+        if !self.has(core::mem::offset_of!(abi::Api, overlay_listen)) {
+            return abi::ERR_STATE;
+        }
+        // SAFETY: the table has the function; `user` is only handed back.
+        unsafe { (self.0.overlay_listen)(listener, user, order) }
+    }
+
+    /// Shows or hides an overlay listener.
+    pub fn overlay_show(&self, id: i32, on: bool) -> i32 {
+        if !self.has(core::mem::offset_of!(abi::Api, overlay_show)) {
+            return abi::ERR_STATE;
+        }
+        // SAFETY: the table has the function.
+        unsafe { (self.0.overlay_show)(id, u32::from(on)) }
+    }
+
+    /// Ends a subscription made by [`Self::overlay_listen`].
+    pub fn overlay_unlisten(&self, id: i32) -> i32 {
+        if !self.has(core::mem::offset_of!(abi::Api, overlay_unlisten)) {
+            return abi::ERR_STATE;
+        }
+        // SAFETY: the table has the function.
+        unsafe { (self.0.overlay_unlisten)(id) }
+    }
+
+    /// The real state of the input devices at the game's last poll (stage
+    /// 117); `None` on a platform without the input gate.
+    pub fn input(&self) -> Option<abi::Input> {
+        if !self.has(core::mem::offset_of!(abi::Api, input_read)) {
+            return None;
+        }
+        let mut input = abi::Input::default();
+        // SAFETY: the table has the function; a buffer of the right size.
+        (unsafe { (self.0.input_read)(&mut input) } == abi::OK).then_some(input)
+    }
+
+    /// Closes (`true`) or opens the game's input; the number of captures
+    /// held, or an error.
+    pub fn capture_input(&self, on: bool) -> i32 {
+        if !self.has(core::mem::offset_of!(abi::Api, input_capture)) {
+            return abi::ERR_STATE;
+        }
+        // SAFETY: the table has the function.
+        unsafe { (self.0.input_capture)(u32::from(on)) }
+    }
+
+    /// Hides a key (`DIK_*`) from the game for good (`true`) or shows it
+    /// again; the key that opens a mod's menu.
+    pub fn reserve_key(&self, key: u8, on: bool) -> i32 {
+        if !self.has(core::mem::offset_of!(abi::Api, input_reserve)) {
+            return abi::ERR_STATE;
+        }
+        // SAFETY: the table has the function.
+        unsafe { (self.0.input_reserve)(u32::from(key), u32::from(on)) }
+    }
+
+    /// Ends a subscription made by [`Self::device_listen`].
+    pub fn device_unlisten(&self, id: i32) -> i32 {
+        if !self.has(core::mem::offset_of!(abi::Api, device_unlisten)) {
+            return abi::ERR_STATE;
+        }
+        // SAFETY: the table has the function.
+        unsafe { (self.0.device_unlisten)(id) }
     }
 
     /// Name of the build of the game.
@@ -420,6 +533,18 @@ mod tests {
             ("DOCTOR_LUA_TTABLE", LUA_TTABLE),
             ("DOCTOR_LUA_TFUNCTION", LUA_TFUNCTION),
             ("DOCTOR_LUA_TUSERDATA", LUA_TUSERDATA),
+            ("DOCTOR_TICK_PAUSED", TICK_PAUSED as i32),
+            ("DOCTOR_TICK_RUNNING", TICK_RUNNING as i32),
+            ("DOCTOR_DEVICE_LOST", DEVICE_LOST as i32),
+            ("DOCTOR_DEVICE_RESET", DEVICE_RESET as i32),
+            ("DOCTOR_API_SIZE_V1", API_SIZE_V1 as i32),
+            ("DOCTOR_KEY_ESCAPE", i32::from(KEY_ESCAPE)),
+            ("DOCTOR_KEY_RETURN", i32::from(KEY_RETURN)),
+            ("DOCTOR_KEY_GRAVE", i32::from(KEY_GRAVE)),
+            ("DOCTOR_KEY_UP", i32::from(KEY_UP)),
+            ("DOCTOR_KEY_LEFT", i32::from(KEY_LEFT)),
+            ("DOCTOR_KEY_RIGHT", i32::from(KEY_RIGHT)),
+            ("DOCTOR_KEY_DOWN", i32::from(KEY_DOWN)),
         ] {
             assert_eq!(define(name), i64::from(value), "{name}");
         }
@@ -444,8 +569,29 @@ mod tests {
     #[test]
     fn the_header_asserts_the_sizes_of_a_32_bit_build() {
         let api = 8 + 4 * API_FUNCTIONS.len();
+        // The first platform ends with `hook_call`, 32 functions.
+        let v1 = API_FUNCTIONS
+            .iter()
+            .position(|f| *f == "hook_call")
+            .unwrap()
+            + 1;
+        assert_eq!(API_SIZE_V1 as usize, 8 + 4 * v1);
+        if core::mem::size_of::<usize>() == 4 {
+            assert_eq!(
+                core::mem::offset_of!(Api, tick_listen),
+                API_SIZE_V1 as usize
+            );
+        }
         assert!(HEADER.contains(&format!("DOCTOR_STATIC_ASSERT(sizeof(DoctorApi) == {api}")));
         assert!(HEADER.contains("DOCTOR_STATIC_ASSERT(sizeof(DoctorClass) == 32"));
+        assert!(HEADER.contains("DOCTOR_STATIC_ASSERT(sizeof(DoctorOverlay) == 24"));
+        assert!(HEADER.contains("DOCTOR_STATIC_ASSERT(sizeof(DoctorPad) == 12"));
+        assert!(HEADER.contains("DOCTOR_STATIC_ASSERT(sizeof(DoctorInput) == 384"));
+        assert_eq!(core::mem::size_of::<Pad>(), 12);
+        assert_eq!(core::mem::size_of::<Input>(), 384);
+        if core::mem::size_of::<usize>() == 4 {
+            assert_eq!(core::mem::size_of::<Overlay>(), 24);
+        }
         assert!(HEADER.contains("DOCTOR_STATIC_ASSERT(sizeof(DoctorAttr) == 16"));
         assert!(HEADER.contains("DOCTOR_STATIC_ASSERT(sizeof(DoctorMessage) == 12"));
         if core::mem::size_of::<usize>() == 4 {

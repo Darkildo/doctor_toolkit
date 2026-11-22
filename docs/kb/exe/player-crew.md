@@ -3,10 +3,10 @@ type: exe
 status: known
 confidence: exe
 editions: ["1.0.789.0"]
-stages: [72, 48, 82]
-sources: ["docs/analysis/crew.md", "docs/analysis/live-link.md §13.5", "crates/doctor-toolkit-live/src/addr.rs", "crates/doctor-toolkit-live/src/edition.rs", "crates/doctor-toolkit-live/src/state.rs"]
+stages: [72, 48, 82, 114]
+sources: ["docs/analysis/crew.md", "docs/analysis/live-link.md §13.5", "crates/doctor-toolkit-live/src/addr.rs", "crates/doctor-toolkit-live/src/edition.rs", "crates/doctor-toolkit-live/src/state.rs", "docs/analysis/dev-menu-cheat-table.md §3"]
 tags: [exe, family, crew]
-updated: 2026-11-16
+updated: 2026-11-20
 ---
 # Команда игрока
 
@@ -41,7 +41,11 @@ updated: 2026-11-16
 | `0x00790000` | специальности шаблона: `NPCCrewComponent.0 & 0xFC` | crew.md §2 |
 | `0x00790150` | начальная оружейная лицензия по флагам `SimNpc` (бит 3 — 2, бит 4 — 3) | crew.md §8 |
 | `0x008BCF90` | запись заслуг человека: GUID и лицензия | crew.md §8 |
-| `0x008BCE30` | прибавить заслугу; лицензия по сумме: 10, 25, 70 | crew.md §8 |
+| `0x008BCE30` | прибавить заслугу `(GUID*, вид)`; лицензия по сумме двенадцати счётчиков (<10 — 1, <25 — 2, ≤69 — 3, иначе 4) только повышается, тогда `*0x01129908+0x19 = 1` | crew.md §8; dev-menu-cheat-table.md §3 |
+| `0x01129908` | данные: заслуги и лицензии (указатель): `+8` записи по 0x2C (двенадцать `u16`, `+0x18` GUID `SimNpc`, `+0x28` лицензия 1…4), `+0xC` число | dev-menu-cheat-table.md §3 |
+| `0x008BCB50`, `0x008BCF60` | индекс записи заслуг по GUID (`SimNpc+0x20`); лицензия по GUID (нет записи — 1) | dev-menu-cheat-table.md §3 |
+| `0x009A9950` | конструктор компонента свиты (пакет `0xE851E4F3`, таблица `0x00D931A8`): `+0x28` сопровождающие, `+0x2C` число, `+0x34` = 3 — атрибут 1 (читатель `0x009A89D0`) | dev-menu-cheat-table.md §3 |
+| `0x009A9010` | удержание сопровождающих рядом с владельцем `+0x1C` (из обработчика `0x009AA0E0`) | dev-menu-cheat-table.md §3 |
 | `0x009263B0` | экран сведений о рекруте: специальности, имя, биография (`имя + "_background"`), лицензия | crew.md §2, §9 |
 | `0x00906860` | обработчик класса `UnlockCheck`: флаг дополнения `*0x01129908 +0x18` | crew.md §10 |
 | `0x009BED80` | сборка персонажа `mobface` для портрета | crew.md §9 |
@@ -50,3 +54,4 @@ updated: 2026-11-16
 
 - [Команда: люди чести семьи игрока](../../analysis/crew.md)
 - [Живая связь](../../analysis/live-link.md) §13.5 «Семья: команда игрока»
+- [Таблица Cheat Engine → мод](../../analysis/dev-menu-cheat-table.md) §3; люди семей соперников — [семьи: люди, вендетта, заведения](family-members.md)

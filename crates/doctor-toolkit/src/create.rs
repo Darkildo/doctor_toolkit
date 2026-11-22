@@ -32,6 +32,7 @@ use crate::container::ustream::{ResourceHeader, Storage, StreamLayout};
 use crate::game::{GameInstance, ResourceIndex, StreamFile};
 use crate::hash::{fnv1a, sdbm};
 use crate::io::{self, Endian};
+use crate::navigation::placement::StreamHashes;
 use crate::resource::neoguid::{self, MachineName};
 use crate::resource::simgroup::Guid;
 use crate::resource::texture::{TYPE_TG4D, TYPE_TG4H};
@@ -658,6 +659,21 @@ pub enum Target {
     Texture(u32),
 }
 
+impl Target {
+    /// The target in words: `material 0000abcd`.
+    pub fn text(&self) -> String {
+        let hex = |v: &u32| format!("{v:08x}");
+        match self {
+            Target::Guid(g) => format!(
+                "resource {}",
+                g.iter().map(hex).collect::<Vec<_>>().join(".")
+            ),
+            Target::Material(h) => format!("material {}", hex(h)),
+            Target::Texture(h) => format!("texture {}", hex(h)),
+        }
+    }
+}
+
 /// The references of one resource.
 pub fn references(type_id: u32, data: &[u8]) -> Result<Vec<Target>> {
     let mut out = Vec::new();
@@ -746,27 +762,128 @@ impl Provided {
     }
 }
 
-/// A reference that no loaded stream can satisfy.
+/// A reference the game cannot satisfy when it loads the resource.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Unresolved {
     pub stream: String,
     pub resource: usize,
     pub type_id: u32,
     pub target: Target,
+    /// `Some(i)`: the target is a material that only the stream itself
+    /// holds, as resource `i`, after the mesh `resource`. The game binds
+    /// the materials of a mesh once, when the mesh loads
+    /// (`docs/analysis/resource-placement.md` §5.5), so the mesh is drawn
+    /// without it. `None`: no stream loaded with this one holds the target.
+    pub after: Option<usize>,
+}
+
+impl Unresolved {
+    /// What is wrong, in words.
+    pub fn what(&self) -> String {
+        match self.after {
+            Some(at) => format!(
+                "{} is resource {at} of the stream, after the mesh: the game binds materials \
+                 when the mesh loads; the material must come before the mesh",
+                self.target.text()
+            ),
+            None => format!(
+                "unresolved reference: {} is in no stream loaded with it",
+                self.target.text()
+            ),
+        }
+    }
+}
+
+/// What a resource of a stream is to [`materials_after_meshes`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OrderItem {
+    /// A material with this name hash.
+    Material(u32),
+    /// A mesh whose draw records name these materials.
+    Mesh(Vec<u32>),
+    Other,
+}
+
+/// A mesh drawn without a material because the material comes after it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MaterialAfterMesh {
+    /// Position of the mesh in the stream.
+    pub mesh: usize,
+    /// Name hash of the material.
+    pub material: u32,
+    /// Position of the first material with that name hash, after the mesh.
+    pub at: usize,
+}
+
+/// The meshes of a stream (`items`, in the order of the file) that name a
+/// material the stream holds only after them, when no stream loaded with it
+/// holds that material too (`elsewhere`). The game binds the materials of a
+/// mesh once, when the mesh loads, and in every stream of the game the
+/// materials come before the meshes (`docs/analysis/resource-placement.md`
+/// §5.5).
+pub fn materials_after_meshes(
+    items: &[OrderItem],
+    mut elsewhere: impl FnMut(u32) -> bool,
+) -> Vec<MaterialAfterMesh> {
+    let mut first: HashMap<u32, usize> = HashMap::new();
+    for (at, item) in items.iter().enumerate() {
+        if let OrderItem::Material(hash) = item {
+            first.entry(*hash).or_insert(at);
+        }
+    }
+    let mut out = Vec::new();
+    for (mesh, item) in items.iter().enumerate() {
+        let OrderItem::Mesh(materials) = item else {
+            continue;
+        };
+        let mut seen: Vec<u32> = Vec::new();
+        for &material in materials {
+            if seen.contains(&material) {
+                continue;
+            }
+            seen.push(material);
+            if let Some(&at) = first.get(&material)
+                && at > mesh
+                && !elsewhere(material)
+            {
+                out.push(MaterialAfterMesh { mesh, material, at });
+            }
+        }
+    }
+    out
 }
 
 /// Checks that the references of the resources of `stream_index` resolve in
-/// the stream itself or in the streams loaded before it (its table-of-contents
-/// ancestors). In the game files every metamodel resource reference does.
+/// the stream itself or in the streams the game loads with it
+/// ([`ReferenceChecker::reach`]), and that the materials of its meshes come
+/// before the meshes.
 pub fn check_references(game: &GameInstance, stream_index: usize) -> Result<Vec<Unresolved>> {
     ReferenceChecker::new(game)?.check(stream_index)
 }
 
+/// What a stream gives the checker: what it provides, and the streams its
+/// data loads.
+#[derive(Debug, Default)]
+struct Loaded {
+    provided: Provided,
+    loads: Vec<usize>,
+}
+
 /// [`check_references`] for many streams, reading each stream once.
+///
+/// A stream reaches what it holds, what its prerequisites in the tables of
+/// contents hold (transitively), and what the streams its SimGroup data
+/// loads hold, and so on from those: the rule of
+/// [`crate::navigation::placement`] (`docs/analysis/resource-placement.md`
+/// §1, §3), here without the index of the game.
 pub struct ReferenceChecker<'a> {
     game: &'a GameInstance,
     parents: HashMap<String, Vec<String>>,
-    provided: HashMap<usize, Provided>,
+    hashes: StreamHashes,
+    /// Stream numbers by name.
+    numbers: HashMap<String, usize>,
+    loaded: HashMap<usize, Loaded>,
+    reach: HashMap<usize, std::sync::Arc<[usize]>>,
 }
 
 impl<'a> ReferenceChecker<'a> {
@@ -774,63 +891,133 @@ impl<'a> ReferenceChecker<'a> {
         Ok(Self {
             game,
             parents: game.stream_parents()?,
-            provided: HashMap::new(),
+            hashes: StreamHashes::of_game(game),
+            numbers: game
+                .streams()
+                .iter()
+                .enumerate()
+                .map(|(i, f)| (f.stream_name(), i))
+                .collect(),
+            loaded: HashMap::new(),
+            reach: HashMap::new(),
         })
     }
 
-    fn provided(&mut self, index: usize) -> Result<&Provided> {
-        if !self.provided.contains_key(&index) {
-            let provided = Provided::of_stream(&self.game.open_stream(index)?)?;
-            self.provided.insert(index, provided);
+    fn stream_name(&self, index: usize) -> Result<String> {
+        Ok(self
+            .game
+            .streams()
+            .get(index)
+            .ok_or_else(|| Error::InvalidArgument(format!("stream index {index} out of range")))?
+            .stream_name())
+    }
+
+    /// The number of stream `name`.
+    fn number(&self, name: &str) -> Option<usize> {
+        self.numbers
+            .get(name)
+            .copied()
+            .or_else(|| self.game.find_stream(name))
+    }
+
+    fn load(&mut self, index: usize) -> Result<&Loaded> {
+        if !self.loaded.contains_key(&index) {
+            let stream = self.game.open_stream(index)?;
+            let provided = Provided::of_stream(&stream)?;
+            let mut loads: Vec<usize> = Vec::new();
+            for (r, resource) in stream.layout().resources.iter().enumerate() {
+                if resource.header.type_id != TYPE_SIMGROUP {
+                    continue;
+                }
+                let Ok(group) = stream
+                    .resource_data(r)
+                    .and_then(|d| crate::resource::simgroup::SimGroup::parse(&d))
+                else {
+                    continue;
+                };
+                for name in self.hashes.requested_by(&group) {
+                    if let Some(t) = self.number(name)
+                        && t != index
+                        && !loads.contains(&t)
+                    {
+                        loads.push(t);
+                    }
+                }
+            }
+            loads.sort_unstable();
+            self.loaded.insert(index, Loaded { provided, loads });
         }
-        Ok(&self.provided[&index])
+        Ok(&self.loaded[&index])
+    }
+
+    /// The streams the data of stream `stream_index` loads: GUIDs of its
+    /// SimGroups that are the hash of a stream
+    /// ([`StreamHashes::requested_by`]).
+    pub fn loads(&mut self, stream_index: usize) -> Result<Vec<usize>> {
+        Ok(self.load(stream_index)?.loads.clone())
+    }
+
+    /// The streams the game loads with stream `stream_index`, besides the
+    /// stream itself: its prerequisites in the tables of contents, the
+    /// streams its data or theirs loads, their prerequisites, and so on.
+    /// Sorted.
+    pub fn reach(&mut self, stream_index: usize) -> Result<Vec<usize>> {
+        Ok(self.reach_of(stream_index)?.to_vec())
+    }
+
+    fn reach_of(&mut self, stream_index: usize) -> Result<std::sync::Arc<[usize]>> {
+        if let Some(reach) = self.reach.get(&stream_index) {
+            return Ok(reach.clone());
+        }
+        let mut out: Vec<usize> = Vec::new();
+        let mut todo = vec![stream_index];
+        while let Some(c) = todo.pop() {
+            let name = self.stream_name(c)?;
+            let mut next: Vec<usize> = crate::game::ancestors(&self.parents, &name)
+                .iter()
+                .filter_map(|a| self.number(a))
+                .collect();
+            next.extend(self.load(c)?.loads.iter().copied());
+            for t in next {
+                if t != stream_index && !out.contains(&t) {
+                    out.push(t);
+                    todo.push(t);
+                }
+            }
+        }
+        out.sort_unstable();
+        let out: std::sync::Arc<[usize]> = out.into();
+        self.reach.insert(stream_index, out.clone());
+        Ok(out)
     }
 
     /// Whether `target` resolves for stream `stream_index`: in the stream
-    /// itself or in a stream loaded before it.
+    /// itself or in a stream loaded with it ([`Self::reach`]).
     pub fn provides(&mut self, stream_index: usize, target: &Target) -> Result<bool> {
-        let name = self
-            .game
-            .streams()
-            .get(stream_index)
-            .ok_or_else(|| {
-                Error::InvalidArgument(format!("stream index {stream_index} out of range"))
-            })?
-            .stream_name();
-        let mut scope = vec![stream_index];
-        for ancestor in crate::game::ancestors(&self.parents, &name) {
-            if let Some(index) = self.game.find_stream(&ancestor) {
-                scope.push(index);
-            }
-        }
-        for index in scope {
-            if self.provided(index)?.provides(target) {
+        Ok(self.load(stream_index)?.provided.provides(target)
+            || self.provided_elsewhere(stream_index, target)?)
+    }
+
+    /// Whether a stream loaded with stream `stream_index` ([`Self::reach`])
+    /// provides `target`; the stream itself does not count.
+    pub fn provided_elsewhere(&mut self, stream_index: usize, target: &Target) -> Result<bool> {
+        for &s in self.reach_of(stream_index)?.iter() {
+            if self.load(s)?.provided.provides(target) {
                 return Ok(true);
             }
         }
         Ok(false)
     }
 
-    /// Unresolved references of stream `stream_index`.
+    /// Unresolved references of stream `stream_index`, and meshes whose
+    /// material comes after them in the stream ([`Unresolved::after`]).
     pub fn check(&mut self, stream_index: usize) -> Result<Vec<Unresolved>> {
-        let game = self.game;
-        let file = game.streams().get(stream_index).ok_or_else(|| {
-            Error::InvalidArgument(format!("stream index {stream_index} out of range"))
-        })?;
-        let name = file.stream_name();
-        let mut scope = vec![stream_index];
-        for ancestor in crate::game::ancestors(&self.parents, &name) {
-            if let Some(index) = game.find_stream(&ancestor) {
-                scope.push(index);
-            }
-        }
-        for &index in &scope {
-            self.provided(index)?;
-        }
-        let provides = |target: &Target| scope.iter().any(|i| self.provided[i].provides(target));
-        let stream = game.open_stream(stream_index)?;
+        let name = self.stream_name(stream_index)?;
+        let stream = self.game.open_stream(stream_index)?;
+        let resources = &stream.layout().resources;
+        let mut items: Vec<OrderItem> = vec![OrderItem::Other; resources.len()];
         let mut out = Vec::new();
-        for (index, resource) in stream.layout().resources.iter().enumerate() {
+        for (index, resource) in resources.iter().enumerate() {
             let type_id = resource.header.type_id;
             if !matches!(
                 type_id,
@@ -839,19 +1026,58 @@ impl<'a> ReferenceChecker<'a> {
                 continue;
             }
             let data = stream.resource_data(index)?;
-            for target in references(type_id, &data)? {
-                if !provides(&target) {
+            let targets = references(type_id, &data)?;
+            match type_id {
+                TYPE_MATERIAL => items[index] = OrderItem::Material(read_u32(&data, 8)?),
+                TYPE_MESH => items[index] = OrderItem::Mesh(material_targets(&targets)),
+                _ => {}
+            }
+            for target in targets {
+                if !self.provides(stream_index, &target)? {
                     out.push(Unresolved {
                         stream: name.clone(),
                         resource: index,
                         type_id,
                         target,
+                        after: None,
                     });
                 }
             }
         }
+        let mut problem = None;
+        let order = materials_after_meshes(&items, |hash| {
+            self.provided_elsewhere(stream_index, &Target::Material(hash))
+                .unwrap_or_else(|e| {
+                    problem.get_or_insert(e);
+                    true
+                })
+        });
+        if let Some(e) = problem {
+            return Err(e);
+        }
+        for o in order {
+            out.push(Unresolved {
+                stream: name.clone(),
+                resource: o.mesh,
+                type_id: TYPE_MESH,
+                target: Target::Material(o.material),
+                after: Some(o.at),
+            });
+        }
+        out.sort_by_key(|u| u.resource);
         Ok(out)
     }
+}
+
+/// The material name hashes among `targets` (the references of a mesh).
+pub fn material_targets(targets: &[Target]) -> Vec<u32> {
+    targets
+        .iter()
+        .filter_map(|t| match t {
+            Target::Material(h) => Some(*h),
+            _ => None,
+        })
+        .collect()
 }
 
 /// A new stream GUID: a canonical NeoGuid of the tool's machine name with
@@ -1075,6 +1301,57 @@ mod tests {
         std::fs::write(&path, bytes).unwrap();
         let file = StreamFile::open(&path).unwrap();
         (dir, file)
+    }
+
+    #[test]
+    fn a_material_after_its_mesh_is_found_unless_another_stream_has_it() {
+        use OrderItem::{Material as M, Mesh, Other};
+        let items = vec![
+            M(1),
+            Mesh(vec![1, 2, 2, 3]),
+            Other,
+            M(2),
+            Mesh(vec![2]),
+            M(2),
+        ];
+        let found = materials_after_meshes(&items, |_| false);
+        // Material 3 is in no stream here (another check); the second mesh
+        // comes after the first copy of material 2.
+        assert_eq!(
+            found,
+            [MaterialAfterMesh {
+                mesh: 1,
+                material: 2,
+                at: 3
+            }]
+        );
+        assert!(materials_after_meshes(&items, |h| h == 2).is_empty());
+        assert!(materials_after_meshes(&[Mesh(vec![5]), Other], |_| false).is_empty());
+    }
+
+    #[test]
+    fn unresolved_references_say_what_is_wrong() {
+        let mut u = Unresolved {
+            stream: "gf2/a".into(),
+            resource: 4,
+            type_id: TYPE_MESH,
+            target: Target::Material(0xabc),
+            after: None,
+        };
+        assert_eq!(
+            u.what(),
+            "unresolved reference: material 00000abc is in no stream loaded with it"
+        );
+        u.after = Some(7);
+        assert!(
+            u.what()
+                .starts_with("material 00000abc is resource 7 of the stream")
+        );
+        assert!(u.what().ends_with("the material must come before the mesh"));
+        assert_eq!(
+            Target::Guid([1, 2, 3, 0xff]).text(),
+            "resource 00000001.00000002.00000003.000000ff"
+        );
     }
 
     #[test]

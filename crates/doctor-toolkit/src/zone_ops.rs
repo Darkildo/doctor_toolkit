@@ -725,6 +725,7 @@ pub fn plan_model_import(
             format: p.format,
             collision: parse_collision(p.collision.as_deref())?,
             this_stream_only: false,
+            keep_copies: Vec::new(),
         },
     )?;
     if let Some(into) = &into {

@@ -1,0 +1,33 @@
+[package]
+name = "doctor-toolkit-cheats-asi"
+description = "doctor_cheats.asi: a developer menu in the game for the player of The Godfather II (PC 1.0.789.0) — a native mod on doctor_platform.asi"
+version = "0.1.0"
+edition = "2024"
+license = "GPL-3.0-only"
+publish = false
+
+# A Windows DLL for 32-bit x86, outside the workspace (the workspace builds
+# for the host). Build: tools/build-cheats-module.sh, or
+#   cargo build --release --target i686-pc-windows-gnu \
+#       --manifest-path crates/doctor-toolkit-cheats-asi/Cargo.toml
+# The menu, the settings and the texts are tested on the host:
+#   cargo test --manifest-path crates/doctor-toolkit-cheats-asi/Cargo.toml
+[workspace]
+
+[lib]
+name = "doctor_cheats"
+crate-type = ["cdylib"]
+path = "src/lib.rs"
+
+[dependencies]
+doctor-toolkit-live = { path = "../doctor-toolkit-live" }
+doctor-toolkit-overlay = { path = "../doctor-toolkit-overlay" }
+doctor-toolkit-sdk = { path = "../doctor-toolkit-sdk" }
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+panic = "unwind"
+strip = true
+debug = false

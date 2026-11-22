@@ -10,7 +10,7 @@
 //!
 //! On load it checks the build ([`doctor_toolkit_live::platform::CHECKS`]);
 //! on another build it installs nothing, calls no mod and says why in its
-//! log. On PC 1.0.789.0 it replaces two calls:
+//! log. On PC 1.0.789.0 it patches, from `DllMain`:
 //!
 //! 1. the call of the engine's class registration in the start of the
 //!    application (`0x0068AB55`): after the engine has registered its 299
@@ -20,10 +20,22 @@
 //!    and hooks ([`hooks`]);
 //! 2. the call of the LuaManager's constructor (`0x00681860`): the module
 //!    adds its binder, which registers the Lua functions of the mods in
-//!    every state.
+//!    every state;
+//! 3. the call of the game's tick in the frame of both main loops
+//!    (`0x0068BC15`): after the tick, the mods' listeners of the frame
+//!    ([`frame`], stage 115);
+//! 4. the input gate ([`input`], stage 117): the call of `XInputGetState`
+//!    (`0x00B941EB`) and three places of the poll that fetch
+//!    `GetDeviceState` of a keyboard, a mouse and a joystick
+//!    (`0x00B9518C`, `0x00B9521E`, `0x00B952B1`), and the cursor of the
+//!    game's menus: its movement (`0x0069EB00`) and the call of
+//!    `GetCursorPos` (`0x0069E6AF`).
 //!
-//! A third patch, the filter of the message bus (`0x00408A1A`), is made
-//! only when a mod asks for a filter.
+//! Two more patches are made only when a mod asks, from its
+//! `doctor_mod_init`: the filter of the message bus (`0x00408A1A`) and the
+//! overlay before `Present` (`0x00608E9E`, [`overlay`], stage 116). The
+//! events of the Direct3D device need no patch: the module adds itself to
+//! the game's registry of device handlers when a mod first asks for them.
 //!
 //! Its log is `scripts/doctor_platform.log`. Nothing unwinds into the game
 //! or into a mod: every entry point catches panics.
@@ -33,8 +45,12 @@
 mod api;
 mod bus;
 mod classes;
+mod d3d;
+mod frame;
 mod hooks;
+mod input;
 mod lua;
+mod overlay;
 mod win;
 
 use std::ffi::c_void;
@@ -57,6 +73,13 @@ static LOG: Mutex<Option<std::fs::File>> = Mutex::new(None);
 static INSTALLED: AtomicBool = AtomicBool::new(false);
 /// `doctor_mod_init` of the mods is running.
 static IN_INIT: AtomicBool = AtomicBool::new(false);
+/// The main thread of the game (the one that starts the application).
+static MAIN_THREAD: AtomicU32 = AtomicU32::new(0);
+
+/// The identifier of the game's main thread (0 before the start).
+pub(crate) fn main_thread() -> u32 {
+    MAIN_THREAD.load(Ordering::Relaxed)
+}
 
 /// Folder of the module (`scripts/` of the game).
 fn module_dir() -> PathBuf {
@@ -163,6 +186,8 @@ extern "C" fn start_hook() {
         register();
     }
     let _ = std::panic::catch_unwind(|| {
+        // SAFETY: a plain Win32 call.
+        MAIN_THREAD.store(unsafe { win::GetCurrentThreadId() }, Ordering::Relaxed);
         init_mods();
         lua::attach();
     });
@@ -172,7 +197,7 @@ extern "C" fn start_hook() {
 ///
 /// # Safety
 /// `site` must be a call checked by the edition check.
-unsafe fn redirect(site: u32, target: u32) -> bool {
+pub(crate) unsafe fn redirect(site: u32, target: u32) -> bool {
     let rel = target.wrapping_sub(site + 5);
     // SAFETY: only the 4-byte target of the call changes.
     unsafe { win::patch(site + 1, &rel.to_le_bytes()) }
@@ -207,6 +232,11 @@ fn install() -> Result<(), String> {
         if !redirect(addr::LUA_MANAGER_CALL, lua) {
             return Err(format!("could not patch {:#010x}", addr::LUA_MANAGER_CALL));
         }
+        let tick = frame::tick_hook as extern "C" fn() as usize as u32;
+        if !redirect(addr::TICK_CALL, tick) {
+            return Err(format!("could not patch {:#010x}", addr::TICK_CALL));
+        }
+        input::install()?;
     }
     INSTALLED.store(true, Ordering::Relaxed);
     Ok(())
@@ -241,10 +271,17 @@ pub unsafe extern "system" fn DllMain(module: *mut c_void, reason: u32, _: *mut 
             ));
             match installed {
                 Ok(()) => log(&format!(
-                    "edition {}; hooks: start of the application at {:#010x}, LuaManager at {:#010x}",
+                    "edition {}; hooks: start of the application at {:#010x}, LuaManager at {:#010x}, tick at {:#010x}, input gate at {:#010x}, {:#010x}, {:#010x}, {:#010x}, cursor at {:#010x}, {:#010x}",
                     edition::NAME,
                     addr::START_CALL,
-                    addr::LUA_MANAGER_CALL
+                    addr::LUA_MANAGER_CALL,
+                    addr::TICK_CALL,
+                    addr::XINPUT_CALL,
+                    addr::INPUT_KEYBOARD,
+                    addr::INPUT_MOUSE,
+                    addr::INPUT_JOYSTICK,
+                    addr::CURSOR_CALL,
+                    addr::CURSOR_DELTA
                 )),
                 Err(why) => log(&format!("{why}; nothing installed, no mod is called")),
             }
